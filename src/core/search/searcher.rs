@@ -5,11 +5,13 @@ use core::index::IndexReader;
 use core::index::Term;
 use core::index::TermContext;
 use core::search::bulk_scorer::BulkScorer;
+use core::search::cache_policy::{QueryCachingPolicy, UsageTrackingQueryCachingPolicy};
 use core::search::collector;
 use core::search::collector::Collector;
+use core::search::lru_query_cache::{LRUQueryCache, QueryCache};
 use core::search::statistics::{CollectionStatistics, TermStatistics};
 use core::search::SimilarityEnum;
-use core::search::{Query, NO_MORE_DOCS};
+use core::search::{Query, Weight, NO_MORE_DOCS};
 use error::*;
 
 /// Implements search over a single IndexReader.
@@ -39,13 +41,18 @@ const DEFAULT_SIMILARITY_ENUM: SimilarityEnum = SimilarityEnum::BM25 { k1: 1.2, 
 pub struct IndexSearcher {
     pub reader: Arc<IndexReader>,
     sim_enum: SimilarityEnum,
+    query_cache: Box<QueryCache>,
+    cache_policy: Arc<QueryCachingPolicy>,
 }
 
 impl IndexSearcher {
     pub fn new(reader: Arc<IndexReader>) -> IndexSearcher {
+        let max_doc = reader.max_doc();
         IndexSearcher {
             reader,
             sim_enum: DEFAULT_SIMILARITY_ENUM,
+            query_cache: Box::new(LRUQueryCache::new(1000, max_doc)),
+            cache_policy: Arc::new(UsageTrackingQueryCachingPolicy::default()),
         }
     }
 
@@ -53,7 +60,7 @@ impl IndexSearcher {
     ///
     /// `LeafCollector::collect(DocId)` is called for every matching document.
     pub fn search(&self, query: &Query, collector: &mut Collector) -> Result<()> {
-        let weight = query.create_weight(self, collector.need_scores())?;
+        let weight = self.create_weight(query, collector.need_scores())?;
 
         for (ord, reader) in self.reader.leaves().iter().enumerate() {
             let mut scorer = weight.create_scorer(*reader)?;
@@ -67,7 +74,7 @@ impl IndexSearcher {
                 }
 
                 let live_docs = reader.live_docs();
-                match bulk_scorer.score(collector, &live_docs, 0, NO_MORE_DOCS) {
+                match bulk_scorer.score(collector, Some(&live_docs), 0, NO_MORE_DOCS) {
                     Err(Error(
                         ErrorKind::Collector(collector::ErrorKind::CollectionTerminated),
                         _,
@@ -92,6 +99,17 @@ impl IndexSearcher {
         }
 
         Ok(())
+    }
+
+    /// Creates a {@link Weight} for the given query, potentially adding caching
+    /// if possible and configured.
+    pub fn create_weight(&self, query: &Query, needs_scores: bool) -> Result<Box<Weight>> {
+        let mut weight = query.create_weight(self, needs_scores)?;
+        if !needs_scores {
+            weight = self.query_cache
+                .do_cache(weight, Arc::clone(&self.cache_policy));
+        }
+        Ok(weight)
     }
 
     pub fn similarity(&self) -> SimilarityEnum {

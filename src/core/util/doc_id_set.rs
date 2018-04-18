@@ -1,29 +1,28 @@
 use error::*;
 
 use core::search::{DocIdSet, DocIterator, NO_MORE_DOCS};
-use core::util::bit_set::{BitSet, BitSetRef};
+use core::util::bit_set::{ImmutableBitSet, ImmutableBitSetRef};
 use core::util::DocId;
-use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 pub struct BitDocIdSet {
-    set: BitSetRef,
+    set: ImmutableBitSetRef,
     cost: usize,
 }
 
 impl BitDocIdSet {
-    pub fn new(set: Box<BitSet>, cost: usize) -> BitDocIdSet {
+    pub fn new(set: Box<ImmutableBitSet>, cost: usize) -> BitDocIdSet {
         BitDocIdSet {
             cost,
-            set: Arc::new(Mutex::new(set)),
+            set: Arc::from(set),
         }
     }
 
-    pub fn with_bits(set: Box<BitSet>) -> BitDocIdSet {
+    pub fn with_bits(set: Box<ImmutableBitSet>) -> BitDocIdSet {
         let cost = set.approximate_cardinality();
         BitDocIdSet {
             cost,
-            set: Arc::new(Mutex::new(set)),
+            set: Arc::from(set),
         }
     }
 }
@@ -36,21 +35,21 @@ impl DocIdSet for BitDocIdSet {
         )?)))
     }
 
-    fn bits(&self) -> Result<Option<BitSetRef>> {
+    fn bits(&self) -> Result<Option<ImmutableBitSetRef>> {
         Ok(Some(Arc::clone(&self.set)))
     }
 }
 
 pub struct BitSetIterator {
-    bits: BitSetRef,
+    bits: ImmutableBitSetRef,
     length: usize,
     cost: usize,
     doc: DocId,
 }
 
 impl BitSetIterator {
-    pub fn new(bits: BitSetRef, cost: usize) -> Result<BitSetIterator> {
-        let length = bits.lock()?.len();
+    pub fn new(bits: ImmutableBitSetRef, cost: usize) -> Result<BitSetIterator> {
+        let length = bits.len();
         Ok(BitSetIterator {
             bits,
             length,
@@ -78,7 +77,7 @@ impl DocIterator for BitSetIterator {
         if target >= self.length as i32 {
             self.doc = NO_MORE_DOCS;
         } else {
-            self.doc = self.bits.lock()?.next_set_bit(target as usize);
+            self.doc = self.bits.next_set_bit(target as usize);
         }
         Ok(self.doc)
     }
@@ -89,7 +88,7 @@ impl DocIterator for BitSetIterator {
 }
 
 pub struct IntArrayDocIdSet {
-    docs: Rc<Vec<i32>>,
+    docs: Arc<Vec<i32>>,
     length: usize,
 }
 
@@ -98,7 +97,7 @@ impl IntArrayDocIdSet {
         assert_eq!(docs[length], NO_MORE_DOCS);
 
         IntArrayDocIdSet {
-            docs: Rc::new(docs),
+            docs: Arc::new(docs),
             length,
         }
     }
@@ -107,25 +106,25 @@ impl IntArrayDocIdSet {
 impl DocIdSet for IntArrayDocIdSet {
     fn iterator(&self) -> Result<Option<Box<DocIterator>>> {
         Ok(Some(Box::new(IntArrayDocIterator::new(
-            Rc::clone(&self.docs),
+            Arc::clone(&self.docs),
             self.length,
         ))))
     }
 
-    fn bits(&self) -> Result<Option<BitSetRef>> {
+    fn bits(&self) -> Result<Option<ImmutableBitSetRef>> {
         Ok(None)
     }
 }
 
 pub struct IntArrayDocIterator {
-    docs: Rc<Vec<i32>>,
+    docs: Arc<Vec<i32>>,
     length: usize,
     i: i32,
     doc: DocId,
 }
 
 impl IntArrayDocIterator {
-    pub fn new(docs: Rc<Vec<i32>>, length: usize) -> IntArrayDocIterator {
+    pub fn new(docs: Arc<Vec<i32>>, length: usize) -> IntArrayDocIterator {
         IntArrayDocIterator {
             docs,
             length,

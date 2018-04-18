@@ -11,14 +11,11 @@ use core::search::bm25_similarity::BM25Similarity;
 use core::search::searcher::IndexSearcher;
 use core::search::statistics::*;
 use core::search::term_scorer::TermScorer;
-use core::search::DocIterator;
-use core::search::Query;
-use core::search::Scorer;
-use core::search::Similarity;
-use core::search::SimilarityEnum;
-use core::search::Weight;
+use core::search::{DocIterator, Query, Scorer, Similarity, SimilarityEnum, Weight};
 
-#[derive(Clone, Debug)]
+pub const TERM: &str = "term";
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct TermQuery {
     pub term: Term,
     pub boost: f32,
@@ -65,6 +62,10 @@ impl Query for TermQuery {
 
     fn extract_terms(&self) -> Vec<TermQuery> {
         vec![self.clone()]
+    }
+
+    fn query_type(&self) -> &'static str {
+        TERM
     }
 }
 
@@ -126,5 +127,23 @@ impl<T: Similarity> Weight for TermWeight<T> {
             self.create_doc_iterator(reader, i32::from(flags))?,
             self.boost,
         )))
+    }
+
+    fn query_type(&self) -> &'static str {
+        TERM
+    }
+}
+
+impl<T: Similarity> fmt::Display for TermWeight<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "TermWeight(field: {}, term: {}, boost: {}, similarity: {}, need_score: {})",
+            &self.term.field(),
+            &self.term.text().unwrap(),
+            self.boost,
+            &self.similarity,
+            self.needs_scores
+        )
     }
 }

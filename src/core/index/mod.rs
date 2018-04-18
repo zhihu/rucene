@@ -359,7 +359,7 @@ pub struct BufferedUpdates {
 ///
 /// Note that terms may represent more than words from text fields, but also
 /// things like dates, email addresses, urls, etc.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Term {
     pub field: String,
     pub bytes: Vec<u8>,

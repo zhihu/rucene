@@ -5,7 +5,7 @@ use core::util::DocId;
 use error::*;
 
 pub struct BulkScorer<'a> {
-    scorer: &'a mut Scorer,
+    pub scorer: &'a mut Scorer,
 }
 
 impl<'a> BulkScorer<'a> {
@@ -34,7 +34,7 @@ impl<'a> BulkScorer<'a> {
     pub fn score(
         &mut self,
         collector: &mut Collector,
-        accept_docs: &Bits,
+        accept_docs: Option<&Bits>,
         min: DocId,
         max: DocId,
     ) -> Result<DocId> {
@@ -50,25 +50,63 @@ impl<'a> BulkScorer<'a> {
     fn score_range(
         &mut self,
         collector: &mut Collector,
+        accept_docs: Option<&Bits>,
+        min: DocId,
+        max: DocId,
+    ) -> Result<DocId> {
+        if let Some(bits) = accept_docs {
+            self.score_range_in_docs_set(collector, bits, min, max)
+        } else {
+            self.score_range_all(collector, min, max)
+        }
+    }
+
+    fn score_range_in_docs_set(
+        &mut self,
+        collector: &mut Collector,
         accept_docs: &Bits,
         min: DocId,
         max: DocId,
     ) -> Result<DocId> {
         let mut current_doc = min;
-        while current_doc < max {
-            if self.scorer.support_two_phase() {
+        if self.scorer.support_two_phase() {
+            while current_doc < max {
                 if accept_docs.get(current_doc as usize)? && self.scorer.matches()? {
                     collector.collect(current_doc, self.scorer)?;
                 }
                 current_doc = self.scorer.approximate_next()?;
-            } else {
+            }
+        } else {
+            while current_doc < max {
                 if accept_docs.get(current_doc as usize)? {
                     collector.collect(current_doc, self.scorer)?;
                 }
                 current_doc = self.scorer.next()?;
             }
         }
+        Ok(current_doc)
+    }
 
+    fn score_range_all(
+        &mut self,
+        collector: &mut Collector,
+        min: DocId,
+        max: DocId,
+    ) -> Result<DocId> {
+        let mut current_doc = min;
+        if self.scorer.support_two_phase() {
+            while current_doc < max {
+                if self.scorer.matches()? {
+                    collector.collect(current_doc, self.scorer)?;
+                }
+                current_doc = self.scorer.approximate_next()?;
+            }
+        } else {
+            while current_doc < max {
+                collector.collect(current_doc, self.scorer)?;
+                current_doc = self.scorer.next()?;
+            }
+        }
         Ok(current_doc)
     }
 }

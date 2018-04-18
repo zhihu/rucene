@@ -6,6 +6,8 @@ use core::util::DocId;
 use error::*;
 use std::fmt;
 
+pub const MATCH_ALL: &str = "match_all";
+
 pub struct MatchAllDocsQuery;
 
 impl Query for MatchAllDocsQuery {
@@ -16,11 +18,15 @@ impl Query for MatchAllDocsQuery {
     fn extract_terms(&self) -> Vec<TermQuery> {
         unimplemented!()
     }
+
+    fn query_type(&self) -> &'static str {
+        MATCH_ALL
+    }
 }
 
 impl fmt::Display for MatchAllDocsQuery {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "match_all")
+        write!(f, "MatchAllDocsQuery()")
     }
 }
 
@@ -33,6 +39,16 @@ impl Weight for MatchAllDocsWeight {
             iterator: Box::new(AllDocsIterator::new(leaf_reader.max_doc())),
             cost: leaf_reader.max_doc() as usize,
         }))
+    }
+
+    fn query_type(&self) -> &'static str {
+        MATCH_ALL
+    }
+}
+
+impl fmt::Display for MatchAllDocsWeight {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "MatchAllDocsWeight()")
     }
 }
 
@@ -118,6 +134,8 @@ impl DocIterator for AllDocsIterator {
     }
 }
 
+pub const CONSTANT: &str = "constant";
+
 pub struct ConstantScoreQuery {
     pub query: Box<Query>,
     weight: f32,
@@ -138,13 +156,17 @@ impl ConstantScoreQuery {
 
 impl fmt::Display for ConstantScoreQuery {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "ConstantScoreQuery(sub_query: {})", self.query)
+        write!(
+            f,
+            "ConstantScoreQuery(sub_query: {}, weight: {})",
+            self.query, self.weight
+        )
     }
 }
 
 impl Query for ConstantScoreQuery {
     fn create_weight(&self, searcher: &IndexSearcher, needs_scores: bool) -> Result<Box<Weight>> {
-        let weight = self.query.create_weight(searcher, false)?;
+        let weight = searcher.create_weight(self.query.as_ref(), false)?;
         if needs_scores {
             Ok(Box::new(ConstantScoreWeight::new(weight, self.weight)))
         } else {
@@ -154,6 +176,10 @@ impl Query for ConstantScoreQuery {
 
     fn extract_terms(&self) -> Vec<TermQuery> {
         vec![]
+    }
+
+    fn query_type(&self) -> &'static str {
+        CONSTANT
     }
 }
 
@@ -181,5 +207,19 @@ impl Weight for ConstantScoreWeight {
             iterator: inner_scorer,
             cost,
         }))
+    }
+
+    fn query_type(&self) -> &'static str {
+        CONSTANT
+    }
+}
+
+impl fmt::Display for ConstantScoreWeight {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "ConstantScoreWeight(sub_weight: {}, query_weight: {})",
+            self.sub_weight, self.query_weight
+        )
     }
 }

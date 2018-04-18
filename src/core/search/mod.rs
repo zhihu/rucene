@@ -1,5 +1,7 @@
+use std::collections::hash_map::DefaultHasher;
 use std::fmt;
 use std::fmt::Display;
+use std::hash::{Hash, Hasher};
 use std::i32;
 use std::sync::Arc;
 
@@ -9,7 +11,7 @@ use core::search::statistics::CollectionStatistics;
 use core::search::statistics::TermStatistics;
 use core::search::term_query::TermQuery;
 use core::search::top_docs::TopDocs;
-use core::util::bit_set::BitSetRef;
+use core::util::bit_set::ImmutableBitSetRef;
 use core::util::DocId;
 use error::*;
 
@@ -47,6 +49,8 @@ pub mod bm25_similarity;
 pub mod searcher;
 
 // Statistics
+pub mod cache_policy;
+pub mod lru_query_cache;
 pub mod statistics;
 
 error_chain! {
@@ -310,10 +314,27 @@ pub trait Query: Display {
 
     /// For highlight use.
     fn extract_terms(&self) -> Vec<TermQuery>;
+
+    fn query_type(&self) -> &'static str;
 }
 
-pub trait Weight {
+pub trait Weight: Display {
     fn create_scorer(&self, leaf_reader: &LeafReader) -> Result<Box<Scorer>>;
+
+    fn hash_code(&self) -> u32 {
+        let key = format!("{}", self);
+        let mut hasher = DefaultHasher::new();
+        key.hash(&mut hasher);
+        hasher.finish() as u32
+    }
+
+    fn query_type(&self) -> &'static str;
+
+    /// return the actual query type for the weight
+    /// it is useful when self is a wrapped weight such as `CachingWrapperWeight`
+    fn actual_query_type(&self) -> &'static str {
+        self.query_type()
+    }
 }
 
 /// Similarity defines the components of Lucene scoring.
@@ -385,7 +406,7 @@ pub enum SimilarityEnum {
     BM25 { k1: f32, b: f32 },
 }
 
-pub trait Similarity {
+pub trait Similarity: Display {
     type Weight: SimWeight;
 
     fn compute_weight(
@@ -479,7 +500,7 @@ impl fmt::Display for RescoreMode {
 
 /// A DocIdSet contains a set of doc ids. Implementing classes must
 /// only implement *#iterator* to provide access to the set.
-pub trait DocIdSet {
+pub trait DocIdSet: Send + Sync {
     /// Provides a `DocIdSetIterator` to access the set.
     /// This implementation can return None if there
     /// are no docs that match.
@@ -498,7 +519,7 @@ pub trait DocIdSet {
     /// like `FixedBitSet`, which return
     /// itself if they are used as `DocIdSet`.
     ///
-    fn bits(&self) -> Result<Option<BitSetRef>>;
+    fn bits(&self) -> Result<Option<ImmutableBitSetRef>>;
 }
 
 #[cfg(test)]
@@ -614,6 +635,12 @@ pub mod tests {
     impl Weight for MockSimpleWeight {
         fn create_scorer(&self, _reader: &LeafReader) -> Result<Box<Scorer>> {
             Ok(create_mock_scorer(self.docs.clone()))
+        }
+    }
+
+    impl fmt::Display for MockSimpleWeight {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            unimplemented!()
         }
     }
 

@@ -7,13 +7,9 @@ use core::util::ImmutableBits;
 use error::*;
 
 pub type BitSetRef = Arc<Mutex<Box<BitSet>>>;
+pub type ImmutableBitSetRef = Arc<ImmutableBitSet>;
 
-/// Base implementation for a bit set.
-pub trait BitSet: ImmutableBits {
-    fn set(&mut self, i: usize);
-    /// Clears a range of bits.
-    fn clear(&mut self, start_index: usize, end_index: usize);
-
+pub trait ImmutableBitSet: ImmutableBits {
     /// Return the number of bits that are set.
     /// this method is likely to run in linear time
     fn cardinality(&self) -> usize;
@@ -36,6 +32,13 @@ pub trait BitSet: ImmutableBits {
         }
         Ok(())
     }
+}
+
+/// Base implementation for a bit set.
+pub trait BitSet: ImmutableBitSet {
+    fn set(&mut self, i: usize);
+    /// Clears a range of bits.
+    fn clear(&mut self, start_index: usize, end_index: usize);
 
     /// Does in-place OR of the bits provided by the iterator. The state of the
     /// iterator after this operation terminates is undefined.
@@ -58,9 +61,12 @@ pub trait BitSet: ImmutableBits {
 /// `LongBitSet`.
 ///
 pub struct FixedBitSet {
-    pub bits: Vec<i64>,   // Array of longs holding the bits
-    pub num_bits: usize,  // The number of bits in use
-    pub num_words: usize, // The exact number of longs needed to hold numBits (<= bits.length)
+    pub bits: Vec<i64>,
+    // Array of longs holding the bits
+    pub num_bits: usize,
+    // The number of bits in use
+    pub num_words: usize,
+    // The exact number of longs needed to hold numBits (<= bits.length)
 }
 
 impl FixedBitSet {
@@ -145,14 +151,79 @@ impl FixedBitSet {
         let mask = 1i64 << i64::from(index & 0x3fi32);
         self.bits[word_num as usize] &= !mask;
     }
+
+    pub fn flip(&mut self, start_index: usize, end_index: usize) {
+        debug_assert!(start_index < self.num_bits);
+        debug_assert!(end_index <= self.num_bits);
+        if end_index <= start_index {
+            return;
+        }
+        let start_word = start_index >> 6;
+        let end_word = (end_index - 1) >> 6;
+
+        let start_mask = !((-1i64) << (start_index & 0x3fusize)) as i64;
+        let end_mask = !((-1i64).unsigned_shift((64usize - end_index) & 0x3fusize));
+
+        if start_word == end_word {
+            self.bits[start_word] ^= start_mask | end_mask;
+            return;
+        }
+
+        // optimize tight loop with unsafe
+        self.bits[start_word] ^= start_mask;
+        unsafe {
+            let ptr = self.bits.as_mut_ptr();
+            for i in start_word + 1..end_word {
+                let e = ptr.offset(i as isize);
+                *e = !*e;
+            }
+        }
+        self.bits[end_word] ^= end_mask;
+    }
+}
+
+impl ImmutableBitSet for FixedBitSet {
+    fn cardinality(&self) -> usize {
+        bit_util::pop_array(&self.bits, 0, self.num_words)
+    }
+
+    fn next_set_bit(&self, index: usize) -> i32 {
+        // Depends on the ghost bits being clear!
+        debug_assert!(index < self.num_bits);
+        let mut i = index >> 6;
+        // skip all the bits to the right of index
+        let word = unsafe { *self.bits.as_ptr().offset(i as isize) } >> (index & 0x3fusize);
+
+        if word != 0 {
+            return (index as u32 + word.trailing_zeros()) as i32;
+        }
+
+        unsafe {
+            let bits_ptr = self.bits.as_ptr();
+            loop {
+                i += 1;
+                if i >= self.num_words {
+                    break;
+                }
+                let word = *bits_ptr.offset(i as isize);
+                if word != 0 {
+                    return ((i << 6) as u32 + word.trailing_zeros()) as i32;
+                }
+            }
+        }
+        NO_MORE_DOCS
+    }
 }
 
 impl BitSet for FixedBitSet {
+    #[inline]
     fn set(&mut self, index: usize) {
         debug_assert!(index < self.num_bits);
         let word_num = index >> 6;
         let mask = 1i64 << (index & 0x3fusize);
-        self.bits[word_num] |= mask;
+        unsafe {
+            *self.bits.as_mut_ptr().offset(word_num as isize) |= mask;
+        }
     }
 
     fn clear(&mut self, start_index: usize, end_index: usize) {
@@ -179,43 +250,17 @@ impl BitSet for FixedBitSet {
         }
         self.bits[end_word] &= end_mask;
     }
-
-    fn cardinality(&self) -> usize {
-        bit_util::pop_array(&self.bits, 0, self.num_words)
-    }
-
-    fn next_set_bit(&self, index: usize) -> i32 {
-        // Depends on the ghost bits being clear!
-        debug_assert!(index < self.num_bits);
-        let mut i = index >> 6;
-        let word = self.bits[i] >> (index & 0x3fusize); // skip all the bits to the right of index
-
-        if word != 0 {
-            return (index as u32 + word.trailing_zeros()) as i32;
-        }
-
-        loop {
-            i += 1;
-            if i >= self.num_words {
-                break;
-            }
-            let word = self.bits[i];
-            if word != 0 {
-                return ((i << 6) as u32 + word.trailing_zeros()) as i32;
-            }
-        }
-        NO_MORE_DOCS
-    }
 }
 
 impl ImmutableBits for FixedBitSet {
+    #[inline]
     fn get(&self, index: usize) -> Result<bool> {
         debug_assert!(index < self.num_bits);
         let i = index >> 6; // div 64
                             // signed shift will keep a negative index and force an
                             // array-index-out-of-bounds-exception, removing the need for an explicit check.
         let mask = 1i64 << (index & 0x3fusize);
-        Ok((self.bits[i] & mask) != 0)
+        Ok(unsafe { *self.bits.as_ptr().offset(i as isize) & mask != 0 })
     }
 
     fn len(&self) -> usize {

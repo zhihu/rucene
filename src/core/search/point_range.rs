@@ -12,6 +12,7 @@ use core::search::{EmptyDocIterator, MatchNoDocScorer};
 use core::util::string_util::bytes_compare;
 use core::util::{DocId, DocIdSetBuilder};
 
+#[derive(Copy, Clone)]
 pub enum PointValueType {
     Integer,
     Float,
@@ -100,6 +101,8 @@ impl PointRangeQuery {
     }
 }
 
+pub const POINT_RANGE: &str = "point_range";
+
 impl Query for PointRangeQuery {
     fn create_weight(&self, _searcher: &IndexSearcher, _needs_scores: bool) -> Result<Box<Weight>> {
         Ok(Box::new(PointRangeWeight::new(
@@ -108,11 +111,16 @@ impl Query for PointRangeQuery {
             self.bytes_per_dim,
             self.lower_point.clone(),
             self.upper_point.clone(),
+            self.value_type,
         )))
     }
 
     fn extract_terms(&self) -> Vec<TermQuery> {
         unimplemented!()
+    }
+
+    fn query_type(&self) -> &'static str {
+        POINT_RANGE
     }
 }
 
@@ -140,6 +148,7 @@ struct PointRangeWeight {
     bytes_per_dim: usize,
     lower_point: Vec<u8>,
     upper_point: Vec<u8>,
+    value_type: PointValueType,
 }
 
 impl PointRangeWeight {
@@ -149,6 +158,7 @@ impl PointRangeWeight {
         bytes_per_dim: usize,
         lower_point: Vec<u8>,
         upper_point: Vec<u8>,
+        value_type: PointValueType,
     ) -> PointRangeWeight {
         PointRangeWeight {
             field,
@@ -156,6 +166,7 @@ impl PointRangeWeight {
             bytes_per_dim,
             lower_point,
             upper_point,
+            value_type,
         }
     }
 
@@ -229,10 +240,32 @@ impl Weight for PointRangeWeight {
                     }
                 };
                 let cost = iterator.cost();
-                return Ok(Box::new(ConstantScoreScorer::new(1.0f32, iterator, cost)));
+                return Ok(Box::new(ConstantScoreScorer::new(0f32, iterator, cost)));
             }
         }
         Ok(Box::new(MatchNoDocScorer::default()))
+    }
+
+    fn query_type(&self) -> &'static str {
+        POINT_RANGE
+    }
+}
+
+impl fmt::Display for PointRangeWeight {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "PointRangeWeight(field: {}, type:{}, num_dims: {}, bytes_per_dim: {}, lower: {}, \
+             upper: {})",
+            &self.field,
+            &self.value_type,
+            self.num_dims,
+            self.bytes_per_dim,
+            self.value_type
+                .format_bytes(&self.lower_point, self.bytes_per_dim),
+            self.value_type
+                .format_bytes(&self.upper_point, self.bytes_per_dim),
+        )
     }
 }
 

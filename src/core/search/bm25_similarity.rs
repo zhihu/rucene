@@ -1,4 +1,5 @@
 use error::Result;
+use std::fmt;
 use std::sync::Arc;
 
 use core::index::field_info::FieldInvertState;
@@ -103,6 +104,12 @@ impl Similarity for BM25Similarity {
         let norm = reader.norm_values(&stats.field)?;
         let boxed = BM25SimScorer::new(stats, norm);
         Ok(Box::new(boxed))
+    }
+}
+
+impl fmt::Display for BM25Similarity {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "BM25Similarity(k1: {}, b: {})", self.k1, self.b)
     }
 }
 

@@ -68,4 +68,10 @@ pub trait LeafReader {
     /// Returns the `PointValuesRef` used for numeric or
     /// spatial searches, or None if there are no point fields.
     fn point_values(&self) -> Option<PointValuesRef>;
+
+    /// Expert: Returns a key for this IndexReader, so CachingWrapperFilter can find
+    // it again.
+    // This key must not have equals()/hashCode() methods, so &quot;equals&quot; means
+    // &quot;identical&quot;.
+    fn core_cache_key(&self) -> &str;
 }

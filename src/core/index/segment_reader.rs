@@ -484,4 +484,9 @@ impl LeafReader for SegmentReader {
             None => None,
         }
     }
+
+    fn core_cache_key(&self) -> &str {
+        // use segment name as unique segment cache key
+        &self.si.info.name
+    }
 }

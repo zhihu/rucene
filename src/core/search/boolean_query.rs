@@ -8,9 +8,7 @@ use core::search::match_all::ConstantScoreQuery;
 use core::search::req_opt::ReqOptScorer;
 use core::search::searcher::IndexSearcher;
 use core::search::term_query::TermQuery;
-use core::search::Query;
-use core::search::Scorer;
-use core::search::Weight;
+use core::search::{Query, Scorer, Weight};
 use error::*;
 
 pub struct BooleanQuery {
@@ -19,6 +17,8 @@ pub struct BooleanQuery {
     filter_queries: Vec<Box<Query>>,
     minimum_should_match: i32,
 }
+
+pub const BOOLEAN: &str = "boolean";
 
 impl BooleanQuery {
     pub fn build(
@@ -62,14 +62,14 @@ impl Query for BooleanQuery {
         let mut must_weights =
             Vec::with_capacity(self.must_queries.len() + self.filter_queries.len());
         for q in &self.must_queries {
-            must_weights.push(q.create_weight(searcher, needs_scores)?);
+            must_weights.push(searcher.create_weight(q.as_ref(), needs_scores)?);
         }
         for q in &self.filter_queries {
-            must_weights.push(q.create_weight(searcher, false)?);
+            must_weights.push(searcher.create_weight(q.as_ref(), false)?);
         }
         let mut should_weights = Vec::new();
         for q in &self.should_queries {
-            should_weights.push(q.create_weight(searcher, needs_scores)?);
+            should_weights.push(searcher.create_weight(q.as_ref(), needs_scores)?);
         }
 
         Ok(Box::new(BooleanWeight::new(
@@ -96,16 +96,21 @@ impl Query for BooleanQuery {
 
         term_query_list
     }
+
+    fn query_type(&self) -> &'static str {
+        BOOLEAN
+    }
 }
 
 impl fmt::Display for BooleanQuery {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let must_str = self.queries_to_str(&self.must_queries);
         let should_str = self.queries_to_str(&self.should_queries);
+        let filters_str = self.queries_to_str(&self.filter_queries);
         write!(
             f,
-            "BooleanQuery(must: [{}], should: [{}], match: {})",
-            must_str, should_str, self.minimum_should_match
+            "BooleanQuery(must: [{}], should: [{}], filters: [{}] match: {})",
+            must_str, should_str, filters_str, self.minimum_should_match
         )
     }
 }
@@ -146,6 +151,11 @@ impl BooleanWeight {
         }
         Ok(result)
     }
+
+    fn weights_to_str(&self, weights: &[Box<Weight>]) -> String {
+        let weight_strs: Vec<String> = weights.iter().map(|q| format!("{}", q)).collect();
+        weight_strs.join(", ")
+    }
 }
 
 impl Weight for BooleanWeight {
@@ -185,5 +195,21 @@ impl Weight for BooleanWeight {
                 should_scorer.unwrap(),
             )))
         }
+    }
+
+    fn query_type(&self) -> &'static str {
+        BOOLEAN
+    }
+}
+
+impl fmt::Display for BooleanWeight {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let must_str = self.weights_to_str(&self.must_weights);
+        let should_str = self.weights_to_str(&self.should_weights);
+        write!(
+            f,
+            "BooleanWeight(must: [{}], should: [{}], min match: {}, needs score: {})",
+            must_str, should_str, self.minimum_should_match, self.needs_scores
+        )
     }
 }

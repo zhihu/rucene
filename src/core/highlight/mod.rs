@@ -569,13 +569,6 @@ pub struct FieldQuery {
     term_or_phrase_number: i32,
 }
 
-impl PartialEq for TermQuery {
-    fn eq(&self, other: &Self) -> bool {
-        self.boost == other.boost && self.term.field == other.term.field
-            && self.term.bytes == other.term.bytes
-    }
-}
-
 impl FieldQuery {
     pub fn new(
         query: &Query,
