@@ -1,0 +1,54 @@
+<project name="verify" default="compile" xmlns:ivy="antlib:org.apache.ivy.ant">
+  <property name="ivy.install.version" value="2.4.0" />
+  <property name="ivy.jar.dir" value="${basedir}/ivy" />
+  <property name="ivy.jar.file" value="${ivy.jar.dir}/ivy.jar" />
+
+  <property name="build.dir" value="build" />
+  <property name="src.dir" value="src" />
+  <property name="lib.dir" value="lib" />
+
+  <target name="download-ivy" unless="skip.download">
+    <mkdir dir="${ivy.jar.dir}"/>
+    <echo message="installing ivy..."/>
+    <get src="https://repo1.maven.org/maven2/org/apache/ivy/ivy/${ivy.install.version}/ivy-${ivy.install.version}.jar" dest="${ivy.jar.file}" usetimestamp="true"/>
+  </target>
+
+  <target name="install-ivy" depends="download-ivy">
+    <path id="ivy.lib.path">
+        <fileset dir="${ivy.jar.dir}" includes="*.jar"/>
+    </path>
+    <taskdef resource="org/apache/ivy/ant/antlib.xml" uri="antlib:org.apache.ivy.ant" classpathref="ivy.lib.path"/>
+  </target>
+  
+  <target name="resolve" description="Resolve dependencies.">
+    <ivy:retrieve conf="compile" pattern="${lib.dir}/[artifact]-[revision].[ext]"/>
+  </target>
+
+  <path id="compile.classpath">
+    <fileset dir="${lib.dir}" />
+  </path>
+
+  <path id="run.classpath">
+    <pathelement path="${build.dir}" />
+    <fileset dir="${lib.dir}" />
+  </path>
+
+  <target name="compile" depends="install-ivy, resolve">
+ 		<mkdir dir="${build.dir}" />
+		<javac srcdir="${src.dir}" destdir="${build.dir}" includes="**/*.java" classpathref="compile.classpath" debug="on" includeantruntime="false" />
+  </target>
+
+  <target name="clean">
+    <delete includeemptydirs="true" quiet="true">
+      <fileset dir="${build.dir}" />
+    </delete>
+  </target>
+  
+  <target name="clean-ivy">
+    <delete dir="${ivy.jar.dir}"/>
+  </target>
+  
+  <target name="clean-cache" depends="install-ivy">
+    <ivy:cleancache />
+  </target>
+</project>
