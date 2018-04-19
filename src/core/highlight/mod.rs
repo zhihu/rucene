@@ -889,14 +889,13 @@ impl FieldPhraseList {
             phrase_list: vec![],
         };
 
-        let mut phrase_candidate: Vec<TermInfo> = vec![];
         let mut curr_map: Option<&QueryPhraseMap> = None;
         let mut next_map: Option<&QueryPhraseMap>;
 
         while !field_term_stack.is_empty()
             && field_phrase_list.phrase_list.len() < phrase_limit as usize
         {
-            phrase_candidate.clear();
+            let mut phrase_candidate: Vec<TermInfo> = vec![];
 
             let first = field_term_stack.pop().unwrap();
             match field_query.get_field_term_map(&field, &first.text) {
@@ -953,7 +952,7 @@ impl FieldPhraseList {
                             curr_map_unwrap.boost,
                             Some(curr_map_unwrap.term_or_phrase_number),
                         ));
-                        return field_phrase_list;
+                        break;
                     } else {
                         let mut i = phrase_candidate.len() - 1;
                         while i > 0 {
@@ -966,7 +965,7 @@ impl FieldPhraseList {
                                     curr_map_unwrap.boost,
                                     Some(curr_map_unwrap.term_or_phrase_number),
                                 ));
-                                return field_phrase_list;
+                                break;
                             }
 
                             i -= 1;
