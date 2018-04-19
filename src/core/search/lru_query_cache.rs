@@ -1,5 +1,7 @@
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::mem;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
@@ -265,6 +267,7 @@ pub struct CachingWrapperWeight {
     policy: Arc<QueryCachingPolicy>,
     used: AtomicBool,
     query_key: String,
+    hash_code: u32,
 }
 
 impl CachingWrapperWeight {
@@ -274,12 +277,15 @@ impl CachingWrapperWeight {
         policy: Arc<QueryCachingPolicy>,
     ) -> CachingWrapperWeight {
         let query_key = format!("{}", weight);
+        let mut hasher = DefaultHasher::new();
+        query_key.hash(&mut hasher);
         CachingWrapperWeight {
             cache_data,
             weight,
             policy,
             used: AtomicBool::new(false),
             query_key,
+            hash_code: hasher.finish() as u32,
         }
     }
 
@@ -393,6 +399,10 @@ impl Weight for CachingWrapperWeight {
 
     fn actual_query_type(&self) -> &'static str {
         self.weight.query_type()
+    }
+
+    fn hash_code(&self) -> u32 {
+        self.hash_code
     }
 }
 
