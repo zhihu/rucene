@@ -5,7 +5,6 @@ use core::index::IndexReader;
 use core::index::LeafReader;
 use core::index::SegmentInfos;
 use core::index::{get_segment_file_name, SegmentReader};
-use core::search::SimilarityEnum;
 use core::store::{DirectoryRc, IOContext};
 use core::util::DocId;
 use error::Result;
@@ -94,10 +93,6 @@ impl IndexReader for StandardDirectoryReader {
         let mut visitor = DocumentStoredFieldVisitor::new(&fields_load);
         self.readers[i].document(doc_id - self.starts[i], &mut visitor)?;
         Ok(visitor.document())
-    }
-
-    fn similarity(&self) -> SimilarityEnum {
-        SimilarityEnum::BM25 { k1: 1.2, b: 0.75 }
     }
 
     fn max_doc(&self) -> i32 {

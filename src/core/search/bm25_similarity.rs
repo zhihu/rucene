@@ -31,16 +31,25 @@ lazy_static! {
     };
 }
 
+pub const DEFAULT_BM25_K1: f32 = 1.2;
+pub const DEFAULT_BM25_B: f32 = 0.75;
+
 pub struct BM25Similarity {
     k1: f32,
     b: f32,
+}
+
+impl Default for BM25Similarity {
+    fn default() -> Self {
+        BM25Similarity::new(DEFAULT_BM25_K1, DEFAULT_BM25_B)
+    }
 }
 
 impl BM25Similarity {
     pub fn new(k1: f32, b: f32) -> BM25Similarity {
         BM25Similarity { k1, b }
     }
-    #[allow(dead_code)]
+
     fn sloppy_freq(distance: i32) -> f32 {
         (1.0 / distance as f32 + 1.0)
     }
@@ -81,13 +90,11 @@ impl BM25Similarity {
 }
 
 impl Similarity for BM25Similarity {
-    type Weight = BM25SimWeight;
-
     fn compute_weight(
         &self,
         collection_stats: &CollectionStatistics,
         term_stats: &TermStatistics,
-    ) -> BM25SimWeight {
+    ) -> Box<SimWeight> {
         let avgdl = BM25Similarity::avg_field_length(&collection_stats);
         let idf = BM25Similarity::idf(&term_stats, &collection_stats);
         let field = collection_stats.field.clone();
@@ -97,13 +104,7 @@ impl Similarity for BM25Similarity {
                 * ((1.0 - self.b) + self.b * (BM25Similarity::decode_norm_value(i as u8) / avgdl));
         }
 
-        BM25SimWeight::new(self.k1, self.b, idf, field, cache)
-    }
-
-    fn sim_scorer(&self, stats: Arc<BM25SimWeight>, reader: &LeafReader) -> Result<Box<SimScorer>> {
-        let norm = reader.norm_values(&stats.field)?;
-        let boxed = BM25SimScorer::new(stats, norm);
-        Ok(Box::new(boxed))
+        Box::new(BM25SimWeight::new(self.k1, self.b, idf, field, cache))
     }
 }
 
@@ -114,29 +115,41 @@ impl fmt::Display for BM25Similarity {
 }
 
 pub struct BM25SimScorer {
-    weight: Arc<BM25SimWeight>,
+    k1: f32,
+    idf: f32,
+    cache: Arc<[f32; 256]>,
     norms: Option<Box<NumericDocValues>>,
 }
 
 impl BM25SimScorer {
-    fn new(weight: Arc<BM25SimWeight>, norms: Option<Box<NumericDocValues>>) -> BM25SimScorer {
-        BM25SimScorer { weight, norms }
+    fn new(weight: &BM25SimWeight, norms: Option<Box<NumericDocValues>>) -> BM25SimScorer {
+        BM25SimScorer {
+            k1: weight.k1,
+            idf: weight.idf,
+            cache: Arc::clone(&weight.cache),
+            norms,
+        }
     }
 
     pub fn compute_score(&mut self, doc: i32, freq: f32) -> Result<f32> {
-        let mut norm = self.weight.k1;
-        if let Some(ref mut norms) = self.norms {
+        let norm = if let Some(ref mut norms) = self.norms {
             let encode_length = (norms.get(doc)? & 0xFF) as usize;
-            norm = self.weight.cache[encode_length];
-        }
+            self.cache[encode_length]
+        } else {
+            self.k1
+        };
 
-        Ok(self.weight.idf * (self.weight.k1 + 1.0) * freq / (freq + norm))
+        Ok(self.idf * (self.k1 + 1.0) * freq / (freq + norm))
     }
 }
 
 impl SimScorer for BM25SimScorer {
     fn score(&mut self, doc: DocId, freq: f32) -> Result<f32> {
         self.compute_score(doc, freq)
+    }
+
+    fn compute_slop_factor(&self, distance: i32) -> f32 {
+        BM25Similarity::sloppy_freq(distance)
     }
 }
 
@@ -146,22 +159,42 @@ pub struct BM25SimWeight {
     b: f32,
     idf: f32,
     field: String,
-    cache: [f32; 256],
+    cache: Arc<[f32; 256]>,
+    boost: f32,
+    weight: f32,
 }
 
 impl BM25SimWeight {
     fn new(k1: f32, b: f32, idf: f32, field: String, cache: [f32; 256]) -> BM25SimWeight {
-        BM25SimWeight {
+        let mut weight = BM25SimWeight {
             k1,
             b,
             idf,
             field,
-            cache,
-        }
+            cache: Arc::new(cache),
+            boost: 1.0,
+            weight: 0.0,
+        };
+        weight.normalize(1.0, 1.0);
+        weight
     }
 }
 
-impl SimWeight for BM25SimWeight {}
+impl SimWeight for BM25SimWeight {
+    fn get_value_for_normalization(&self) -> f32 {
+        self.weight * self.weight
+    }
+
+    fn normalize(&mut self, _query_norm: f32, boost: f32) {
+        self.boost = boost;
+        self.weight = self.idf * boost;
+    }
+
+    fn sim_scorer(&self, reader: &LeafReader) -> Result<Box<SimScorer>> {
+        let norm = reader.norm_values(&self.field)?;
+        Ok(Box::new(BM25SimScorer::new(self, norm)))
+    }
+}
 
 #[cfg(test)]
 mod tests {
