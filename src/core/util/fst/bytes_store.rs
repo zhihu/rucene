@@ -4,10 +4,11 @@ use error::*;
 use std::cmp::min;
 use std::io;
 use std::io::{Read, Write};
-use std::sync::{Arc, Mutex};
+use std::mem;
+use std::sync::Arc;
 use std::vec::Vec;
 
-type BlockRef = Arc<Mutex<Vec<Vec<u8>>>>;
+type BlockRef = Arc<Vec<Vec<u8>>>;
 
 #[derive(Debug)]
 pub struct BytesStore {
@@ -26,7 +27,7 @@ impl BytesStore {
             block_size,
             block_bits,
             block_mask,
-            blocks: BlockRef::new(Mutex::new(vec![])),
+            blocks: BlockRef::new(vec![]),
             current: vec![0u8; block_size],
         }
     }
@@ -64,7 +65,7 @@ impl BytesStore {
             block_size,
             block_bits,
             block_mask: block_size - 1,
-            blocks: Arc::new(Mutex::new(blocks)),
+            blocks: Arc::new(blocks),
             current: vec![0 as u8; block_size],
         })
     }
@@ -88,10 +89,10 @@ impl Write for BytesStore {
                     offset += chunk;
                     len -= chunk;
                 }
-                if let Ok(ref mut blocks) = self.blocks.lock() {
-                    blocks.push(self.current.clone());
-                }
-                self.current.resize(0, 0);
+                let mut current = vec![];
+                mem::swap(&mut current, &mut self.current);
+                // we are sure it won't be used in multiple threads during writing
+                Arc::make_mut(&mut self.blocks).push(current);
             }
         }
 
@@ -106,7 +107,7 @@ impl Write for BytesStore {
 impl BytesStore {
     #[allow(dead_code)]
     fn get_position(&self) -> Result<usize> {
-        Ok(self.blocks.lock()?.len() * self.block_size + self.current.len() as usize)
+        Ok(self.blocks.len() * self.block_size + self.current.len() as usize)
     }
 
     /// Absolute writeBytes without changing the current
@@ -159,13 +160,9 @@ impl BytesStore {
     /// Writes all of our bytes to the target {@link DataOutput}.
     #[allow(dead_code)]
     fn write_to(&self, output: &mut DataOutput) -> Result<()> {
-        let length = self.blocks.lock()?.len();
+        let length = self.blocks.len();
         for i in 0..length {
-            output.write_bytes(
-                self.blocks.lock()?[i].as_slice(),
-                0,
-                self.blocks.lock()?[i].len(),
-            )?;
+            output.write_bytes(self.blocks[i].as_slice(), 0, self.blocks[i].len())?;
         }
         Ok(())
     }
@@ -226,7 +223,11 @@ impl DataInput for StoreBytesReader {
     }
 
     fn read_byte(&mut self) -> Result<u8> {
-        let b = self.blocks.lock()?[self.block_index][self.next_read];
+        let b = unsafe {
+            *(*self.blocks.as_ptr().offset(self.block_index as isize))
+                .as_ptr()
+                .offset(self.next_read as isize)
+        };
 
         if self.reversed {
             if self.next_read == 0 {
