@@ -15,6 +15,8 @@ pub trait Output: Clone {
 
     fn cat(&self, other: &Self) -> Self;
 
+    fn concat(&mut self, other: &Self);
+
     fn subtract(&self, other: &Self) -> Self;
 
     fn is_empty(&self) -> bool;

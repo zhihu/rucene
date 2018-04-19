@@ -184,7 +184,7 @@ impl<T: OutputFactory> FST<T> {
             // Accepts empty string
             // 1KB blocks:
             let num_bytes = data_in.read_vint()? as usize;
-            let bytes_store = BytesStore::new(data_in, num_bytes, 10)?;
+            let bytes_store = BytesStore::new(data_in, num_bytes, 30)?;
             let mut reader = if packed {
                 bytes_store.get_forward_reader()
             } else {
@@ -279,7 +279,7 @@ impl<T: OutputFactory> FST<T> {
         let bytes_ref = BytesRefFSTEnum::new(bytes);
         if let Some(ref out) = arc.output {
             if !out.is_empty() {
-                output = output.cat(&out);
+                output.concat(&out);
             }
         }
         let mut last_final_output = if arc.is_final() && arc.next_final_output.is_some() {
@@ -298,7 +298,7 @@ impl<T: OutputFactory> FST<T> {
                     arc = a;
                     if let Some(ref out) = arc.output {
                         if !out.is_empty() {
-                            output = output.cat(&out);
+                            output.concat(&out);
                         }
                     }
                     if arc.is_final() {

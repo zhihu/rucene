@@ -30,3 +30,9 @@ name = "verify"
 
 [[bin]]
 name = "benchmark"
+
+# The release profile, used for `cargo build --release`
+[profile.release]
+lto = true
+opt-level = 3
+debug = true
