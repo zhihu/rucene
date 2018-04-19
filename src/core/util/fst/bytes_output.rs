@@ -58,6 +58,10 @@ impl Output for ByteSequenceOutput {
         }
     }
 
+    fn concat(&mut self, other: &ByteSequenceOutput) {
+        self.bytes.extend(&other.bytes);
+    }
+
     fn prefix(&self, other: &ByteSequenceOutput) -> ByteSequenceOutput {
         let mut pos1 = 0;
         let mut pos2 = 0;

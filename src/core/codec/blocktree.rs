@@ -1030,8 +1030,11 @@ impl<'a> SegmentTermIterator {
                 IndexOptions::Docs => -1,
                 _ => i64::from(self.state.doc_freq) + self.stats_reader.read_vlong()?,
             };
-            for i in 0..self.longs.len() {
-                self.longs[i] = self.bytes_reader.read_vlong()?;
+            unsafe {
+                let ptr = self.longs.as_mut_ptr();
+                for i in 0..self.longs.len() {
+                    *ptr.offset(i as isize) = self.bytes_reader.read_vlong()?;
+                }
             }
             lucene50_decode_term(
                 &self.longs,

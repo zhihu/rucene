@@ -251,8 +251,11 @@ impl DataInput for StoreBytesReader {
     }
 
     fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
-        for i in 0..len {
-            b[offset + i] = self.read_byte()?;
+        unsafe {
+            let ptr = b.as_mut_ptr().offset(offset as isize);
+            for i in 0..len {
+                *ptr.offset(i as isize) = self.read_byte()?;
+            }
         }
 
         Ok(())
