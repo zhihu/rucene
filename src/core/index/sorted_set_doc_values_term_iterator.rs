@@ -1,7 +1,7 @@
 use core::index::term::{OrdTermState, SeekStatus, TermIterator, TermState};
 use core::index::SortedSetDocValues;
 use core::search::posting_iterator::PostingIterator;
-use error::ErrorKind::UnsupportedOperation;
+use error::ErrorKind::*;
 use error::Result;
 
 /// Implements a `TermIterator` wrapping a provided `SortedSetDocValues`
@@ -67,7 +67,11 @@ impl<'a> TermIterator for SortedSetDocValuesTermIterator<'a> {
         }
     }
 
-    fn seek_exact_at(&mut self, ord: i64) -> Result<()> {
+    fn seek_exact_state(&mut self, _text: &[u8], state: &TermState) -> Result<()> {
+        self.seek_exact_ord(state.ord())
+    }
+
+    fn seek_exact_ord(&mut self, ord: i64) -> Result<()> {
         assert!(ord >= 0 && ord < self.values.get_value_count() as i64);
         self.current_ord = ord;
         let bytes = self.values.lookup_ord(self.current_ord)?;

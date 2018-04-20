@@ -17,6 +17,9 @@ mod producer;
 pub use self::producer::*;
 
 use std::sync::{Arc, Mutex};
+
+use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+
 pub type DocValuesProducerRef = Arc<Mutex<Box<DocValuesProducer>>>;
 
 use core::codec::format::PointsFormat;
@@ -24,7 +27,10 @@ use core::codec::format::{CompoundFormat, LiveDocsFormat, NormsFormat};
 use core::codec::format::{DocValuesFormat, PostingsFormat, StoredFieldsFormat};
 use core::codec::format::{FieldInfosFormat, SegmentInfoFormat, TermVectorsFormat};
 use core::index::term::TermState;
+use error::ErrorKind::*;
 use error::*;
+
+const BLOCK_TERM_STATE_SERIALIZED_SIZE: usize = 76;
 
 #[derive(Clone)]
 pub struct BlockTermState {
@@ -73,6 +79,44 @@ impl BlockTermState {
         }
     }
 
+    pub fn deserialize(from: &[u8]) -> Result<BlockTermState> {
+        // 76 bytes in total
+        let mut from = from;
+        if from.len() != BLOCK_TERM_STATE_SERIALIZED_SIZE {
+            bail!(IllegalArgument(
+                "Serialized bytes is not for BlockTermState".into()
+            ))
+        }
+        let ord = from.read_i64::<LittleEndian>()?;
+        let doc_freq = from.read_i32::<LittleEndian>()?;
+
+        let total_term_freq = from.read_i64::<LittleEndian>()?;
+        let term_block_ord = from.read_i32::<LittleEndian>()?;
+
+        let block_file_pointer = from.read_i64::<LittleEndian>()?;
+
+        let doc_start_fp = from.read_i64::<LittleEndian>()?;
+        let pos_start_fp = from.read_i64::<LittleEndian>()?;
+        let pay_start_fp = from.read_i64::<LittleEndian>()?;
+        let skip_offset = from.read_i64::<LittleEndian>()?;
+        let last_pos_block_offset = from.read_i64::<LittleEndian>()?;
+        let singleton_doc_id = from.read_i32::<LittleEndian>()?;
+        Ok(BlockTermState {
+            ord,
+            doc_freq,
+            total_term_freq,
+            term_block_ord,
+            block_file_pointer,
+
+            doc_start_fp,
+            pos_start_fp,
+            pay_start_fp,
+            skip_offset,
+            last_pos_block_offset,
+            singleton_doc_id,
+        })
+    }
+
     pub fn ord(&self) -> i64 {
         self.ord
     }
@@ -113,7 +157,41 @@ impl BlockTermState {
     }
 }
 
-impl TermState for BlockTermState {}
+impl TermState for BlockTermState {
+    fn ord(&self) -> i64 {
+        self.ord
+    }
+
+    fn serialize(&self) -> Vec<u8> {
+        let mut buffer = Vec::with_capacity(BLOCK_TERM_STATE_SERIALIZED_SIZE);
+        buffer.write_i64::<LittleEndian>(self.ord).unwrap();
+        buffer.write_i32::<LittleEndian>(self.doc_freq).unwrap();
+
+        buffer
+            .write_i64::<LittleEndian>(self.total_term_freq)
+            .unwrap();
+        buffer
+            .write_i32::<LittleEndian>(self.term_block_ord)
+            .unwrap();
+
+        buffer
+            .write_i64::<LittleEndian>(self.block_file_pointer)
+            .unwrap();
+
+        buffer.write_i64::<LittleEndian>(self.doc_start_fp).unwrap();
+        buffer.write_i64::<LittleEndian>(self.pos_start_fp).unwrap();
+        buffer.write_i64::<LittleEndian>(self.pay_start_fp).unwrap();
+        buffer.write_i64::<LittleEndian>(self.skip_offset).unwrap();
+        buffer
+            .write_i64::<LittleEndian>(self.last_pos_block_offset)
+            .unwrap();
+        buffer
+            .write_i32::<LittleEndian>(self.singleton_doc_id)
+            .unwrap();
+        debug_assert!(buffer.len() == BLOCK_TERM_STATE_SERIALIZED_SIZE);
+        buffer
+    }
+}
 
 pub fn check_ascii_with_limit(s: &str, limit: usize) -> Result<()> {
     if s.chars().count() != s.len() || s.len() > limit {

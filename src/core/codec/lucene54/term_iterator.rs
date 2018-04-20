@@ -213,7 +213,7 @@ impl TermIterator for CompressedBinaryTermIterator {
         Ok(SeekStatus::End)
     }
 
-    fn seek_exact_at(&mut self, ord: i64) -> Result<()> {
+    fn seek_exact_ord(&mut self, ord: i64) -> Result<()> {
         let block = ord.unsigned_shift(lucene54::INTERVAL_SHIFT as usize);
         if block
             != self.current_ord

@@ -1,17 +1,20 @@
 use error::*;
 use std::boxed::Box;
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
+use core::index::term::TermState;
 use core::index::LeafReader;
-use core::index::Term;
-use core::index::TermContext;
+use core::index::{Term, TermContext};
 use core::index::{POSTINGS_FREQS, POSTINGS_NONE};
 use core::search::bm25_similarity::BM25Similarity;
+use core::search::posting_iterator::EmptyPostingIterator;
 use core::search::searcher::IndexSearcher;
 use core::search::statistics::*;
 use core::search::term_scorer::TermScorer;
 use core::search::{DocIterator, Query, Scorer, Similarity, SimilarityEnum, Weight};
+use core::util::DocId;
 
 pub const TERM: &str = "term";
 
@@ -51,6 +54,7 @@ impl Query for TermQuery {
                 let sim_weight = similarity.compute_weight(&collection_stats, &term_stats);
                 Ok(Box::new(TermWeight::new(
                     self.term.clone(),
+                    term_context.states.into_iter().collect(),
                     self.boost,
                     similarity,
                     sim_weight,
@@ -87,11 +91,13 @@ pub struct TermWeight<T: Similarity> {
     similarity: T,
     sim_weight: Arc<T::Weight>,
     needs_scores: bool,
+    term_states: HashMap<DocId, Box<TermState>>,
 }
 
 impl<T: Similarity> TermWeight<T> {
     pub fn new(
         term: Term,
+        term_states: HashMap<DocId, Box<TermState>>,
         boost: f32,
         similarity: T,
         sim_weight: T::Weight,
@@ -99,6 +105,7 @@ impl<T: Similarity> TermWeight<T> {
     ) -> TermWeight<T> {
         TermWeight {
             term,
+            term_states,
             boost,
             similarity,
             sim_weight: Arc::new(sim_weight),
@@ -107,7 +114,11 @@ impl<T: Similarity> TermWeight<T> {
     }
 
     fn create_doc_iterator(&self, reader: &LeafReader, flags: i32) -> Result<Box<DocIterator>> {
-        reader.docs(&self.term, flags)
+        if let Some(state) = self.term_states.get(&reader.doc_base()) {
+            reader.docs_from_state(&self.term, state.as_ref(), flags)
+        } else {
+            Ok(Box::new(EmptyPostingIterator::default()))
+        }
     }
 }
 

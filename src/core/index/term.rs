@@ -1,6 +1,7 @@
-use error::ErrorKind::UnsupportedOperation;
+use error::ErrorKind::*;
 use error::Result;
 
+use std::mem::transmute;
 use std::sync::Arc;
 
 use core::search::posting_iterator::PostingIterator;
@@ -8,7 +9,11 @@ use core::search::posting_iterator::POSTING_ITERATOR_FLAG_FREQS;
 
 /// Encapsulates all required internal state to position the associated
 /// `TermIterator` without re-seeking
-pub trait TermState {}
+pub trait TermState {
+    fn ord(&self) -> i64;
+
+    fn serialize(&self) -> Vec<u8>;
+}
 
 /// An ordinal based `TermState`
 pub struct OrdTermState {
@@ -16,7 +21,16 @@ pub struct OrdTermState {
     pub ord: i64,
 }
 
-impl TermState for OrdTermState {}
+impl TermState for OrdTermState {
+    fn ord(&self) -> i64 {
+        self.ord
+    }
+
+    fn serialize(&self) -> Vec<u8> {
+        let r: [u8; 8] = unsafe { transmute(self.ord.to_be()) };
+        r.to_vec()
+    }
+}
 
 /// Access to the terms in a specific field.  See {@link Fields}.
 /// @lucene.experimental
@@ -140,7 +154,7 @@ pub trait Terms: Send + Sync {
             return Ok(Vec::with_capacity(0));
         } else if size > 0 {
             let mut iterator = self.iterator()?;
-            iterator.as_mut().seek_exact_at(size - 1)?;
+            iterator.as_mut().seek_exact_ord(size - 1)?;
             return iterator.as_mut().term();
         }
 
@@ -298,7 +312,17 @@ pub trait TermIterator {
     /// previously returned by {@link #ord}.  The target ord
     /// may be before or after the current ord, and must be
     /// within bounds.
-    fn seek_exact_at(&mut self, ord: i64) -> Result<()>;
+    fn seek_exact_ord(&mut self, ord: i64) -> Result<()>;
+
+    fn seek_exact_state(&mut self, text: &[u8], _state: &TermState) -> Result<()> {
+        self.seek_exact(text).and_then(|r| {
+            if r {
+                Ok(())
+            } else {
+                bail!(IllegalArgument(format!("Term {:?} does not exist", text)))
+            }
+        })
+    }
 
     /// Returns current term. Do not call this when the enum
     /// is unpositioned.
