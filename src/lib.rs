@@ -15,11 +15,11 @@ extern crate serde;
 extern crate serde_derive;
 extern crate serde_json;
 
+extern crate byteorder;
 extern crate bytes;
 extern crate crc;
 extern crate memmap;
 extern crate num_traits;
-
 extern crate thread_local;
 
 pub mod core;

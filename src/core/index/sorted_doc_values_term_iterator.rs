@@ -66,12 +66,16 @@ impl<'a> TermIterator for SortedDocValuesTermIterator<'a> {
         }
     }
 
-    fn seek_exact_at(&mut self, ord: i64) -> Result<()> {
+    fn seek_exact_ord(&mut self, ord: i64) -> Result<()> {
         assert!(ord >= 0 && ord < self.values.get_value_count() as i64);
         self.current_ord = ord as i32;
         let bytes = self.values.lookup_ord(self.current_ord)?;
         self.scratch = bytes.to_vec();
         Ok(())
+    }
+
+    fn seek_exact_state(&mut self, _text: &[u8], state: &TermState) -> Result<()> {
+        self.seek_exact_ord(state.ord())
     }
 
     fn term(&mut self) -> Result<Vec<u8>> {

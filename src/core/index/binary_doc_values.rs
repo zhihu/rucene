@@ -162,7 +162,7 @@ impl CompressedBinaryDocValues {
 
 impl LongBinaryDocValues for CompressedBinaryDocValues {
     fn get64(&mut self, id: i64) -> Result<&[u8]> {
-        self.term_iterator.seek_exact_at(id)?;
+        self.term_iterator.seek_exact_ord(id)?;
         self.term_buffer = self.term_iterator.term()?;
         Ok(self.term_buffer.as_ref())
     }

@@ -398,8 +398,7 @@ impl Clone for Term {
 pub struct TermContext {
     pub doc_freq: i32,
     pub total_term_freq: i64,
-    #[allow(dead_code)]
-    states: Vec<Box<TermState>>,
+    pub states: Vec<(DocId, Box<TermState>)>,
 }
 
 impl TermContext {
@@ -426,6 +425,8 @@ impl TermContext {
                     let doc_freq = terms_enum.doc_freq()?;
                     let total_term_freq = terms_enum.total_term_freq()?;
                     self.accumulate_statistics(doc_freq, total_term_freq as i64);
+                    self.states
+                        .push((reader.doc_base(), terms_enum.term_state()?));
                 }
             }
         }

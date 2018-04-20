@@ -1,6 +1,6 @@
 use core::codec::FieldsProducerRef;
 use core::index::point_values::PointValuesRef;
-use core::index::term::TermsRef;
+use core::index::term::{TermState, TermsRef};
 use core::index::BinaryDocValuesRef;
 use core::index::SortedDocValuesRef;
 use core::index::SortedNumericDocValuesRef;
@@ -33,6 +33,30 @@ pub trait LeafReader {
             if terms_iter.seek_exact(term.bytes.as_ref())? {
                 return Ok(terms_iter.postings_with_flags(flags as i16)?);
             }
+        }
+        Ok(Box::new(EmptyPostingIterator::default()))
+    }
+
+    fn docs_from_state(
+        &self,
+        term: &Term,
+        state: &TermState,
+        flags: i32,
+    ) -> Result<Box<DocIterator>> {
+        self.postings_from_state(term, state, flags)?
+            .clone_as_doc_iterator()
+    }
+
+    fn postings_from_state(
+        &self,
+        term: &Term,
+        state: &TermState,
+        flags: i32,
+    ) -> Result<Box<PostingIterator>> {
+        if let Some(terms) = self.terms(term.field())? {
+            let mut terms_iter = terms.iterator()?;
+            terms_iter.seek_exact_state(term.bytes.as_ref(), state)?;
+            return terms_iter.postings_with_flags(flags as i16);
         }
         Ok(Box::new(EmptyPostingIterator::default()))
     }

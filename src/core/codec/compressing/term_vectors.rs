@@ -1132,7 +1132,7 @@ impl TermIterator for TVTermsIterator {
         }
     }
 
-    fn seek_exact_at(&mut self, _ord: i64) -> Result<()> {
+    fn seek_exact_ord(&mut self, _ord: i64) -> Result<()> {
         // Not Supported Operation
         unimplemented!()
     }

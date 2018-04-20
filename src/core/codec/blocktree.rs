@@ -1557,8 +1557,17 @@ impl<'a> TermIterator for SegmentTermIterator {
         unimplemented!()
     }
 
-    fn seek_exact_at(&mut self, _ord: i64) -> Result<()> {
+    fn seek_exact_ord(&mut self, _ord: i64) -> Result<()> {
         unimplemented!()
+    }
+
+    fn seek_exact_state(&mut self, text: &[u8], state: &TermState) -> Result<()> {
+        self.term.clear();
+        self.term.extend(text.iter());
+        self.state = BlockTermState::deserialize(&state.serialize())?;
+        self.is_leaf_block = true;
+        self.meta_data_upto = self.state.term_block_ord;
+        Ok(())
     }
 
     fn term(&mut self) -> Result<Vec<u8>> {
