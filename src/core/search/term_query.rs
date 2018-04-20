@@ -2,18 +2,16 @@ use error::*;
 use std::boxed::Box;
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::Arc;
 
 use core::index::term::TermState;
 use core::index::LeafReader;
 use core::index::{Term, TermContext};
 use core::index::{POSTINGS_FREQS, POSTINGS_NONE};
-use core::search::bm25_similarity::BM25Similarity;
 use core::search::posting_iterator::EmptyPostingIterator;
 use core::search::searcher::IndexSearcher;
 use core::search::statistics::*;
 use core::search::term_scorer::TermScorer;
-use core::search::{DocIterator, Query, Scorer, Similarity, SimilarityEnum, Weight};
+use core::search::{DocIterator, Query, Scorer, Similarity, SimWeight, Weight};
 use core::util::DocId;
 
 pub const TERM: &str = "term";
@@ -47,21 +45,16 @@ impl Query for TermQuery {
                 CollectionStatistics::new(self.term.field.clone(), max_doc, -1, -1, -1),
             )
         };
-
-        match searcher.similarity() {
-            SimilarityEnum::BM25 { k1, b } => {
-                let similarity = BM25Similarity::new(k1, b);
-                let sim_weight = similarity.compute_weight(&collection_stats, &term_stats);
-                Ok(Box::new(TermWeight::new(
-                    self.term.clone(),
-                    term_context.states.into_iter().collect(),
-                    self.boost,
-                    similarity,
-                    sim_weight,
-                    needs_scores,
-                )))
-            }
-        }
+        let similarity = searcher.similarity(&self.term.field);
+        let sim_weight = similarity.compute_weight(&collection_stats, &term_stats);
+        Ok(Box::new(TermWeight::new(
+            self.term.clone(),
+            term_context.states.into_iter().collect(),
+            self.boost,
+            similarity,
+            sim_weight,
+            needs_scores,
+        )))
     }
 
     fn extract_terms(&self) -> Vec<TermQuery> {
@@ -85,31 +78,31 @@ impl fmt::Display for TermQuery {
     }
 }
 
-pub struct TermWeight<T: Similarity> {
+pub struct TermWeight {
     term: Term,
     boost: f32,
-    similarity: T,
-    sim_weight: Arc<T::Weight>,
+    similarity: Box<Similarity>,
+    sim_weight: Box<SimWeight>,
     needs_scores: bool,
     term_states: HashMap<DocId, Box<TermState>>,
 }
 
-impl<T: Similarity> TermWeight<T> {
+impl TermWeight {
     pub fn new(
         term: Term,
         term_states: HashMap<DocId, Box<TermState>>,
         boost: f32,
-        similarity: T,
-        sim_weight: T::Weight,
+        similarity: Box<Similarity>,
+        sim_weight: Box<SimWeight>,
         needs_scores: bool,
-    ) -> TermWeight<T> {
+    ) -> TermWeight {
         TermWeight {
             term,
-            term_states,
             boost,
             similarity,
-            sim_weight: Arc::new(sim_weight),
+            sim_weight,
             needs_scores,
+            term_states,
         }
     }
 
@@ -122,10 +115,10 @@ impl<T: Similarity> TermWeight<T> {
     }
 }
 
-impl<T: Similarity> Weight for TermWeight<T> {
+impl Weight for TermWeight {
     fn create_scorer(&self, reader: &LeafReader) -> Result<Box<Scorer>> {
         let _norms = reader.norm_values(&self.term.field);
-        let sim_scorer = self.similarity.sim_scorer(self.sim_weight.clone(), reader)?;
+        let sim_scorer = self.sim_weight.sim_scorer(reader)?;
 
         let flags = if self.needs_scores {
             POSTINGS_FREQS
@@ -145,7 +138,7 @@ impl<T: Similarity> Weight for TermWeight<T> {
     }
 }
 
-impl<T: Similarity> fmt::Display for TermWeight<T> {
+impl fmt::Display for TermWeight {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,

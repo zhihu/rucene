@@ -3,7 +3,6 @@ use std::fmt;
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};
 use std::i32;
-use std::sync::Arc;
 
 use core::index::LeafReader;
 use core::search::searcher::IndexSearcher;
@@ -401,28 +400,46 @@ pub trait Weight: Display {
 /// passes in a the document id and an explanation of how the frequency was computed.
 ///
 ///
-#[derive(Copy, Clone)]
-pub enum SimilarityEnum {
-    BM25 { k1: f32, b: f32 },
-}
 
 pub trait Similarity: Display {
-    type Weight: SimWeight;
-
     fn compute_weight(
         &self,
         collection_stats: &CollectionStatistics,
         term_stats: &TermStatistics,
-    ) -> Self::Weight;
-
-    fn sim_scorer(&self, stats: Arc<Self::Weight>, reader: &LeafReader) -> Result<Box<SimScorer>>;
+    ) -> Box<SimWeight>;
 }
 
 pub trait SimScorer: Send {
+    /// Score a single document
+    /// @param doc document id within the inverted index segment
+    /// @param freq sloppy term frequency
+    /// @return document's score
     fn score(&mut self, doc: DocId, freq: f32) -> Result<f32>;
+
+    /// Computes the amount of a sloppy phrase match, based on an edit distance.
+    fn compute_slop_factor(&self, distance: i32) -> f32;
+
+    // Calculate a scoring factor based on the data in the payload.
+    // fn compute_payload_factor(&self, doc: DocId, start: i32, end: i32, payload: &Payload);
 }
 
-pub trait SimWeight {}
+pub trait SimWeight {
+    ///  The value for normalization of contained query clauses (e.g. sum of squared weights).
+    ///
+    /// NOTE: a Similarity implementation might not use any query normalization at all,
+    /// it's not required. However, if it wants to participate in query normalization,
+    /// it can return a value here.
+    ///
+    fn get_value_for_normalization(&self) -> f32;
+
+    fn normalize(&mut self, query_norm: f32, boost: f32);
+
+    fn sim_scorer(&self, reader: &LeafReader) -> Result<Box<SimScorer>>;
+}
+
+pub trait SimilarityProducer: Send + Sync {
+    fn create(&self, field: &str) -> Box<Similarity>;
+}
 
 /// A query rescorer interface used to re-rank the Top-K results of a previously
 /// executed search.

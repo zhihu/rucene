@@ -4,14 +4,15 @@ use core::index::multi_fields::MultiFields;
 use core::index::IndexReader;
 use core::index::Term;
 use core::index::TermContext;
+use core::search::bm25_similarity::BM25Similarity;
 use core::search::bulk_scorer::BulkScorer;
 use core::search::cache_policy::{QueryCachingPolicy, UsageTrackingQueryCachingPolicy};
 use core::search::collector;
 use core::search::collector::Collector;
 use core::search::lru_query_cache::{LRUQueryCache, QueryCache};
 use core::search::statistics::{CollectionStatistics, TermStatistics};
-use core::search::SimilarityEnum;
 use core::search::{Query, Weight, NO_MORE_DOCS};
+use core::search::{Similarity, SimilarityProducer};
 use error::*;
 
 /// Implements search over a single IndexReader.
@@ -36,11 +37,18 @@ use error::*;
 /// synchronize on the `IndexSearcher` instance.
 ///
 ///
-const DEFAULT_SIMILARITY_ENUM: SimilarityEnum = SimilarityEnum::BM25 { k1: 1.2, b: 0.75 };
+
+struct DefaultSimilarityProducer;
+
+impl SimilarityProducer for DefaultSimilarityProducer {
+    fn create(&self, _field: &str) -> Box<Similarity> {
+        Box::new(BM25Similarity::default())
+    }
+}
 
 pub struct IndexSearcher {
     pub reader: Arc<IndexReader>,
-    sim_enum: SimilarityEnum,
+    sim_producer: Box<SimilarityProducer>,
     query_cache: Box<QueryCache>,
     #[allow(dead_code)]
     cache_policy: Arc<QueryCachingPolicy>,
@@ -48,10 +56,17 @@ pub struct IndexSearcher {
 
 impl IndexSearcher {
     pub fn new(reader: Arc<IndexReader>) -> IndexSearcher {
+        Self::with_similarity(reader, Box::new(DefaultSimilarityProducer {}))
+    }
+
+    pub fn with_similarity(
+        reader: Arc<IndexReader>,
+        sim_producer: Box<SimilarityProducer>,
+    ) -> IndexSearcher {
         let max_doc = reader.max_doc();
         IndexSearcher {
             reader,
-            sim_enum: DEFAULT_SIMILARITY_ENUM,
+            sim_producer,
             query_cache: Box::new(LRUQueryCache::new(1000, max_doc)),
             cache_policy: Arc::new(UsageTrackingQueryCachingPolicy::default()),
         }
@@ -113,8 +128,8 @@ impl IndexSearcher {
         Ok(weight)
     }
 
-    pub fn similarity(&self) -> SimilarityEnum {
-        self.sim_enum
+    pub fn similarity(&self, field: &str) -> Box<Similarity> {
+        self.sim_producer.create(field)
     }
 
     pub fn term_statistics(&self, term: Term, context: &TermContext) -> TermStatistics {

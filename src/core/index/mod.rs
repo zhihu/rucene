@@ -80,7 +80,6 @@ use core::codec::Codec;
 use core::doc::Document;
 use core::index::stored_field_visitor::StoredFieldVisitor;
 use core::index::term::TermState;
-use core::search::SimilarityEnum;
 use core::store::{DirectoryRc, IOContext};
 use core::util::{to_base36, Bits, DocId, Version};
 use error::Result;
@@ -178,7 +177,6 @@ pub trait IndexReader: Send + Sync {
     fn leaves(&self) -> Vec<&LeafReader>;
     fn term_vector(&self, doc_id: DocId) -> Result<Box<Fields>>;
     fn document(&self, doc_id: DocId, fields_load: &[String]) -> Result<Document>;
-    fn similarity(&self) -> SimilarityEnum;
     fn max_doc(&self) -> i32;
     fn num_docs(&self) -> i32;
     fn leaf_reader_for_doc(&self, doc: DocId) -> &LeafReader {
@@ -862,10 +860,6 @@ pub mod tests {
         }
 
         fn document(&self, _doc_id: DocId, _fields_load: &[String]) -> Result<Document> {
-            unimplemented!()
-        }
-
-        fn similarity(&self) -> SimilarityEnum {
             unimplemented!()
         }
 
