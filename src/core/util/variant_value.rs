@@ -28,8 +28,7 @@ impl fmt::Display for VariantValue {
             VariantValue::Float(fval) => write!(f, "{:.3}", fval),
             VariantValue::Double(d) => write!(f, "{:.6}", d),
             VariantValue::VString(ref s) => write!(f, "{}", s),
-            // VariantValue::Binary(ref _b) => write!(f, "Binary(unprintable)"),
-            _ => write!(f, "Non-printable"),
+            VariantValue::Binary(ref _b) => write!(f, "Binary(unprintable)"),
         }
     }
 }
@@ -123,11 +122,15 @@ impl PartialEq for VariantValue {
 impl Ord for VariantValue {
     fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
+            (&VariantValue::Bool(b1), &VariantValue::Bool(b2)) => b1.cmp(&b2),
+            (&VariantValue::Char(c1), &VariantValue::Char(c2)) => c1.cmp(&c2),
             (&VariantValue::Short(v1), &VariantValue::Short(v2)) => v1.cmp(&v2),
             (&VariantValue::Int(v1), &VariantValue::Int(v2)) => v1.cmp(&v2),
             (&VariantValue::Long(v1), &VariantValue::Long(v2)) => v1.cmp(&v2),
             (&VariantValue::Float(v1), &VariantValue::Float(v2)) => v1.partial_cmp(&v2).unwrap(),
             (&VariantValue::Double(v1), &VariantValue::Double(v2)) => v1.partial_cmp(&v2).unwrap(),
+            (&VariantValue::VString(ref s1), &VariantValue::VString(ref s2)) => s1.cmp(&s2),
+            (&VariantValue::Binary(ref b1), &VariantValue::Binary(ref b2)) => b1.cmp(&b2),
             (_, _) => panic!("Non-comparable"),
         }
     }
