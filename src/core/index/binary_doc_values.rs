@@ -112,7 +112,7 @@ impl CompressedBinaryDocValues {
 
         let data_copy = IndexInput::clone(data.lock()?.as_ref())?;
         let term_iterator = CompressedBinaryTermIterator::new(
-            Mutex::new(data_copy),
+            data_copy,
             max_term_length as usize,
             num_reverse_index_values,
             Arc::clone(&reverse_index),
@@ -149,7 +149,7 @@ impl CompressedBinaryDocValues {
     pub fn get_term_iterator(&self) -> Result<CompressedBinaryTermIterator> {
         let data = IndexInput::clone(self.data.lock()?.deref().as_ref())?;
         CompressedBinaryTermIterator::new(
-            Mutex::new(data),
+            data,
             self.max_term_length as usize,
             self.num_reverse_index_values,
             Arc::clone(&self.reverse_index),

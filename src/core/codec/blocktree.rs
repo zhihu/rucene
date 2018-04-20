@@ -1565,7 +1565,7 @@ impl<'a> TermIterator for SegmentTermIterator {
         self.term.clear();
         self.term.extend(text.iter());
         self.state = BlockTermState::deserialize(&state.serialize())?;
-        self.is_leaf_block = true;
+        self.is_leaf_block = false;
         self.meta_data_upto = self.state.term_block_ord;
         Ok(())
     }

@@ -1,7 +1,7 @@
 use error::*;
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use core::codec::codec_util;
 use core::codec::format::CompoundFormat;
@@ -50,7 +50,7 @@ pub struct Lucene50CompoundReader {
     pub directory: DirectoryRc,
     name: String,
     entries: HashMap<String, FileEntry>,
-    input: Mutex<Box<IndexInput>>,
+    input: Box<IndexInput>,
     pub version: i32,
 }
 
@@ -94,7 +94,7 @@ impl Lucene50CompoundReader {
             directory,
             name: si.name.clone(),
             entries,
-            input: Mutex::new(input),
+            input,
             version,
         })
     }
@@ -145,7 +145,7 @@ impl Directory for Lucene50CompoundReader {
                 self.entries.keys()
             )
         })?;
-        self.input.lock()?.slice(name, entry.0, entry.1)
+        self.input.slice(name, entry.0, entry.1)
     }
 
     /// Returns an array of strings, one for each file in the directory.
