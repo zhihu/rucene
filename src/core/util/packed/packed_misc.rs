@@ -471,7 +471,7 @@ pub const PACKED8_THREE_BLOCKS_MAX_SIZE: i32 = i32::max_value() / 3;
 pub const PACKED16_THREE_BLOCKS_MAX_SIZE: i32 = i32::max_value() / 3;
 
 /// A decoder for packed integers.
-pub trait PackedIntDecoder: Send {
+pub trait PackedIntDecoder: Send + Sync {
     /// The minimum number of long blocks to encode in a single iteration, when
     /// using long encoding.
     fn long_block_count(&self) -> usize;

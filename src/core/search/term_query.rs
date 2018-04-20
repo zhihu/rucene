@@ -11,7 +11,7 @@ use core::search::posting_iterator::EmptyPostingIterator;
 use core::search::searcher::IndexSearcher;
 use core::search::statistics::*;
 use core::search::term_scorer::TermScorer;
-use core::search::{DocIterator, Query, Scorer, Similarity, SimWeight, Weight};
+use core::search::{DocIterator, Query, Scorer, SimWeight, Similarity, Weight};
 use core::util::DocId;
 
 pub const TERM: &str = "term";

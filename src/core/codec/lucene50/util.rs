@@ -1,5 +1,5 @@
 use std::cmp::max;
-use std::sync::{Arc, Mutex, Once, ONCE_INIT};
+use std::sync::{Arc, Once, ONCE_INIT};
 
 use core::codec::lucene50::posting::BLOCK_SIZE;
 use core::store::IndexInput;
@@ -67,7 +67,7 @@ fn encoded_size(format: &Format, version: i32, bits_per_value: i32) -> i32 {
 
 struct ForUtilInstance {
     encoded_sizes: [i32; 33],
-    decoders: Vec<Mutex<Box<PackedIntDecoder>>>,
+    decoders: Vec<Box<PackedIntDecoder>>,
     iterations: [i32; 33],
 }
 
@@ -86,18 +86,10 @@ impl ForUtilInstance {
             let format = Format::with_id(format_id);
             encoded_sizes[bpv] = encoded_size(&format, packed_ints_version, bits_per_value);
             if bpv == 1 {
-                decoders.push(Mutex::new(get_decoder(
-                    &format,
-                    packed_ints_version,
-                    bits_per_value,
-                )?));
+                decoders.push(get_decoder(&format, packed_ints_version, bits_per_value)?);
             }
-            decoders.push(Mutex::new(get_decoder(
-                &format,
-                packed_ints_version,
-                bits_per_value,
-            )?));
-            iterations[bpv] = compute_iterations(decoders[bpv].lock()?.as_ref());
+            decoders.push(get_decoder(&format, packed_ints_version, bits_per_value)?);
+            iterations[bpv] = compute_iterations(decoders[bpv].as_ref());
         }
 
         Ok(ForUtilInstance {
@@ -127,7 +119,7 @@ impl ForUtilInstance {
         let encoded_size = self.encoded_sizes[num_bits];
         input.read_exact(&mut encoded[0..encoded_size as usize])?;
 
-        let decoder = &self.decoders[num_bits].lock()?;
+        let decoder = &self.decoders[num_bits];
         let iters = self.iterations[num_bits] as usize;
         decoder.decode_byte_to_int(encoded, decoded, iters);
         Ok(())

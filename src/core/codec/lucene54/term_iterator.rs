@@ -10,7 +10,6 @@ use error::ErrorKind::UnsupportedOperation;
 use error::Result;
 
 use std::cmp::Ordering;
-use std::sync::Mutex;
 
 pub struct CompressedBinaryTermIterator {
     num_reverse_index_values: i64,
@@ -20,7 +19,7 @@ pub struct CompressedBinaryTermIterator {
     num_index_values: i64,
     current_ord: i64,
     current_block_start: i64,
-    input: Mutex<Box<IndexInput>>,
+    input: Box<IndexInput>,
     offsets: [i32; lucene54::INTERVAL_COUNT as usize],
     buffer: [u8; (lucene54::INTERVAL_COUNT * 2 - 1) as usize],
     term: Vec<u8>,
@@ -31,7 +30,7 @@ pub struct CompressedBinaryTermIterator {
 
 impl CompressedBinaryTermIterator {
     pub fn new(
-        input: Mutex<Box<IndexInput>>,
+        input: Box<IndexInput>,
         max_term_length: usize,
         num_reverse_index_values: i64,
         reverse_index: ReverseTermsIndexRef,
@@ -39,7 +38,8 @@ impl CompressedBinaryTermIterator {
         num_values: i64,
         num_index_values: i64,
     ) -> Result<CompressedBinaryTermIterator> {
-        input.lock()?.seek(0)?;
+        let mut input = input;
+        input.seek(0)?;
         Ok(CompressedBinaryTermIterator {
             num_reverse_index_values,
             reverse_index,
@@ -60,18 +60,19 @@ impl CompressedBinaryTermIterator {
 
     fn read_header(&mut self) -> Result<()> {
         {
-            let mut input = self.input.lock()?;
-            let length = input.read_vint()? as u32;
-            input.read_bytes(&mut self.first_term, 0, length as usize)?;
+            let length = self.input.read_vint()? as u32;
+            self.input
+                .read_bytes(&mut self.first_term, 0, length as usize)?;
             self.first_term_length = length;
-            input.read_bytes(&mut self.buffer, 0, (lucene54::INTERVAL_COUNT - 1) as usize)?;
+            self.input
+                .read_bytes(&mut self.buffer, 0, (lucene54::INTERVAL_COUNT - 1) as usize)?;
         }
         if self.buffer[0] == 0xFF {
             self.read_short_addresses()?;
         } else {
             self.read_byte_addresses();
         }
-        self.current_block_start = self.input.lock()?.file_pointer();
+        self.current_block_start = self.input.file_pointer();
         Ok(())
     }
 
@@ -88,7 +89,7 @@ impl CompressedBinaryTermIterator {
     // read double byte addresses: each is delta -2
     // (shared prefix byte and length > 0 are both implicit
     fn read_short_addresses(&mut self) -> Result<()> {
-        self.input.lock()?.read_bytes(
+        self.input.read_bytes(
             &mut self.buffer,
             (lucene54::INTERVAL_COUNT - 1) as usize,
             lucene54::INTERVAL_COUNT as usize,
@@ -116,15 +117,14 @@ impl CompressedBinaryTermIterator {
 
     // read term at offset, delta encoded from first term
     fn read_term(&mut self, offset: i32) -> Result<()> {
-        let mut input = self.input.lock()?;
-        let start = (input.read_byte()? as usize) & 0xFF;
+        let start = (self.input.read_byte()? as usize) & 0xFF;
         // FIXME: first_term.offset
         self.term[0..start]
             .as_mut()
             .copy_from_slice(&self.first_term[0..start]);
         let offset = offset as usize;
         let suffix = (self.offsets[offset] - self.offsets[offset - 1] - 1) as usize;
-        input.read_bytes(self.term.as_mut(), start, suffix)?;
+        self.input.read_bytes(self.term.as_mut(), start, suffix)?;
         self.term_length = (start + suffix) as u32;
         Ok(())
     }
@@ -148,13 +148,12 @@ impl CompressedBinaryTermIterator {
 
     // binary search against first term in block range to find term's block
     fn binary_search_block(&mut self, text: &[u8], mut low: i64, mut high: i64) -> Result<i64> {
-        let mut input = self.input.lock()?;
         while low <= high {
             let mid = low + (high - low) / 2;
             let pos = self.addresses.lock()?.get64(mid)?;
-            input.seek(pos)?;
-            let length = input.read_vint()? as usize;
-            input.read_bytes(self.term.as_mut(), 0, length)?;
+            self.input.seek(pos)?;
+            let length = self.input.read_vint()? as usize;
+            self.input.read_bytes(self.term.as_mut(), 0, length)?;
             self.term_length = length as u32;
             match self.term[0..length].as_ref().cmp(text) {
                 Ordering::Less => low = mid + 1,
@@ -196,9 +195,7 @@ impl TermIterator for CompressedBinaryTermIterator {
             block = ::std::cmp::max(low, self.binary_search_block(text, low, high)?);
         }
         // position before block then scan to term
-        self.input
-            .lock()?
-            .seek(self.addresses.lock()?.get64(block)?)?;
+        self.input.seek(self.addresses.lock()?.get64(block)?)?;
         self.current_ord = (block << lucene54::INTERVAL_SHIFT) - 1;
 
         while !self.next()?.is_empty() {
@@ -220,9 +217,7 @@ impl TermIterator for CompressedBinaryTermIterator {
                 .unsigned_shift(lucene54::INTERVAL_SHIFT as usize)
         {
             // switch to different block
-            self.input
-                .lock()?
-                .seek(self.addresses.lock()?.get64(block)?)?;
+            self.input.seek(self.addresses.lock()?.get64(block)?)?;
             self.read_header()?;
         }
         self.current_ord = ord;
@@ -231,7 +226,7 @@ impl TermIterator for CompressedBinaryTermIterator {
             self.read_first_term()
         } else {
             let pos = self.current_block_start + i64::from(self.offsets[(offset - 1) as usize]);
-            self.input.lock()?.seek(pos)?;
+            self.input.seek(pos)?;
             self.read_term(offset)
         }
     }

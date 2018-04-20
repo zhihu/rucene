@@ -1,6 +1,5 @@
 use std::io;
 use std::io::Read;
-use std::sync::{Mutex, MutexGuard};
 
 use core::codec::lucene50::posting::BLOCK_SIZE;
 use core::store::DataInput;
@@ -121,7 +120,7 @@ pub struct Lucene50SkipReader {
     doc_count: i32,
 
     /// skip_stream for each level.
-    skip_stream: Vec<Option<Mutex<Box<IndexInput>>>>,
+    skip_stream: Vec<Option<Box<IndexInput>>>,
 
     /// The start pointer of each skip level.
     skip_pointer: Vec<i64>,
@@ -169,7 +168,7 @@ impl Lucene50SkipReader {
         let mut skip_stream = Vec::with_capacity(self.skip_stream.len());
         for s in &self.skip_stream {
             skip_stream.push(match s {
-                Some(ref stream) => Some(Mutex::new(stream.lock()?.clone()?)),
+                Some(ref stream) => Some(stream.as_ref().clone()?),
                 None => None,
             });
         }
@@ -223,7 +222,7 @@ impl Lucene50SkipReader {
         let mut skip_intervals = vec![0 as i64; 0];
         let mut skip_streams = Vec::with_capacity(max_number_of_skip_levels);
         let input_is_buffered = skip_stream.is_buffered();
-        skip_streams.push(Some(Mutex::new(skip_stream)));
+        skip_streams.push(Some(skip_stream));
         skip_intervals.push(i64::from(skip_interval));
         for i in 1..max_number_of_skip_levels {
             // cache skip intervals
@@ -371,7 +370,7 @@ impl Lucene50SkipReader {
     /// Seeks the skip entry on the given level
     pub fn seek_child(&mut self, level: i32) -> Result<()> {
         let ulevel = level as usize;
-        let mut skip_stream = self.skip_stream[ulevel].as_mut().unwrap().lock()?;
+        let skip_stream = self.skip_stream[ulevel].as_mut().unwrap();
         skip_stream.seek(self.last_child_pointer)?;
         self.num_skipped[ulevel] = self.num_skipped[ulevel + 1] - self.skip_interval[ulevel + 1];
         self.skip_doc[ulevel] = self.last_doc;
@@ -461,26 +460,25 @@ impl Lucene50SkipReader {
         self.skip_stream[0]
             .as_mut()
             .unwrap()
-            .lock()?
             .seek(self.skip_pointer[0])?;
 
         let mut to_buffer = self.number_of_levels_to_buffer;
 
         for i in (1..self.number_of_skip_levels as usize).rev() {
             // the length of the current level
-            let length = self.skip_stream[0].as_mut().unwrap().lock()?.read_vlong()?;
+            let length = self.skip_stream[0].as_mut().unwrap().read_vlong()?;
 
             // the start pointer of the current level
-            self.skip_pointer[i] = self.skip_stream[0].as_mut().unwrap().lock()?.file_pointer();
+            self.skip_pointer[i] = self.skip_stream[0].as_mut().unwrap().file_pointer();
             if to_buffer > 0 {
                 // buffer this level
-                let stream = { SkipBuffer::new(self.stream(0)?.as_mut(), length as i32)? };
-                self.skip_stream[i] = Some(Mutex::new(Box::new(stream)));
+                let stream = { SkipBuffer::new(self.stream(0)?, length as i32)? };
+                self.skip_stream[i] = Some(Box::new(stream));
                 to_buffer -= 1;
             } else {
                 // clone this stream, it is already at the start of the current level
-                let stream = { IndexInput::clone(self.stream(0)?.as_ref())? };
-                self.skip_stream[i] = Some(Mutex::new(stream));
+                let stream = { IndexInput::clone(self.stream(0)?)? };
+                self.skip_stream[i] = Some(stream);
                 // if self.input_is_buffered && length < BufferedIndexInput.BUFFER_SIZE {
                 // ((BufferedIndexInput)
                 // skip_stream[i]).setBufferSize(Math.max(BufferedIndexInput.MIN_BUFFER_SIZE, (int)
@@ -488,17 +486,13 @@ impl Lucene50SkipReader {
                 //
 
                 // move base stream beyond the current level
-                let fp = self.skip_stream[0].as_mut().unwrap().lock()?.file_pointer();
-                self.skip_stream[0]
-                    .as_mut()
-                    .unwrap()
-                    .lock()?
-                    .seek(fp + length)?;
+                let fp = self.skip_stream[0].as_mut().unwrap().file_pointer();
+                self.skip_stream[0].as_mut().unwrap().seek(fp + length)?;
             }
         }
 
         // use base stream for the lowest level
-        self.skip_pointer[0] = self.skip_stream[0].as_mut().unwrap().lock()?.file_pointer();
+        self.skip_pointer[0] = self.skip_stream[0].as_mut().unwrap().file_pointer();
         Ok(())
     }
 
@@ -523,20 +517,16 @@ impl Lucene50SkipReader {
 
         if level != 0 {
             // read the child pointer if we are not on the leaf level
-            self.child_pointer[ulevel] = self.skip_stream[ulevel]
-                .as_mut()
-                .unwrap()
-                .lock()?
-                .read_vlong()?
+            self.child_pointer[ulevel] = self.skip_stream[ulevel].as_mut().unwrap().read_vlong()?
                 + self.skip_pointer[ulevel - 1];
         }
 
         Ok(true)
     }
 
-    fn stream(&mut self, id: usize) -> Result<MutexGuard<Box<IndexInput>>> {
+    fn stream(&mut self, id: usize) -> Result<&mut IndexInput> {
         debug_assert!(id < self.skip_stream.len());
-        Ok(self.skip_stream[id].as_mut().unwrap().lock()?)
+        Ok(self.skip_stream[id].as_mut().unwrap().as_mut())
     }
 
     /// Returns the id of the doc to which the last call of {@link #skipTo(int)}
@@ -568,7 +558,6 @@ impl Lucene50SkipReader {
                         > self.skip_stream[(level - 1) as usize]
                             .as_mut()
                             .unwrap()
-                            .lock()?
                             .file_pointer()
                 {
                     self.seek_child(level - 1)?;
