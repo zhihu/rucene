@@ -42,6 +42,7 @@ pub struct IndexSearcher {
     pub reader: Arc<IndexReader>,
     sim_enum: SimilarityEnum,
     query_cache: Box<QueryCache>,
+    #[allow(dead_code)]
     cache_policy: Arc<QueryCachingPolicy>,
 }
 
@@ -104,11 +105,11 @@ impl IndexSearcher {
     /// Creates a {@link Weight} for the given query, potentially adding caching
     /// if possible and configured.
     pub fn create_weight(&self, query: &Query, needs_scores: bool) -> Result<Box<Weight>> {
-        let mut weight = query.create_weight(self, needs_scores)?;
-        if !needs_scores {
-            weight = self.query_cache
-                .do_cache(weight, Arc::clone(&self.cache_policy));
-        }
+        let weight = query.create_weight(self, needs_scores)?;
+//        if !needs_scores {
+//            weight = self.query_cache
+//                .do_cache(weight, Arc::clone(&self.cache_policy));
+//        }
         Ok(weight)
     }
 
