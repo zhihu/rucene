@@ -6,7 +6,7 @@ use core::util::DocId;
 use core::util::{EmptyLongValues, LongValues};
 use error::Result;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 pub struct DirectMonotonicMeta {
     #[allow(dead_code)]
@@ -58,7 +58,7 @@ impl DirectMonotonicReader {
 
     pub fn get_instance(
         meta: &DirectMonotonicMeta,
-        data: &Arc<Mutex<Box<RandomAccessInput>>>,
+        data: &Arc<Box<RandomAccessInput>>,
     ) -> Result<Box<LongValues>> {
         let mut readers: Vec<Box<LongValues>> = Vec::new();
         for i in 0..meta.num_blocks as usize {
