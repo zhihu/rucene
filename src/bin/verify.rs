@@ -475,7 +475,6 @@ fn verify_numeric_doc_values(
         leaf_reader.get_numeric_doc_values(field_name),
         "failed to get numeric doc values",
     )?;
-    let numeric_doc_values = numeric_doc_values.lock().unwrap();
     for doc_id in 0..max_doc {
         let expected = read_long(input)?;
         let rucene = convert_rucene_result(
@@ -508,7 +507,6 @@ fn verify_sorted_doc_values(
         leaf_reader.get_sorted_doc_values(field_name),
         "failed to get sorted doc values",
     )?;
-    let sorted_doc_values = sorted_doc_values.lock().unwrap();
     for doc_id in 0..max_doc {
         let expected = read_binary(input)?;
         let rucene = convert_rucene_result(
@@ -541,26 +539,24 @@ fn verify_sorted_numeric_doc_values(
         leaf_reader.get_sorted_numeric_doc_values(field_name),
         "failed to get sorted_numeric doc values",
     )?;
-    let sorted_numeric_doc_values = sorted_numeric_doc_values.lock();
-    let mut sorted_numeric_doc_values = sorted_numeric_doc_values.unwrap();
     for doc_id in 0..max_doc {
-        convert_rucene_result(
+        let ctx = convert_rucene_result(
             sorted_numeric_doc_values.set_document(doc_id),
             "failed to set document id",
         )?;
         let count = read_int(input)? as usize;
-        if sorted_numeric_doc_values.count() != count {
+        if sorted_numeric_doc_values.count(&ctx) != count {
             eprintln!(
                 "Sorted numeric doc values count mismatch {} vs {}",
                 count,
-                sorted_numeric_doc_values.count()
+                sorted_numeric_doc_values.count(&ctx)
             );
             return new_error("");
         }
         for vi in 0..count {
             let expected = read_long(input)?;
             let rucene = convert_rucene_result(
-                sorted_numeric_doc_values.value_at(vi),
+                sorted_numeric_doc_values.value_at(&ctx, vi),
                 "failed to get sorted numeric doc values for doc",
             )?;
             if expected != rucene {
@@ -590,17 +586,15 @@ fn verify_sorted_set_doc_values(
         leaf_reader.get_sorted_set_doc_values(field_name),
         "failed to get sorted_set doc values",
     )?;
-    let sorted_set_doc_values = sorted_set_doc_values.lock();
-    let mut sorted_set_doc_values = sorted_set_doc_values.unwrap();
     for doc_id in 0..max_doc {
-        convert_rucene_result(
+        let mut ctx = convert_rucene_result(
             sorted_set_doc_values.set_document(doc_id),
             "failed to set document id",
         )?;
         loop {
             let ord = read_long(input)?;
             let rucene_ord = convert_rucene_result(
-                sorted_set_doc_values.next_ord(),
+                sorted_set_doc_values.next_ord(&mut ctx),
                 "Failed to get next ord of sorted set doc values",
             )?;
             if rucene_ord != ord {

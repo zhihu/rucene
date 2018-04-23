@@ -7,7 +7,7 @@ use core::util::DocId;
 use core::util::LongValues;
 use error::Result;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 pub trait SortedDocValues: BinaryDocValues {
     fn get_ord(&self, doc_id: DocId) -> Result<i32>;
@@ -36,10 +36,10 @@ pub trait SortedDocValues: BinaryDocValues {
         Ok(-(low + 1)) // key not found
     }
 
-    fn term_iterator<'a, 'b: 'a>(&'b mut self) -> Result<Box<TermIterator + 'a>>;
+    fn term_iterator<'a, 'b: 'a>(&'b self) -> Result<Box<TermIterator + 'a>>;
 }
 
-pub type SortedDocValuesRef = Arc<Mutex<Box<SortedDocValues>>>;
+pub type SortedDocValuesRef = Arc<Box<SortedDocValues>>;
 
 pub struct TailoredSortedDocValues {
     ordinals: Box<LongValues>,
@@ -99,9 +99,9 @@ impl SortedDocValues for TailoredSortedDocValues {
             _ => <Self as SortedDocValues>::lookup_term(self, key),
         }
     }
-    fn term_iterator<'a, 'b: 'a>(&'b mut self) -> Result<Box<TermIterator + 'a>> {
+    fn term_iterator<'a, 'b: 'a>(&'b self) -> Result<Box<TermIterator + 'a>> {
         match self.binary {
-            BoxedBinaryDocValuesEnum::Compressed(ref mut bin) => {
+            BoxedBinaryDocValuesEnum::Compressed(ref bin) => {
                 let boxed = bin.get_term_iterator()?;
                 Ok(Box::new(boxed))
             }

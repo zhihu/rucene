@@ -14,7 +14,6 @@ use core::util::DocId;
 use error::Result;
 
 use core::util::{Bits, BitsRef, ImmutableBits, MatchNoBits};
-use std::sync::Mutex;
 
 pub struct EmptyBinaryDocValues;
 
@@ -52,7 +51,7 @@ impl SortedDocValues for EmptySortedDocValues {
         0
     }
 
-    fn term_iterator<'a, 'b: 'a>(&'b mut self) -> Result<Box<TermIterator + 'a>> {
+    fn term_iterator<'a, 'b: 'a>(&'b self) -> Result<Box<TermIterator + 'a>> {
         let ti = SortedDocValuesTermIterator::new(self);
         Ok(Box::new(ti))
     }
@@ -108,19 +107,16 @@ impl DocValues {
     }
 
     pub fn docs_with_value_sorted(dv: Box<SortedDocValues>, max_doc: i32) -> Bits {
-        let dv = Mutex::new(dv);
         let boxed = SortedDocValuesBits { dv, max_doc };
         Bits::new(Box::new(boxed))
     }
 
     pub fn docs_with_value_sorted_set(dv: Box<SortedSetDocValues>, max_doc: i32) -> Bits {
-        let dv = Mutex::new(dv);
         let boxed = SortedSetDocValuesBits { dv, max_doc };
         Bits::new(Box::new(boxed))
     }
 
     pub fn docs_with_value_sorted_numeric(dv: Box<SortedNumericDocValues>, max_doc: i32) -> Bits {
-        let dv = Mutex::new(dv);
         let boxed = SortedNumericDocValuesBits { dv, max_doc };
         Bits::new(Box::new(boxed))
     }
@@ -153,19 +149,19 @@ impl DocValues {
     }
 
     pub fn unwrap_singleton(dv: &SortedNumericDocValuesRef) -> Result<Option<NumericDocValuesRef>> {
-        let val = dv.lock()?.get_numeric_doc_values();
+        let val = dv.get_numeric_doc_values();
         Ok(val)
     }
 }
 
 struct SortedDocValuesBits {
-    dv: Mutex<Box<SortedDocValues>>,
+    dv: Box<SortedDocValues>,
     max_doc: i32,
 }
 
 impl ImmutableBits for SortedDocValuesBits {
     fn get(&self, index: usize) -> Result<bool> {
-        let ord = self.dv.lock()?.get_ord(index as DocId)?;
+        let ord = self.dv.get_ord(index as DocId)?;
         Ok(ord >= 0)
     }
 
@@ -175,14 +171,14 @@ impl ImmutableBits for SortedDocValuesBits {
 }
 
 struct SortedSetDocValuesBits {
-    dv: Mutex<Box<SortedSetDocValues>>,
+    dv: Box<SortedSetDocValues>,
     max_doc: i32,
 }
 
 impl ImmutableBits for SortedSetDocValuesBits {
     fn get(&self, index: usize) -> Result<bool> {
-        self.dv.lock()?.set_document(index as DocId)?;
-        let ord = self.dv.lock()?.next_ord()?;
+        let mut ctx = self.dv.set_document(index as DocId)?;
+        let ord = self.dv.next_ord(&mut ctx)?;
         Ok(ord != NO_MORE_ORDS)
     }
     fn len(&self) -> usize {
@@ -191,15 +187,14 @@ impl ImmutableBits for SortedSetDocValuesBits {
 }
 
 struct SortedNumericDocValuesBits {
-    dv: Mutex<Box<SortedNumericDocValues>>,
+    dv: Box<SortedNumericDocValues>,
     max_doc: i32,
 }
 
 impl ImmutableBits for SortedNumericDocValuesBits {
     fn get(&self, index: usize) -> Result<bool> {
-        let mut dv = self.dv.lock()?;
-        dv.set_document(index as DocId)?;
-        Ok(dv.count() != 0)
+        let ctx = self.dv.set_document(index as DocId)?;
+        Ok(self.dv.count(&ctx) != 0)
     }
     fn len(&self) -> usize {
         self.max_doc as usize
