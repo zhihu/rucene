@@ -5,7 +5,7 @@ use core::util::MutableBits;
 use error::ErrorKind::{IllegalArgument, IllegalState};
 use error::Result;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct SparseBits {
@@ -18,7 +18,7 @@ pub struct SparseBits {
     doc_id: i64, // mutable
     // doc_id at (index + 1)
     next_doc_id: i64, // mutable
-    doc_ids: Arc<Mutex<Box<LongValues>>>,
+    doc_ids: Arc<Box<LongValues>>,
 }
 
 impl SparseBits {
@@ -44,7 +44,7 @@ impl SparseBits {
             index: -1,
             doc_id: -1,
             next_doc_id: first_doc_id,
-            doc_ids: Arc::new(Mutex::new(doc_ids)),
+            doc_ids: Arc::new(doc_ids),
         })
     }
 
@@ -70,7 +70,7 @@ impl SparseBits {
                 return Ok(hi_index);
             }
 
-            let hi_doc_id = self.doc_ids.lock()?.get64(hi_index)?;
+            let hi_doc_id = self.doc_ids.get64(hi_index)?;
             if hi_doc_id > doc_id {
                 self.next_doc_id = hi_doc_id;
                 return Ok(hi_index);
@@ -86,7 +86,7 @@ impl SparseBits {
     fn binary_search(&mut self, mut hi_index: i64, doc_id: i64) -> Result<()> {
         while self.index + 1 < hi_index {
             let mid_index = self.index + (hi_index - self.index) / 2;
-            let mid_doc_id = self.doc_ids.lock()?.get64(mid_index)?;
+            let mid_doc_id = self.doc_ids.get64(mid_index)?;
             if mid_doc_id > doc_id {
                 hi_index = mid_index;
                 self.next_doc_id = mid_doc_id;
@@ -103,12 +103,12 @@ impl SparseBits {
             bail!(IllegalState("internal error".to_owned()));
         }
         if !((self.index == -1 && self.doc_id == -1)
-            || self.doc_id == self.doc_ids.lock()?.get64(self.index)?)
+            || self.doc_id == self.doc_ids.get64(self.index)?)
         {
             bail!(IllegalState("internal error".to_owned()));
         }
         if !((next_index == self.doc_ids_length && self.next_doc_id == self.max_doc)
-            || self.next_doc_id == self.doc_ids.lock()?.get64(next_index)?)
+            || self.next_doc_id == self.doc_ids.get64(next_index)?)
         {
             bail!(IllegalState("internal error".to_owned()));
         }
@@ -177,9 +177,10 @@ impl SparseLongValues {
 }
 
 impl LongValues for SparseLongValues {
-    fn get64(&mut self, doc_id: i64) -> Result<i64> {
-        if self.docs_with_field.get64(doc_id)? {
-            let r = self.values.get64(self.docs_with_field.index)?;
+    fn get64(&self, doc_id: i64) -> Result<i64> {
+        let mut docs_with_field = self.docs_with_field_clone();
+        if docs_with_field.get64(doc_id)? {
+            let r = self.values.get64(docs_with_field.index)?;
             Ok(r)
         } else {
             Ok(self.missing_value)
@@ -188,7 +189,7 @@ impl LongValues for SparseLongValues {
 }
 
 impl NumericDocValues for SparseLongValues {
-    fn get(&mut self, doc_id: DocId) -> Result<i64> {
+    fn get(&self, doc_id: DocId) -> Result<i64> {
         LongValues::get64(self, i64::from(doc_id))
     }
 }

@@ -7,7 +7,7 @@ use core::util::LongValues;
 use error::ErrorKind::{CorruptIndex, IllegalArgument};
 use error::Result;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// Provides random access to a stream written with MonotonicBlockPackedWriter
 pub struct MonotonicBlockPackedReader {
@@ -21,7 +21,7 @@ pub struct MonotonicBlockPackedReader {
     sum_bpv: i64,
 }
 
-pub type MonotonicBlockPackedReaderRef = Arc<Mutex<MonotonicBlockPackedReader>>;
+pub type MonotonicBlockPackedReaderRef = Arc<MonotonicBlockPackedReader>;
 
 impl MonotonicBlockPackedReader {
     fn expected(origin: i64, average: f32, index: i32) -> i64 {
@@ -92,7 +92,7 @@ impl MonotonicBlockPackedReader {
 }
 
 impl LongValues for MonotonicBlockPackedReader {
-    fn get64(&mut self, index: i64) -> Result<i64> {
+    fn get64(&self, index: i64) -> Result<i64> {
         if !(index >= 0 && index < self.value_count as i64) {
             bail!(IllegalArgument(format!("index {} out of range", index)))
         }
@@ -105,7 +105,7 @@ impl LongValues for MonotonicBlockPackedReader {
 }
 
 impl NumericDocValues for MonotonicBlockPackedReader {
-    fn get(&mut self, doc_id: DocId) -> Result<i64> {
+    fn get(&self, doc_id: DocId) -> Result<i64> {
         LongValues::get64(self, i64::from(doc_id))
     }
 }

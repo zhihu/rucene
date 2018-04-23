@@ -1,6 +1,6 @@
 use std::collections::hash_map::Entry as HashMapEntry;
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use core::codec::format::{self, DocValuesFormat};
 use core::codec::{DocValuesProducer, DocValuesProducerRef};
@@ -93,7 +93,7 @@ impl DocValuesFieldsReader {
                                 let segment_read_state =
                                     SegmentReadState::with_suffix(state, &segment_suffix);
                                 let dv_producer = dv_format.fields_producer(&segment_read_state)?;
-                                let dv_producer = Arc::new(Mutex::new(dv_producer));
+                                let dv_producer = Arc::new(dv_producer);
                                 vacant.insert(Arc::clone(&dv_producer));
                                 fields.insert(name.to_string(), dv_producer);
                             }
@@ -110,7 +110,7 @@ impl DocValuesFieldsReader {
 impl DocValuesProducer for DocValuesFieldsReader {
     fn get_numeric(&self, field: &FieldInfo) -> Result<Box<NumericDocValues>> {
         match self.fields.get(&field.name) {
-            Some(producer) => producer.lock()?.get_numeric(field),
+            Some(producer) => producer.get_numeric(field),
             None => bail!(IllegalArgument(format!{
                 "DocValuesType of field {} isn't Numeric",
                 field.name
@@ -118,9 +118,9 @@ impl DocValuesProducer for DocValuesFieldsReader {
         }
     }
 
-    fn get_binary(&mut self, field: &FieldInfo) -> Result<Box<BinaryDocValues>> {
+    fn get_binary(&self, field: &FieldInfo) -> Result<Box<BinaryDocValues>> {
         match self.fields.get(&field.name) {
-            Some(producer) => producer.lock()?.get_binary(field),
+            Some(producer) => producer.get_binary(field),
             None => bail!(IllegalArgument(format!{
                 "DocValuesType of field {} isn't Binary",
                 field.name
@@ -128,9 +128,9 @@ impl DocValuesProducer for DocValuesFieldsReader {
         }
     }
 
-    fn get_sorted(&mut self, field: &FieldInfo) -> Result<Box<SortedDocValues>> {
+    fn get_sorted(&self, field: &FieldInfo) -> Result<Box<SortedDocValues>> {
         match self.fields.get(&field.name) {
-            Some(producer) => producer.lock()?.get_sorted(field),
+            Some(producer) => producer.get_sorted(field),
             None => bail!(IllegalArgument(format!{
                 "DocValuesType of field {} isn't Sorted",
                 field.name
@@ -140,7 +140,7 @@ impl DocValuesProducer for DocValuesFieldsReader {
 
     fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Box<SortedNumericDocValues>> {
         match self.fields.get(&field.name) {
-            Some(producer) => producer.lock()?.get_sorted_numeric(field),
+            Some(producer) => producer.get_sorted_numeric(field),
             None => bail!(IllegalArgument(format!{
                 "DocValuesType of field {} isn't SortedNumeric",
                 field.name
@@ -148,9 +148,9 @@ impl DocValuesProducer for DocValuesFieldsReader {
         }
     }
 
-    fn get_sorted_set(&mut self, field: &FieldInfo) -> Result<Box<SortedSetDocValues>> {
+    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Box<SortedSetDocValues>> {
         match self.fields.get(&field.name) {
-            Some(producer) => producer.lock()?.get_sorted_set(field),
+            Some(producer) => producer.get_sorted_set(field),
             None => bail!(IllegalArgument(format!{
                 "DocValuesType of field {} isn't SortedSet",
                 field.name
@@ -158,9 +158,9 @@ impl DocValuesProducer for DocValuesFieldsReader {
         }
     }
 
-    fn get_docs_with_field(&mut self, field: &FieldInfo) -> Result<Bits> {
+    fn get_docs_with_field(&self, field: &FieldInfo) -> Result<Bits> {
         match self.fields.get(&field.name) {
-            Some(producer) => producer.lock()?.get_docs_with_field(field),
+            Some(producer) => producer.get_docs_with_field(field),
             None => bail!(IllegalArgument(format!{
                 "field {} for get_docs_with_field",
                 field.name
@@ -168,7 +168,7 @@ impl DocValuesProducer for DocValuesFieldsReader {
         }
     }
 
-    fn check_integrity(&mut self) -> Result<()> {
+    fn check_integrity(&self) -> Result<()> {
         // for format in self.formats.values() {
         // format.lock()?.check_integrity()?;
         // }

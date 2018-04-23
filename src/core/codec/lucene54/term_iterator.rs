@@ -135,8 +135,8 @@ impl CompressedBinaryTermIterator {
         let mut high = self.num_reverse_index_values - 1;
         while low < high {
             let mid = low + (high - low) / 2;
-            let start = self.reverse_index.lock()?.term_addresses.get64(mid)?;
-            let scratch = self.reverse_index.lock()?.terms.fill(start);
+            let start = self.reverse_index.term_addresses.get64(mid)?;
+            let scratch = self.reverse_index.terms.fill(start);
             match scratch[..].as_ref().cmp(text) {
                 Ordering::Less => low = mid + 1,
                 Ordering::Greater => high = mid - 1,
@@ -150,7 +150,7 @@ impl CompressedBinaryTermIterator {
     fn binary_search_block(&mut self, text: &[u8], mut low: i64, mut high: i64) -> Result<i64> {
         while low <= high {
             let mid = low + (high - low) / 2;
-            let pos = self.addresses.lock()?.get64(mid)?;
+            let pos = self.addresses.get64(mid)?;
             self.input.seek(pos)?;
             let length = self.input.read_vint()? as usize;
             self.input.read_bytes(self.term.as_mut(), 0, length)?;
@@ -195,7 +195,7 @@ impl TermIterator for CompressedBinaryTermIterator {
             block = ::std::cmp::max(low, self.binary_search_block(text, low, high)?);
         }
         // position before block then scan to term
-        self.input.seek(self.addresses.lock()?.get64(block)?)?;
+        self.input.seek(self.addresses.get64(block)?)?;
         self.current_ord = (block << lucene54::INTERVAL_SHIFT) - 1;
 
         while !self.next()?.is_empty() {
@@ -217,7 +217,7 @@ impl TermIterator for CompressedBinaryTermIterator {
                 .unsigned_shift(lucene54::INTERVAL_SHIFT as usize)
         {
             // switch to different block
-            self.input.seek(self.addresses.lock()?.get64(block)?)?;
+            self.input.seek(self.addresses.get64(block)?)?;
             self.read_header()?;
         }
         self.current_ord = ord;

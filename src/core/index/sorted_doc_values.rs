@@ -10,21 +10,21 @@ use error::Result;
 use std::sync::{Arc, Mutex};
 
 pub trait SortedDocValues: BinaryDocValues {
-    fn get_ord(&mut self, doc_id: DocId) -> Result<i32>;
+    fn get_ord(&self, doc_id: DocId) -> Result<i32>;
 
-    fn lookup_ord(&mut self, ord: i32) -> Result<&[u8]>;
+    fn lookup_ord(&self, ord: i32) -> Result<Vec<u8>>;
 
     fn get_value_count(&self) -> usize;
 
     /// if key exists, return its ordinal, else return
     /// - insertion_point - 1.
-    fn lookup_term(&mut self, key: &[u8]) -> Result<i32> {
+    fn lookup_term(&self, key: &[u8]) -> Result<i32> {
         let mut low = 0;
         let mut high = self.get_value_count() as i32 - 1;
         while low <= high {
             let mid = low + (high - low) / 2;
             let term = self.lookup_ord(mid)?;
-            let cmp = bit_util::bcompare(term, key);
+            let cmp = bit_util::bcompare(&term, key);
             if cmp < 0 {
                 low = mid + 1;
             } else if cmp > 0 {
@@ -45,7 +45,6 @@ pub struct TailoredSortedDocValues {
     ordinals: Box<LongValues>,
     binary: BoxedBinaryDocValuesEnum,
     value_count: usize,
-    dummy: Vec<u8>,
 }
 
 impl TailoredSortedDocValues {
@@ -58,7 +57,6 @@ impl TailoredSortedDocValues {
             ordinals,
             binary: BoxedBinaryDocValuesEnum::General(binary),
             value_count,
-            dummy: vec![0u8; 1],
         }
     }
 
@@ -71,21 +69,20 @@ impl TailoredSortedDocValues {
             ordinals,
             binary: BoxedBinaryDocValuesEnum::Compressed(binary),
             value_count,
-            dummy: vec![0u8; 1],
         }
     }
 }
 
 impl SortedDocValues for TailoredSortedDocValues {
-    fn get_ord(&mut self, doc_id: DocId) -> Result<i32> {
+    fn get_ord(&self, doc_id: DocId) -> Result<i32> {
         let value = self.ordinals.get(doc_id)?;
         Ok(value as i32)
     }
 
-    fn lookup_ord(&mut self, ord: i32) -> Result<&[u8]> {
+    fn lookup_ord(&self, ord: i32) -> Result<Vec<u8>> {
         match self.binary {
-            BoxedBinaryDocValuesEnum::General(ref mut binary) => binary.get(ord),
-            BoxedBinaryDocValuesEnum::Compressed(ref mut binary) => binary.get(ord),
+            BoxedBinaryDocValuesEnum::General(ref binary) => binary.get(ord),
+            BoxedBinaryDocValuesEnum::Compressed(ref binary) => binary.get(ord),
         }
     }
 
@@ -93,9 +90,9 @@ impl SortedDocValues for TailoredSortedDocValues {
         self.value_count
     }
 
-    fn lookup_term(&mut self, key: &[u8]) -> Result<i32> {
+    fn lookup_term(&self, key: &[u8]) -> Result<i32> {
         match self.binary {
-            BoxedBinaryDocValuesEnum::Compressed(ref mut binary) => {
+            BoxedBinaryDocValuesEnum::Compressed(ref binary) => {
                 let val = binary.lookup_term(key)? as i32;
                 Ok(val)
             }
@@ -117,10 +114,10 @@ impl SortedDocValues for TailoredSortedDocValues {
 }
 
 impl BinaryDocValues for TailoredSortedDocValues {
-    fn get(&mut self, doc_id: DocId) -> Result<&[u8]> {
+    fn get(&self, doc_id: DocId) -> Result<Vec<u8>> {
         let ord = self.get_ord(doc_id)?;
         if ord == -1 {
-            Ok(&self.dummy[0..0])
+            Ok(Vec::with_capacity(0))
         } else {
             self.lookup_ord(ord)
         }

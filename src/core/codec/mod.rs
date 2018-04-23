@@ -16,11 +16,11 @@ pub mod writer;
 mod producer;
 pub use self::producer::*;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-pub type DocValuesProducerRef = Arc<Mutex<Box<DocValuesProducer>>>;
+pub type DocValuesProducerRef = Arc<Box<DocValuesProducer>>;
 
 use core::codec::format::PointsFormat;
 use core::codec::format::{CompoundFormat, LiveDocsFormat, NormsFormat};

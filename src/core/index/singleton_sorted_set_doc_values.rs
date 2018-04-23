@@ -49,7 +49,7 @@ impl SortedSetDocValues for SingletonSortedSetDocValues {
         Ok(v)
     }
 
-    fn lookup_ord(&mut self, ord: i64) -> Result<&[u8]> {
+    fn lookup_ord(&mut self, ord: i64) -> Result<Vec<u8>> {
         // cast is ok: single-valued cannot exceed i32::MAX
         self.dv_in.lookup_ord(ord as i32)
     }

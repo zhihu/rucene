@@ -443,8 +443,6 @@ fn verify_binary_doc_values(
         leaf_reader.get_binary_doc_values(field_name),
         "failed to get binary doc values",
     )?;
-    let binary_doc_values = binary_doc_values.lock();
-    let mut binary_doc_values = binary_doc_values.unwrap();
     for doc_id in 0..max_doc {
         let expected = read_binary(input)?;
         let rucene = convert_rucene_result(
@@ -477,8 +475,7 @@ fn verify_numeric_doc_values(
         leaf_reader.get_numeric_doc_values(field_name),
         "failed to get numeric doc values",
     )?;
-    let numeric_doc_values = numeric_doc_values.lock();
-    let mut numeric_doc_values = numeric_doc_values.unwrap();
+    let numeric_doc_values = numeric_doc_values.lock().unwrap();
     for doc_id in 0..max_doc {
         let expected = read_long(input)?;
         let rucene = convert_rucene_result(
@@ -511,8 +508,7 @@ fn verify_sorted_doc_values(
         leaf_reader.get_sorted_doc_values(field_name),
         "failed to get sorted doc values",
     )?;
-    let sorted_doc_values = sorted_doc_values.lock();
-    let mut sorted_doc_values = sorted_doc_values.unwrap();
+    let sorted_doc_values = sorted_doc_values.lock().unwrap();
     for doc_id in 0..max_doc {
         let expected = read_binary(input)?;
         let rucene = convert_rucene_result(

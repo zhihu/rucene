@@ -35,7 +35,7 @@ pub enum DocValuesRefEnum {
     SortedSet(SortedSetDocValuesRef),
 }
 
-pub type ThreadLocalDocValueProducer = ThreadLocal<RefCell<Box<DocValuesProducer>>>;
+pub type ThreadLocalDocValueProducer = ThreadLocal<Box<DocValuesProducer>>;
 
 pub struct SegmentReader {
     si: Arc<SegmentCommitInfo>,
@@ -192,7 +192,7 @@ impl SegmentReader {
                 SegmentDocValues::get_doc_values_producer(-1_i64, &si, dir, field_infos)?;
 
             let doc_values_producer = ThreadLocal::new();
-            doc_values_producer.get_or(|| Box::new(RefCell::from(dv_producer)));
+            doc_values_producer.get_or(|| Box::new(dv_producer));
             doc_values_producer
         };
         Ok(doc_values_producer)
@@ -220,8 +220,7 @@ impl SegmentReader {
                     Arc::clone(&self.field_infos),
                 )?;
 
-                self.doc_values_producer
-                    .get_or(|| Box::new(RefCell::from(dv_producer)));
+                self.doc_values_producer.get_or(|| Box::new(dv_producer));
             }
         }
         Ok(())
@@ -291,7 +290,7 @@ impl LeafReader for SegmentReader {
             },
             Entry::Vacant(v) => match self.get_dv_field(field, DocValuesType::Numeric) {
                 Some(fi) if self.doc_values_producer.get().is_some() => {
-                    let mut dv_producer = self.doc_values_producer.get().unwrap().borrow_mut();
+                    let dv_producer = self.doc_values_producer.get().unwrap();
                     let dv = dv_producer.get_numeric(fi)?;
                     let cell = Arc::new(Mutex::new(dv));
                     v.insert(DocValuesRefEnum::Numeric(Arc::clone(&cell)));
@@ -322,9 +321,9 @@ impl LeafReader for SegmentReader {
             },
             Entry::Vacant(v) => match self.get_dv_field(field, DocValuesType::Binary) {
                 Some(fi) if self.doc_values_producer.get().is_some() => {
-                    let mut dv_producer = self.doc_values_producer.get().unwrap().borrow_mut();
+                    let dv_producer = self.doc_values_producer.get().unwrap();
                     let dv = dv_producer.get_binary(fi)?;
-                    let cell = Arc::new(Mutex::new(dv));
+                    let cell = Arc::new(dv);
                     v.insert(DocValuesRefEnum::Binary(Arc::clone(&cell)));
                     Ok(cell)
                 }
@@ -354,7 +353,7 @@ impl LeafReader for SegmentReader {
             },
             Entry::Vacant(v) => match self.get_dv_field(field, DocValuesType::Sorted) {
                 Some(fi) if self.doc_values_producer.get().is_some() => {
-                    let mut dv_producer = self.doc_values_producer.get().unwrap().borrow_mut();
+                    let dv_producer = self.doc_values_producer.get().unwrap();
                     let dv = dv_producer.get_sorted(fi)?;
                     let cell = Arc::new(Mutex::new(dv));
                     v.insert(DocValuesRefEnum::Sorted(Arc::clone(&cell)));
@@ -385,7 +384,7 @@ impl LeafReader for SegmentReader {
             },
             Entry::Vacant(v) => match self.get_dv_field(field, DocValuesType::SortedNumeric) {
                 Some(fi) if self.doc_values_producer.get().is_some() => {
-                    let dv_producer = self.doc_values_producer.get().unwrap().borrow_mut();
+                    let dv_producer = self.doc_values_producer.get().unwrap();
                     let dv = dv_producer.get_sorted_numeric(fi)?;
                     let cell = Arc::new(Mutex::new(dv));
                     v.insert(DocValuesRefEnum::SortedNumeric(Arc::clone(&cell)));
@@ -416,7 +415,7 @@ impl LeafReader for SegmentReader {
             },
             Entry::Vacant(v) => match self.get_dv_field(field, DocValuesType::SortedSet) {
                 Some(fi) if self.doc_values_producer.get().is_some() => {
-                    let mut dv_producer = self.doc_values_producer.get().unwrap().borrow_mut();
+                    let dv_producer = self.doc_values_producer.get().unwrap();
                     let dv = dv_producer.get_sorted_set(fi)?;
                     let cell = Arc::new(Mutex::new(dv));
                     v.insert(DocValuesRefEnum::SortedSet(Arc::clone(&cell)));
@@ -459,7 +458,7 @@ impl LeafReader for SegmentReader {
                 if fi.doc_values_type != DocValuesType::Null
                     && self.doc_values_producer.get().is_some() =>
             {
-                let mut dv_producer = self.doc_values_producer.get().unwrap().borrow_mut();
+                let dv_producer = self.doc_values_producer.get().unwrap();
                 let dv = dv_producer.get_docs_with_field(fi)?;
                 let cell = Arc::new(dv);
                 self.docs_with_field_local
