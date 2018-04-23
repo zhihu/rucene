@@ -16,7 +16,7 @@ pub trait SortedSetDocValues: Send {
     /// positions to the specified document
     fn set_document(&mut self, doc: DocId) -> Result<()>;
     fn next_ord(&mut self) -> Result<i64>;
-    fn lookup_ord(&mut self, ord: i64) -> Result<&[u8]>;
+    fn lookup_ord(&mut self, ord: i64) -> Result<Vec<u8>>;
     fn get_value_count(&self) -> usize;
 
     fn lookup_term(&mut self, key: &[u8]) -> Result<i64> {
@@ -25,7 +25,7 @@ pub trait SortedSetDocValues: Send {
         while low < high {
             let mid = low + (high - low) / 2;
             let term = self.lookup_ord(mid)?;
-            let cmp = bit_util::bcompare(term, key);
+            let cmp = bit_util::bcompare(&term, key);
             if cmp < 0 {
                 low = mid + 1;
             } else if cmp > 0 {
@@ -112,7 +112,7 @@ impl SortedSetDocValues for AddressedRandomAccessOrds {
         Ok(value)
     }
 
-    fn lookup_ord(&mut self, ord: i64) -> Result<&[u8]> {
+    fn lookup_ord(&mut self, ord: i64) -> Result<Vec<u8>> {
         match self.binary {
             BoxedBinaryDocValuesEnum::General(ref mut long_binary) => long_binary.get64(ord),
             BoxedBinaryDocValuesEnum::Compressed(ref mut compressed_binary) => {
@@ -231,7 +231,7 @@ impl SortedSetDocValues for TabledRandomAccessOrds {
         Ok(value)
     }
 
-    fn lookup_ord(&mut self, ord: i64) -> Result<&[u8]> {
+    fn lookup_ord(&mut self, ord: i64) -> Result<Vec<u8>> {
         match self.binary {
             BoxedBinaryDocValuesEnum::General(ref mut binary) => binary.get64(ord),
             BoxedBinaryDocValuesEnum::Compressed(ref mut binary) => binary.get64(ord),

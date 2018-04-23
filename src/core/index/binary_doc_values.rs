@@ -8,80 +8,72 @@ use core::util::DocId;
 use core::util::LongValues;
 use error::Result;
 
-use std::ops::Deref;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-pub trait BinaryDocValues: Send {
-    fn get(&mut self, doc_id: DocId) -> Result<&[u8]>;
+pub trait BinaryDocValues: Send + Sync {
+    fn get(&self, doc_id: DocId) -> Result<Vec<u8>>;
 }
 
-pub type BinaryDocValuesRef = Arc<Mutex<Box<BinaryDocValues>>>;
+pub type BinaryDocValuesRef = Arc<Box<BinaryDocValues>>;
 
 pub trait LongBinaryDocValues: BinaryDocValues {
-    fn get64(&mut self, doc_id: i64) -> Result<&[u8]>;
+    fn get64(&self, doc_id: i64) -> Result<Vec<u8>>;
 }
 
 pub struct FixedBinaryDocValues {
-    data: Mutex<Box<IndexInput>>,
-    buffer: Vec<u8>,
+    data: Box<IndexInput>,
+    buffer_len: usize,
 }
 
 impl FixedBinaryDocValues {
     pub fn new(data: Box<IndexInput>, buffer_len: usize) -> Self {
-        FixedBinaryDocValues {
-            data: Mutex::new(data),
-            buffer: vec![0u8; buffer_len],
-        }
+        FixedBinaryDocValues { data, buffer_len }
     }
 }
 
 impl LongBinaryDocValues for FixedBinaryDocValues {
-    fn get64(&mut self, id: i64) -> Result<&[u8]> {
-        let length = self.buffer.len();
-        let mut data = self.data.lock()?;
+    fn get64(&self, id: i64) -> Result<Vec<u8>> {
+        let length = self.buffer_len;
+        let mut data = self.data.as_ref().clone()?;
         data.seek(id * length as i64)?;
-        data.read_bytes(&mut self.buffer, 0, length)?;
-        Ok(&self.buffer)
+        let mut buffer = vec![0u8; length];
+        data.read_bytes(&mut buffer, 0, length)?;
+        Ok(buffer)
     }
 }
 
 impl BinaryDocValues for FixedBinaryDocValues {
-    fn get(&mut self, doc_id: DocId) -> Result<&[u8]> {
+    fn get(&self, doc_id: DocId) -> Result<Vec<u8>> {
         FixedBinaryDocValues::get64(self, i64::from(doc_id))
     }
 }
 
 pub struct VariableBinaryDocValues {
     addresses: Box<LongValues>,
-    data: Mutex<Box<IndexInput>>,
-    buffer: Vec<u8>,
+    data: Box<IndexInput>,
 }
 
 impl VariableBinaryDocValues {
-    pub fn new(addresses: Box<LongValues>, data: Box<IndexInput>, length: usize) -> Self {
-        let buffer = vec![0u8; length];
-        VariableBinaryDocValues {
-            addresses,
-            data: Mutex::new(data),
-            buffer,
-        }
+    pub fn new(addresses: Box<LongValues>, data: Box<IndexInput>, _length: usize) -> Self {
+        VariableBinaryDocValues { addresses, data }
     }
 }
 
 impl LongBinaryDocValues for VariableBinaryDocValues {
-    fn get64(&mut self, id: i64) -> Result<&[u8]> {
+    fn get64(&self, id: i64) -> Result<Vec<u8>> {
         let start_address = self.addresses.get64(id)?;
         let end_address = self.addresses.get64(id + 1)?;
         let length = (end_address - start_address) as usize;
-        let mut data = self.data.lock()?;
+        let mut data = self.data.as_ref().clone()?;
         data.seek(start_address)?;
-        data.read_bytes(&mut self.buffer, 0, length)?;
-        Ok(&self.buffer[0..length])
+        let mut buffer = vec![0u8; length];
+        data.read_bytes(&mut buffer, 0, length)?;
+        Ok(buffer)
     }
 }
 
 impl BinaryDocValues for VariableBinaryDocValues {
-    fn get(&mut self, doc_id: DocId) -> Result<&[u8]> {
+    fn get(&self, doc_id: DocId) -> Result<Vec<u8>> {
         VariableBinaryDocValues::get64(self, i64::from(doc_id))
     }
 }
@@ -91,9 +83,7 @@ pub struct CompressedBinaryDocValues {
     num_index_values: i64,
     num_reverse_index_values: i64,
     max_term_length: i32,
-    data: Mutex<Box<IndexInput>>,
-    term_iterator: CompressedBinaryTermIterator,
-    term_buffer: Vec<u8>,
+    data: Box<IndexInput>,
     reverse_index: ReverseTermsIndexRef,
     addresses: MonotonicBlockPackedReaderRef,
 }
@@ -103,23 +93,12 @@ impl CompressedBinaryDocValues {
         bytes: &BinaryEntry,
         addresses: MonotonicBlockPackedReaderRef,
         reverse_index: ReverseTermsIndexRef,
-        data: Mutex<Box<IndexInput>>,
+        data: Box<IndexInput>,
     ) -> Result<CompressedBinaryDocValues> {
         let max_term_length = bytes.max_length;
         let num_reverse_index_values = reverse_index.lock()?.term_addresses.size() as i64;
         let num_values = bytes.count;
         let num_index_values = addresses.lock()?.size() as i64;
-
-        let data_copy = IndexInput::clone(data.lock()?.as_ref())?;
-        let term_iterator = CompressedBinaryTermIterator::new(
-            data_copy,
-            max_term_length as usize,
-            num_reverse_index_values,
-            Arc::clone(&reverse_index),
-            Arc::clone(&addresses),
-            num_values,
-            num_index_values,
-        )?;
 
         let dv = CompressedBinaryDocValues {
             num_values,
@@ -127,19 +106,18 @@ impl CompressedBinaryDocValues {
             num_reverse_index_values,
             max_term_length,
             data,
-            term_iterator,
-            term_buffer: Vec::new(),
             reverse_index,
             addresses,
         };
         Ok(dv)
     }
 
-    pub fn lookup_term(&mut self, key: &[u8]) -> Result<i64> {
-        match self.term_iterator.seek_ceil(key)? {
-            SeekStatus::Found => self.term_iterator.ord(),
+    pub fn lookup_term(&self, key: &[u8]) -> Result<i64> {
+        let mut term_iterator = self.get_term_iterator()?;
+        match term_iterator.seek_ceil(key)? {
+            SeekStatus::Found => term_iterator.ord(),
             SeekStatus::NotFound => {
-                let val = -self.term_iterator.ord()? - 1;
+                let val = -term_iterator.ord()? - 1;
                 Ok(val)
             }
             _ => Ok(-self.num_values - 1),
@@ -147,7 +125,7 @@ impl CompressedBinaryDocValues {
     }
 
     pub fn get_term_iterator(&self) -> Result<CompressedBinaryTermIterator> {
-        let data = IndexInput::clone(self.data.lock()?.deref().as_ref())?;
+        let data = IndexInput::clone(self.data.as_ref())?;
         CompressedBinaryTermIterator::new(
             data,
             self.max_term_length as usize,
@@ -161,15 +139,15 @@ impl CompressedBinaryDocValues {
 }
 
 impl LongBinaryDocValues for CompressedBinaryDocValues {
-    fn get64(&mut self, id: i64) -> Result<&[u8]> {
-        self.term_iterator.seek_exact_ord(id)?;
-        self.term_buffer = self.term_iterator.term()?;
-        Ok(self.term_buffer.as_ref())
+    fn get64(&self, id: i64) -> Result<Vec<u8>> {
+        let mut term_iterator = self.get_term_iterator()?;
+        term_iterator.seek_exact_ord(id)?;
+        term_iterator.term()
     }
 }
 
 impl BinaryDocValues for CompressedBinaryDocValues {
-    fn get(&mut self, doc_id: DocId) -> Result<&[u8]> {
+    fn get(&self, doc_id: DocId) -> Result<Vec<u8>> {
         CompressedBinaryDocValues::get64(self, i64::from(doc_id))
     }
 }

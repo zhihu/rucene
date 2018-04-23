@@ -92,7 +92,7 @@ impl MonotonicBlockPackedReader {
 }
 
 impl LongValues for MonotonicBlockPackedReader {
-    fn get64(&mut self, index: i64) -> Result<i64> {
+    fn get64(&self, index: i64) -> Result<i64> {
         if !(index >= 0 && index < self.value_count as i64) {
             bail!(IllegalArgument(format!("index {} out of range", index)))
         }
@@ -105,7 +105,7 @@ impl LongValues for MonotonicBlockPackedReader {
 }
 
 impl NumericDocValues for MonotonicBlockPackedReader {
-    fn get(&mut self, doc_id: DocId) -> Result<i64> {
+    fn get(&self, doc_id: DocId) -> Result<i64> {
         LongValues::get64(self, i64::from(doc_id))
     }
 }

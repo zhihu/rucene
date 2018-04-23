@@ -323,7 +323,7 @@ impl LeafReader for SegmentReader {
                 Some(fi) if self.doc_values_producer.get().is_some() => {
                     let dv_producer = self.doc_values_producer.get().unwrap();
                     let dv = dv_producer.get_binary(fi)?;
-                    let cell = Arc::new(Mutex::new(dv));
+                    let cell = Arc::new(dv);
                     v.insert(DocValuesRefEnum::Binary(Arc::clone(&cell)));
                     Ok(cell)
                 }

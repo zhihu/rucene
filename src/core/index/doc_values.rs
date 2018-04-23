@@ -16,44 +16,36 @@ use error::Result;
 use core::util::{Bits, BitsRef, ImmutableBits, MatchNoBits};
 use std::sync::Mutex;
 
-pub struct EmptyBinaryDocValues {
-    dummy: Vec<u8>,
-}
+pub struct EmptyBinaryDocValues;
 
 impl EmptyBinaryDocValues {
     fn new() -> Self {
-        EmptyBinaryDocValues {
-            dummy: vec![0u8; 1],
-        }
+        EmptyBinaryDocValues {}
     }
 }
 
 impl BinaryDocValues for EmptyBinaryDocValues {
-    fn get(&mut self, _doc_id: DocId) -> Result<&[u8]> {
-        Ok(&self.dummy[0..0])
+    fn get(&self, _doc_id: DocId) -> Result<Vec<u8>> {
+        Ok(Vec::with_capacity(0))
     }
 }
 
 #[derive(Clone)]
-pub struct EmptySortedDocValues {
-    dummy: Vec<u8>,
-}
+pub struct EmptySortedDocValues;
 
 impl EmptySortedDocValues {
     fn new() -> Self {
-        EmptySortedDocValues {
-            dummy: vec![0u8; 1],
-        }
+        EmptySortedDocValues {}
     }
 }
 
 impl SortedDocValues for EmptySortedDocValues {
-    fn get_ord(&mut self, _doc_id: DocId) -> Result<i32> {
+    fn get_ord(&self, _doc_id: DocId) -> Result<i32> {
         Ok(-1)
     }
 
-    fn lookup_ord(&mut self, _ord: i32) -> Result<&[u8]> {
-        Ok(&self.dummy[0..0])
+    fn lookup_ord(&self, _ord: i32) -> Result<Vec<u8>> {
+        Ok(Vec::with_capacity(0))
     }
 
     fn get_value_count(&self) -> usize {
@@ -67,14 +59,14 @@ impl SortedDocValues for EmptySortedDocValues {
 }
 
 impl BinaryDocValues for EmptySortedDocValues {
-    fn get(&mut self, _doc_id: DocId) -> Result<&[u8]> {
-        Ok(&self.dummy[0..0])
+    fn get(&self, _doc_id: DocId) -> Result<Vec<u8>> {
+        Ok(Vec::with_capacity(0))
     }
 }
 
 pub struct EmptyNumericDocValues;
 impl NumericDocValues for EmptyNumericDocValues {
-    fn get(&mut self, _doc_id: DocId) -> Result<i64> {
+    fn get(&self, _doc_id: DocId) -> Result<i64> {
         Ok(0)
     }
 }

@@ -197,7 +197,7 @@ impl NormsProducer for Lucene53NormsProducer {
 struct ScalarNumericDocValue(i64);
 
 impl NumericDocValues for ScalarNumericDocValue {
-    fn get(&mut self, _doc_id: DocId) -> Result<i64> {
+    fn get(&self, _doc_id: DocId) -> Result<i64> {
         Ok(self.0)
     }
 }
@@ -224,9 +224,9 @@ where
 
 impl<F> NumericDocValues for RandomAccessNumericDocValues<F>
 where
-    F: Fn(&RandomAccessInput, DocId) -> Result<i64> + Send,
+    F: Fn(&RandomAccessInput, DocId) -> Result<i64> + Send + Sync,
 {
-    fn get(&mut self, doc_id: DocId) -> Result<i64> {
+    fn get(&self, doc_id: DocId) -> Result<i64> {
         let consumer = &self.consumer;
         consumer(self.input.as_ref(), doc_id)
     }

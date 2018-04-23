@@ -57,7 +57,7 @@ impl DirectPackedReader1 {
 }
 
 impl LongValues for DirectPackedReader1 {
-    fn get64(&mut self, index: i64) -> Result<i64> {
+    fn get64(&self, index: i64) -> Result<i64> {
         if index < 0 {
             bail!(IllegalArgument(format!(
                 "negative index encountered: {}",
@@ -74,7 +74,7 @@ impl LongValues for DirectPackedReader1 {
 }
 
 impl NumericDocValues for DirectPackedReader1 {
-    fn get(&mut self, doc_id: DocId) -> Result<i64> {
+    fn get(&self, doc_id: DocId) -> Result<i64> {
         LongValues::get64(self, i64::from(doc_id))
     }
 }
@@ -95,7 +95,7 @@ impl DirectPackedReader2 {
 }
 
 impl LongValues for DirectPackedReader2 {
-    fn get64(&mut self, index: i64) -> Result<i64> {
+    fn get64(&self, index: i64) -> Result<i64> {
         if index < 0 {
             bail!(IllegalArgument(format!(
                 "negative index encountered: {}",
@@ -117,7 +117,7 @@ impl LongValues for DirectPackedReader2 {
 }
 
 impl NumericDocValues for DirectPackedReader2 {
-    fn get(&mut self, doc_id: DocId) -> Result<i64> {
+    fn get(&self, doc_id: DocId) -> Result<i64> {
         LongValues::get64(self, i64::from(doc_id))
     }
 }
@@ -138,7 +138,7 @@ impl DirectPackedReader4 {
 }
 
 impl LongValues for DirectPackedReader4 {
-    fn get64(&mut self, index: i64) -> Result<i64> {
+    fn get64(&self, index: i64) -> Result<i64> {
         if index < 0 {
             bail!(IllegalArgument(format!(
                 "negative index encountered: {}",
@@ -160,7 +160,7 @@ impl LongValues for DirectPackedReader4 {
 }
 
 impl NumericDocValues for DirectPackedReader4 {
-    fn get(&mut self, doc_id: DocId) -> Result<i64> {
+    fn get(&self, doc_id: DocId) -> Result<i64> {
         LongValues::get64(self, i64::from(doc_id))
     }
 }
@@ -181,7 +181,7 @@ impl DirectPackedReader8 {
 }
 
 impl LongValues for DirectPackedReader8 {
-    fn get64(&mut self, index: i64) -> Result<i64> {
+    fn get64(&self, index: i64) -> Result<i64> {
         if index < 0 {
             bail!(IllegalArgument(format!(
                 "negative index encountered: {}",
@@ -199,7 +199,7 @@ impl LongValues for DirectPackedReader8 {
 }
 
 impl NumericDocValues for DirectPackedReader8 {
-    fn get(&mut self, doc_id: DocId) -> Result<i64> {
+    fn get(&self, doc_id: DocId) -> Result<i64> {
         LongValues::get64(self, i64::from(doc_id))
     }
 }
@@ -220,7 +220,7 @@ impl DirectPackedReader12 {
 }
 
 impl LongValues for DirectPackedReader12 {
-    fn get64(&mut self, index: i64) -> Result<i64> {
+    fn get64(&self, index: i64) -> Result<i64> {
         if index < 0 {
             bail!(IllegalArgument(format!(
                 "negative index encountered: {}",
@@ -241,7 +241,7 @@ impl LongValues for DirectPackedReader12 {
 }
 
 impl NumericDocValues for DirectPackedReader12 {
-    fn get(&mut self, doc_id: DocId) -> Result<i64> {
+    fn get(&self, doc_id: DocId) -> Result<i64> {
         LongValues::get64(self, i64::from(doc_id))
     }
 }
@@ -262,7 +262,7 @@ impl DirectPackedReader16 {
 }
 
 impl LongValues for DirectPackedReader16 {
-    fn get64(&mut self, index: i64) -> Result<i64> {
+    fn get64(&self, index: i64) -> Result<i64> {
         if index < 0 {
             bail!(IllegalArgument(format!(
                 "negative index encountered: {}",
@@ -282,7 +282,7 @@ impl LongValues for DirectPackedReader16 {
 }
 
 impl NumericDocValues for DirectPackedReader16 {
-    fn get(&mut self, doc_id: DocId) -> Result<i64> {
+    fn get(&self, doc_id: DocId) -> Result<i64> {
         LongValues::get64(self, i64::from(doc_id))
     }
 }
@@ -303,7 +303,7 @@ impl DirectPackedReader20 {
 }
 
 impl LongValues for DirectPackedReader20 {
-    fn get64(&mut self, index: i64) -> Result<i64> {
+    fn get64(&self, index: i64) -> Result<i64> {
         if index < 0 {
             bail!(IllegalArgument(format!(
                 "negative index encountered: {}",
@@ -325,7 +325,7 @@ impl LongValues for DirectPackedReader20 {
 }
 
 impl NumericDocValues for DirectPackedReader20 {
-    fn get(&mut self, doc_id: DocId) -> Result<i64> {
+    fn get(&self, doc_id: DocId) -> Result<i64> {
         LongValues::get64(self, i64::from(doc_id))
     }
 }
@@ -346,7 +346,7 @@ impl DirectPackedReader24 {
 }
 
 impl LongValues for DirectPackedReader24 {
-    fn get64(&mut self, index: i64) -> Result<i64> {
+    fn get64(&self, index: i64) -> Result<i64> {
         if index < 0 {
             bail!(IllegalArgument(format!(
                 "negative index encountered: {}",
@@ -362,7 +362,7 @@ impl LongValues for DirectPackedReader24 {
 }
 
 impl NumericDocValues for DirectPackedReader24 {
-    fn get(&mut self, doc_id: DocId) -> Result<i64> {
+    fn get(&self, doc_id: DocId) -> Result<i64> {
         LongValues::get64(self, i64::from(doc_id))
     }
 }
@@ -383,7 +383,7 @@ impl DirectPackedReader28 {
 }
 
 impl LongValues for DirectPackedReader28 {
-    fn get64(&mut self, index: i64) -> Result<i64> {
+    fn get64(&self, index: i64) -> Result<i64> {
         if index < 0 {
             bail!(IllegalArgument(format!(
                 "negative index encountered: {}",
@@ -401,7 +401,7 @@ impl LongValues for DirectPackedReader28 {
 }
 
 impl NumericDocValues for DirectPackedReader28 {
-    fn get(&mut self, doc_id: DocId) -> Result<i64> {
+    fn get(&self, doc_id: DocId) -> Result<i64> {
         LongValues::get64(self, i64::from(doc_id))
     }
 }
@@ -422,7 +422,7 @@ impl DirectPackedReader32 {
 }
 
 impl LongValues for DirectPackedReader32 {
-    fn get64(&mut self, index: i64) -> Result<i64> {
+    fn get64(&self, index: i64) -> Result<i64> {
         if index < 0 {
             bail!(IllegalArgument(format!(
                 "negative index encountered: {}",
@@ -440,7 +440,7 @@ impl LongValues for DirectPackedReader32 {
 }
 
 impl NumericDocValues for DirectPackedReader32 {
-    fn get(&mut self, doc_id: DocId) -> Result<i64> {
+    fn get(&self, doc_id: DocId) -> Result<i64> {
         LongValues::get64(self, i64::from(doc_id))
     }
 }
@@ -461,7 +461,7 @@ impl DirectPackedReader40 {
 }
 
 impl LongValues for DirectPackedReader40 {
-    fn get64(&mut self, index: i64) -> Result<i64> {
+    fn get64(&self, index: i64) -> Result<i64> {
         if index < 0 {
             bail!(IllegalArgument(format!(
                 "negative index encountered: {}",
@@ -477,7 +477,7 @@ impl LongValues for DirectPackedReader40 {
 }
 
 impl NumericDocValues for DirectPackedReader40 {
-    fn get(&mut self, doc_id: DocId) -> Result<i64> {
+    fn get(&self, doc_id: DocId) -> Result<i64> {
         LongValues::get64(self, i64::from(doc_id))
     }
 }
@@ -498,7 +498,7 @@ impl DirectPackedReader48 {
 }
 
 impl LongValues for DirectPackedReader48 {
-    fn get64(&mut self, index: i64) -> Result<i64> {
+    fn get64(&self, index: i64) -> Result<i64> {
         if index < 0 {
             bail!(IllegalArgument(format!(
                 "negative index encountered: {}",
@@ -514,7 +514,7 @@ impl LongValues for DirectPackedReader48 {
 }
 
 impl NumericDocValues for DirectPackedReader48 {
-    fn get(&mut self, doc_id: DocId) -> Result<i64> {
+    fn get(&self, doc_id: DocId) -> Result<i64> {
         LongValues::get64(self, i64::from(doc_id))
     }
 }
@@ -535,7 +535,7 @@ impl DirectPackedReader56 {
 }
 
 impl LongValues for DirectPackedReader56 {
-    fn get64(&mut self, index: i64) -> Result<i64> {
+    fn get64(&self, index: i64) -> Result<i64> {
         if index < 0 {
             bail!(IllegalArgument(format!(
                 "negative index encountered: {}",
@@ -551,7 +551,7 @@ impl LongValues for DirectPackedReader56 {
 }
 
 impl NumericDocValues for DirectPackedReader56 {
-    fn get(&mut self, doc_id: DocId) -> Result<i64> {
+    fn get(&self, doc_id: DocId) -> Result<i64> {
         LongValues::get64(self, i64::from(doc_id))
     }
 }
@@ -572,7 +572,7 @@ impl DirectPackedReader64 {
 }
 
 impl LongValues for DirectPackedReader64 {
-    fn get64(&mut self, index: i64) -> Result<i64> {
+    fn get64(&self, index: i64) -> Result<i64> {
         if index < 0 {
             bail!(IllegalArgument(format!(
                 "negative index encountered: {}",
@@ -590,7 +590,7 @@ impl LongValues for DirectPackedReader64 {
 }
 
 impl NumericDocValues for DirectPackedReader64 {
-    fn get(&mut self, doc_id: DocId) -> Result<i64> {
+    fn get(&self, doc_id: DocId) -> Result<i64> {
         LongValues::get64(self, i64::from(doc_id))
     }
 }

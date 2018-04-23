@@ -1072,7 +1072,7 @@ impl Lucene54DocValuesProducer {
             self.data
                 .lock()?
                 .slice("terms", bytes.offset, bytes.addresses_offset - bytes.offset)?;
-        CompressedBinaryDocValues::new(bytes, addresses, index, Mutex::new(slice))
+        CompressedBinaryDocValues::new(bytes, addresses, index, slice)
     }
 }
 
