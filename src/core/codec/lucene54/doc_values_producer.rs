@@ -26,15 +26,14 @@ use error::Result;
 
 use std::borrow::BorrowMut;
 use std::collections::HashMap;
-use std::ops::{Deref, DerefMut};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 
 pub struct ReverseTermsIndex {
     pub term_addresses: MonotonicBlockPackedReader,
     pub terms: PagedBytesReader,
 }
 
-pub type ReverseTermsIndexRef = Arc<Mutex<ReverseTermsIndex>>;
+pub type ReverseTermsIndexRef = Arc<ReverseTermsIndex>;
 
 type NumericEntryLink = Arc<NumericEntry>;
 
@@ -139,7 +138,7 @@ pub struct Lucene54DocValuesProducer {
     #[allow(dead_code)]
     num_fields: i32,
     max_doc: i32,
-    data: Mutex<Box<IndexInput>>,
+    data: Box<IndexInput>,
     merging: bool,
     numerics: HashMap<String, NumericEntryLink>,
     binaries: HashMap<String, BinaryEntry>,
@@ -147,8 +146,8 @@ pub struct Lucene54DocValuesProducer {
     sorted_numerics: HashMap<String, SortedSetEntry>,
     ords: HashMap<String, NumericEntryLink>,
     ord_indexes: HashMap<String, NumericEntryLink>,
-    address_instances: RwLock<HashMap<String, Arc<Mutex<MonotonicBlockPackedReader>>>>,
-    reverse_index_instances: RwLock<HashMap<String, Arc<Mutex<ReverseTermsIndex>>>>,
+    address_instances: RwLock<HashMap<String, Arc<MonotonicBlockPackedReader>>>,
+    reverse_index_instances: RwLock<HashMap<String, Arc<ReverseTermsIndex>>>,
 }
 
 impl Lucene54DocValuesProducer {
@@ -219,7 +218,7 @@ impl Lucene54DocValuesProducer {
         Ok(Lucene54DocValuesProducer {
             num_fields,
             max_doc: state.segment_info.max_doc(),
-            data: Mutex::new(data),
+            data,
             merging: false,
             numerics,
             binaries,
@@ -808,7 +807,7 @@ impl Lucene54DocValuesProducer {
             lucene54::ALL_MISSING => Box::new(MatchNoBits::new(count)),
             lucene54::ALL_LIVE => Box::new(MatchAllBits::new(count)),
             _ => {
-                let data = self.data.lock()?;
+                let data = self.data.as_ref().clone()?;
                 let boxed = LiveBits::new(data.as_ref(), offset, count)?;
                 Box::new(boxed)
             }
@@ -826,7 +825,6 @@ impl Lucene54DocValuesProducer {
 
     fn get_numeric_delta_compressed(&self, entry: &NumericEntryLink) -> Result<DeltaLongValues> {
         let slice = self.data
-            .lock()?
             .random_access_slice(entry.offset, entry.end_offset - entry.offset)?;
         let slice = Arc::new(slice);
         let delta = entry.min_value;
@@ -836,7 +834,6 @@ impl Lucene54DocValuesProducer {
 
     fn get_numeric_gcd_compressed(&self, entry: &NumericEntryLink) -> Result<GcdLongValues> {
         let slice = self.data
-            .lock()?
             .random_access_slice(entry.offset, entry.end_offset - entry.offset)?;
         let slice = Arc::new(slice);
         let base = entry.min_value;
@@ -846,7 +843,7 @@ impl Lucene54DocValuesProducer {
     }
 
     fn get_numeric_table_compressed(&self, entry: &NumericEntryLink) -> Result<TableLongValues> {
-        let data = self.data.lock()?;
+        let data = self.data.as_ref().clone()?;
         let slice = data.random_access_slice(entry.offset, entry.end_offset - entry.offset)?;
         let slice = Arc::new(slice);
         let table = entry.table.clone();
@@ -939,7 +936,6 @@ impl Lucene54DocValuesProducer {
         let length = entry.offset - entry.missing_offset;
 
         let doc_ids_data = self.data
-            .lock()?
             .random_access_slice(entry.missing_offset, length)?;
         let doc_ids_data = Arc::new(doc_ids_data);
 
@@ -958,7 +954,7 @@ impl Lucene54DocValuesProducer {
         _field: &FieldInfo,
         bytes: &BinaryEntry,
     ) -> Result<FixedBinaryDocValues> {
-        let data = self.data.lock()?.slice(
+        let data = self.data.as_ref().slice(
             "fixed-binary",
             bytes.offset,
             bytes.count * i64::from(bytes.max_length),
@@ -980,13 +976,11 @@ impl Lucene54DocValuesProducer {
         let meta = Arc::clone(meta_ref);
 
         let addresses_data = self.data
-            .lock()?
             .random_access_slice(bytes.addresses_offset, addresses_length)?;
         let addresses_data = Arc::new(addresses_data);
         let addresses = DirectMonotonicReader::get_instance(meta.as_ref(), &addresses_data)?;
         let data_length = bytes.addresses_offset - bytes.offset;
         let data = self.data
-            .lock()?
             .slice("var-binary", bytes.offset, data_length)?;
         let variable_binary =
             VariableBinaryDocValues::new(addresses, data, bytes.max_length as usize);
@@ -997,23 +991,24 @@ impl Lucene54DocValuesProducer {
         &self,
         field: &FieldInfo,
         bytes: &BinaryEntry,
-    ) -> Result<Arc<Mutex<MonotonicBlockPackedReader>>> {
+    ) -> Result<Arc<MonotonicBlockPackedReader>> {
         if let Some(addresses) = self.address_instances.read()?.get(&field.name) {
             return Ok(Arc::clone(addresses));
         }
 
-        let mut data = self.data.lock()?;
+        let mut data = self.data.as_ref().clone()?;
+        let data: &mut IndexInput = data.borrow_mut();
         data.seek(bytes.addresses_offset)?;
         let size =
             ((bytes.count + i64::from(lucene54::INTERVAL_MASK)) >> lucene54::INTERVAL_SHIFT) as u64;
         let addresses = MonotonicBlockPackedReader::new(
-            data.deref_mut().as_mut(),
+            data,
             bytes.packed_ints_version,
             bytes.block_size as usize,
             size,
             false,
         )?;
-        let addresses = Arc::new(Mutex::new(addresses));
+        let addresses = Arc::new(addresses);
         if !self.merging {
             self.address_instances
                 .write()?
@@ -1026,17 +1021,18 @@ impl Lucene54DocValuesProducer {
         &self,
         field: &FieldInfo,
         bytes: &BinaryEntry,
-    ) -> Result<Arc<Mutex<ReverseTermsIndex>>> {
+    ) -> Result<Arc<ReverseTermsIndex>> {
         if let Some(reverse_terms_index) = self.reverse_index_instances.read()?.get(&field.name) {
             return Ok(Arc::clone(reverse_terms_index));
         }
 
-        let mut data = self.data.lock()?;
+        let mut data = self.data.as_ref().clone()?;
+        let data: &mut IndexInput = data.borrow_mut();
         data.seek(bytes.reverse_index_offset)?;
         let size = (bytes.count + i64::from(lucene54::REVERSE_INTERVAL_MASK))
             >> lucene54::REVERSE_INTERVAL_SHIFT;
         let term_addresses = MonotonicBlockPackedReader::new(
-            data.deref_mut().as_mut(),
+            data.borrow_mut(),
             bytes.packed_ints_version,
             bytes.block_size as usize,
             size as u64,
@@ -1044,14 +1040,14 @@ impl Lucene54DocValuesProducer {
         )?;
         let data_size = data.read_vlong()?;
         let mut paged_bytes = PagedBytes::new(15);
-        paged_bytes.copy(data.deref_mut().as_mut(), data_size)?;
+        paged_bytes.copy(data.borrow_mut(), data_size)?;
         paged_bytes.freeze(true);
         let terms = PagedBytesReader::new(paged_bytes);
         let index = ReverseTermsIndex {
             term_addresses,
             terms,
         };
-        let index = Arc::new(Mutex::new(index));
+        let index = Arc::new(index);
         if !self.merging {
             self.reverse_index_instances
                 .write()?
@@ -1067,10 +1063,9 @@ impl Lucene54DocValuesProducer {
     ) -> Result<CompressedBinaryDocValues> {
         let addresses = self.get_interval_instance(field, &bytes)?;
         let index = self.get_reverse_index_instance(field, &bytes)?;
-        debug_assert!(addresses.lock()?.size() > 0); // we don't have to handle empty case
+        debug_assert!(addresses.size() > 0); // we don't have to handle empty case
         let slice =
             self.data
-                .lock()?
                 .slice("terms", bytes.offset, bytes.addresses_offset - bytes.offset)?;
         CompressedBinaryDocValues::new(bytes, addresses, index, slice)
     }
@@ -1079,7 +1074,6 @@ impl Lucene54DocValuesProducer {
 impl Lucene54DocValuesProducer {
     fn get_ord_index_instance(&self, entry: &NumericEntryLink) -> Result<Box<LongValues>> {
         let data = self.data
-            .lock()?
             .random_access_slice(entry.offset, entry.end_offset - entry.offset)?;
         if let Some(ref meta) = entry.monotonic_meta {
             DirectMonotonicReader::get_instance(meta.as_ref(), &Arc::new(data))
@@ -1341,8 +1335,9 @@ impl DocValuesProducer for Lucene54DocValuesProducer {
                             Ok(Box::new(boxed))
                         }
                         _ => {
+                            let mut data = self.data.as_ref().clone()?;
                             let living_room =
-                                LiveBits::new(self.data.lock()?.deref().as_ref(), offset, count)?;
+                                LiveBits::new(data.borrow_mut(), offset, count)?;
                             let boxed = DocValues::singleton_sorted_numeric_doc_values(
                                 values,
                                 Bits::new(Box::new(living_room)),
@@ -1440,7 +1435,7 @@ impl DocValuesProducer for Lucene54DocValuesProducer {
         }
     }
     fn check_integrity(&self) -> Result<()> {
-        let mut input = (*self.data.lock()?).clone()?;
+        let mut input = self.data.as_ref().clone()?;
         let input: &mut IndexInput = input.borrow_mut();
         codec_util::checksum_entire_file(input)?;
         Ok(())

@@ -96,9 +96,9 @@ impl CompressedBinaryDocValues {
         data: Box<IndexInput>,
     ) -> Result<CompressedBinaryDocValues> {
         let max_term_length = bytes.max_length;
-        let num_reverse_index_values = reverse_index.lock()?.term_addresses.size() as i64;
+        let num_reverse_index_values = reverse_index.term_addresses.size() as i64;
         let num_values = bytes.count;
-        let num_index_values = addresses.lock()?.size() as i64;
+        let num_index_values = addresses.size() as i64;
 
         let dv = CompressedBinaryDocValues {
             num_values,
