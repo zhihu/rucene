@@ -935,8 +935,7 @@ impl Lucene54DocValuesProducer {
     fn get_sparse_live_bits_by_entry(&self, entry: &NumericEntry) -> Result<SparseBits> {
         let length = entry.offset - entry.missing_offset;
 
-        let doc_ids_data = self.data
-            .random_access_slice(entry.missing_offset, length)?;
+        let doc_ids_data = self.data.random_access_slice(entry.missing_offset, length)?;
         let doc_ids_data = Arc::new(doc_ids_data);
 
         if let Some(ref meta) = entry.monotonic_meta {
@@ -980,8 +979,7 @@ impl Lucene54DocValuesProducer {
         let addresses_data = Arc::new(addresses_data);
         let addresses = DirectMonotonicReader::get_instance(meta.as_ref(), &addresses_data)?;
         let data_length = bytes.addresses_offset - bytes.offset;
-        let data = self.data
-            .slice("var-binary", bytes.offset, data_length)?;
+        let data = self.data.slice("var-binary", bytes.offset, data_length)?;
         let variable_binary =
             VariableBinaryDocValues::new(addresses, data, bytes.max_length as usize);
         Ok(variable_binary)
@@ -1064,9 +1062,8 @@ impl Lucene54DocValuesProducer {
         let addresses = self.get_interval_instance(field, &bytes)?;
         let index = self.get_reverse_index_instance(field, &bytes)?;
         debug_assert!(addresses.size() > 0); // we don't have to handle empty case
-        let slice =
-            self.data
-                .slice("terms", bytes.offset, bytes.addresses_offset - bytes.offset)?;
+        let slice = self.data
+            .slice("terms", bytes.offset, bytes.addresses_offset - bytes.offset)?;
         CompressedBinaryDocValues::new(bytes, addresses, index, slice)
     }
 }
@@ -1336,8 +1333,7 @@ impl DocValuesProducer for Lucene54DocValuesProducer {
                         }
                         _ => {
                             let mut data = self.data.as_ref().clone()?;
-                            let living_room =
-                                LiveBits::new(data.borrow_mut(), offset, count)?;
+                            let living_room = LiveBits::new(data.borrow_mut(), offset, count)?;
                             let boxed = DocValues::singleton_sorted_numeric_doc_values(
                                 values,
                                 Bits::new(Box::new(living_room)),

@@ -283,7 +283,7 @@ mod tests {
     fn variant_binary_test() {
         let bval = VariantValue::Binary(vec![65u8, 66u8, 67u8]);
         let expr = format!("{}", bval);
-        assert_eq!(expr, "Non-printable");
+        assert_eq!(expr, "Binary(unprintable)");
 
         if let VariantValue::Binary(ref bvec) = bval {
             for (i, val) in bvec.iter().enumerate() {

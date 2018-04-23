@@ -121,10 +121,10 @@ impl IndexSearcher {
     /// if possible and configured.
     pub fn create_weight(&self, query: &Query, needs_scores: bool) -> Result<Box<Weight>> {
         let weight = query.create_weight(self, needs_scores)?;
-//        if !needs_scores {
-//            weight = self.query_cache
-//                .do_cache(weight, Arc::clone(&self.cache_policy));
-//        }
+        //        if !needs_scores {
+        //            weight = self.query_cache
+        //                .do_cache(weight, Arc::clone(&self.cache_policy));
+        //        }
         Ok(weight)
     }
 
@@ -171,6 +171,8 @@ mod tests {
     use core::search::tests::*;
     use core::search::*;
 
+    pub const MOCK_QUERY: &str = "mock";
+
     struct MockQuery {
         docs: Vec<DocId>,
     }
@@ -192,6 +194,10 @@ mod tests {
 
         fn extract_terms(&self) -> Vec<TermQuery> {
             unimplemented!()
+        }
+
+        fn query_type(&self) -> &'static str {
+            MOCK_QUERY
         }
     }
 

@@ -1,14 +1,20 @@
-use core::search::{two_phase_next, DocIterator, Scorer, NO_MORE_DOCS};
+use core::index::LeafReader;
+use core::search::searcher::IndexSearcher;
+use core::search::term_query::TermQuery;
+use core::search::{two_phase_next, DocIterator, Query, Scorer, Weight, NO_MORE_DOCS};
 use core::util::DocId;
+use error::ErrorKind::IllegalArgument;
 use error::Result;
 
 use std::cell::RefCell;
 use std::cmp::{Ord, Ordering};
 use std::collections::binary_heap::Iter;
 use std::collections::BinaryHeap;
+use std::f32;
+use std::fmt;
 
 #[derive(Eq)]
-struct ScorerWrapper {
+pub struct ScorerWrapper {
     pub scorer: RefCell<Box<Scorer>>,
     pub doc: DocId,
     pub matches: Option<bool>,
@@ -118,7 +124,7 @@ impl PartialOrd for ScorerWrapper {
     }
 }
 
-struct ScorerPriorityQueue(BinaryHeap<ScorerWrapper>);
+pub struct ScorerPriorityQueue(BinaryHeap<ScorerWrapper>);
 
 impl ScorerPriorityQueue {
     fn new() -> ScorerPriorityQueue {
@@ -158,31 +164,19 @@ impl ScorerPriorityQueue {
     }
 }
 
-pub struct DisjunctionScorer {
+pub struct DisjunctionSumScorer {
     sub_scorers: ScorerPriorityQueue,
     cost: usize,
     support_two_phase: bool,
     two_phase_match_cost: f32,
 }
 
-impl DisjunctionScorer {
-    pub fn new(children: Vec<Box<Scorer>>) -> DisjunctionScorer {
+impl DisjunctionSumScorer {
+    pub fn new(children: Vec<Box<Scorer>>) -> DisjunctionSumScorer {
         assert!(children.len() > 1);
 
         let cost = children.iter().map(|w| w.cost()).sum();
-        let mut support_two_phase = false;
-        // let mut sum_match_cost = 0f32;
-        // let mut sum_approx_cost = 0;
-        for scorer in &children {
-            // let cost_weight = scorer.cost().max(1);
-            // sum_approx_cost += cost_weight;
-            if scorer.support_two_phase() {
-                support_two_phase = true;
-                // sum_match_cost += scorer.match_cost() * cost_weight as f32;
-            }
-        }
-
-        // let match_cost = sum_match_cost / (sum_approx_cost as f32);
+        let support_two_phase = children.iter().any(|s| s.support_two_phase());
 
         let two_phase_match_cost = if support_two_phase {
             children.iter().map(|s| s.match_cost()).sum()
@@ -195,42 +189,38 @@ impl DisjunctionScorer {
             sub_scorers.push(wrapper);
         }
 
-        DisjunctionScorer {
+        DisjunctionSumScorer {
             sub_scorers,
             cost,
             support_two_phase,
             two_phase_match_cost,
         }
     }
+}
 
-    /// Get the list of scorers which are on the current doc.
-    fn pop_top_scorers(&mut self) -> Vec<ScorerWrapper> {
-        let current_doc = self.sub_scorers.peek().doc;
-        debug_assert_ne!(
-            current_doc, -1,
-            "You should call iterator::next() first before scoring"
-        );
-        debug_assert_ne!(
-            current_doc, NO_MORE_DOCS,
-            "You should check remain docs before scoring"
-        );
+impl DisjunctionScorer for DisjunctionSumScorer {
+    fn sub_scorers(&self) -> &ScorerPriorityQueue {
+        &self.sub_scorers
+    }
 
-        let mut top_scorers: Vec<ScorerWrapper> = Vec::new();
+    fn sub_scorers_mut(&mut self) -> &mut ScorerPriorityQueue {
+        &mut self.sub_scorers
+    }
 
-        while !self.sub_scorers.is_empty() {
-            let scorer = self.sub_scorers.pop();
-            if scorer.doc == current_doc {
-                top_scorers.push(scorer);
-            } else {
-                self.sub_scorers.push(scorer);
-                break;
-            }
-        }
-        top_scorers
+    fn two_phase_match_cost(&self) -> f32 {
+        self.two_phase_match_cost
+    }
+
+    fn get_cost(&self) -> usize {
+        self.cost
+    }
+
+    fn support_two_phase_iter(&self) -> bool {
+        self.support_two_phase
     }
 }
 
-impl Scorer for DisjunctionScorer {
+impl Scorer for DisjunctionSumScorer {
     fn score(&mut self) -> Result<f32> {
         let mut top_scorers = self.pop_top_scorers();
         let mut score: f32 = 0.0;
@@ -247,9 +237,47 @@ impl Scorer for DisjunctionScorer {
     }
 }
 
-impl DocIterator for DisjunctionScorer {
+pub trait DisjunctionScorer {
+    fn sub_scorers(&self) -> &ScorerPriorityQueue;
+
+    fn sub_scorers_mut(&mut self) -> &mut ScorerPriorityQueue;
+
+    fn two_phase_match_cost(&self) -> f32;
+
+    fn get_cost(&self) -> usize;
+
+    fn support_two_phase_iter(&self) -> bool;
+
+    /// Get the list of scorers which are on the current doc.
+    fn pop_top_scorers(&mut self) -> Vec<ScorerWrapper> {
+        let current_doc = self.sub_scorers().peek().doc;
+        debug_assert_ne!(
+            current_doc, -1,
+            "You should call iterator::next() first before scoring"
+        );
+        debug_assert_ne!(
+            current_doc, NO_MORE_DOCS,
+            "You should check remain docs before scoring"
+        );
+
+        let mut top_scorers: Vec<ScorerWrapper> = Vec::new();
+
+        while !self.sub_scorers().is_empty() {
+            let scorer = self.sub_scorers_mut().pop();
+            if scorer.doc == current_doc {
+                top_scorers.push(scorer);
+            } else {
+                self.sub_scorers_mut().push(scorer);
+                break;
+            }
+        }
+        top_scorers
+    }
+}
+
+impl<T: DisjunctionScorer + Scorer> DocIterator for T {
     fn doc_id(&self) -> DocId {
-        self.sub_scorers.peek().doc
+        self.sub_scorers().peek().doc
     }
 
     fn next(&mut self) -> Result<DocId> {
@@ -263,11 +291,11 @@ impl DocIterator for DisjunctionScorer {
     }
 
     fn cost(&self) -> usize {
-        self.cost
+        self.get_cost()
     }
 
     fn matches(&mut self) -> Result<bool> {
-        if self.support_two_phase {
+        if self.support_two_phase_iter() {
             let mut matches = false;
             let mut top_scorers = self.pop_top_scorers();
             for scorer in &mut top_scorers {
@@ -277,7 +305,7 @@ impl DocIterator for DisjunctionScorer {
                 }
             }
 
-            self.sub_scorers.push_all(top_scorers);
+            self.sub_scorers_mut().push_all(top_scorers);
             Ok(matches)
         } else {
             Ok(true)
@@ -285,48 +313,267 @@ impl DocIterator for DisjunctionScorer {
     }
 
     fn match_cost(&self) -> f32 {
-        self.two_phase_match_cost
+        self.two_phase_match_cost()
     }
 
     fn approximate_next(&mut self) -> Result<DocId> {
-        let mut top = self.sub_scorers.pop();
+        let sub_scorers = self.sub_scorers_mut();
+        let mut top = sub_scorers.pop();
         let doc = top.doc;
 
         loop {
             let next_doc = top.approximate_next()?;
             top.set_doc(next_doc);
             // Reinsert top to the queue
-            self.sub_scorers.push(top);
+            sub_scorers.push(top);
 
-            top = self.sub_scorers.pop();
+            top = sub_scorers.pop();
             if top.doc != doc {
                 break;
             }
         }
 
         let current_doc = top.doc;
-        self.sub_scorers.push(top);
+        sub_scorers.push(top);
 
         Ok(current_doc)
     }
 
     fn approximate_advance(&mut self, target: DocId) -> Result<DocId> {
-        let mut top = self.sub_scorers.pop();
+        let sub_scorers = self.sub_scorers_mut();
+        let mut top = sub_scorers.pop();
 
         loop {
             top.doc = top.approximate_advance(target)?;
-            self.sub_scorers.push(top);
+            sub_scorers.push(top);
 
-            top = self.sub_scorers.pop();
+            top = sub_scorers.pop();
             if top.doc >= target {
                 break;
             }
         }
 
         let current_doc = top.doc;
-        self.sub_scorers.push(top);
+        sub_scorers.push(top);
 
         Ok(current_doc)
+    }
+}
+
+/// A query that generates the union of documents produced by its subqueries, and that scores each
+/// document with the maximum score for that document as produced by any subquery, plus a tie
+/// breaking increment for any additional matching subqueries. This is useful when searching for a
+/// word in multiple fields with different boost factors (so that the fields cannot be
+/// combined equivalently into a single search field).  We want the primary score to be the one
+/// associated with the highest boost, not the sum of the field scores (as BooleanQuery would give).
+/// If the query is "albino elephant" this ensures that "albino" matching one field and "elephant"
+/// matching another gets a higher score than "albino" matching both fields.
+/// To get this result, use both BooleanQuery and DisjunctionMaxQuery:  for each term a
+/// DisjunctionMaxQuery searches for it in each field, while the set of these DisjunctionMaxQuery's
+/// is combined into a BooleanQuery. The tie breaker capability allows results that include the
+/// same term in multiple fields to be judged better than results that include this term in only
+/// the best of those multiple fields, without confusing this with the better case of two different
+/// terms in the multiple fields.
+///
+
+pub struct DisjunctionMaxQuery {
+    pub disjuncts: Vec<Box<Query>>,
+    /// Multiple of the non-max disjunct scores added into our final score.
+    /// Non-zero values support tie-breaking.
+    pub tie_breaker_multiplier: f32,
+}
+
+impl DisjunctionMaxQuery {
+    pub fn build(disjuncts: Vec<Box<Query>>, tie_breaker_multiplier: f32) -> Result<Box<Query>> {
+        let mut disjuncts = disjuncts;
+        if disjuncts.is_empty() {
+            bail!(IllegalArgument(
+                "DisjunctionMaxQuery: sub query should not be empty!".into()
+            ))
+        } else if disjuncts.len() == 1 {
+            Ok(disjuncts.remove(0))
+        } else {
+            Ok(Box::new(DisjunctionMaxQuery {
+                disjuncts,
+                tie_breaker_multiplier,
+            }))
+        }
+    }
+}
+
+pub const DISJUNCTION_MAX: &str = "dismax";
+
+impl Query for DisjunctionMaxQuery {
+    fn create_weight(&self, searcher: &IndexSearcher, needs_scores: bool) -> Result<Box<Weight>> {
+        let mut weights = Vec::with_capacity(self.disjuncts.len());
+        for q in &self.disjuncts {
+            weights.push(q.create_weight(searcher, needs_scores)?);
+        }
+
+        Ok(Box::new(DisjunctionMaxWeight::new(
+            weights,
+            self.tie_breaker_multiplier,
+            needs_scores,
+        )))
+    }
+
+    fn extract_terms(&self) -> Vec<TermQuery> {
+        let mut queries = Vec::new();
+        for q in &self.disjuncts {
+            queries.extend(q.extract_terms());
+        }
+        queries
+    }
+
+    fn query_type(&self) -> &'static str {
+        DISJUNCTION_MAX
+    }
+}
+
+impl fmt::Display for DisjunctionMaxQuery {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let queries: Vec<String> = self.disjuncts.iter().map(|q| format!("{}", q)).collect();
+        write!(
+            f,
+            "DisjunctionMaxQuery(disjunctions: {}, tie_breaker_multiplier: {})",
+            queries.join(", "),
+            self.tie_breaker_multiplier
+        )
+    }
+}
+
+/// Expert: the Weight for DisjunctionMaxQuery, used to
+/// normalize, score and explain these queries.
+///
+/// <p>NOTE: this API and implementation is subject to
+/// change suddenly in the next release.</p>
+///
+pub struct DisjunctionMaxWeight {
+    weights: Vec<Box<Weight>>,
+    tie_breaker_multiplier: f32,
+    needs_scores: bool,
+}
+
+impl DisjunctionMaxWeight {
+    pub fn new(
+        weights: Vec<Box<Weight>>,
+        tie_breaker_multiplier: f32,
+        needs_scores: bool,
+    ) -> DisjunctionMaxWeight {
+        DisjunctionMaxWeight {
+            weights,
+            tie_breaker_multiplier,
+            needs_scores,
+        }
+    }
+}
+
+impl Weight for DisjunctionMaxWeight {
+    fn create_scorer(&self, leaf_reader: &LeafReader) -> Result<Box<Scorer>> {
+        let mut scorers = Vec::with_capacity(self.weights.len());
+        for w in &self.weights {
+            scorers.push(w.create_scorer(leaf_reader)?);
+        }
+        Ok(Box::new(DisjunctionMaxScorer::new(
+            scorers,
+            self.tie_breaker_multiplier,
+        )))
+    }
+
+    fn query_type(&self) -> &'static str {
+        DISJUNCTION_MAX
+    }
+}
+
+impl fmt::Display for DisjunctionMaxWeight {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let weights: Vec<String> = self.weights.iter().map(|q| format!("{}", q)).collect();
+        write!(
+            f,
+            "DisjunctionMaxWeight(weights:{}, tie_breaker_multiplier:{}, needs_scores:{})",
+            weights.join(", "),
+            self.tie_breaker_multiplier,
+            self.needs_scores
+        )
+    }
+}
+
+pub struct DisjunctionMaxScorer {
+    sub_scorers: ScorerPriorityQueue,
+    cost: usize,
+    support_two_phase: bool,
+    two_phase_match_cost: f32,
+    tie_breaker_multiplier: f32,
+}
+
+impl DisjunctionMaxScorer {
+    pub fn new(children: Vec<Box<Scorer>>, tie_breaker_multiplier: f32) -> DisjunctionMaxScorer {
+        assert!(children.len() > 1);
+
+        let cost = children.iter().map(|w| w.cost()).sum();
+        let support_two_phase = children.iter().any(|s| s.support_two_phase());
+
+        let two_phase_match_cost = if support_two_phase {
+            children.iter().map(|s| s.match_cost()).sum()
+        } else {
+            0f32
+        };
+        let mut sub_scorers = ScorerPriorityQueue::new();
+        for scorer in children {
+            let wrapper = ScorerWrapper::new(scorer);
+            sub_scorers.push(wrapper);
+        }
+
+        DisjunctionMaxScorer {
+            sub_scorers,
+            cost,
+            support_two_phase,
+            two_phase_match_cost,
+            tie_breaker_multiplier,
+        }
+    }
+}
+
+impl Scorer for DisjunctionMaxScorer {
+    fn score(&mut self) -> Result<f32> {
+        let mut top_scorers = self.pop_top_scorers();
+        let mut score_sum = 0.0f32;
+        let mut score_max = f32::NEG_INFINITY;
+
+        for scorer in &mut top_scorers {
+            if scorer.matches()? {
+                let sub_score = scorer.score()?;
+                score_sum += sub_score;
+                if sub_score > score_max {
+                    score_max = sub_score;
+                }
+            }
+        }
+        self.sub_scorers.push_all(top_scorers);
+
+        Ok(score_max + (score_sum - score_max) * self.tie_breaker_multiplier)
+    }
+}
+
+impl DisjunctionScorer for DisjunctionMaxScorer {
+    fn sub_scorers(&self) -> &ScorerPriorityQueue {
+        &self.sub_scorers
+    }
+
+    fn sub_scorers_mut(&mut self) -> &mut ScorerPriorityQueue {
+        &mut self.sub_scorers
+    }
+
+    fn two_phase_match_cost(&self) -> f32 {
+        self.two_phase_match_cost
+    }
+
+    fn get_cost(&self) -> usize {
+        self.cost
+    }
+
+    fn support_two_phase_iter(&self) -> bool {
+        self.support_two_phase
     }
 }
 
@@ -378,22 +625,22 @@ mod tests {
         assert!((two_phase.score().unwrap() - 15.0) < ::std::f32::EPSILON);
     }
 
-    fn create_disjunction_scorer() -> DisjunctionScorer {
+    fn create_disjunction_scorer() -> DisjunctionSumScorer {
         let s1 = create_mock_scorer(vec![1, 2, 3, 4, 5]);
         let s2 = create_mock_scorer(vec![2, 5]);
         let s3 = create_mock_scorer(vec![2, 3, 4, 5]);
 
         let scorers: Vec<Box<Scorer>> = vec![s1, s2, s3];
 
-        DisjunctionScorer::new(scorers)
+        DisjunctionSumScorer::new(scorers)
     }
 
-    fn create_disjunction_two_phase_scorer() -> DisjunctionScorer {
+    fn create_disjunction_two_phase_scorer() -> DisjunctionSumScorer {
         let s1 = create_mock_scorer(vec![1, 2, 3, 5, 6, 7, 8]);
         let s2 = create_mock_scorer(vec![2, 3, 5, 7, 8]);
         let s3 = create_mock_two_phase_scorer(vec![1, 2, 3, 4, 5, 6, 7], vec![1, 2, 4, 5]);
         let s4 = create_mock_two_phase_scorer(vec![1, 2, 3, 4, 5, 6, 7], vec![2, 4]);
 
-        DisjunctionScorer::new(vec![s1, s2, s3, s4])
+        DisjunctionSumScorer::new(vec![s1, s2, s3, s4])
     }
 }
