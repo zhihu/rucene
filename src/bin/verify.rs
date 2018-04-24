@@ -208,14 +208,11 @@ fn verify_doc_positions(
     for (ref mut term, ref mut positions) in term_positions {
         let index_field_term_ref = convert_rucene_result(
             index_field_ref
-                .lock()
-                .unwrap()
                 .get_with_flags(term, FLAG_POSITIONS | FLAG_OFFSETS),
             "Can not get index field term",
         )?;
-        let mut index_field_term = index_field_term_ref.lock().unwrap();
-        convert_rucene_result(index_field_term.reset(), "Can not reset index field term")?;
-        let tf = index_field_term.tf();
+        convert_rucene_result(index_field_term_ref.reset(), "Can not reset index field term")?;
+        let tf = index_field_term_ref.tf();
         if tf != positions.len() as i32 {
             output.push_str(&format!(
                 "Term frequency mismatch for term '{}' in doc {}: {} vs {}",
@@ -234,9 +231,9 @@ fn verify_doc_positions(
             return new_error("Term frequency mismatch");
         }
         let index = 0usize;
-        while index_field_term.has_next() {
+        while index_field_term_ref.has_next() {
             let (lp, ls, le) = positions[index];
-            let tp = convert_rucene_result(index_field_term.next_pos(), "Can not get next term")?;
+            let tp = convert_rucene_result(index_field_term_ref.next_pos(), "Can not get next term")?;
             if lp != tp.position {
                 output.push_str(&format!(
                     "Term Position Mismatch: {} vs {}",
