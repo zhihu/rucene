@@ -378,7 +378,7 @@ impl<T: DisjunctionScorer + Scorer> DocIterator for T {
 
 pub struct DisjunctionMaxQuery {
     pub disjuncts: Vec<Box<Query>>,
-    /// Multiple of the non-max disjunct scores added into our final score.
+    /// Multiple of the non-max disjunction scores added into our final score.
     /// Non-zero values support tie-breaking.
     pub tie_breaker_multiplier: f32,
 }

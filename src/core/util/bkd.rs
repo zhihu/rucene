@@ -1187,7 +1187,7 @@ impl DocIdsWriter {
         }
 
         for id in doc_ids.iter_mut().take(count).skip(i) {
-            let l1 = input.read_short()? as u32;
+            let l1 = input.read_short()? as u16 as u32;
             let l2 = u32::from(input.read_byte()?);
             *id = ((l1 << 8) | l2) as i32;
         }
@@ -1263,7 +1263,7 @@ impl DocIdsWriter {
         }
 
         for _ in i..count {
-            let l1 = input.read_short()? as u32;
+            let l1 = input.read_short()? as u16 as u32;
             let l2 = u32::from(input.read_byte()?);
             visitor.visit(((l1 << 8) | l2) as i32)?;
         }
