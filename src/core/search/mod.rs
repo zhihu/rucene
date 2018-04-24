@@ -20,7 +20,6 @@ pub mod disjunction;
 pub mod match_all;
 pub mod min_score;
 pub mod point_range;
-
 pub mod posting_iterator;
 
 pub mod bulk_scorer;
@@ -653,10 +652,14 @@ pub mod tests {
         fn create_scorer(&self, _reader: &LeafReader) -> Result<Box<Scorer>> {
             Ok(create_mock_scorer(self.docs.clone()))
         }
+
+        fn query_type(&self) -> &'static str {
+            "mock"
+        }
     }
 
     impl fmt::Display for MockSimpleWeight {
-        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fn fmt(&self, _f: &mut fmt::Formatter) -> fmt::Result {
             unimplemented!()
         }
     }

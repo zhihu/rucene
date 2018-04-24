@@ -1,9 +1,8 @@
-use std::boxed::Box;
 use std::fmt;
 
 use core::index::LeafReader;
 use core::search::conjunction::ConjunctionScorer;
-use core::search::disjunction::DisjunctionScorer;
+use core::search::disjunction::DisjunctionSumScorer;
 use core::search::match_all::ConstantScoreQuery;
 use core::search::req_opt::ReqOptScorer;
 use core::search::searcher::IndexSearcher;
@@ -109,7 +108,7 @@ impl fmt::Display for BooleanQuery {
         let filters_str = self.queries_to_str(&self.filter_queries);
         write!(
             f,
-            "BooleanQuery(must: [{}], should: [{}], filters: [{}] match: {})",
+            "BooleanQuery(must: [{}], should: [{}], filters: [{}], match: {})",
             must_str, should_str, filters_str, self.minimum_should_match
         )
     }
@@ -174,10 +173,9 @@ impl Weight for BooleanWeight {
         };
         let should_scorer: Option<Box<Scorer>> = if !self.should_weights.is_empty() {
             if self.should_weights.len() > 1 {
-                Some(Box::new(DisjunctionScorer::new(self.build_scorers(
-                    &self.should_weights,
-                    leaf_reader,
-                )?)))
+                Some(Box::new(DisjunctionSumScorer::new(
+                    self.build_scorers(&self.should_weights, leaf_reader)?,
+                )))
             } else {
                 Some(self.should_weights[0].create_scorer(leaf_reader)?)
             }

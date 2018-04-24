@@ -131,7 +131,7 @@ mod tests {
             let mut bulk_scorer = BulkScorer::new(scorer_box.as_mut());
             top_collector.set_next_reader(0, &leaf_reader).unwrap();
             bulk_scorer
-                .score(&mut top_collector, &bits, 0, NO_MORE_DOCS)
+                .score(&mut top_collector, Some(&bits), 0, NO_MORE_DOCS)
                 .unwrap();
         }
 

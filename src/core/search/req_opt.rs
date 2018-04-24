@@ -90,7 +90,7 @@ mod tests {
         let s4 = create_mock_scorer(vec![3, 4, 5]);
 
         let conjunction_scorer = Box::new(ConjunctionScorer::new(vec![s1, s2]));
-        let disjunction_scorer = Box::new(DisjunctionScorer::new(vec![s3, s4]));
+        let disjunction_scorer = Box::new(DisjunctionSumScorer::new(vec![s3, s4]));
         let mut scorer = ReqOptScorer::new(conjunction_scorer, disjunction_scorer);
 
         assert_eq!(scorer.doc_id(), -1);

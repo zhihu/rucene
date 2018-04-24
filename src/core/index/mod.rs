@@ -676,7 +676,6 @@ pub mod tests {
     use super::*;
     use core::index::point_values::PointValuesRef;
     use core::search::bm25_similarity::BM25Similarity;
-    use core::search::*;
     use core::util::*;
 
     use core::codec::FieldsProducerRef;
@@ -698,7 +697,7 @@ pub mod tests {
     }
 
     impl NumericDocValues for MockNumericValues {
-        fn get(&mut self, doc_id: DocId) -> Result<i64> {
+        fn get(&self, doc_id: DocId) -> Result<i64> {
             Ok(i64::from(self.num[&doc_id]))
         }
     }
@@ -833,6 +832,10 @@ pub mod tests {
 
         fn num_docs(&self) -> i32 {
             0
+        }
+
+        fn core_cache_key(&self) -> &str {
+            unimplemented!()
         }
     }
 
