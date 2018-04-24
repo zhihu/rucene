@@ -208,14 +208,11 @@ fn verify_doc_positions(
     for (ref mut term, ref mut positions) in term_positions {
         let index_field_term_ref = convert_rucene_result(
             index_field_ref
-                .lock()
-                .unwrap()
                 .get_with_flags(term, FLAG_POSITIONS | FLAG_OFFSETS),
             "Can not get index field term",
         )?;
-        let mut index_field_term = index_field_term_ref.lock().unwrap();
-        convert_rucene_result(index_field_term.reset(), "Can not reset index field term")?;
-        let tf = index_field_term.tf();
+        convert_rucene_result(index_field_term_ref.reset(), "Can not reset index field term")?;
+        let tf = index_field_term_ref.tf();
         if tf != positions.len() as i32 {
             output.push_str(&format!(
                 "Term frequency mismatch for term '{}' in doc {}: {} vs {}",
@@ -234,9 +231,9 @@ fn verify_doc_positions(
             return new_error("Term frequency mismatch");
         }
         let index = 0usize;
-        while index_field_term.has_next() {
+        while index_field_term_ref.has_next() {
             let (lp, ls, le) = positions[index];
-            let tp = convert_rucene_result(index_field_term.next_pos(), "Can not get next term")?;
+            let tp = convert_rucene_result(index_field_term_ref.next_pos(), "Can not get next term")?;
             if lp != tp.position {
                 output.push_str(&format!(
                     "Term Position Mismatch: {} vs {}",
@@ -475,7 +472,6 @@ fn verify_numeric_doc_values(
         leaf_reader.get_numeric_doc_values(field_name),
         "failed to get numeric doc values",
     )?;
-    let numeric_doc_values = numeric_doc_values.lock().unwrap();
     for doc_id in 0..max_doc {
         let expected = read_long(input)?;
         let rucene = convert_rucene_result(
@@ -508,7 +504,6 @@ fn verify_sorted_doc_values(
         leaf_reader.get_sorted_doc_values(field_name),
         "failed to get sorted doc values",
     )?;
-    let sorted_doc_values = sorted_doc_values.lock().unwrap();
     for doc_id in 0..max_doc {
         let expected = read_binary(input)?;
         let rucene = convert_rucene_result(
@@ -541,26 +536,24 @@ fn verify_sorted_numeric_doc_values(
         leaf_reader.get_sorted_numeric_doc_values(field_name),
         "failed to get sorted_numeric doc values",
     )?;
-    let sorted_numeric_doc_values = sorted_numeric_doc_values.lock();
-    let mut sorted_numeric_doc_values = sorted_numeric_doc_values.unwrap();
     for doc_id in 0..max_doc {
-        convert_rucene_result(
+        let ctx = convert_rucene_result(
             sorted_numeric_doc_values.set_document(doc_id),
             "failed to set document id",
         )?;
         let count = read_int(input)? as usize;
-        if sorted_numeric_doc_values.count() != count {
+        if sorted_numeric_doc_values.count(&ctx) != count {
             eprintln!(
                 "Sorted numeric doc values count mismatch {} vs {}",
                 count,
-                sorted_numeric_doc_values.count()
+                sorted_numeric_doc_values.count(&ctx)
             );
             return new_error("");
         }
         for vi in 0..count {
             let expected = read_long(input)?;
             let rucene = convert_rucene_result(
-                sorted_numeric_doc_values.value_at(vi),
+                sorted_numeric_doc_values.value_at(&ctx, vi),
                 "failed to get sorted numeric doc values for doc",
             )?;
             if expected != rucene {
@@ -590,17 +583,15 @@ fn verify_sorted_set_doc_values(
         leaf_reader.get_sorted_set_doc_values(field_name),
         "failed to get sorted_set doc values",
     )?;
-    let sorted_set_doc_values = sorted_set_doc_values.lock();
-    let mut sorted_set_doc_values = sorted_set_doc_values.unwrap();
     for doc_id in 0..max_doc {
-        convert_rucene_result(
+        let mut ctx = convert_rucene_result(
             sorted_set_doc_values.set_document(doc_id),
             "failed to set document id",
         )?;
         loop {
             let ord = read_long(input)?;
             let rucene_ord = convert_rucene_result(
-                sorted_set_doc_values.next_ord(),
+                sorted_set_doc_values.next_ord(&mut ctx),
                 "Failed to get next ord of sorted set doc values",
             )?;
             if rucene_ord != ord {

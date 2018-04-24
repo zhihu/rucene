@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use thread_local::{CachedThreadLocal, ThreadLocal};
 
 use core::codec::DocValuesProducer;
@@ -292,7 +292,7 @@ impl LeafReader for SegmentReader {
                 Some(fi) if self.doc_values_producer.get().is_some() => {
                     let dv_producer = self.doc_values_producer.get().unwrap();
                     let dv = dv_producer.get_numeric(fi)?;
-                    let cell = Arc::new(Mutex::new(dv));
+                    let cell = Arc::new(dv);
                     v.insert(DocValuesRefEnum::Numeric(Arc::clone(&cell)));
                     Ok(cell)
                 }
@@ -355,7 +355,7 @@ impl LeafReader for SegmentReader {
                 Some(fi) if self.doc_values_producer.get().is_some() => {
                     let dv_producer = self.doc_values_producer.get().unwrap();
                     let dv = dv_producer.get_sorted(fi)?;
-                    let cell = Arc::new(Mutex::new(dv));
+                    let cell = Arc::new(dv);
                     v.insert(DocValuesRefEnum::Sorted(Arc::clone(&cell)));
                     Ok(cell)
                 }
@@ -386,7 +386,7 @@ impl LeafReader for SegmentReader {
                 Some(fi) if self.doc_values_producer.get().is_some() => {
                     let dv_producer = self.doc_values_producer.get().unwrap();
                     let dv = dv_producer.get_sorted_numeric(fi)?;
-                    let cell = Arc::new(Mutex::new(dv));
+                    let cell = Arc::new(dv);
                     v.insert(DocValuesRefEnum::SortedNumeric(Arc::clone(&cell)));
                     Ok(cell)
                 }
@@ -417,7 +417,7 @@ impl LeafReader for SegmentReader {
                 Some(fi) if self.doc_values_producer.get().is_some() => {
                     let dv_producer = self.doc_values_producer.get().unwrap();
                     let dv = dv_producer.get_sorted_set(fi)?;
-                    let cell = Arc::new(Mutex::new(dv));
+                    let cell = Arc::new(dv);
                     v.insert(DocValuesRefEnum::SortedSet(Arc::clone(&cell)));
                     Ok(cell)
                 }

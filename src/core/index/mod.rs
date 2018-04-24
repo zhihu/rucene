@@ -671,7 +671,6 @@ impl MergeState {}
 #[cfg(test)]
 pub mod tests {
     use std::collections::HashMap;
-    use std::sync::Mutex;
 
     use super::*;
     use core::index::point_values::PointValuesRef;
@@ -803,7 +802,7 @@ pub mod tests {
         }
 
         fn get_numeric_doc_values(&self, _field: &str) -> Result<NumericDocValuesRef> {
-            Ok(Arc::new(Mutex::new(Box::new(MockNumericValues::default()))))
+            Ok(Arc::new(Box::new(MockNumericValues::default())))
         }
 
         fn get_binary_doc_values(&self, _field: &str) -> Result<BinaryDocValuesRef> {

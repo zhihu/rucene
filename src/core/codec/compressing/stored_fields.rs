@@ -2,7 +2,7 @@ use error::Result;
 use std::boxed::Box;
 use std::cmp::min;
 use std::io::{self, Read};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use core::codec::codec_util::*;
 use core::codec::compressing::{CompressionMode, Decompress, Decompressor};
@@ -94,9 +94,9 @@ pub struct CompressingStoredFieldsIndexReader {
     start_pointers: Vec<i64>,
     avg_chunk_docs: Vec<i32>,
     avg_chunk_sizes: Vec<i64>,
-    doc_bases_deltas: Vec<Mutex<Box<Reader>>>,
+    doc_bases_deltas: Vec<Box<Reader>>,
     // delta from the avg
-    start_pointers_deltas: Vec<Mutex<Box<Reader>>>,
+    start_pointers_deltas: Vec<Box<Reader>>,
     // delta from the avg
 }
 
@@ -129,13 +129,13 @@ impl CompressingStoredFieldsIndexReader {
             if bits_per_doc_base > 32 {
                 bail!("Corrupted bitsPerDocBase: {}", bits_per_doc_base);
             }
-            doc_bases_deltas.push(Mutex::new(get_reader_no_header(
+            doc_bases_deltas.push(get_reader_no_header(
                 fields_index_in,
                 Format::Packed,
                 packed_ints_version,
                 num_chunks as usize,
                 bits_per_doc_base,
-            )?));
+            )?);
 
             // start pointers
             start_pointers.push(fields_index_in.read_vlong()?);
@@ -144,13 +144,13 @@ impl CompressingStoredFieldsIndexReader {
             if bits_per_start_pointer > 64 {
                 bail!("Corrupted bitsPerStartPointer: {}", bits_per_start_pointer);
             }
-            start_pointers_deltas.push(Mutex::new(get_reader_no_header(
+            start_pointers_deltas.push(get_reader_no_header(
                 fields_index_in,
                 Format::Packed,
                 packed_ints_version,
                 num_chunks as usize,
                 bits_per_start_pointer,
-            )?));
+            )?);
 
             // block_count += 1;
         }
@@ -186,8 +186,6 @@ impl CompressingStoredFieldsIndexReader {
     fn relative_doc_base(&self, block: usize, relative_chunk: usize) -> DocId {
         let expected = self.avg_chunk_docs[block] as usize * relative_chunk;
         let delta = self.doc_bases_deltas[block]
-            .lock()
-            .unwrap()
             .get(relative_chunk)
             .decode();
         (expected as i64 + delta) as DocId
@@ -196,8 +194,6 @@ impl CompressingStoredFieldsIndexReader {
     fn relative_start_pointer(&self, block: usize, relative_chunk: usize) -> i64 {
         let expected = self.avg_chunk_sizes[block] as usize * relative_chunk;
         let delta = self.start_pointers_deltas[block]
-            .lock()
-            .unwrap()
             .get(relative_chunk)
             .decode();
         expected as i64 + delta
@@ -205,7 +201,7 @@ impl CompressingStoredFieldsIndexReader {
 
     fn relative_chunk(&self, block: usize, relative_doc: DocId) -> Result<usize> {
         let mut lo = 0usize;
-        let mut hi = self.doc_bases_deltas[block].lock()?.size() - 1usize;
+        let mut hi = self.doc_bases_deltas[block].size() - 1usize;
         while lo <= hi {
             let mid = (lo + hi) >> 1;
             let mid_value = self.relative_doc_base(block, mid);

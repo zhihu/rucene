@@ -1,5 +1,5 @@
 use std::collections::hash_map::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use core::codec::FieldsProducerRef;
 use core::index::Term;
@@ -126,8 +126,8 @@ pub const FLAG_FREQUENCIES: i32 = 8;
 pub const FLAG_POSITIONS: i32 = 16;
 pub const FLAG_CACHE: i32 = 32;
 
-pub type LeafIndexFieldRef = Arc<Mutex<LeafIndexField>>;
-pub type LeafIndexFieldTermRef = Arc<Mutex<LeafIndexFieldTerm>>;
+pub type LeafIndexFieldRef = LeafIndexField;
+pub type LeafIndexFieldTermRef = LeafIndexFieldTerm;
 
 ///
 // Holds all information on a particular term in a field.
@@ -317,7 +317,7 @@ impl LeafIndexField {
         }
     }
 
-    pub fn get(&mut self, key: &str) -> Result<LeafIndexFieldTermRef> {
+    pub fn get(&mut self, key: &str) -> Result<&mut LeafIndexFieldTermRef> {
         self.get_with_flags(key, FLAG_FREQUENCIES)
     }
 
@@ -329,25 +329,23 @@ impl LeafIndexField {
     // advance which terms are requested, we could provide an array which the
     // user could then iterate over.
     //
-    pub fn get_with_flags(&mut self, key: &str, flags: i32) -> Result<LeafIndexFieldTermRef> {
-        if self.terms.contains_key(key) {
-            let index_field_term_ref = &self.terms[key];
-            index_field_term_ref.lock()?.validate_flags(flags)?;
-            Ok(Arc::clone(index_field_term_ref))
-        } else {
+    pub fn get_with_flags(&mut self, key: &str, flags: i32) -> Result<&mut LeafIndexFieldTermRef> {
+        if !self.terms.contains_key(key) {
             let index_field_term =
                 LeafIndexFieldTerm::new(key, &self.field_name, flags, self.doc_id, &self.fields)?;
             index_field_term.validate_flags(flags)?;
-            let index_field_term_ref = Arc::new(Mutex::new(index_field_term));
+            let index_field_term_ref = index_field_term;
             self.terms
-                .insert(String::from(key), index_field_term_ref.clone());
-            Ok(index_field_term_ref)
+                .insert(String::from(key), index_field_term_ref);
         }
+        let index_field_term_ref = self.terms.get_mut(key).unwrap();
+        index_field_term_ref.validate_flags(flags)?;
+        Ok(index_field_term_ref)
     }
 
     pub fn set_doc_id_in_terms(&mut self, doc_id: DocId) -> Result<()> {
-        for ti in self.terms.values() {
-            ti.lock()?.set_document(doc_id)?;
+        for ti in self.terms.values_mut() {
+            ti.set_document(doc_id)?;
         }
         Ok(())
     }
@@ -401,8 +399,8 @@ impl LeafIndexLookup {
     }
 
     fn set_next_doc_id_in_fields(&mut self) -> Result<()> {
-        for stat in self.index_fields.values() {
-            stat.lock()?.set_doc_id_in_terms(self.doc_id)?;
+        for stat in self.index_fields.values_mut() {
+            stat.set_doc_id_in_terms(self.doc_id)?;
         }
         Ok(())
     }
@@ -410,15 +408,13 @@ impl LeafIndexLookup {
     // advance which terms are requested, we could provide an array which the
     // user could then iterate over.
     //
-    pub fn get(&mut self, key: &str) -> LeafIndexFieldRef {
-        if self.index_fields.contains_key(key) {
-            Arc::clone(&self.index_fields[key])
-        } else {
-            let index_field = LeafIndexField::new(key, self.doc_id, self.fields.clone());
-            let index_field_ref = Arc::new(Mutex::new(index_field));
+    pub fn get(&mut self, key: &str) -> &mut LeafIndexFieldRef {
+        if !self.index_fields.contains_key(key) {
+            let index_field = LeafIndexField::new(key, self.doc_id, Arc::clone(&self.fields));
+            let index_field_ref = index_field;
             self.index_fields
-                .insert(String::from(key), Arc::clone(&index_field_ref));
-            index_field_ref
+                .insert(String::from(key), index_field_ref);
         }
+        self.index_fields.get_mut(key).unwrap()
     }
 }

@@ -7,14 +7,14 @@ use error::Result;
 
 /// Implements a `TermIterator` wrapping a provided `SortedDocValues`
 pub struct SortedDocValuesTermIterator<'a> {
-    values: &'a mut SortedDocValues,
+    values: &'a SortedDocValues,
     current_ord: i32,
     scratch: Vec<u8>,
 }
 
 impl<'a> SortedDocValuesTermIterator<'a> {
     /// Creates a new TermIterator over the provided values
-    pub fn new<'c, 'b: 'c>(values: &'b mut SortedDocValues) -> SortedDocValuesTermIterator<'c> {
+    pub fn new<'c, 'b: 'c>(values: &'b SortedDocValues) -> SortedDocValuesTermIterator<'c> {
         SortedDocValuesTermIterator {
             values,
             current_ord: -1,
