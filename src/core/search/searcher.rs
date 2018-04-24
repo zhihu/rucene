@@ -120,11 +120,11 @@ impl IndexSearcher {
     /// Creates a {@link Weight} for the given query, potentially adding caching
     /// if possible and configured.
     pub fn create_weight(&self, query: &Query, needs_scores: bool) -> Result<Box<Weight>> {
-        let weight = query.create_weight(self, needs_scores)?;
-        //        if !needs_scores {
-        //            weight = self.query_cache
-        //                .do_cache(weight, Arc::clone(&self.cache_policy));
-        //        }
+        let mut weight = query.create_weight(self, needs_scores)?;
+        if !needs_scores {
+            weight = self.query_cache
+                .do_cache(weight, Arc::clone(&self.cache_policy));
+        }
         Ok(weight)
     }
 
