@@ -3,6 +3,7 @@
 #![cfg_attr(feature = "clippy", plugin(clippy))]
 #![cfg_attr(not(feature = "clippy"), allow(unknown_lints))]
 #![feature(const_max_value, vec_resize_default, option_filter, exact_size_is_empty)]
+#![feature(hash_map_remove_entry)]
 
 #[macro_use]
 extern crate error_chain;

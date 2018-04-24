@@ -6,6 +6,8 @@ use std::mem;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
+use core::search::lru_cache::LRUCache;
+
 use core::index::LeafReader;
 use core::search::bulk_scorer::BulkScorer;
 use core::search::cache_policy::QueryCachingPolicy;
@@ -113,14 +115,14 @@ impl LeafCache {
 pub struct CacheData {
     // maps queries that are contained in the cache to a singleton so that this
     // cache does not store several copies of the same query
-    pub unique_queries: HashMap<String, String>,
+    pub unique_queries: LRUCache<String, String>,
     // The contract between this set and the per-leaf caches is that per-leaf caches
     // are only allowed to store sub-sets of the queries that are contained in
     // mostRecentlyUsedQueries. This is why write operations are performed under a lock
     // pub most_recently_used_queries: HashSet<Query>,
     pub cache: HashMap<String, LeafCache>,
 
-    max_size: i32,
+    max_size: usize,
     max_doc: i32,
     min_size: i32,
     min_size_ratio: f32,
@@ -137,16 +139,16 @@ impl CacheData {
 
     /// Whether evictions are required.
     fn requires_eviction(&self) -> Result<bool> {
-        Ok(self.unique_queries.len() > self.max_size as usize)
+        Ok(self.unique_queries.len() > self.max_size)
     }
 
     pub fn get(
-        &self,
+        &mut self,
         query_key: &str,
         leaf_reader: &LeafReader,
     ) -> Result<Option<Box<DocIterator>>> {
         if let Some(leaf_cache) = self.cache.get(leaf_reader.core_cache_key()) {
-            if let Some(singleton) = self.unique_queries.get(query_key) {
+            if let Some(singleton) = self.unique_queries.get(&query_key.to_string()) {
                 // this get call moves the query to the most-recently-used position
                 return leaf_cache.get(singleton);
             }
@@ -160,8 +162,11 @@ impl CacheData {
         leaf_reader: &LeafReader,
         set: Box<DocIdSet>,
     ) -> Result<()> {
-        let query_key = if self.unique_queries.contains_key(query_key) {
-            self.unique_queries[query_key].to_string()
+        let query_key = if self.unique_queries.contains_key(&query_key.to_string()) {
+            self.unique_queries
+                .get(&query_key.to_string())
+                .unwrap()
+                .to_string()
         } else {
             self.unique_queries
                 .insert(query_key.to_string(), query_key.to_string());
@@ -186,33 +191,19 @@ impl CacheData {
     fn evict_if_necessary(&mut self) -> Result<()> {
         if self.requires_eviction()? {
             loop {
-                let query_key = {
-                    let key = self.unique_queries.keys().last();
-
-                    if key.is_none() {
-                        break;
-                    }
-
-                    key.unwrap().clone()
-                };
-
                 if !self.requires_eviction()? {
                     break;
                 }
 
-                let size = self.unique_queries.len();
-
-                self.unique_queries.remove(&query_key);
-                if size == self.unique_queries.len() {
+                if let Some(key) = self.unique_queries.remove_last() {
+                    self.on_eviction(&key);
+                } else {
                     bail!(
                         "Removal from the cache failed! This is probably due to a query which has \
                          been modified after having been put into the cache or a badly \
-                         implemented clone(). query: {:?}",
-                        query_key
+                         implemented clone()."
                     );
                 }
-
-                self.on_eviction(&query_key);
             }
         }
 
@@ -231,9 +222,10 @@ pub struct LRUQueryCache {
 }
 
 impl LRUQueryCache {
-    pub fn new(max_size: i32, max_doc: i32) -> LRUQueryCache {
+    pub fn new(max_size: usize, max_doc: i32) -> LRUQueryCache {
+        // let max_size = 10;
         let cache_data = CacheData {
-            unique_queries: HashMap::new(),
+            unique_queries: LRUCache::with_capacity(max_size),
             cache: HashMap::new(),
             max_size,
             max_doc,
@@ -368,12 +360,13 @@ impl Weight for CachingWrapperWeight {
 
         {
             // If the lock is already busy, prefer using the uncached version than waiting
-            match self.cache_data.try_read() {
-                Ok(cache_data) => if let Some(disi) = cache_data.get(&self.query_key, leaf_reader)?
-                {
-                    let cost = disi.cost();
-                    return Ok(Box::new(ConstantScoreScorer::new(0.0f32, disi, cost)));
-                },
+            match self.cache_data.try_write() {
+                Ok(mut cache_data) => {
+                    if let Some(disi) = cache_data.get(&self.query_key, leaf_reader)? {
+                        let cost = disi.cost();
+                        return Ok(Box::new(ConstantScoreScorer::new(0.0f32, disi, cost)));
+                    }
+                }
                 _ => {
                     return self.weight.create_scorer(leaf_reader);
                 }
@@ -449,9 +442,9 @@ impl Collector for DocIdSetLeafCollector {
 }
 
 // Number of documents in a block
-static BLOCK_SIZE: i32 = 1i32 << 16;
+static BLOCK_SIZE: usize = 1 << 16;
 // The maximum length for an array, beyond that point we switch to a bitset
-static MAX_ARRAY_LENGTH: i32 = 1i32 << 12;
+static MAX_ARRAY_LENGTH: usize = 1 << 12;
 
 ///
 // {@link DocIdSet} implementation inspired from http://roaringbitmap.org/
@@ -466,11 +459,11 @@ static MAX_ARRAY_LENGTH: i32 = 1i32 << 12;
 //
 pub struct RoaringDocIdSet {
     doc_id_sets: Arc<Vec<Option<Box<DocIdSet>>>>,
-    cardinality: i32,
+    cardinality: usize,
 }
 
 impl RoaringDocIdSet {
-    pub fn new(doc_id_sets: Vec<Option<Box<DocIdSet>>>, cardinality: i32) -> RoaringDocIdSet {
+    pub fn new(doc_id_sets: Vec<Option<Box<DocIdSet>>>, cardinality: usize) -> RoaringDocIdSet {
         RoaringDocIdSet {
             doc_id_sets: Arc::new(doc_id_sets),
             cardinality,
@@ -480,12 +473,12 @@ impl RoaringDocIdSet {
 
 pub struct RoaringDocIdSetBuilder {
     doc_id_sets: Vec<Option<Box<DocIdSet>>>,
-    cardinality: i32,
+    cardinality: usize,
 
     max_doc: i32,
     last_doc_id: DocId,
     current_block: i32,
-    current_block_cardinality: i32,
+    current_block_cardinality: usize,
 
     // We start by filling the buffer and when it's full we copy the content of
     // the buffer to the FixedBitSet and put further documents in that bitset
@@ -513,7 +506,7 @@ impl RoaringDocIdSetBuilder {
         }
     }
 
-    pub fn cardinality(&self) -> i32 {
+    pub fn cardinality(&self) -> usize {
         self.cardinality
     }
 
@@ -527,19 +520,19 @@ impl RoaringDocIdSetBuilder {
             // Use sparse encoding
             assert!(self.dense_buffer.is_none());
             if current_block_cardinality > 0 {
-                let mut docs: Vec<u16> = vec![0u16; current_block_cardinality as usize];
-                docs.copy_from_slice(&self.buffer[0..current_block_cardinality as usize]);
+                let mut docs: Vec<u16> = vec![0u16; current_block_cardinality];
+                docs.copy_from_slice(&self.buffer[0..current_block_cardinality]);
 
                 self.doc_id_sets[current_block as usize] = Some(Box::new(ShortArrayDocIdSet::new(
                     docs,
-                    current_block_cardinality as usize,
+                    current_block_cardinality,
                 )));
             }
         } else {
             assert!(self.dense_buffer.is_some());
             assert_eq!(
                 self.dense_buffer.as_mut().unwrap().cardinality(),
-                self.current_block_cardinality as usize
+                self.current_block_cardinality
             );
 
             if self.dense_buffer.as_mut().unwrap().len() == BLOCK_SIZE as usize
@@ -570,7 +563,7 @@ impl RoaringDocIdSetBuilder {
                 let length = exclude_docs.len();
                 self.doc_id_sets[self.current_block as usize] = Some(Box::new(NotDocIdSet::new(
                     Box::new(ShortArrayDocIdSet::new(exclude_docs, length)),
-                    BLOCK_SIZE,
+                    BLOCK_SIZE as i32,
                 )));
             } else {
                 // Neither sparse nor super dense, use a fixed bit set
@@ -664,14 +657,14 @@ pub struct RoaringDocIterator {
     doc_id_sets: Arc<Vec<Option<Box<DocIdSet>>>>,
     doc: DocId,
     block: i32,
-    cardinality: i32,
+    cardinality: usize,
     sub: Option<Box<DocIterator>>,
 }
 
 impl RoaringDocIterator {
     pub fn new(
         doc_id_sets: Arc<Vec<Option<Box<DocIdSet>>>>,
-        cardinality: i32,
+        cardinality: usize,
     ) -> RoaringDocIterator {
         RoaringDocIterator {
             doc_id_sets,

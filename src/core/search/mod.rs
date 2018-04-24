@@ -48,6 +48,7 @@ pub mod searcher;
 
 // Statistics
 pub mod cache_policy;
+pub mod lru_cache;
 pub mod lru_query_cache;
 pub mod statistics;
 
