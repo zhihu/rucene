@@ -36,6 +36,7 @@ pub mod util;
 pub mod boolean_query;
 pub mod query_string;
 pub mod term_query;
+pub mod boost;
 
 // Scorers
 pub mod term_scorer;
@@ -334,6 +335,14 @@ pub trait Weight: Display {
     fn actual_query_type(&self) -> &'static str {
         self.query_type()
     }
+
+    /// Assigns the query normalization factor and boost to this.
+    fn normalize(&mut self, norm: f32, boost: f32);
+
+    /// The value for normalization of contained query clauses (e.g. sum of squared weights).
+    fn value_for_normalization(&self) -> f32;
+
+    fn needs_scores(&self) -> bool;
 }
 
 /// Similarity defines the components of Lucene scoring.
@@ -402,11 +411,30 @@ pub trait Weight: Display {
 ///
 
 pub trait Similarity: Display {
+    /// Compute any collection-level weight (e.g. IDF, average document length, etc)
+    /// needed for scoring a query.
     fn compute_weight(
         &self,
         collection_stats: &CollectionStatistics,
         term_stats: &TermStatistics,
     ) -> Box<SimWeight>;
+
+    /// Computes the normalization value for a query given the sum of the
+    /// normalized weights `SimWeight#getValueForNormalization()` of
+    /// each of the query terms.  This value is passed back to the
+    /// weight (`SimWeight#normalize(float, float)` of each query
+    /// term, to provide a hook to attempt to make scores from different
+    /// queries comparable.
+    /// <p>
+    /// By default this is disabled (returns 1), but some
+    /// implementations such as `TFIDFSimilarity` override this.
+    ///
+    /// @param valueForNormalization the sum of the term normalization values
+    /// @return a normalization factor for query weights
+    ///
+    fn query_norm(&self, _value_for_normalization: f32) -> f32 {
+        1.0f32
+    }
 }
 
 pub trait SimScorer: Send {
@@ -656,6 +684,9 @@ pub mod tests {
 
         fn query_type(&self) -> &'static str {
             "mock"
+        }
+
+        fn normalize(&mut self, _norm: f32, _boost: f32) {
         }
     }
 

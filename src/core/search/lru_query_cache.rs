@@ -386,6 +386,10 @@ impl Weight for CachingWrapperWeight {
         }
     }
 
+    fn hash_code(&self) -> u32 {
+        self.hash_code
+    }
+
     fn query_type(&self) -> &'static str {
         CACHING_QUERY_TYPE_STR
     }
@@ -394,8 +398,16 @@ impl Weight for CachingWrapperWeight {
         self.weight.query_type()
     }
 
-    fn hash_code(&self) -> u32 {
-        self.hash_code
+    fn normalize(&mut self, norm: f32, boost: f32) {
+        self.weight.normalize(norm, boost)
+    }
+
+    fn value_for_normalization(&self) -> f32 {
+        self.weight.value_for_normalization()
+    }
+
+    fn needs_scores(&self) -> bool {
+        self.weight.needs_scores()
     }
 }
 
@@ -420,7 +432,7 @@ impl Collector for BitSetLeafCollector {
 
         Ok(())
     }
-    fn need_scores(&self) -> bool {
+    fn needs_scores(&self) -> bool {
         false
     }
 }
@@ -436,7 +448,7 @@ impl Collector for DocIdSetLeafCollector {
     fn collect(&mut self, doc: DocId, _scorer: &mut Scorer) -> Result<()> {
         self.doc_id_set.add_doc(doc)
     }
-    fn need_scores(&self) -> bool {
+    fn needs_scores(&self) -> bool {
         false
     }
 }

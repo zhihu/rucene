@@ -77,5 +77,5 @@ pub trait Collector {
 
     /// Indicates if document scores are needed by this collector.
     /// return `true` if scores are needed.
-    fn need_scores(&self) -> bool;
+    fn needs_scores(&self) -> bool;
 }

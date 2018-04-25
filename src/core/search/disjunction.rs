@@ -483,6 +483,27 @@ impl Weight for DisjunctionMaxWeight {
     fn query_type(&self) -> &'static str {
         DISJUNCTION_MAX
     }
+
+    fn normalize(&mut self, norm: f32, boost: f32) {
+        for weight in &mut self.weights {
+            weight.normalize(norm, boost)
+        }
+    }
+
+    fn value_for_normalization(&self) -> f32 {
+        let mut max_value = 0f32;
+        let mut sum = 0f32;
+        for weight in &self.weights {
+            let sub = weight.value_for_normalization();
+            sum += sub;
+            max_value = max_value.max(sub);
+        }
+        max_value + (sum - max_value) * self.tie_breaker_multiplier
+    }
+
+    fn needs_scores(&self) -> bool {
+        self.needs_scores
+    }
 }
 
 impl fmt::Display for DisjunctionMaxWeight {

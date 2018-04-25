@@ -34,7 +34,7 @@ impl<'a> Collector for ChainedCollector<'a> {
         Ok(())
     }
 
-    fn need_scores(&self) -> bool {
-        self.collectors.iter().any(|it| it.need_scores())
+    fn needs_scores(&self) -> bool {
+        self.collectors.iter().any(|it| it.needs_scores())
     }
 }
