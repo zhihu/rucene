@@ -1,7 +1,8 @@
 use std::sync::Arc;
+use std::fmt;
 
 use core::index::multi_fields::MultiFields;
-use core::index::IndexReader;
+use core::index::{IndexReader, LeafReader};
 use core::index::Term;
 use core::index::TermContext;
 use core::search::bm25_similarity::BM25Similarity;
@@ -12,7 +13,7 @@ use core::search::collector::Collector;
 use core::search::lru_query_cache::{LRUQueryCache, QueryCache};
 use core::search::statistics::{CollectionStatistics, TermStatistics};
 use core::search::{Query, Weight, NO_MORE_DOCS};
-use core::search::{Similarity, SimilarityProducer};
+use core::search::{Similarity, SimScorer, SimWeight, SimilarityProducer};
 use error::*;
 
 /// Implements search over a single IndexReader.
@@ -46,6 +47,50 @@ impl SimilarityProducer for DefaultSimilarityProducer {
     }
 }
 
+pub struct NonScoringSimilarity;
+
+impl Similarity for NonScoringSimilarity {
+    fn compute_weight(
+        &self,
+        _collection_stats: &CollectionStatistics,
+        _term_stats: &TermStatistics
+    ) -> Box<SimWeight> {
+        Box::new(NonScoringSimWeight {})
+    }
+}
+
+impl fmt::Display for NonScoringSimilarity {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "non-scoring")
+    }
+}
+
+pub struct NonScoringSimWeight;
+
+impl SimWeight for NonScoringSimWeight {
+    fn get_value_for_normalization(&self) -> f32 {
+        1.0f32
+    }
+
+    fn normalize(&mut self, _query_norm: f32, _boost: f32) {}
+
+    fn sim_scorer(&self, _reader: &LeafReader) -> Result<Box<SimScorer>> {
+        Ok(Box::new(NonScoringSimScorer {}))
+    }
+}
+
+pub struct NonScoringSimScorer;
+
+impl SimScorer for NonScoringSimScorer {
+    fn score(&mut self, _doc: i32, _freq: f32) -> Result<f32> {
+        Ok(0f32)
+    }
+
+    fn compute_slop_factor(&self, _distance: i32) -> f32 {
+        1.0f32
+    }
+}
+
 pub struct IndexSearcher {
     pub reader: Arc<IndexReader>,
     sim_producer: Box<SimilarityProducer>,
@@ -76,7 +121,7 @@ impl IndexSearcher {
     ///
     /// `LeafCollector::collect(DocId)` is called for every matching document.
     pub fn search(&self, query: &Query, collector: &mut Collector) -> Result<()> {
-        let weight = self.create_weight(query, collector.need_scores())?;
+        let weight = self.create_weight(query, collector.needs_scores())?;
 
         for (ord, reader) in self.reader.leaves().iter().enumerate() {
             let mut scorer = weight.create_scorer(*reader)?;
@@ -128,8 +173,29 @@ impl IndexSearcher {
         Ok(weight)
     }
 
-    pub fn similarity(&self, field: &str) -> Box<Similarity> {
-        self.sim_producer.create(field)
+    ///
+    /// Creates a normalized weight for a top-level `Query`.
+    /// The query is rewritten by this method and `Query#createWeight` called,
+    /// afterwards the `Weight` is normalized. The returned `Weight`
+    /// can then directly be used to get a `Scorer`.
+    ///
+    pub fn create_normalized_weight(&self, query: &Query, needs_scores: bool) -> Result<Box<Weight>> {
+        let mut weight = self.create_weight(query, needs_scores)?;
+        let v = weight.value_for_normalization();
+        let mut norm: f32 = self.similarity("", needs_scores).query_norm(v);
+        if norm.is_finite() || norm.is_nan() {
+            norm = 1.0f32;
+        }
+        weight.normalize(norm, 1.0f32);
+        Ok(weight)
+    }
+
+    pub fn similarity(&self, field: &str, needs_scores: bool) -> Box<Similarity> {
+        if needs_scores {
+            self.sim_producer.create(field)
+        } else {
+            Box::new(NonScoringSimilarity {})
+        }
     }
 
     pub fn term_statistics(&self, term: Term, context: &TermContext) -> TermStatistics {

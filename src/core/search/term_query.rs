@@ -7,11 +7,11 @@ use core::index::term::TermState;
 use core::index::LeafReader;
 use core::index::{Term, TermContext};
 use core::index::{POSTINGS_FREQS, POSTINGS_NONE};
-use core::search::posting_iterator::EmptyPostingIterator;
+use core::search::posting_iterator::{PostingIterator, EmptyPostingIterator};
 use core::search::searcher::IndexSearcher;
 use core::search::statistics::*;
 use core::search::term_scorer::TermScorer;
-use core::search::{DocIterator, Query, Scorer, SimWeight, Similarity, Weight};
+use core::search::{Query, Scorer, SimWeight, Similarity, Weight};
 use core::util::DocId;
 
 pub const TERM: &str = "term";
@@ -45,7 +45,7 @@ impl Query for TermQuery {
                 CollectionStatistics::new(self.term.field.clone(), max_doc, -1, -1, -1),
             )
         };
-        let similarity = searcher.similarity(&self.term.field);
+        let similarity = searcher.similarity(&self.term.field, needs_scores);
         let sim_weight = similarity.compute_weight(&collection_stats, &term_stats);
         Ok(Box::new(TermWeight::new(
             self.term.clone(),
@@ -106,9 +106,9 @@ impl TermWeight {
         }
     }
 
-    fn create_doc_iterator(&self, reader: &LeafReader, flags: i32) -> Result<Box<DocIterator>> {
+    fn create_postings_iterator(&self, reader: &LeafReader, flags: i32) -> Result<Box<PostingIterator>> {
         if let Some(state) = self.term_states.get(&reader.doc_base()) {
-            reader.docs_from_state(&self.term, state.as_ref(), flags)
+            reader.postings_from_state(&self.term, state.as_ref(), flags)
         } else {
             Ok(Box::new(EmptyPostingIterator::default()))
         }
@@ -128,13 +128,25 @@ impl Weight for TermWeight {
 
         Ok(Box::new(TermScorer::new(
             sim_scorer,
-            self.create_doc_iterator(reader, i32::from(flags))?,
+            self.create_postings_iterator(reader, i32::from(flags))?,
             self.boost,
         )))
     }
 
     fn query_type(&self) -> &'static str {
         TERM
+    }
+
+    fn normalize(&mut self, norm: f32, boost: f32) {
+        self.sim_weight.normalize(norm, boost)
+    }
+
+    fn value_for_normalization(&self) -> f32 {
+        self.sim_weight.get_value_for_normalization()
+    }
+
+    fn needs_scores(&self) -> bool {
+        self.needs_scores
     }
 }
 

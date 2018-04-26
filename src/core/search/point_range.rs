@@ -149,6 +149,8 @@ struct PointRangeWeight {
     lower_point: Vec<u8>,
     upper_point: Vec<u8>,
     value_type: PointValueType,
+    weight: f32,
+    norm: f32,
 }
 
 impl PointRangeWeight {
@@ -167,6 +169,8 @@ impl PointRangeWeight {
             lower_point,
             upper_point,
             value_type,
+            weight: 0f32,
+            norm: 1f32,
         }
     }
 
@@ -240,7 +244,7 @@ impl Weight for PointRangeWeight {
                     }
                 };
                 let cost = iterator.cost();
-                return Ok(Box::new(ConstantScoreScorer::new(0f32, iterator, cost)));
+                return Ok(Box::new(ConstantScoreScorer::new(self.weight, iterator, cost)));
             }
         }
         Ok(Box::new(MatchNoDocScorer::default()))
@@ -248,6 +252,19 @@ impl Weight for PointRangeWeight {
 
     fn query_type(&self) -> &'static str {
         POINT_RANGE
+    }
+
+    fn normalize(&mut self, norm: f32, boost: f32) {
+        self.weight = norm * boost;
+        self.norm = norm;
+    }
+
+    fn value_for_normalization(&self) -> f32 {
+        self.weight * self.weight
+    }
+
+    fn needs_scores(&self) -> bool {
+        false
     }
 }
 

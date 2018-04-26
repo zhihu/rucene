@@ -106,7 +106,7 @@ impl Collector for TopDocsCollector {
         Ok(())
     }
 
-    fn need_scores(&self) -> bool {
+    fn needs_scores(&self) -> bool {
         true
     }
 }

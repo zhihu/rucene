@@ -116,7 +116,7 @@ impl fmt::Display for BM25Similarity {
 
 pub struct BM25SimScorer {
     k1: f32,
-    idf: f32,
+    weight: f32,
     cache: Arc<[f32; 256]>,
     norms: Option<Box<NumericDocValues>>,
 }
@@ -125,7 +125,7 @@ impl BM25SimScorer {
     fn new(weight: &BM25SimWeight, norms: Option<Box<NumericDocValues>>) -> BM25SimScorer {
         BM25SimScorer {
             k1: weight.k1,
-            idf: weight.idf,
+            weight: weight.weight,
             cache: Arc::clone(&weight.cache),
             norms,
         }
@@ -139,7 +139,7 @@ impl BM25SimScorer {
             self.k1
         };
 
-        Ok(self.idf * (self.k1 + 1.0) * freq / (freq + norm))
+        Ok(self.weight * (self.k1 + 1.0) * freq / (freq + norm))
     }
 }
 

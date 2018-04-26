@@ -50,7 +50,7 @@ impl Collector for EarlyTerminatingSortingCollector {
     }
 
     // NOTE: this collector won't be used alone, so return true will be ok
-    fn need_scores(&self) -> bool {
+    fn needs_scores(&self) -> bool {
         true
     }
 }

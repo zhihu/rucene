@@ -38,7 +38,7 @@ impl BooleanQuery {
             } else if shoulds.len() == 1 {
                 shoulds.remove(0)
             } else {
-                Box::new(ConstantScoreQuery::with_weight(filters.remove(0), 0f32))
+                Box::new(ConstantScoreQuery::with_boost(filters.remove(0), 0f32))
             };
             return Ok(query);
         }
@@ -119,7 +119,6 @@ pub struct BooleanWeight {
     should_weights: Vec<Box<Weight>>,
     #[allow(dead_code)]
     minimum_should_match: i32,
-    #[allow(dead_code)]
     needs_scores: bool,
 }
 
@@ -145,8 +144,7 @@ impl BooleanWeight {
     ) -> Result<Vec<Box<Scorer>>> {
         let mut result = Vec::with_capacity(weights.len());
         for weight in weights {
-            let scorer = weight.create_scorer(leaf_reader)?;
-            result.push(scorer)
+            result.push(weight.create_scorer(leaf_reader)?)
         }
         Ok(result)
     }
@@ -160,24 +158,24 @@ impl BooleanWeight {
 impl Weight for BooleanWeight {
     fn create_scorer(&self, leaf_reader: &LeafReader) -> Result<Box<Scorer>> {
         let must_scorer: Option<Box<Scorer>> = if !self.must_weights.is_empty() {
-            if self.must_weights.len() > 1 {
-                Some(Box::new(ConjunctionScorer::new(self.build_scorers(
-                    &self.must_weights,
-                    leaf_reader,
-                )?)))
+            let mut scorers = self.build_scorers(
+                &self.must_weights,
+                leaf_reader,
+            )?;
+            if scorers.len() > 1 {
+                Some(Box::new(ConjunctionScorer::new(scorers)))
             } else {
-                Some(self.must_weights[0].create_scorer(leaf_reader)?)
+                Some(scorers.remove(0))
             }
         } else {
             None
         };
         let should_scorer: Option<Box<Scorer>> = if !self.should_weights.is_empty() {
-            if self.should_weights.len() > 1 {
-                Some(Box::new(DisjunctionSumScorer::new(
-                    self.build_scorers(&self.should_weights, leaf_reader)?,
-                )))
+            let mut scorers = self.build_scorers(&self.should_weights, leaf_reader)?;
+            if scorers.len() > 1 {
+                Some(Box::new(DisjunctionSumScorer::new(scorers)))
             } else {
-                Some(self.should_weights[0].create_scorer(leaf_reader)?)
+                Some(scorers.remove(0))
             }
         } else {
             None
@@ -197,6 +195,29 @@ impl Weight for BooleanWeight {
 
     fn query_type(&self) -> &'static str {
         BOOLEAN
+    }
+
+    fn normalize(&mut self, norm: f32, boost: f32) {
+        for must in &mut self.must_weights {
+            must.normalize(norm, boost);
+        }
+        for should in &mut self.should_weights {
+            should.normalize(norm, boost);
+        }
+    }
+
+    fn value_for_normalization(&self) -> f32 {
+        let mut sum = 0f32;
+        for weight in &self.must_weights {
+            if weight.needs_scores() {
+                sum += weight.value_for_normalization();
+            }
+        }
+        sum
+    }
+
+    fn needs_scores(&self) -> bool {
+        self.needs_scores
     }
 }
 
