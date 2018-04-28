@@ -16,21 +16,7 @@ impl Document {
     pub fn add(&mut self, field: StoredField) {
         self.fields.push(field);
     }
-
     pub fn remove_field(&mut self, name: &str) {
-        for i in 0..self.fields.len() {
-            if self.fields[i].field.name().eq(name) {
-                self.fields.remove(i);
-                return;
-            }
-        }
-    }
-
-    pub fn remove_fields(&mut self, name: &str) {
-        for i in 0..self.fields.len() {
-            if self.fields[i].field.name().eq(name) {
-                self.fields.remove(i);
-            }
-        }
+        self.fields.retain(|ref v| v.field.name() != name);
     }
 }

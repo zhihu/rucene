@@ -74,7 +74,7 @@ impl TermVectorsFormat for CompressingTermVectorsFormat {
         field_info: Arc<FieldInfos>,
         ioctx: &IOContext,
     ) -> Result<Box<TermVectorsReader>> {
-        match CompressingTermVectorsReader::new(
+        CompressingTermVectorsReader::new(
             &directory,
             si,
             &self.segment_suffix,
@@ -82,10 +82,7 @@ impl TermVectorsFormat for CompressingTermVectorsFormat {
             ioctx,
             &self.format_name,
             self.compression_mode.clone(),
-        ) {
-            Ok(tvf) => Ok(Box::new(tvf)),
-            Err(e) => Err(e),
-        }
+        ).map(|tvf| -> Box<TermVectorsReader> { Box::new(tvf) })
     }
 
     fn vectors_writer(
@@ -451,15 +448,7 @@ impl CompressingTermVectorsReader {
                 )?);
             }
             _ => {
-                debug_assert!(false);
-                // will not arrive here, just make the compiler happy
-                flags_reader = Some(get_reader_no_header(
-                    vectors_stream,
-                    Format::Packed,
-                    self.packed_ints_version,
-                    total_fields,
-                    FLAGS_BITS,
-                )?);
+                unreachable!();
             }
         }
         debug_assert!(flags_mutable.is_some() || flags_reader.is_some());
@@ -469,10 +458,11 @@ impl CompressingTermVectorsReader {
             flags_reader.as_ref().unwrap().as_ref()
         };
 
-        for i in 0..num_fields {
-            field_num_offs.push(all_field_num_off.get((skip + i) as usize) as i32);
-        }
+        let extension: Vec<_> = (0..num_fields)
+            .map(|i| all_field_num_off.get((skip + i) as usize) as i32)
+            .collect();
 
+        field_num_offs.extend(extension);
         // number of terms per field for all fields
         let bits_required = vectors_stream.read_vint()?;
         let num_terms = get_reader_no_header(
@@ -482,11 +472,10 @@ impl CompressingTermVectorsReader {
             total_fields,
             bits_required,
         )?;
-        let mut sum = 0;
-        for i in 0..total_fields {
-            sum += num_terms.as_ref().get(i) as i32;
-        }
-        let total_terms = sum as usize;
+
+        let total_terms = (0..total_fields)
+            .map(|i| num_terms.as_ref().get(i) as i32)
+            .fold(0, |acc, x| acc + x) as usize;
 
         // term length
         let mut doc_off = 0;
@@ -604,9 +593,7 @@ impl CompressingTermVectorsReader {
                 &position_index,
             )?
         } else {
-            let mut pos: Vec<Vec<i32>> = Vec::with_capacity(num_fields);
-            pos.resize(num_fields, Vec::with_capacity(0));
-            pos
+            vec![Vec::with_capacity(0); num_fields as usize]
         };
 
         let mut start_offsets: Vec<Vec<i32>> = Vec::with_capacity(num_fields);

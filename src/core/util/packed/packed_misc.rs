@@ -2867,17 +2867,16 @@ impl BlockPackedReaderIterator {
         debug_assert!(min_equals_0 || min_value != 0);
 
         if bits_per_value == 0 {
-            for i in 0..self.values.len() {
-                self.values[i] = min_value;
-            }
+            let num_values = self.values.len();
+            self.values = vec![min_value; num_values];
         } else {
             let decoder = get_decoder(&Format::Packed, self.packed_ints_version, bits_per_value)?;
             let iterations = self.block_size / PackedIntDecoder::byte_value_count(decoder.as_ref());
             let blocks_size = iterations * PackedIntDecoder::byte_block_count(decoder.as_ref());
-            if self.blocks.len() < blocks_size {
-                for _ in 0..blocks_size - self.blocks.len() {
-                    self.blocks.push(0u8);
-                }
+
+            let actual_len = self.blocks.len();
+            if actual_len < blocks_size {
+                self.blocks.extend(vec![0u8; blocks_size - actual_len]);
             }
             let value_count = min(self.value_count - self.ord, self.block_size as i64) as i32;
             let blocks_count =

@@ -96,7 +96,7 @@ impl SegmentReader {
     }
 
     pub fn check_bounds(&self, doc_id: DocId) {
-        assert!(
+        debug_assert!(
             doc_id >= 0 && doc_id < self.doc_base + self.max_docs(),
             format!(
                 "doc_id={} max_docs={} doc_base={}",

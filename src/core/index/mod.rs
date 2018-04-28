@@ -176,7 +176,7 @@ pub fn file_name_from_generation(base: &str, ext: &str, gen: i64) -> String {
 pub trait IndexReader: Send + Sync {
     fn leaves(&self) -> Vec<&LeafReader>;
     fn term_vector(&self, doc_id: DocId) -> Result<Box<Fields>>;
-    fn document(&self, doc_id: DocId, fields_load: &[String]) -> Result<Document>;
+    fn document(&self, doc_id: DocId, fields: &[String]) -> Result<Document>;
     fn max_doc(&self) -> i32;
     fn num_docs(&self) -> i32;
     fn leaf_reader_for_doc(&self, doc: DocId) -> &LeafReader {

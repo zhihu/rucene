@@ -1,14 +1,14 @@
-use core::doc::StoredField;
-use core::highlight::{BoundaryScanner, DefaultEncoder, Encoder, FieldFragList, FragmentsBuilder,
-                      SimpleBoundaryScanner, SubInfo, Toffs, WeightedFragInfo};
-use core::index::Fieldable;
-use core::index::IndexReader;
-use core::util::DocId;
-use error::*;
-
 use std::borrow::Borrow;
 use std::cmp::min;
 use std::collections::HashMap;
+
+use core::doc::StoredField;
+use core::highlight::{BoundaryScanner, DefaultEncoder, Encoder, FieldFragList, FragmentsBuilder,
+                      SimpleBoundaryScanner, SubInfo, Toffs, WeightedFragInfo};
+use core::index::{Fieldable, IndexReader};
+use core::util::DocId;
+
+use error::Result;
 
 pub struct BaseFragmentsBuilder {
     pre_tags: Vec<String>,
@@ -25,19 +25,11 @@ impl BaseFragmentsBuilder {
         boundary_scanner: Option<Box<BoundaryScanner>>,
     ) -> BaseFragmentsBuilder {
         BaseFragmentsBuilder {
-            pre_tags: match pre_tags {
-                Some(x) => x.to_vec(),
-                None => vec![String::from("<b>")],
-            },
-            post_tags: match post_tags {
-                Some(x) => x.to_vec(),
-                None => vec![String::from("</b>")],
-            },
+            pre_tags: pre_tags.map_or(vec!["<b>".to_owned()], |x| x.to_vec()),
+            post_tags: post_tags.map_or(vec!["</b>".to_owned()], |x| x.to_vec()),
             multi_valued_separator: ' ',
-            boundary_scanner: match boundary_scanner {
-                Some(x) => x,
-                None => Box::new(SimpleBoundaryScanner::new(None, None)),
-            },
+            boundary_scanner: boundary_scanner
+                .map_or(Box::new(SimpleBoundaryScanner::new(None, None)), |x| x),
             discrete_multi_value_highlighting: false,
         }
     }
@@ -48,10 +40,10 @@ impl BaseFragmentsBuilder {
         doc_id: DocId,
         field_name: &str,
     ) -> Result<Vec<StoredField>> {
-        let fields_load = vec![field_name.to_string()];
-        // let mut visitor = DocumentStoredFieldVisitor::new(&fields_load);
+        let fields = [field_name.to_string()];
+        // let mut visitor = DocumentStoredFieldVisitor::new(&fields);
 
-        let document = reader.document(doc_id, &fields_load)?;
+        let document = reader.document(doc_id, &fields)?;
         Ok(document.fields)
     }
 

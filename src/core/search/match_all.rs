@@ -30,16 +30,16 @@ impl fmt::Display for MatchAllDocsQuery {
     }
 }
 
-struct MatchAllDocsWeight{
+struct MatchAllDocsWeight {
     weight: f32,
-    norm: f32
+    norm: f32,
 }
 
 impl Default for MatchAllDocsWeight {
     fn default() -> Self {
         MatchAllDocsWeight {
             weight: 0f32,
-            norm: 1f32
+            norm: 1f32,
         }
     }
 }
@@ -168,10 +168,7 @@ pub struct ConstantScoreQuery {
 
 impl ConstantScoreQuery {
     pub fn new(query: Box<Query>) -> ConstantScoreQuery {
-        ConstantScoreQuery {
-            query,
-            boost: 0f32,
-        }
+        ConstantScoreQuery { query, boost: 0f32 }
     }
 
     pub fn with_boost(query: Box<Query>, boost: f32) -> ConstantScoreQuery {
@@ -219,7 +216,7 @@ impl ConstantScoreWeight {
         ConstantScoreWeight {
             sub_weight,
             query_weight: boost,
-            query_norm: 1.0f32
+            query_norm: 1.0f32,
         }
     }
 }

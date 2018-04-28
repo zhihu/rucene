@@ -157,10 +157,10 @@ impl FastVectorHighlighter {
         field_query: &FieldQuery,
         reader: &LeafReader,
         doc_id: DocId,
-        matched_field: &str,
+        field: &str,
         frag_char_size: i32,
     ) -> Result<Box<FieldFragList>> {
-        let mut field_term_stack = FieldTermStack::new(reader, doc_id, matched_field, field_query)?;
+        let mut field_term_stack = FieldTermStack::new(reader, doc_id, field, field_query)?;
         let field_phrase_list =
             FieldPhraseList::new(&mut field_term_stack, field_query, self.phrase_limit);
 

@@ -32,7 +32,7 @@ impl StandardDirectoryReader {
         let mut starts = Vec::with_capacity(readers.len() + 1);
         let mut max_doc = 0;
         let mut num_docs = 0;
-        for (_, reader) in readers.iter_mut().enumerate() {
+        for reader in readers.iter_mut() {
             reader.set_doc_base(max_doc);
             starts.push(max_doc);
             max_doc += reader.max_docs();
@@ -55,11 +55,7 @@ impl StandardDirectoryReader {
 
 impl IndexReader for StandardDirectoryReader {
     fn leaves(&self) -> Vec<&LeafReader> {
-        let mut res = Vec::with_capacity(self.readers.len());
-        for reader in &self.readers {
-            res.push(reader as &LeafReader);
-        }
-        res
+        self.readers.iter().map(|r| r as &LeafReader).collect()
     }
 
     fn term_vector(&self, doc_id: DocId) -> Result<Box<Fields>> {
@@ -79,19 +75,17 @@ impl IndexReader for StandardDirectoryReader {
 
     fn document(&self, doc_id: DocId, fields_load: &[String]) -> Result<Document> {
         if doc_id < 0 || doc_id > self.max_doc {
-            bail!("invalid doc id: {}", doc_id);
+            bail!("doc_id {} invalid: [max_doc={}]", doc_id, self.max_doc);
         }
-        let mut i = 0usize;
-        while i < self.starts.len() {
-            if self.starts[i + 1] > doc_id {
-                break;
-            }
-            i += 1;
-        }
-        assert!(i < self.readers.len());
+
+        let pos = match self.starts.binary_search_by(|&probe| probe.cmp(&doc_id)) {
+            Ok(i) => i + 1,
+            Err(i) => i,
+        };
+        debug_assert!(pos < self.readers.len());
 
         let mut visitor = DocumentStoredFieldVisitor::new(&fields_load);
-        self.readers[i].document(doc_id - self.starts[i], &mut visitor)?;
+        self.readers[pos].document(doc_id - self.starts[pos], &mut visitor)?;
         Ok(visitor.document())
     }
 

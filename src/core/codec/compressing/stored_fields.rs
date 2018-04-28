@@ -12,18 +12,13 @@ use core::codec::writer::StoredFieldsWriter;
 use core::index::field_info::{FieldInfo, FieldInfos};
 use core::index::stored_field_visitor::{Status as VisitStatus, StoredFieldVisitor};
 use core::index::{segment_file_name, SegmentInfo};
-use core::store::ChecksumIndexInput;
-use core::store::DataInput;
-use core::store::{IOContext, IndexInput};
+use core::store::{ChecksumIndexInput, DataInput, IOContext, IndexInput};
 // use core::store::byte_array_data_input::ByteArrayDataInput;
 use core::store::DirectoryRc;
-use core::util::bit_util::UnsignedShift;
-use core::util::bit_util::ZigZagEncoding;
-use core::util::packed_misc::OffsetAndLength;
-use core::util::packed_misc::ReaderIterator;
+use core::util::bit_util::{UnsignedShift, ZigZagEncoding};
 use core::util::packed_misc::{get_reader_iterator_no_header, get_reader_no_header};
-use core::util::packed_misc::{Format, Reader};
-use core::util::DocId;
+use core::util::packed_misc::{Format, OffsetAndLength, Reader, ReaderIterator};
+use core::util::{ComputeTime, DocId};
 
 pub struct CompressingStoredFieldsFormat {
     format_name: String,
@@ -185,9 +180,7 @@ impl CompressingStoredFieldsIndexReader {
 
     fn relative_doc_base(&self, block: usize, relative_chunk: usize) -> DocId {
         let expected = self.avg_chunk_docs[block] as usize * relative_chunk;
-        let delta = self.doc_bases_deltas[block]
-            .get(relative_chunk)
-            .decode();
+        let delta = self.doc_bases_deltas[block].get(relative_chunk).decode();
         (expected as i64 + delta) as DocId
     }
 
@@ -409,19 +402,13 @@ impl CompressingStoredFieldsReader {
         match bits & TYPE_MASK {
             BYTE_ARR => {
                 let length = self.read_vint()? as usize;
-                let mut data = Vec::with_capacity(length);
-                for _ in 0..length {
-                    data.push(0u8);
-                }
+                let mut data = vec![0u8; length];
                 self.read_bytes(data.as_mut(), 0, length)?;
                 visitor.binary_field(info, data.as_ref());
             }
             STRING => {
                 let length = self.read_vint()? as usize;
-                let mut data = Vec::with_capacity(length);
-                for _ in 0..length {
-                    data.push(0u8);
-                }
+                let mut data = vec![0u8; length];
                 self.read_bytes(data.as_mut(), 0, length)?;
                 visitor.string_field(info, data.as_ref());
             }
@@ -725,6 +712,7 @@ impl CompressingStoredFieldsReader {
     }
 
     fn clone(&self) -> Result<Self> {
+        let _a = ComputeTime::new(file!(), "CompressingSFReader::clone");
         Ok(CompressingStoredFieldsReader {
             version: self.version,
             field_infos: self.field_infos.clone(),

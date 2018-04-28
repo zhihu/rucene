@@ -1,5 +1,5 @@
-use core::search::DocIterator;
 use core::search::posting_iterator::PostingIterator;
+use core::search::DocIterator;
 use core::search::Scorer;
 use core::search::SimScorer;
 use core::util::DocId;

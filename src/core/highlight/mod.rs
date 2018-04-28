@@ -6,9 +6,7 @@ use core::util::DocId;
 use error::*;
 
 use std::borrow::Cow;
-use std::clone::Clone;
-use std::cmp::max;
-use std::cmp::Ordering;
+use std::cmp::{max, Ordering};
 use std::collections::HashMap;
 use std::f32::EPSILON;
 
@@ -1150,22 +1148,16 @@ pub struct SimpleBoundaryScanner {
 impl SimpleBoundaryScanner {
     pub fn new(max_scan: Option<i32>, boundary_chars: Option<&Vec<char>>) -> SimpleBoundaryScanner {
         SimpleBoundaryScanner {
-            max_scan: match max_scan {
-                Some(x) => x,
-                None => DEFAULT_MAX_SCAN,
-            },
+            max_scan: max_scan.map_or(DEFAULT_MAX_SCAN, |x| x),
             boundary_chars: match boundary_chars {
                 Some(x) => x.clone(),
-                None => SimpleBoundaryScanner::boundary_chars_to_vec(&String::from(
-                    DEFAULT_BOUNDARY_CHARS,
-                )),
+                None => SimpleBoundaryScanner::boundary_chars_to_vec(DEFAULT_BOUNDARY_CHARS),
             },
         }
     }
 
     pub fn boundary_chars_to_vec(boundary_chars: &str) -> Vec<char> {
-        let default_boundary_chars: Vec<char> = boundary_chars.chars().collect();
-        default_boundary_chars.clone()
+        boundary_chars.chars().collect()
     }
 }
 
@@ -1228,7 +1220,7 @@ pub trait FragmentsBuilder {
     // create multiple fragments.
     //
     // @param reader IndexReader of the index
-    // @param docId document id to be highlighter
+    // @param docId document id to be highlighted
     // @param fieldName field of the document to be highlighted
     // @param fieldFragList FieldFragList object
     // @param maxNumFragments maximum number of fragments
