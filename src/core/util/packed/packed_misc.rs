@@ -2876,7 +2876,7 @@ impl BlockPackedReaderIterator {
 
             let actual_len = self.blocks.len();
             if actual_len < blocks_size {
-                self.blocks.extend(vec![0u8; blocks_size - actual_len]);
+                self.blocks.resize(blocks_size, 0u8);
             }
             let value_count = min(self.value_count - self.ord, self.block_size as i64) as i32;
             let blocks_count =
