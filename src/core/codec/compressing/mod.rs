@@ -140,14 +140,9 @@ impl LZ4 {
                 // no overlap -> arraycopy
                 let matches = match_dec as usize;
 
-                let mut to_copy = vec![0u8; fast_len];
-                to_copy.copy_from_slice(&dest[dest_off - matches..dest_off - matches + fast_len]);
-                dest[dest_off..dest_off + fast_len].copy_from_slice(to_copy.as_slice());
-
-                //                for i in 0..fast_len {
-                //                    //let val = dest[dest_off - matches + fast_len - i - 1];
-                // dest[dest_off + fast_len - i - 1] = dest[dest_off - matches +
-                // fast_len - i - 1];                }
+                let pos = dest_off - matches;
+                let (lhs, rhs) = dest.split_at_mut(dest_off);
+                rhs[..fast_len].copy_from_slice(&lhs[pos..pos + fast_len]);
                 dest_off += match_len as usize;
             }
             if dest_off >= decompressed_len {

@@ -257,7 +257,7 @@ impl BaseFragmentsBuilder {
                     .collect();
                 fragment.push_str(encoder.encode_text(original.as_str()).borrow());
 
-                fragment.push_str(self.pre_tag(pre_tags, sub_info.seqnum));
+                fragment.push_str(Self::tag(pre_tags, sub_info.seqnum));
 
                 original = src_chars[(to.start_offset - offset_delta - modified_start_offset[0])
                                          as usize
@@ -267,7 +267,7 @@ impl BaseFragmentsBuilder {
                     .collect();
                 fragment.push_str(encoder.encode_text(original.as_str()).borrow());
 
-                fragment.push_str(self.post_tag(post_tags, sub_info.seqnum));
+                fragment.push_str(Self::tag(post_tags, sub_info.seqnum));
 
                 src_index = to.end_offset - offset_delta - modified_start_offset[0];
             }
@@ -328,14 +328,10 @@ impl BaseFragmentsBuilder {
         Ok(ret)
     }
 
-    fn pre_tag<'a>(&self, pre_tags: &'a [String], num: i32) -> &'a str {
-        let n = num as usize % pre_tags.len();
-        &pre_tags[n]
-    }
-
-    fn post_tag<'a>(&self, post_tags: &'a [String], num: i32) -> &'a str {
-        let n = num as usize % post_tags.len();
-        &post_tags[n]
+    #[inline]
+    fn tag<'a>(tags: &'a [String], num: i32) -> &'a str {
+        let num = num as usize % tags.len();
+        tags[num].as_ref()
     }
 }
 

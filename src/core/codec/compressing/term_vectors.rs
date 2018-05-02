@@ -142,7 +142,7 @@ impl CompressingTermVectorsReader {
         // load the index into memory
         let index_name = segment_file_name(&si.name, segment_suffix, VECTORS_INDEX_EXTENSION);
         let mut input = d.as_ref().open_checksum_input(&index_name, context)?;
-        let codec_name_idx = String::from(format_name) + CODEC_SFX_IDX;
+        let codec_name_idx = format!("{}{}", format_name, CODEC_SFX_IDX);
         let version = check_index_header(
             input.as_mut(),
             &codec_name_idx,
