@@ -126,6 +126,7 @@ impl LZ4 {
             match_len += MIN_MATCH;
 
             // copying a multiple of 8 bytes can make decompression from 5% to 10% faster
+            // Does this applies to Rust ? It's a question.
             let fast_len = ((match_len + 7) as usize) & 0xffff_fff8;
             if match_dec < match_len || dest_off + fast_len > dest_end {
                 // overlap -> naive incremental copy
@@ -137,13 +138,12 @@ impl LZ4 {
                     dest_cur += 1;
                 }
             } else {
-                // no overlap -> arraycopy
-                let matches = match_dec as usize;
-
-                let pos = dest_off - matches;
+                // non-overlap -> arraycopy
+                let ref_pos = dest_off - match_dec as usize;
+                let match_len = match_len as usize;
                 let (lhs, rhs) = dest.split_at_mut(dest_off);
-                rhs[..fast_len].copy_from_slice(&lhs[pos..pos + fast_len]);
-                dest_off += match_len as usize;
+                rhs[0..match_len].copy_from_slice(&lhs[ref_pos..ref_pos + match_len]);
+                dest_off += match_len;
             }
             if dest_off >= decompressed_len {
                 break;
