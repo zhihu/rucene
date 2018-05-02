@@ -1,14 +1,14 @@
-use core::doc::StoredField;
-use core::highlight::{BoundaryScanner, DefaultEncoder, Encoder, FieldFragList, FragmentsBuilder,
-                      SimpleBoundaryScanner, SubInfo, Toffs, WeightedFragInfo};
-use core::index::Fieldable;
-use core::index::IndexReader;
-use core::util::DocId;
-use error::*;
-
 use std::borrow::Borrow;
 use std::cmp::min;
 use std::collections::HashMap;
+
+use core::doc::StoredField;
+use core::highlight::{BoundaryScanner, DefaultEncoder, Encoder, FieldFragList, FragmentsBuilder,
+                      SimpleBoundaryScanner, SubInfo, Toffs, WeightedFragInfo};
+use core::index::{Fieldable, IndexReader};
+use core::util::DocId;
+
+use error::Result;
 
 pub struct BaseFragmentsBuilder {
     pre_tags: Vec<String>,
@@ -25,19 +25,11 @@ impl BaseFragmentsBuilder {
         boundary_scanner: Option<Box<BoundaryScanner>>,
     ) -> BaseFragmentsBuilder {
         BaseFragmentsBuilder {
-            pre_tags: match pre_tags {
-                Some(x) => x.to_vec(),
-                None => vec![String::from("<b>")],
-            },
-            post_tags: match post_tags {
-                Some(x) => x.to_vec(),
-                None => vec![String::from("</b>")],
-            },
+            pre_tags: pre_tags.map_or(vec!["<b>".to_owned()], |x| x.to_vec()),
+            post_tags: post_tags.map_or(vec!["</b>".to_owned()], |x| x.to_vec()),
             multi_valued_separator: ' ',
-            boundary_scanner: match boundary_scanner {
-                Some(x) => x,
-                None => Box::new(SimpleBoundaryScanner::new(None, None)),
-            },
+            boundary_scanner: boundary_scanner
+                .unwrap_or_else(|| Box::new(SimpleBoundaryScanner::new(None, None))),
             discrete_multi_value_highlighting: false,
         }
     }
@@ -48,10 +40,10 @@ impl BaseFragmentsBuilder {
         doc_id: DocId,
         field_name: &str,
     ) -> Result<Vec<StoredField>> {
-        let fields_load = vec![field_name.to_string()];
-        // let mut visitor = DocumentStoredFieldVisitor::new(&fields_load);
+        let fields = [field_name.to_string()];
+        // let mut visitor = DocumentStoredFieldVisitor::new(&fields);
 
-        let document = reader.document(doc_id, &fields_load)?;
+        let document = reader.document(doc_id, &fields)?;
         Ok(document.fields)
     }
 
@@ -265,7 +257,7 @@ impl BaseFragmentsBuilder {
                     .collect();
                 fragment.push_str(encoder.encode_text(original.as_str()).borrow());
 
-                fragment.push_str(self.pre_tag(pre_tags, sub_info.seqnum));
+                fragment.push_str(Self::tag(pre_tags, sub_info.seqnum));
 
                 original = src_chars[(to.start_offset - offset_delta - modified_start_offset[0])
                                          as usize
@@ -275,7 +267,7 @@ impl BaseFragmentsBuilder {
                     .collect();
                 fragment.push_str(encoder.encode_text(original.as_str()).borrow());
 
-                fragment.push_str(self.post_tag(post_tags, sub_info.seqnum));
+                fragment.push_str(Self::tag(post_tags, sub_info.seqnum));
 
                 src_index = to.end_offset - offset_delta - modified_start_offset[0];
             }
@@ -336,14 +328,10 @@ impl BaseFragmentsBuilder {
         Ok(ret)
     }
 
-    fn pre_tag<'a>(&self, pre_tags: &'a [String], num: i32) -> &'a str {
-        let n = num as usize % pre_tags.len();
-        &pre_tags[n]
-    }
-
-    fn post_tag<'a>(&self, post_tags: &'a [String], num: i32) -> &'a str {
-        let n = num as usize % post_tags.len();
-        &post_tags[n]
+    #[inline]
+    fn tag<'a>(tags: &'a [String], num: i32) -> &'a str {
+        let num = num as usize % tags.len();
+        tags[num].as_ref()
     }
 }
 

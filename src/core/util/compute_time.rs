@@ -31,6 +31,6 @@ impl Drop for ComputeTime {
     fn drop(&mut self) {
         let elapsed = self.instant.elapsed();
         let ms = elapsed.as_secs() * 1000 + u64::from(elapsed.subsec_nanos()) / 1_000_000;
-        debug!("[{}:{}] {}ms", self.file, self.func, ms);
+        info!("[{}:{}] {}ms", self.file, self.func, ms);
     }
 }
