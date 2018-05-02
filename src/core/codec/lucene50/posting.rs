@@ -882,36 +882,31 @@ impl BlockPostingIterator {
 
     fn refill_docs(&mut self) -> Result<()> {
         let left = self.doc_freq - self.doc_upto;
-        if let Some(ref mut doc_in) = self.doc_in {
-            if left >= BLOCK_SIZE {
-                self.for_util.read_block(
-                    doc_in.as_mut(),
-                    &mut self.encoded,
-                    &mut self.doc_delta_buffer,
-                )?;
-                self.for_util.read_block(
-                    doc_in.as_mut(),
-                    &mut self.encoded,
-                    &mut self.freq_buffer,
-                )?;
-            } else if self.doc_freq == 1 {
-                self.doc_delta_buffer[0] = self.singleton_doc_id;
-                self.freq_buffer[0] = self.total_term_freq as i32;
-            } else {
-                // Read vInts:
-                read_vint_block(
-                    doc_in.as_mut(),
-                    &mut self.doc_delta_buffer,
-                    &mut self.freq_buffer,
-                    left,
-                    true,
-                )?;
-            }
-            self.doc_buffer_upto = 0;
-            Ok(())
+        if left >= BLOCK_SIZE {
+            let doc_in = self.doc_in.as_mut().unwrap();
+            self.for_util.read_block(
+                doc_in.as_mut(),
+                &mut self.encoded,
+                &mut self.doc_delta_buffer,
+            )?;
+            self.for_util
+                .read_block(doc_in.as_mut(), &mut self.encoded, &mut self.freq_buffer)?;
+        } else if self.doc_freq == 1 {
+            self.doc_delta_buffer[0] = self.singleton_doc_id;
+            self.freq_buffer[0] = self.total_term_freq as i32;
         } else {
-            bail!("Not initalized")
+            // Read vInts:
+            let doc_in = self.doc_in.as_mut().unwrap();
+            read_vint_block(
+                doc_in.as_mut(),
+                &mut self.doc_delta_buffer,
+                &mut self.freq_buffer,
+                left,
+                true,
+            )?;
         }
+        self.doc_buffer_upto = 0;
+        Ok(())
     }
 
     fn refill_positions(&mut self) -> Result<()> {

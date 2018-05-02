@@ -51,7 +51,7 @@ impl BM25Similarity {
     }
 
     fn sloppy_freq(distance: i32) -> f32 {
-        (1.0 / distance as f32 + 1.0)
+        1.0 / (distance as f32 + 1.0)
     }
 
     fn avg_field_length(collection_stats: &CollectionStatistics) -> f32 {
@@ -79,13 +79,19 @@ impl BM25Similarity {
         NORM_TABLE[b as usize]
     }
 
-    fn idf(term_stats: &TermStatistics, collection_stats: &CollectionStatistics) -> f32 {
-        let doc_freq = term_stats.doc_freq;
-        let mut doc_count = collection_stats.doc_count;
-        if doc_count == -1 {
-            doc_count = collection_stats.max_doc
-        };
-        (1.0 + (doc_count as f64 - doc_freq as f64 + 0.5) / (doc_freq as f64 + 0.5)).ln() as f32
+    fn idf(term_stats: &[TermStatistics], collection_stats: &CollectionStatistics) -> f32 {
+        let mut idf = 0.0f32;
+        for term_stat in term_stats {
+            let doc_freq = term_stat.doc_freq;
+            let mut doc_count = collection_stats.doc_count;
+            if doc_count == -1 {
+                doc_count = collection_stats.max_doc
+            };
+            idf += (1.0 + (doc_count as f64 - doc_freq as f64 + 0.5) / (doc_freq as f64 + 0.5)).ln()
+                as f32;
+        }
+
+        idf
     }
 }
 
@@ -93,7 +99,7 @@ impl Similarity for BM25Similarity {
     fn compute_weight(
         &self,
         collection_stats: &CollectionStatistics,
-        term_stats: &TermStatistics,
+        term_stats: &[TermStatistics],
     ) -> Box<SimWeight> {
         let avgdl = BM25Similarity::avg_field_length(&collection_stats);
         let idf = BM25Similarity::idf(&term_stats, &collection_stats);

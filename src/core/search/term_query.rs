@@ -36,12 +36,12 @@ impl Query for TermQuery {
         let max_doc = i64::from(reader.max_doc());
         let (term_stats, collection_stats) = if needs_scores {
             (
-                searcher.term_statistics(self.term.clone(), &term_context),
+                vec![searcher.term_statistics(self.term.clone(), &term_context)],
                 searcher.collections_statistics(self.term.field.clone())?,
             )
         } else {
             (
-                TermStatistics::new(self.term.bytes.clone(), max_doc, -1),
+                vec![TermStatistics::new(self.term.bytes.clone(), max_doc, -1)],
                 CollectionStatistics::new(self.term.field.clone(), max_doc, -1, -1, -1),
             )
         };

@@ -1,4 +1,3 @@
-use std::borrow::Borrow;
 use std::fmt;
 use std::sync::Arc;
 
@@ -54,7 +53,7 @@ impl Similarity for NonScoringSimilarity {
     fn compute_weight(
         &self,
         _collection_stats: &CollectionStatistics,
-        _term_stats: &TermStatistics,
+        _term_stats: &[TermStatistics],
     ) -> Box<SimWeight> {
         Box::new(NonScoringSimWeight {})
     }
@@ -136,7 +135,7 @@ impl IndexSearcher {
                 }
 
                 let live_docs = reader.live_docs();
-                match bulk_scorer.score(collector, Some(live_docs.borrow()), 0, NO_MORE_DOCS) {
+                match bulk_scorer.score(collector, Some(live_docs.as_ref()), 0, NO_MORE_DOCS) {
                     Err(Error(
                         ErrorKind::Collector(collector::ErrorKind::CollectionTerminated),
                         _,

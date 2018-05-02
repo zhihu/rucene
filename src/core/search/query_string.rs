@@ -6,6 +6,8 @@ use std::vec::Vec;
 
 use core::index::Term;
 use core::search::boolean_query::BooleanQuery;
+use core::search::boost::BoostQuery;
+use core::search::phrase_query::PhraseQuery;
 use core::search::term_query::TermQuery;
 use core::search::Query;
 
@@ -68,7 +70,7 @@ impl QueryStringQueryBuilder {
                     }
 
                     if let Some(ch) = chars.next() {
-                        if ch == '^' {
+                        if ch == '^' || ch == '~' {
                             term_chars.push(ch);
                             while let Some(ch) = chars.next() {
                                 if ch == ' ' {
@@ -156,22 +158,33 @@ impl QueryStringQueryBuilder {
         Ok(Some(query))
     }
 
-    fn term_query(&self, term: String, field: String, boost: f32) -> Box<TermQuery> {
+    fn term_query(&self, term: String, field: String, boost: f32) -> Box<Query> {
         Box::new(TermQuery::new(Term::new(field, term.into()), boost))
     }
 
     fn build_field_query(&self, term_boost: String) -> Result<Box<Query>> {
-        let (term, boost) = match term_boost.find('^') {
-            None => (term_boost, 1f32),
-            Some(i) => {
-                let (t, b) = term_boost.split_at(i as usize);
-                let boost_str: String = b.chars().skip(1).collect();
-                let boost_res = boost_str.parse::<f32>();
-                if let Err(_e) = boost_res {
-                    return Err(format!("invalid boost value '{}'", b).into());
-                }
-                (t.to_string(), boost_res.unwrap())
-            }
+        let mut queries = if term_boost.find('~').is_some() {
+            self.field_phrase_query(&term_boost)?
+        } else {
+            self.field_term_query(term_boost)?
+        };
+
+        let res = if queries.len() == 1 {
+            queries.remove(0)
+        } else {
+            BooleanQuery::build(Vec::new(), queries, vec![])?
+        };
+        Ok(res)
+    }
+
+    fn field_term_query(&self, query: String) -> Result<Vec<Box<Query>>> {
+        let (term, boost) = if let Some(i) = query.find('^') {
+            let (t, b) = query.split_at(i as usize);
+            let boost_str: String = b.chars().skip(1).collect();
+            let boost = boost_str.parse::<f32>()?;
+            (t.to_string(), boost)
+        } else {
+            (query, 1f32)
         };
         let term = if term.starts_with('"') {
             term.chars().skip(1).take(term.len() - 2).collect()
@@ -180,13 +193,36 @@ impl QueryStringQueryBuilder {
         };
         let mut queries = Vec::new();
         for fb in &self.fields {
-            queries.push(self.term_query(term.clone(), fb.0.clone(), fb.1 * boost) as Box<Query>);
+            queries.push(self.term_query(term.clone(), fb.0.clone(), fb.1 * boost));
         }
-        Ok(if queries.len() == 1 {
-            queries.remove(0)
+        Ok(queries)
+    }
+
+    fn field_phrase_query(&self, query: &str) -> Result<Vec<Box<Query>>> {
+        if let Some(idx) = query.find('~') {
+            let (t, s) = query.split_at(idx);
+            let slop_str: String = s.chars().skip(1).collect();
+            let slop = slop_str.parse::<i32>()?;
+            let term_strs: Vec<&str> = t.split_whitespace().collect();
+            if term_strs.len() < 2 {
+                bail!("phrase query terms size must not small than 2");
+            }
+            let mut queries = Vec::with_capacity(self.fields.len());
+            for fb in &self.fields {
+                let terms: Vec<Term> = term_strs
+                    .iter()
+                    .map(|term| Term::new(fb.0.clone(), term.as_bytes().to_vec()))
+                    .collect();
+                queries.push(BoostQuery::build(
+                    Box::new(PhraseQuery::build(terms, slop)?),
+                    fb.1,
+                ))
+            }
+
+            Ok(queries)
         } else {
-            BooleanQuery::build(Vec::new(), queries, vec![])?
-        })
+            bail!("invalid query string '{}' for phrase query", &query);
+        }
     }
 }
 

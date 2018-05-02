@@ -4,8 +4,8 @@ use error::Result;
 use std::mem::transmute;
 use std::sync::Arc;
 
-use core::search::posting_iterator::PostingIterator;
 use core::search::posting_iterator::POSTING_ITERATOR_FLAG_FREQS;
+use core::search::posting_iterator::{EmptyPostingIterator, PostingIterator};
 
 /// Encapsulates all required internal state to position the associated
 /// `TermIterator` without re-seeking
@@ -379,5 +379,44 @@ pub trait TermIterator {
         bail!(UnsupportedOperation(
             "TermIterator::term_state unsupported".into()
         ))
+    }
+}
+
+#[derive(Default)]
+pub struct EmptyTermIterator;
+
+impl TermIterator for EmptyTermIterator {
+    fn next(&mut self) -> Result<Vec<u8>> {
+        // TODO fix me
+        bail!("no more terms!")
+    }
+
+    fn seek_ceil(&mut self, _text: &[u8]) -> Result<SeekStatus> {
+        Ok(SeekStatus::End)
+    }
+
+    fn seek_exact_ord(&mut self, _ord: i64) -> Result<()> {
+        unreachable!()
+    }
+
+    fn term(&mut self) -> Result<Vec<u8>> {
+        // TODO fix me
+        Ok(Vec::new())
+    }
+
+    fn ord(&mut self) -> Result<i64> {
+        Ok(-1)
+    }
+
+    fn doc_freq(&mut self) -> Result<i32> {
+        Ok(-1)
+    }
+
+    fn total_term_freq(&mut self) -> Result<i64> {
+        Ok(-1)
+    }
+
+    fn postings_with_flags(&mut self, _flags: i16) -> Result<Box<PostingIterator>> {
+        Ok(Box::new(EmptyPostingIterator::default()))
     }
 }
