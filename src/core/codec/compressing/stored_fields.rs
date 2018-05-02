@@ -185,9 +185,7 @@ impl CompressingStoredFieldsIndexReader {
 
     fn relative_doc_base(&self, block: usize, relative_chunk: usize) -> DocId {
         let expected = self.avg_chunk_docs[block] as usize * relative_chunk;
-        let delta = self.doc_bases_deltas[block]
-            .get(relative_chunk)
-            .decode();
+        let delta = self.doc_bases_deltas[block].get(relative_chunk).decode();
         (expected as i64 + delta) as DocId
     }
 

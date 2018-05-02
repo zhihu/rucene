@@ -34,9 +34,9 @@ pub mod util;
 
 // Queries
 pub mod boolean_query;
+pub mod boost;
 pub mod query_string;
 pub mod term_query;
-pub mod boost;
 
 // Scorers
 pub mod term_scorer;
@@ -686,7 +686,14 @@ pub mod tests {
             "mock"
         }
 
-        fn normalize(&mut self, _norm: f32, _boost: f32) {
+        fn normalize(&mut self, _norm: f32, _boost: f32) {}
+
+        fn value_for_normalization(&self) -> f32 {
+            0.0
+        }
+
+        fn needs_scores(&self) -> bool {
+            false
         }
     }
 

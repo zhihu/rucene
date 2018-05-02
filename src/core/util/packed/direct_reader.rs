@@ -11,7 +11,7 @@ use std::sync::Arc;
 pub struct DirectReader;
 impl DirectReader {
     pub fn get_instance(
-        slice: Arc<Box<RandomAccessInput>>,
+        slice: Arc<RandomAccessInput>,
         bits_per_value: i32,
         offset: i64,
     ) -> Result<Box<LongValues>> {
@@ -43,12 +43,12 @@ impl DirectReader {
 
 // ================ Begin Reader 1 ================
 struct DirectPackedReader1 {
-    random_access_input: Arc<Box<RandomAccessInput>>,
+    random_access_input: Arc<RandomAccessInput>,
     offset: i64,
 }
 
 impl DirectPackedReader1 {
-    fn new(random_access_input: Arc<Box<RandomAccessInput>>, offset: i64) -> DirectPackedReader1 {
+    fn new(random_access_input: Arc<RandomAccessInput>, offset: i64) -> DirectPackedReader1 {
         DirectPackedReader1 {
             random_access_input,
             offset,
@@ -81,12 +81,12 @@ impl NumericDocValues for DirectPackedReader1 {
 
 // ================ Begin Reader 2 ================
 struct DirectPackedReader2 {
-    random_access_input: Arc<Box<RandomAccessInput>>,
+    random_access_input: Arc<RandomAccessInput>,
     offset: i64,
 }
 
 impl DirectPackedReader2 {
-    fn new(random_access_input: Arc<Box<RandomAccessInput>>, offset: i64) -> DirectPackedReader2 {
+    fn new(random_access_input: Arc<RandomAccessInput>, offset: i64) -> DirectPackedReader2 {
         DirectPackedReader2 {
             random_access_input,
             offset,
@@ -124,12 +124,12 @@ impl NumericDocValues for DirectPackedReader2 {
 
 // ================ Begin Reader 4 ================
 struct DirectPackedReader4 {
-    random_access_input: Arc<Box<RandomAccessInput>>,
+    random_access_input: Arc<RandomAccessInput>,
     offset: i64,
 }
 
 impl DirectPackedReader4 {
-    fn new(random_access_input: Arc<Box<RandomAccessInput>>, offset: i64) -> DirectPackedReader4 {
+    fn new(random_access_input: Arc<RandomAccessInput>, offset: i64) -> DirectPackedReader4 {
         DirectPackedReader4 {
             random_access_input,
             offset,
@@ -167,12 +167,12 @@ impl NumericDocValues for DirectPackedReader4 {
 
 // ================ Begin Reader 8 ================
 struct DirectPackedReader8 {
-    random_access_input: Arc<Box<RandomAccessInput>>,
+    random_access_input: Arc<RandomAccessInput>,
     offset: i64,
 }
 
 impl DirectPackedReader8 {
-    fn new(random_access_input: Arc<Box<RandomAccessInput>>, offset: i64) -> DirectPackedReader8 {
+    fn new(random_access_input: Arc<RandomAccessInput>, offset: i64) -> DirectPackedReader8 {
         DirectPackedReader8 {
             random_access_input,
             offset,
@@ -206,12 +206,12 @@ impl NumericDocValues for DirectPackedReader8 {
 
 // ================ Begin Reader 12 ================
 struct DirectPackedReader12 {
-    random_access_input: Arc<Box<RandomAccessInput>>,
+    random_access_input: Arc<RandomAccessInput>,
     offset: i64,
 }
 
 impl DirectPackedReader12 {
-    fn new(random_access_input: Arc<Box<RandomAccessInput>>, offset: i64) -> DirectPackedReader12 {
+    fn new(random_access_input: Arc<RandomAccessInput>, offset: i64) -> DirectPackedReader12 {
         DirectPackedReader12 {
             random_access_input,
             offset,
@@ -248,12 +248,12 @@ impl NumericDocValues for DirectPackedReader12 {
 
 // ================ Begin Reader 16 ================
 struct DirectPackedReader16 {
-    random_access_input: Arc<Box<RandomAccessInput>>,
+    random_access_input: Arc<RandomAccessInput>,
     offset: i64,
 }
 
 impl DirectPackedReader16 {
-    fn new(random_access_input: Arc<Box<RandomAccessInput>>, offset: i64) -> DirectPackedReader16 {
+    fn new(random_access_input: Arc<RandomAccessInput>, offset: i64) -> DirectPackedReader16 {
         DirectPackedReader16 {
             random_access_input,
             offset,
@@ -289,12 +289,12 @@ impl NumericDocValues for DirectPackedReader16 {
 
 // ================ Begin Reader 20 ================
 struct DirectPackedReader20 {
-    random_access_input: Arc<Box<RandomAccessInput>>,
+    random_access_input: Arc<RandomAccessInput>,
     offset: i64,
 }
 
 impl DirectPackedReader20 {
-    fn new(random_access_input: Arc<Box<RandomAccessInput>>, offset: i64) -> DirectPackedReader20 {
+    fn new(random_access_input: Arc<RandomAccessInput>, offset: i64) -> DirectPackedReader20 {
         DirectPackedReader20 {
             random_access_input,
             offset,
@@ -332,12 +332,12 @@ impl NumericDocValues for DirectPackedReader20 {
 
 // ================ Begin Reader 24 ================
 struct DirectPackedReader24 {
-    random_access_input: Arc<Box<RandomAccessInput>>,
+    random_access_input: Arc<RandomAccessInput>,
     offset: i64,
 }
 
 impl DirectPackedReader24 {
-    fn new(random_access_input: Arc<Box<RandomAccessInput>>, offset: i64) -> DirectPackedReader24 {
+    fn new(random_access_input: Arc<RandomAccessInput>, offset: i64) -> DirectPackedReader24 {
         DirectPackedReader24 {
             random_access_input,
             offset,
@@ -369,12 +369,12 @@ impl NumericDocValues for DirectPackedReader24 {
 
 // ================ Begin Reader 28 ================
 struct DirectPackedReader28 {
-    random_access_input: Arc<Box<RandomAccessInput>>,
+    random_access_input: Arc<RandomAccessInput>,
     offset: i64,
 }
 
 impl DirectPackedReader28 {
-    fn new(random_access_input: Arc<Box<RandomAccessInput>>, offset: i64) -> DirectPackedReader28 {
+    fn new(random_access_input: Arc<RandomAccessInput>, offset: i64) -> DirectPackedReader28 {
         DirectPackedReader28 {
             random_access_input,
             offset,
@@ -408,12 +408,12 @@ impl NumericDocValues for DirectPackedReader28 {
 
 // ================ Begin Reader 32 ================
 struct DirectPackedReader32 {
-    random_access_input: Arc<Box<RandomAccessInput>>,
+    random_access_input: Arc<RandomAccessInput>,
     offset: i64,
 }
 
 impl DirectPackedReader32 {
-    fn new(random_access_input: Arc<Box<RandomAccessInput>>, offset: i64) -> DirectPackedReader32 {
+    fn new(random_access_input: Arc<RandomAccessInput>, offset: i64) -> DirectPackedReader32 {
         DirectPackedReader32 {
             random_access_input,
             offset,
@@ -447,12 +447,12 @@ impl NumericDocValues for DirectPackedReader32 {
 
 // ================ Begin Reader 40 ================
 struct DirectPackedReader40 {
-    random_access_input: Arc<Box<RandomAccessInput>>,
+    random_access_input: Arc<RandomAccessInput>,
     offset: i64,
 }
 
 impl DirectPackedReader40 {
-    fn new(random_access_input: Arc<Box<RandomAccessInput>>, offset: i64) -> DirectPackedReader40 {
+    fn new(random_access_input: Arc<RandomAccessInput>, offset: i64) -> DirectPackedReader40 {
         DirectPackedReader40 {
             random_access_input,
             offset,
@@ -484,12 +484,12 @@ impl NumericDocValues for DirectPackedReader40 {
 
 // ================ Begin Reader 48 ================
 struct DirectPackedReader48 {
-    random_access_input: Arc<Box<RandomAccessInput>>,
+    random_access_input: Arc<RandomAccessInput>,
     offset: i64,
 }
 
 impl DirectPackedReader48 {
-    fn new(random_access_input: Arc<Box<RandomAccessInput>>, offset: i64) -> DirectPackedReader48 {
+    fn new(random_access_input: Arc<RandomAccessInput>, offset: i64) -> DirectPackedReader48 {
         DirectPackedReader48 {
             random_access_input,
             offset,
@@ -521,12 +521,12 @@ impl NumericDocValues for DirectPackedReader48 {
 
 // ================ Begin Reader 56 ================
 struct DirectPackedReader56 {
-    random_access_input: Arc<Box<RandomAccessInput>>,
+    random_access_input: Arc<RandomAccessInput>,
     offset: i64,
 }
 
 impl DirectPackedReader56 {
-    fn new(random_access_input: Arc<Box<RandomAccessInput>>, offset: i64) -> DirectPackedReader56 {
+    fn new(random_access_input: Arc<RandomAccessInput>, offset: i64) -> DirectPackedReader56 {
         DirectPackedReader56 {
             random_access_input,
             offset,
@@ -558,12 +558,12 @@ impl NumericDocValues for DirectPackedReader56 {
 
 // ================ Begin Reader 64 ================
 struct DirectPackedReader64 {
-    random_access_input: Arc<Box<RandomAccessInput>>,
+    random_access_input: Arc<RandomAccessInput>,
     offset: i64,
 }
 
 impl DirectPackedReader64 {
-    fn new(random_access_input: Arc<Box<RandomAccessInput>>, offset: i64) -> DirectPackedReader64 {
+    fn new(random_access_input: Arc<RandomAccessInput>, offset: i64) -> DirectPackedReader64 {
         DirectPackedReader64 {
             random_access_input,
             offset,

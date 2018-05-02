@@ -19,8 +19,8 @@ use core::search::{MatchNoDocScorer, Scorer, NO_MORE_DOCS};
 use core::util::bit_set::{BitSet, FixedBitSet, ImmutableBitSet, ImmutableBitSetRef};
 use core::util::bit_util::UnsignedShift;
 use core::util::doc_id_set::BitDocIdSet;
+use core::util::Bits;
 use core::util::DocId;
-use core::util::ImmutableBits;
 
 use error::*;
 

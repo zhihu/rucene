@@ -244,7 +244,11 @@ impl Weight for PointRangeWeight {
                     }
                 };
                 let cost = iterator.cost();
-                return Ok(Box::new(ConstantScoreScorer::new(self.weight, iterator, cost)));
+                return Ok(Box::new(ConstantScoreScorer::new(
+                    self.weight,
+                    iterator,
+                    cost,
+                )));
             }
         }
         Ok(Box::new(MatchNoDocScorer::default()))

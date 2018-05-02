@@ -252,7 +252,7 @@ mod tests {
         let bm25_sim = BM25Similarity::new(1.2, 0.75);
         let sim_weight = bm25_sim.compute_weight(&collection_stats, &term_stats);
 
-        assert!((sim_weight.get_value_for_normalization() - 9.5545435f32) < ::std::f32::EPSILON);
+        assert!((sim_weight.get_value_for_normalization() - 9.554_543_5f32) < ::std::f32::EPSILON);
 
         let leaf_reader = MockLeafReader::new(1);
         let mut sim_scorer = sim_weight.sim_scorer(&leaf_reader).unwrap();

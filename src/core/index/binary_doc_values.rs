@@ -14,7 +14,7 @@ pub trait BinaryDocValues: Send + Sync {
     fn get(&self, doc_id: DocId) -> Result<Vec<u8>>;
 }
 
-pub type BinaryDocValuesRef = Arc<Box<BinaryDocValues>>;
+pub type BinaryDocValuesRef = Arc<BinaryDocValues>;
 
 pub trait LongBinaryDocValues: BinaryDocValues {
     fn get64(&self, doc_id: i64) -> Result<Vec<u8>>;

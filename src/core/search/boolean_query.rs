@@ -158,10 +158,7 @@ impl BooleanWeight {
 impl Weight for BooleanWeight {
     fn create_scorer(&self, leaf_reader: &LeafReader) -> Result<Box<Scorer>> {
         let must_scorer: Option<Box<Scorer>> = if !self.must_weights.is_empty() {
-            let mut scorers = self.build_scorers(
-                &self.must_weights,
-                leaf_reader,
-            )?;
+            let mut scorers = self.build_scorers(&self.must_weights, leaf_reader)?;
             if scorers.len() > 1 {
                 Some(Box::new(ConjunctionScorer::new(scorers)))
             } else {
