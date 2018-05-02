@@ -1,24 +1,74 @@
 use core::index::NumericDocValues;
 use core::util::DocId;
 use core::util::LongValues;
-use core::util::MutableBits;
+use core::util::{Bits, BitsContext};
 use error::ErrorKind::{IllegalArgument, IllegalState};
 use error::Result;
 
 use std::sync::Arc;
 
+use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+
 #[derive(Clone)]
-pub struct SparseBits {
-    max_doc: i64,
-    doc_ids_length: i64,
-    first_doc_id: i64,
+struct SparseBitsContext {
     // index of doc_id in doc_ids
     index: i64, // mutable
     // doc_id at index
     doc_id: i64, // mutable
     // doc_id at (index + 1)
     next_doc_id: i64, // mutable
-    doc_ids: Arc<Box<LongValues>>,
+}
+
+const SPARSE_BITS_CONTEXT_SERIALIZED_SIZE: usize = 24;
+
+impl SparseBitsContext {
+    fn new(first_doc_id: i64) -> Self {
+        SparseBitsContext {
+            index: -1,
+            doc_id: -1,
+            next_doc_id: first_doc_id,
+        }
+    }
+
+    fn reset(&mut self, first_doc_id: i64) {
+        self.index = -1;
+        self.doc_id = -1;
+        self.next_doc_id = first_doc_id;
+    }
+
+    fn serialize(&self) -> BitsContext {
+        let mut data = [0u8; 64];
+        {
+            let mut buffer = &mut data as &mut [u8];
+            buffer.write_i64::<LittleEndian>(self.index).unwrap();
+            buffer.write_i64::<LittleEndian>(self.doc_id).unwrap();
+            buffer.write_i64::<LittleEndian>(self.next_doc_id).unwrap();
+        }
+        Some(data)
+    }
+
+    fn deserialize(mut from: &[u8]) -> Result<Self> {
+        if from.len() != SPARSE_BITS_CONTEXT_SERIALIZED_SIZE {
+            bail!(IllegalArgument(
+                "Serialized bytes is not for SparseBitsContext".into()
+            ))
+        }
+        let index = from.read_i64::<LittleEndian>()?;
+        let doc_id = from.read_i64::<LittleEndian>()?;
+        let next_doc_id = from.read_i64::<LittleEndian>()?;
+        Ok(SparseBitsContext {
+            index,
+            doc_id,
+            next_doc_id,
+        })
+    }
+}
+
+pub struct SparseBits {
+    max_doc: i64,
+    doc_ids_length: i64,
+    first_doc_id: i64,
+    doc_ids: Arc<LongValues>,
 }
 
 impl SparseBits {
@@ -41,17 +91,8 @@ impl SparseBits {
             max_doc,
             doc_ids_length,
             first_doc_id,
-            index: -1,
-            doc_id: -1,
-            next_doc_id: first_doc_id,
-            doc_ids: Arc::new(doc_ids),
+            doc_ids: Arc::from(doc_ids),
         })
-    }
-
-    fn reset(&mut self) {
-        self.index = -1;
-        self.doc_id = -1;
-        self.next_doc_id = self.first_doc_id;
     }
 
     /// Gallop forward and stop as soon as an index is found that is greater than
@@ -59,92 +100,93 @@ impl SparseBits {
     /// that is <= *docId* while the return value will give an index
     /// that stores a value that is > *doc_id*. These indices can then be
     /// used to binary search.
-    fn gallop(&mut self, doc_id: i64) -> Result<i64> {
-        self.index += 1;
-        self.doc_id = self.next_doc_id;
-        let mut hi_index = self.index + 1;
+    fn gallop(&self, ctx: &mut SparseBitsContext, doc_id: i64) -> Result<i64> {
+        ctx.index += 1;
+        ctx.doc_id = ctx.next_doc_id;
+        let mut hi_index = ctx.index + 1;
         loop {
             if hi_index >= self.doc_ids_length {
                 hi_index = self.doc_ids_length;
-                self.next_doc_id = self.max_doc;
+                ctx.next_doc_id = self.max_doc;
                 return Ok(hi_index);
             }
 
             let hi_doc_id = self.doc_ids.get64(hi_index)?;
             if hi_doc_id > doc_id {
-                self.next_doc_id = hi_doc_id;
+                ctx.next_doc_id = hi_doc_id;
                 return Ok(hi_index);
             }
 
-            let delta = hi_index - self.index;
-            self.index = hi_index;
-            self.doc_id = hi_doc_id;
+            let delta = hi_index - ctx.index;
+            ctx.index = hi_index;
+            ctx.doc_id = hi_doc_id;
             hi_index += delta << 1; // double the step each time
         }
     }
 
-    fn binary_search(&mut self, mut hi_index: i64, doc_id: i64) -> Result<()> {
-        while self.index + 1 < hi_index {
-            let mid_index = self.index + (hi_index - self.index) / 2;
+    fn binary_search(
+        &self,
+        ctx: &mut SparseBitsContext,
+        mut hi_index: i64,
+        doc_id: i64,
+    ) -> Result<()> {
+        while ctx.index + 1 < hi_index {
+            let mid_index = ctx.index + (hi_index - ctx.index) / 2;
             let mid_doc_id = self.doc_ids.get64(mid_index)?;
             if mid_doc_id > doc_id {
                 hi_index = mid_index;
-                self.next_doc_id = mid_doc_id;
+                ctx.next_doc_id = mid_doc_id;
             } else {
-                self.index = mid_index;
-                self.doc_id = mid_doc_id;
+                ctx.index = mid_index;
+                ctx.doc_id = mid_doc_id;
             }
         }
         Ok(())
     }
 
-    fn check_invariants(&mut self, next_index: i64, doc_id: i64) -> Result<()> {
-        if self.doc_id > doc_id || self.next_doc_id <= doc_id {
+    fn check_invariants(
+        &self,
+        ctx: &SparseBitsContext,
+        next_index: i64,
+        doc_id: i64,
+    ) -> Result<()> {
+        if ctx.doc_id > doc_id || ctx.next_doc_id <= doc_id {
             bail!(IllegalState("internal error".to_owned()));
         }
-        if !((self.index == -1 && self.doc_id == -1)
-            || self.doc_id == self.doc_ids.get64(self.index)?)
+        if !((ctx.index == -1 && ctx.doc_id == -1) || ctx.doc_id == self.doc_ids.get64(ctx.index)?)
         {
             bail!(IllegalState("internal error".to_owned()));
         }
-        if !((next_index == self.doc_ids_length && self.next_doc_id == self.max_doc)
-            || self.next_doc_id == self.doc_ids.get64(next_index)?)
+        if !((next_index == self.doc_ids_length && ctx.next_doc_id == self.max_doc)
+            || ctx.next_doc_id == self.doc_ids.get64(next_index)?)
         {
             bail!(IllegalState("internal error".to_owned()));
         }
         Ok(())
     }
 
-    fn exponential_search(&mut self, doc_id: i64) -> Result<()> {
+    fn exponential_search(&self, ctx: &mut SparseBitsContext, doc_id: i64) -> Result<()> {
         // seek forward by doubling the interval on each iteration
-        let hi_index = self.gallop(doc_id)?;
-        self.check_invariants(hi_index, doc_id)?;
+        let hi_index = self.gallop(ctx, doc_id)?;
+        self.check_invariants(ctx, hi_index, doc_id)?;
         // now perform the actual binary search
-        self.binary_search(hi_index, doc_id)
+        self.binary_search(ctx, hi_index, doc_id)
     }
 
-    fn get64(&mut self, doc_id: i64) -> Result<bool> {
-        if doc_id < self.doc_id {
+    fn get64(&self, ctx: &mut SparseBitsContext, doc_id: i64) -> Result<(bool, BitsContext)> {
+        if doc_id < ctx.doc_id {
             // reading doc ids backward, go back to the start
-            self.reset();
+            ctx.reset(self.first_doc_id)
         }
 
-        if doc_id >= self.next_doc_id {
-            self.exponential_search(doc_id)?;
+        if doc_id >= ctx.next_doc_id {
+            self.exponential_search(ctx, doc_id)?;
         }
-        let next_index = self.index + 1;
-        self.check_invariants(next_index, doc_id)?;
-        Ok(doc_id == self.doc_id)
-    }
-}
-
-impl MutableBits for SparseBits {
-    // ugly workaround
-    fn get(&mut self, index: usize) -> Result<bool> {
-        self.get64(index as i64)
+        let next_index = ctx.index + 1;
+        self.check_invariants(ctx, next_index, doc_id)?;
+        Ok((doc_id == ctx.doc_id, ctx.serialize()))
     }
 
-    // again, workaround
     fn len(&self) -> usize {
         use core::util::math;
 
@@ -154,16 +196,38 @@ impl MutableBits for SparseBits {
 
         self.max_doc as usize
     }
+
+    fn context(&self) -> SparseBitsContext {
+        SparseBitsContext::new(self.first_doc_id)
+    }
+}
+
+impl Bits for SparseBits {
+    fn get_with_ctx(&self, ctx: BitsContext, index: usize) -> Result<(bool, BitsContext)> {
+        let mut ctx = match ctx {
+            Some(c) => SparseBitsContext::deserialize(&c)?,
+            None => self.context(),
+        };
+        self.get64(&mut ctx, index as i64)
+    }
+
+    fn len(&self) -> usize {
+        SparseBits::len(self)
+    }
 }
 
 pub struct SparseLongValues {
-    docs_with_field: SparseBits,
+    docs_with_field: Arc<SparseBits>,
     values: Box<LongValues>,
     missing_value: i64,
 }
 
 impl SparseLongValues {
-    pub fn new(docs_with_field: SparseBits, values: Box<LongValues>, missing_value: i64) -> Self {
+    pub fn new(
+        docs_with_field: Arc<SparseBits>,
+        values: Box<LongValues>,
+        missing_value: i64,
+    ) -> Self {
         SparseLongValues {
             docs_with_field,
             values,
@@ -171,16 +235,16 @@ impl SparseLongValues {
         }
     }
 
-    pub fn docs_with_field_clone(&self) -> SparseBits {
-        self.docs_with_field.clone()
+    pub fn docs_with_field_clone(&self) -> Arc<SparseBits> {
+        Arc::clone(&self.docs_with_field)
     }
 }
 
 impl LongValues for SparseLongValues {
     fn get64(&self, doc_id: i64) -> Result<i64> {
-        let mut docs_with_field = self.docs_with_field_clone();
-        if docs_with_field.get64(doc_id)? {
-            let r = self.values.get64(docs_with_field.index)?;
+        let mut ctx = self.docs_with_field.context();
+        if self.docs_with_field.get64(&mut ctx, doc_id)?.0 {
+            let r = self.values.get64(ctx.index)?;
             Ok(r)
         } else {
             Ok(self.missing_value)

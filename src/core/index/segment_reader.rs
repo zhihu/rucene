@@ -21,9 +21,9 @@ use core::index::SortedSetDocValuesRef;
 use core::index::{FieldInfo, FieldInfos};
 use core::index::{NumericDocValues, NumericDocValuesRef};
 use core::store::IOContext;
+use core::util::BitsRef;
 use core::util::DocId;
 use core::util::MatchAllBits;
-use core::util::{Bits, BitsRef};
 use error::ErrorKind::IllegalArgument;
 use error::Result;
 
@@ -60,7 +60,7 @@ pub struct SegmentReader {
 impl SegmentReader {
     pub fn new(
         si: Arc<SegmentCommitInfo>,
-        live_docs: Bits,
+        live_docs: BitsRef,
         num_docs: i32,
         core: SegmentCoreReaders,
         is_nrt: bool,
@@ -75,7 +75,7 @@ impl SegmentReader {
 
         SegmentReader {
             si,
-            live_docs: Arc::new(live_docs),
+            live_docs,
             num_docs,
             core,
             is_nrt,
@@ -137,7 +137,7 @@ impl SegmentReader {
             )?
         } else {
             assert_eq!(si.del_count, 0);
-            Bits::new(Box::new(MatchAllBits::new(num_docs as usize)))
+            Arc::new(MatchAllBits::new(num_docs as usize))
         };
 
         let doc_values_producer =
@@ -292,7 +292,7 @@ impl LeafReader for SegmentReader {
                 Some(fi) if self.doc_values_producer.get().is_some() => {
                     let dv_producer = self.doc_values_producer.get().unwrap();
                     let dv = dv_producer.get_numeric(fi)?;
-                    let cell = Arc::new(dv);
+                    let cell = Arc::from(dv);
                     v.insert(DocValuesRefEnum::Numeric(Arc::clone(&cell)));
                     Ok(cell)
                 }
@@ -323,7 +323,7 @@ impl LeafReader for SegmentReader {
                 Some(fi) if self.doc_values_producer.get().is_some() => {
                     let dv_producer = self.doc_values_producer.get().unwrap();
                     let dv = dv_producer.get_binary(fi)?;
-                    let cell = Arc::new(dv);
+                    let cell = Arc::from(dv);
                     v.insert(DocValuesRefEnum::Binary(Arc::clone(&cell)));
                     Ok(cell)
                 }
@@ -355,7 +355,7 @@ impl LeafReader for SegmentReader {
                 Some(fi) if self.doc_values_producer.get().is_some() => {
                     let dv_producer = self.doc_values_producer.get().unwrap();
                     let dv = dv_producer.get_sorted(fi)?;
-                    let cell = Arc::new(dv);
+                    let cell = Arc::from(dv);
                     v.insert(DocValuesRefEnum::Sorted(Arc::clone(&cell)));
                     Ok(cell)
                 }
@@ -386,7 +386,7 @@ impl LeafReader for SegmentReader {
                 Some(fi) if self.doc_values_producer.get().is_some() => {
                     let dv_producer = self.doc_values_producer.get().unwrap();
                     let dv = dv_producer.get_sorted_numeric(fi)?;
-                    let cell = Arc::new(dv);
+                    let cell = Arc::from(dv);
                     v.insert(DocValuesRefEnum::SortedNumeric(Arc::clone(&cell)));
                     Ok(cell)
                 }
@@ -417,7 +417,7 @@ impl LeafReader for SegmentReader {
                 Some(fi) if self.doc_values_producer.get().is_some() => {
                     let dv_producer = self.doc_values_producer.get().unwrap();
                     let dv = dv_producer.get_sorted_set(fi)?;
-                    let cell = Arc::new(dv);
+                    let cell = Arc::from(dv);
                     v.insert(DocValuesRefEnum::SortedSet(Arc::clone(&cell)));
                     Ok(cell)
                 }
@@ -460,13 +460,12 @@ impl LeafReader for SegmentReader {
             {
                 let dv_producer = self.doc_values_producer.get().unwrap();
                 let dv = dv_producer.get_docs_with_field(fi)?;
-                let cell = Arc::new(dv);
                 self.docs_with_field_local
                     .get()
                     .unwrap()
                     .borrow_mut()
-                    .insert(field.to_string(), Arc::clone(&cell));
-                Ok(cell)
+                    .insert(field.to_string(), Arc::clone(&dv));
+                Ok(dv)
             }
 
             // FIXME: chain errors

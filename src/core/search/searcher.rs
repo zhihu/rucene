@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::fmt;
 use std::sync::Arc;
 
@@ -135,7 +136,7 @@ impl IndexSearcher {
                 }
 
                 let live_docs = reader.live_docs();
-                match bulk_scorer.score(collector, Some(&live_docs), 0, NO_MORE_DOCS) {
+                match bulk_scorer.score(collector, Some(live_docs.borrow()), 0, NO_MORE_DOCS) {
                     Err(Error(
                         ErrorKind::Collector(collector::ErrorKind::CollectionTerminated),
                         _,

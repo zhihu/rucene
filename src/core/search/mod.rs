@@ -687,6 +687,14 @@ pub mod tests {
         }
 
         fn normalize(&mut self, _norm: f32, _boost: f32) {}
+
+        fn value_for_normalization(&self) -> f32 {
+            0.0
+        }
+
+        fn needs_scores(&self) -> bool {
+            false
+        }
     }
 
     impl fmt::Display for MockSimpleWeight {

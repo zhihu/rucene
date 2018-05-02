@@ -704,9 +704,9 @@ pub mod tests {
     #[derive(Default)]
     pub struct MockBits {}
 
-    impl ImmutableBits for MockBits {
-        fn get(&self, _index: usize) -> Result<bool> {
-            Ok(true)
+    impl Bits for MockBits {
+        fn get_with_ctx(&self, ctx: BitsContext, _index: usize) -> Result<(bool, BitsContext)> {
+            Ok((true, ctx))
         }
 
         fn len(&self) -> usize {
@@ -754,7 +754,7 @@ pub mod tests {
 
             MockLeafReader {
                 doc_base,
-                live_docs: Arc::new(Bits::Immutable(Box::new(MatchAllBits::new(0usize)))),
+                live_docs: Arc::new(MatchAllBits::new(0usize)),
                 field_infos: FieldInfos::new(infos).unwrap(),
             }
         }
@@ -798,11 +798,11 @@ pub mod tests {
         }
 
         fn get_docs_with_field(&self, _field: &str) -> Result<BitsRef> {
-            Ok(Arc::new(Bits::Immutable(Box::new(MockBits::default()))))
+            Ok(Arc::new(MockBits::default()))
         }
 
         fn get_numeric_doc_values(&self, _field: &str) -> Result<NumericDocValuesRef> {
-            Ok(Arc::new(Box::new(MockNumericValues::default())))
+            Ok(Arc::new(MockNumericValues::default()))
         }
 
         fn get_binary_doc_values(&self, _field: &str) -> Result<BinaryDocValuesRef> {

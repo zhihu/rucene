@@ -539,9 +539,10 @@ fn verify_sorted_numeric_doc_values(
         leaf_reader.get_sorted_numeric_doc_values(field_name),
         "failed to get sorted_numeric doc values",
     )?;
+    let mut context = None;
     for doc_id in 0..max_doc {
         let ctx = convert_rucene_result(
-            sorted_numeric_doc_values.set_document(doc_id),
+            sorted_numeric_doc_values.set_document(context, doc_id),
             "failed to set document id",
         )?;
         let count = read_int(input)? as usize;
@@ -567,6 +568,7 @@ fn verify_sorted_numeric_doc_values(
                 return new_error("sorted numeric doc values mismatch");
             }
         }
+        context = Some(ctx)
     }
     Ok(())
 }

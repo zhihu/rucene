@@ -11,7 +11,7 @@ use core::index::SortedDocValues;
 use core::index::SortedNumericDocValues;
 use core::index::SortedSetDocValues;
 use core::index::{DocValuesType, FieldInfo};
-use core::util::Bits;
+use core::util::BitsRef;
 
 use error::ErrorKind::{IllegalArgument, IllegalState};
 use error::Result;
@@ -93,7 +93,7 @@ impl DocValuesFieldsReader {
                                 let segment_read_state =
                                     SegmentReadState::with_suffix(state, &segment_suffix);
                                 let dv_producer = dv_format.fields_producer(&segment_read_state)?;
-                                let dv_producer = Arc::new(dv_producer);
+                                let dv_producer = Arc::from(dv_producer);
                                 vacant.insert(Arc::clone(&dv_producer));
                                 fields.insert(name.to_string(), dv_producer);
                             }
@@ -158,7 +158,7 @@ impl DocValuesProducer for DocValuesFieldsReader {
         }
     }
 
-    fn get_docs_with_field(&self, field: &FieldInfo) -> Result<Bits> {
+    fn get_docs_with_field(&self, field: &FieldInfo) -> Result<BitsRef> {
         match self.fields.get(&field.name) {
             Some(producer) => producer.get_docs_with_field(field),
             None => bail!(IllegalArgument(format!{

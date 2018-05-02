@@ -1,15 +1,18 @@
 use core::index::NumericDocValuesRef;
-use core::util::DocId;
-use core::util::LongValues;
+use core::util::{BitsContext, DocId, LongValues};
 use error::Result;
 
 use std::sync::Arc;
 
-pub type SortedNumericDocValuesContext = (i64, i64);
+pub type SortedNumericDocValuesContext = (i64, i64, BitsContext);
 
 pub trait SortedNumericDocValues: Send + Sync {
     /// positions to the specified document
-    fn set_document(&self, doc: DocId) -> Result<SortedNumericDocValuesContext>;
+    fn set_document(
+        &self,
+        ctx: Option<SortedNumericDocValuesContext>,
+        doc: DocId,
+    ) -> Result<SortedNumericDocValuesContext>;
     /// Retrieve the value for the current document at the specified index.
     /// An index ranges from 0 to count() - 1.
     fn value_at(&self, ctx: &SortedNumericDocValuesContext, index: usize) -> Result<i64>;
@@ -21,7 +24,7 @@ pub trait SortedNumericDocValues: Send + Sync {
     }
 }
 
-pub type SortedNumericDocValuesRef = Arc<Box<SortedNumericDocValues>>;
+pub type SortedNumericDocValuesRef = Arc<SortedNumericDocValues>;
 
 pub struct AddressedSortedNumericDocValues {
     values: Box<LongValues>,
@@ -35,8 +38,13 @@ impl AddressedSortedNumericDocValues {
 }
 
 impl SortedNumericDocValues for AddressedSortedNumericDocValues {
-    fn set_document(&self, doc: DocId) -> Result<SortedNumericDocValuesContext> {
-        Ok((self.ord_index.get(doc)?, self.ord_index.get(doc + 1)?))
+    fn set_document(
+        &self,
+        ctx: Option<SortedNumericDocValuesContext>,
+        doc: DocId,
+    ) -> Result<SortedNumericDocValuesContext> {
+        let bc = ctx.and_then(|c| c.2);
+        Ok((self.ord_index.get(doc)?, self.ord_index.get(doc + 1)?, bc))
     }
 
     fn value_at(&self, ctx: &SortedNumericDocValuesContext, index: usize) -> Result<i64> {
@@ -66,11 +74,17 @@ impl TabledSortedNumericDocValues {
 }
 
 impl SortedNumericDocValues for TabledSortedNumericDocValues {
-    fn set_document(&self, doc: DocId) -> Result<SortedNumericDocValuesContext> {
+    fn set_document(
+        &self,
+        ctx: Option<SortedNumericDocValuesContext>,
+        doc: DocId,
+    ) -> Result<SortedNumericDocValuesContext> {
         let ord = self.ordinals.get(doc)? as usize;
+        let bc = ctx.and_then(|c| c.2);
         Ok((
             i64::from(self.offsets[ord]),
             i64::from(self.offsets[ord + 1]),
+            bc,
         ))
     }
 

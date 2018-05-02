@@ -123,7 +123,7 @@ mod tests {
     #[test]
     fn test_score() {
         let docs = vec![1, 2, 3, 4, 5];
-        let bits = Bits::Immutable(Box::new(MatchAllBits::new(docs.len())));
+        let bits = MatchAllBits::new(docs.len());
         let mut scorer_box = create_mock_scorer(docs);
         let leaf_reader = MockLeafReader::new(0);
         let mut top_collector = TopDocsCollector::new(3);

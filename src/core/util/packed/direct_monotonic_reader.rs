@@ -58,7 +58,7 @@ impl DirectMonotonicReader {
 
     pub fn get_instance(
         meta: &DirectMonotonicMeta,
-        data: &Arc<Box<RandomAccessInput>>,
+        data: &Arc<RandomAccessInput>,
     ) -> Result<Box<LongValues>> {
         let mut readers: Vec<Box<LongValues>> = Vec::new();
         for i in 0..meta.num_blocks as usize {

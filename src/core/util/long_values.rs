@@ -1,5 +1,5 @@
 use core::index::NumericDocValues;
-use core::util::Bits;
+use core::util::BitsRef;
 use core::util::DocId;
 use error::Result;
 
@@ -23,12 +23,12 @@ impl NumericDocValues for EmptyLongValues {
 }
 
 pub struct LiveLongValues {
-    live: Bits,
+    live: BitsRef,
     constant: i64,
 }
 
 impl LiveLongValues {
-    pub fn new(live: Bits, constant: i64) -> Self {
+    pub fn new(live: BitsRef, constant: i64) -> Self {
         LiveLongValues { live, constant }
     }
 }

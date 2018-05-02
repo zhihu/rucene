@@ -7,4 +7,4 @@ pub trait NumericDocValues: Send + Sync {
     fn get(&self, doc_id: DocId) -> Result<i64>;
 }
 
-pub type NumericDocValuesRef = Arc<Box<NumericDocValues>>;
+pub type NumericDocValuesRef = Arc<NumericDocValues>;

@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-pub type DocValuesProducerRef = Arc<Box<DocValuesProducer>>;
+pub type DocValuesProducerRef = Arc<DocValuesProducer>;
 
 use core::codec::format::PointsFormat;
 use core::codec::format::{CompoundFormat, LiveDocsFormat, NormsFormat};
