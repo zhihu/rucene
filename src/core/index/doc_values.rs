@@ -6,7 +6,7 @@ use core::index::SingletonSortedSetDocValues;
 use core::index::SortedDocValuesTermIterator;
 use core::index::NO_MORE_ORDS;
 use core::index::{BinaryDocValues, BinaryDocValuesRef};
-use core::index::{NumericDocValues, NumericDocValuesRef};
+use core::index::{NumericDocValues, NumericDocValuesContext, NumericDocValuesRef};
 use core::index::{SortedDocValues, SortedDocValuesRef};
 use core::index::{SortedNumericDocValues, SortedNumericDocValuesRef};
 use core::index::{SortedSetDocValues, SortedSetDocValuesRef};
@@ -67,8 +67,12 @@ impl BinaryDocValues for EmptySortedDocValues {
 
 pub struct EmptyNumericDocValues;
 impl NumericDocValues for EmptyNumericDocValues {
-    fn get(&self, _doc_id: DocId) -> Result<i64> {
-        Ok(0)
+    fn get_with_ctx(
+        &self,
+        ctx: NumericDocValuesContext,
+        _doc_id: DocId,
+    ) -> Result<(i64, NumericDocValuesContext)> {
+        Ok((0, ctx))
     }
 }
 

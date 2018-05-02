@@ -1,6 +1,6 @@
-use core::index::NumericDocValues;
+use core::index::{NumericDocValues, NumericDocValuesContext};
 use core::store::RandomAccessInput;
-use core::util::LongValues;
+use core::util::{LongValues, LongValuesContext};
 use error::ErrorKind::IllegalArgument;
 use error::ErrorKind::RuntimeError;
 use error::Result;
@@ -57,7 +57,11 @@ impl DirectPackedReader1 {
 }
 
 impl LongValues for DirectPackedReader1 {
-    fn get64(&self, index: i64) -> Result<i64> {
+    fn get64_with_ctx(
+        &self,
+        ctx: LongValuesContext,
+        index: i64,
+    ) -> Result<(i64, LongValuesContext)> {
         if index < 0 {
             bail!(IllegalArgument(format!(
                 "negative index encountered: {}",
@@ -69,13 +73,17 @@ impl LongValues for DirectPackedReader1 {
         let byte_dance = self.random_access_input
             .read_byte(self.offset + (index >> 3))?;
 
-        Ok(i64::from((byte_dance >> shift) & 0x1))
+        Ok((i64::from((byte_dance >> shift) & 0x1), ctx))
     }
 }
 
 impl NumericDocValues for DirectPackedReader1 {
-    fn get(&self, doc_id: DocId) -> Result<i64> {
-        LongValues::get64(self, i64::from(doc_id))
+    fn get_with_ctx(
+        &self,
+        ctx: NumericDocValuesContext,
+        doc_id: DocId,
+    ) -> Result<(i64, NumericDocValuesContext)> {
+        LongValues::get64_with_ctx(self, ctx, i64::from(doc_id))
     }
 }
 
@@ -95,7 +103,11 @@ impl DirectPackedReader2 {
 }
 
 impl LongValues for DirectPackedReader2 {
-    fn get64(&self, index: i64) -> Result<i64> {
+    fn get64_with_ctx(
+        &self,
+        ctx: LongValuesContext,
+        index: i64,
+    ) -> Result<(i64, LongValuesContext)> {
         if index < 0 {
             bail!(IllegalArgument(format!(
                 "negative index encountered: {}",
@@ -112,13 +124,17 @@ impl LongValues for DirectPackedReader2 {
             Err(ref e) => bail!(RuntimeError(format!("{:?}", e))),
         };
 
-        Ok(i64::from((byte_dance >> shift) & 0x3))
+        Ok((i64::from((byte_dance >> shift) & 0x3), ctx))
     }
 }
 
 impl NumericDocValues for DirectPackedReader2 {
-    fn get(&self, doc_id: DocId) -> Result<i64> {
-        LongValues::get64(self, i64::from(doc_id))
+    fn get_with_ctx(
+        &self,
+        ctx: NumericDocValuesContext,
+        doc_id: DocId,
+    ) -> Result<(i64, NumericDocValuesContext)> {
+        LongValues::get64_with_ctx(self, ctx, i64::from(doc_id))
     }
 }
 
@@ -138,7 +154,11 @@ impl DirectPackedReader4 {
 }
 
 impl LongValues for DirectPackedReader4 {
-    fn get64(&self, index: i64) -> Result<i64> {
+    fn get64_with_ctx(
+        &self,
+        ctx: LongValuesContext,
+        index: i64,
+    ) -> Result<(i64, LongValuesContext)> {
         if index < 0 {
             bail!(IllegalArgument(format!(
                 "negative index encountered: {}",
@@ -155,13 +175,17 @@ impl LongValues for DirectPackedReader4 {
             Err(ref e) => bail!(RuntimeError(format!("{:?}", e))),
         };
 
-        Ok(i64::from((byte_dance >> shift) & 0xF))
+        Ok((i64::from((byte_dance >> shift) & 0xF), ctx))
     }
 }
 
 impl NumericDocValues for DirectPackedReader4 {
-    fn get(&self, doc_id: DocId) -> Result<i64> {
-        LongValues::get64(self, i64::from(doc_id))
+    fn get_with_ctx(
+        &self,
+        ctx: NumericDocValuesContext,
+        doc_id: DocId,
+    ) -> Result<(i64, NumericDocValuesContext)> {
+        LongValues::get64_with_ctx(self, ctx, i64::from(doc_id))
     }
 }
 
@@ -181,7 +205,11 @@ impl DirectPackedReader8 {
 }
 
 impl LongValues for DirectPackedReader8 {
-    fn get64(&self, index: i64) -> Result<i64> {
+    fn get64_with_ctx(
+        &self,
+        ctx: LongValuesContext,
+        index: i64,
+    ) -> Result<(i64, LongValuesContext)> {
         if index < 0 {
             bail!(IllegalArgument(format!(
                 "negative index encountered: {}",
@@ -194,13 +222,17 @@ impl LongValues for DirectPackedReader8 {
             Err(ref e) => bail!(RuntimeError(format!("{:?}", e))),
         };
 
-        Ok(i64::from(byte_dance))
+        Ok((i64::from(byte_dance), ctx))
     }
 }
 
 impl NumericDocValues for DirectPackedReader8 {
-    fn get(&self, doc_id: DocId) -> Result<i64> {
-        LongValues::get64(self, i64::from(doc_id))
+    fn get_with_ctx(
+        &self,
+        ctx: NumericDocValuesContext,
+        doc_id: DocId,
+    ) -> Result<(i64, NumericDocValuesContext)> {
+        LongValues::get64_with_ctx(self, ctx, i64::from(doc_id))
     }
 }
 
@@ -220,7 +252,11 @@ impl DirectPackedReader12 {
 }
 
 impl LongValues for DirectPackedReader12 {
-    fn get64(&self, index: i64) -> Result<i64> {
+    fn get64_with_ctx(
+        &self,
+        ctx: LongValuesContext,
+        index: i64,
+    ) -> Result<(i64, LongValuesContext)> {
         if index < 0 {
             bail!(IllegalArgument(format!(
                 "negative index encountered: {}",
@@ -236,13 +272,17 @@ impl LongValues for DirectPackedReader12 {
             Err(ref e) => bail!(RuntimeError(format!("{:?}", e))),
         };
 
-        Ok(i64::from((word >> shift) & 0xFFF))
+        Ok((i64::from((word >> shift) & 0xFFF), ctx))
     }
 }
 
 impl NumericDocValues for DirectPackedReader12 {
-    fn get(&self, doc_id: DocId) -> Result<i64> {
-        LongValues::get64(self, i64::from(doc_id))
+    fn get_with_ctx(
+        &self,
+        ctx: NumericDocValuesContext,
+        doc_id: DocId,
+    ) -> Result<(i64, NumericDocValuesContext)> {
+        LongValues::get64_with_ctx(self, ctx, i64::from(doc_id))
     }
 }
 
@@ -262,7 +302,11 @@ impl DirectPackedReader16 {
 }
 
 impl LongValues for DirectPackedReader16 {
-    fn get64(&self, index: i64) -> Result<i64> {
+    fn get64_with_ctx(
+        &self,
+        ctx: LongValuesContext,
+        index: i64,
+    ) -> Result<(i64, LongValuesContext)> {
         if index < 0 {
             bail!(IllegalArgument(format!(
                 "negative index encountered: {}",
@@ -277,13 +321,17 @@ impl LongValues for DirectPackedReader16 {
             Err(ref e) => bail!(RuntimeError(format!("{:?}", e))),
         };
 
-        Ok(i64::from(word))
+        Ok((i64::from(word), ctx))
     }
 }
 
 impl NumericDocValues for DirectPackedReader16 {
-    fn get(&self, doc_id: DocId) -> Result<i64> {
-        LongValues::get64(self, i64::from(doc_id))
+    fn get_with_ctx(
+        &self,
+        ctx: NumericDocValuesContext,
+        doc_id: DocId,
+    ) -> Result<(i64, NumericDocValuesContext)> {
+        LongValues::get64_with_ctx(self, ctx, i64::from(doc_id))
     }
 }
 
@@ -303,7 +351,11 @@ impl DirectPackedReader20 {
 }
 
 impl LongValues for DirectPackedReader20 {
-    fn get64(&self, index: i64) -> Result<i64> {
+    fn get64_with_ctx(
+        &self,
+        ctx: LongValuesContext,
+        index: i64,
+    ) -> Result<(i64, LongValuesContext)> {
         if index < 0 {
             bail!(IllegalArgument(format!(
                 "negative index encountered: {}",
@@ -320,13 +372,17 @@ impl LongValues for DirectPackedReader20 {
 
         let shift = ((index + 1) & 0x1) << 2;
 
-        Ok(i64::from((dword >> shift) & 0xFFFFF))
+        Ok((i64::from((dword >> shift) & 0xFFFFF), ctx))
     }
 }
 
 impl NumericDocValues for DirectPackedReader20 {
-    fn get(&self, doc_id: DocId) -> Result<i64> {
-        LongValues::get64(self, i64::from(doc_id))
+    fn get_with_ctx(
+        &self,
+        ctx: NumericDocValuesContext,
+        doc_id: DocId,
+    ) -> Result<(i64, NumericDocValuesContext)> {
+        LongValues::get64_with_ctx(self, ctx, i64::from(doc_id))
     }
 }
 
@@ -346,7 +402,11 @@ impl DirectPackedReader24 {
 }
 
 impl LongValues for DirectPackedReader24 {
-    fn get64(&self, index: i64) -> Result<i64> {
+    fn get64_with_ctx(
+        &self,
+        ctx: LongValuesContext,
+        index: i64,
+    ) -> Result<(i64, LongValuesContext)> {
         if index < 0 {
             bail!(IllegalArgument(format!(
                 "negative index encountered: {}",
@@ -355,15 +415,19 @@ impl LongValues for DirectPackedReader24 {
         }
 
         match self.random_access_input.read_int(self.offset + 3 * index) {
-            Ok(v) => Ok(i64::from(v as u32 >> 8)),
+            Ok(v) => Ok((i64::from(v as u32 >> 8), ctx)),
             Err(ref e) => bail!(RuntimeError(format!("{:?}", e))),
         }
     }
 }
 
 impl NumericDocValues for DirectPackedReader24 {
-    fn get(&self, doc_id: DocId) -> Result<i64> {
-        LongValues::get64(self, i64::from(doc_id))
+    fn get_with_ctx(
+        &self,
+        ctx: NumericDocValuesContext,
+        doc_id: DocId,
+    ) -> Result<(i64, NumericDocValuesContext)> {
+        LongValues::get64_with_ctx(self, ctx, i64::from(doc_id))
     }
 }
 
@@ -383,7 +447,11 @@ impl DirectPackedReader28 {
 }
 
 impl LongValues for DirectPackedReader28 {
-    fn get64(&self, index: i64) -> Result<i64> {
+    fn get64_with_ctx(
+        &self,
+        ctx: LongValuesContext,
+        index: i64,
+    ) -> Result<(i64, LongValuesContext)> {
         if index < 0 {
             bail!(IllegalArgument(format!(
                 "negative index encountered: {}",
@@ -394,15 +462,19 @@ impl LongValues for DirectPackedReader28 {
         let offset = (index * 7) >> 1;
         let shift = ((index + 1) & 0x1) << 2;
         match self.random_access_input.read_int(self.offset + offset) {
-            Ok(v) => Ok(i64::from((v as u32 >> shift) & 0x0FFF_FFFF)),
+            Ok(v) => Ok((i64::from((v as u32 >> shift) & 0x0FFF_FFFF), ctx)),
             Err(ref e) => bail!(RuntimeError(format!("{:?}", e))),
         }
     }
 }
 
 impl NumericDocValues for DirectPackedReader28 {
-    fn get(&self, doc_id: DocId) -> Result<i64> {
-        LongValues::get64(self, i64::from(doc_id))
+    fn get_with_ctx(
+        &self,
+        ctx: NumericDocValuesContext,
+        doc_id: DocId,
+    ) -> Result<(i64, NumericDocValuesContext)> {
+        LongValues::get64_with_ctx(self, ctx, i64::from(doc_id))
     }
 }
 
@@ -422,7 +494,11 @@ impl DirectPackedReader32 {
 }
 
 impl LongValues for DirectPackedReader32 {
-    fn get64(&self, index: i64) -> Result<i64> {
+    fn get64_with_ctx(
+        &self,
+        ctx: LongValuesContext,
+        index: i64,
+    ) -> Result<(i64, LongValuesContext)> {
         if index < 0 {
             bail!(IllegalArgument(format!(
                 "negative index encountered: {}",
@@ -433,15 +509,19 @@ impl LongValues for DirectPackedReader32 {
         match self.random_access_input
             .read_int(self.offset + (index << 2))
         {
-            Ok(v) => Ok(i64::from(v as u32)),
+            Ok(v) => Ok((i64::from(v as u32), ctx)),
             Err(ref e) => bail!(RuntimeError(format!("{:?}", e))),
         }
     }
 }
 
 impl NumericDocValues for DirectPackedReader32 {
-    fn get(&self, doc_id: DocId) -> Result<i64> {
-        LongValues::get64(self, i64::from(doc_id))
+    fn get_with_ctx(
+        &self,
+        ctx: NumericDocValuesContext,
+        doc_id: DocId,
+    ) -> Result<(i64, NumericDocValuesContext)> {
+        LongValues::get64_with_ctx(self, ctx, i64::from(doc_id))
     }
 }
 
@@ -461,7 +541,11 @@ impl DirectPackedReader40 {
 }
 
 impl LongValues for DirectPackedReader40 {
-    fn get64(&self, index: i64) -> Result<i64> {
+    fn get64_with_ctx(
+        &self,
+        ctx: LongValuesContext,
+        index: i64,
+    ) -> Result<(i64, LongValuesContext)> {
         if index < 0 {
             bail!(IllegalArgument(format!(
                 "negative index encountered: {}",
@@ -470,15 +554,19 @@ impl LongValues for DirectPackedReader40 {
         }
 
         match self.random_access_input.read_long(self.offset + index * 5) {
-            Ok(w) => Ok(((w as u64) >> 24) as i64),
+            Ok(w) => Ok((((w as u64) >> 24) as i64, ctx)),
             Err(ref e) => bail!(RuntimeError(format!("{:?}", e))),
         }
     }
 }
 
 impl NumericDocValues for DirectPackedReader40 {
-    fn get(&self, doc_id: DocId) -> Result<i64> {
-        LongValues::get64(self, i64::from(doc_id))
+    fn get_with_ctx(
+        &self,
+        ctx: NumericDocValuesContext,
+        doc_id: DocId,
+    ) -> Result<(i64, NumericDocValuesContext)> {
+        LongValues::get64_with_ctx(self, ctx, i64::from(doc_id))
     }
 }
 
@@ -498,7 +586,11 @@ impl DirectPackedReader48 {
 }
 
 impl LongValues for DirectPackedReader48 {
-    fn get64(&self, index: i64) -> Result<i64> {
+    fn get64_with_ctx(
+        &self,
+        ctx: LongValuesContext,
+        index: i64,
+    ) -> Result<(i64, LongValuesContext)> {
         if index < 0 {
             bail!(IllegalArgument(format!(
                 "negative index encountered: {}",
@@ -507,15 +599,19 @@ impl LongValues for DirectPackedReader48 {
         }
 
         match self.random_access_input.read_long(self.offset + index * 6) {
-            Ok(w) => Ok(((w as u64) >> 16) as i64),
+            Ok(w) => Ok((((w as u64) >> 16) as i64, ctx)),
             Err(ref e) => bail!(RuntimeError(format!("{:?}", e))),
         }
     }
 }
 
 impl NumericDocValues for DirectPackedReader48 {
-    fn get(&self, doc_id: DocId) -> Result<i64> {
-        LongValues::get64(self, i64::from(doc_id))
+    fn get_with_ctx(
+        &self,
+        ctx: NumericDocValuesContext,
+        doc_id: DocId,
+    ) -> Result<(i64, NumericDocValuesContext)> {
+        LongValues::get64_with_ctx(self, ctx, i64::from(doc_id))
     }
 }
 
@@ -535,7 +631,11 @@ impl DirectPackedReader56 {
 }
 
 impl LongValues for DirectPackedReader56 {
-    fn get64(&self, index: i64) -> Result<i64> {
+    fn get64_with_ctx(
+        &self,
+        ctx: LongValuesContext,
+        index: i64,
+    ) -> Result<(i64, LongValuesContext)> {
         if index < 0 {
             bail!(IllegalArgument(format!(
                 "negative index encountered: {}",
@@ -544,15 +644,19 @@ impl LongValues for DirectPackedReader56 {
         }
 
         match self.random_access_input.read_long(self.offset + 7 * index) {
-            Ok(v) => Ok(((v as u64) >> 8) as i64),
+            Ok(v) => Ok((((v as u64) >> 8) as i64, ctx)),
             Err(ref e) => bail!(RuntimeError(format!("{:?}", e))),
         }
     }
 }
 
 impl NumericDocValues for DirectPackedReader56 {
-    fn get(&self, doc_id: DocId) -> Result<i64> {
-        LongValues::get64(self, i64::from(doc_id))
+    fn get_with_ctx(
+        &self,
+        ctx: NumericDocValuesContext,
+        doc_id: DocId,
+    ) -> Result<(i64, NumericDocValuesContext)> {
+        LongValues::get64_with_ctx(self, ctx, i64::from(doc_id))
     }
 }
 
@@ -572,7 +676,11 @@ impl DirectPackedReader64 {
 }
 
 impl LongValues for DirectPackedReader64 {
-    fn get64(&self, index: i64) -> Result<i64> {
+    fn get64_with_ctx(
+        &self,
+        ctx: LongValuesContext,
+        index: i64,
+    ) -> Result<(i64, LongValuesContext)> {
         if index < 0 {
             bail!(IllegalArgument(format!(
                 "negative index encountered: {}",
@@ -583,14 +691,18 @@ impl LongValues for DirectPackedReader64 {
         match self.random_access_input
             .read_long(self.offset + (index << 3))
         {
-            Ok(v) => Ok(v),
+            Ok(v) => Ok((v, ctx)),
             Err(ref e) => bail!(RuntimeError(format!("{:?}", e))),
         }
     }
 }
 
 impl NumericDocValues for DirectPackedReader64 {
-    fn get(&self, doc_id: DocId) -> Result<i64> {
-        LongValues::get64(self, i64::from(doc_id))
+    fn get_with_ctx(
+        &self,
+        ctx: NumericDocValuesContext,
+        doc_id: DocId,
+    ) -> Result<(i64, NumericDocValuesContext)> {
+        LongValues::get64_with_ctx(self, ctx, i64::from(doc_id))
     }
 }

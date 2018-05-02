@@ -1,9 +1,9 @@
-use core::index::NumericDocValues;
+use core::index::{NumericDocValues, NumericDocValuesContext};
 use core::store::IndexInput;
 use core::store::RandomAccessInput;
 use core::util::packed::DirectReader;
 use core::util::DocId;
-use core::util::{EmptyLongValues, LongValues};
+use core::util::{EmptyLongValues, LongValues, LongValuesContext};
 use error::Result;
 
 use std::sync::Arc;
@@ -91,16 +91,29 @@ pub struct MixinMonotonicLongValues {
 }
 
 impl LongValues for MixinMonotonicLongValues {
-    fn get64(&self, index: i64) -> Result<i64> {
+    fn get64_with_ctx(
+        &self,
+        ctx: LongValuesContext,
+        index: i64,
+    ) -> Result<(i64, LongValuesContext)> {
+        // we know all readers don't require context
         let block = ((index as u64) >> self.block_shift) as usize;
         let block_index: i64 = index & ((1 << self.block_shift) - 1);
-        let delta = LongValues::get64(self.readers[block].as_ref(), block_index)?;
-        Ok(self.mins[block] + (self.avgs[block] * block_index as f32) as i64 + delta)
+        let (delta, _) =
+            LongValues::get64_with_ctx(self.readers[block].as_ref(), None, block_index)?;
+        Ok((
+            self.mins[block] + (self.avgs[block] * block_index as f32) as i64 + delta,
+            ctx,
+        ))
     }
 }
 
 impl NumericDocValues for MixinMonotonicLongValues {
-    fn get(&self, doc_id: DocId) -> Result<i64> {
-        LongValues::get64(self, i64::from(doc_id))
+    fn get_with_ctx(
+        &self,
+        ctx: NumericDocValuesContext,
+        doc_id: DocId,
+    ) -> Result<(i64, NumericDocValuesContext)> {
+        LongValues::get64_with_ctx(self, ctx, i64::from(doc_id))
     }
 }

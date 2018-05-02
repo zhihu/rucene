@@ -1,9 +1,9 @@
-use core::index::NumericDocValues;
+use core::index::{NumericDocValues, NumericDocValuesContext};
 use core::store::IndexInput;
 use core::util::packed::PackedIntsNullReader;
 use core::util::packed_misc;
 use core::util::DocId;
-use core::util::LongValues;
+use core::util::{LongValues, LongValuesContext};
 use error::ErrorKind::{CorruptIndex, IllegalArgument};
 use error::Result;
 
@@ -92,7 +92,11 @@ impl MonotonicBlockPackedReader {
 }
 
 impl LongValues for MonotonicBlockPackedReader {
-    fn get64(&self, index: i64) -> Result<i64> {
+    fn get64_with_ctx(
+        &self,
+        ctx: LongValuesContext,
+        index: i64,
+    ) -> Result<(i64, LongValuesContext)> {
         if !(index >= 0 && index < self.value_count as i64) {
             bail!(IllegalArgument(format!("index {} out of range", index)))
         }
@@ -100,12 +104,16 @@ impl LongValues for MonotonicBlockPackedReader {
         let idx = (index & (i64::from(self.block_mask))) as i32;
         let val = Self::expected(self.min_values[block], self.averages[block], idx)
             + self.sub_readers[block].get(idx as usize);
-        Ok(val)
+        Ok((val, ctx))
     }
 }
 
 impl NumericDocValues for MonotonicBlockPackedReader {
-    fn get(&self, doc_id: DocId) -> Result<i64> {
-        LongValues::get64(self, i64::from(doc_id))
+    fn get_with_ctx(
+        &self,
+        ctx: NumericDocValuesContext,
+        doc_id: DocId,
+    ) -> Result<(i64, NumericDocValuesContext)> {
+        LongValues::get64_with_ctx(self, ctx, i64::from(doc_id))
     }
 }

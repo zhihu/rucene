@@ -1,8 +1,8 @@
 use core::codec::codec_util;
 use core::codec::format::NormsFormat;
 use core::codec::NormsProducer;
-use core::index::NumericDocValues;
 use core::index::{segment_file_name, FieldInfo, FieldInfos, SegmentReadState};
+use core::index::{NumericDocValues, NumericDocValuesContext};
 use core::store::IndexInput;
 use core::store::RandomAccessInput;
 use core::util::DocId;
@@ -197,8 +197,12 @@ impl NormsProducer for Lucene53NormsProducer {
 struct ScalarNumericDocValue(i64);
 
 impl NumericDocValues for ScalarNumericDocValue {
-    fn get(&self, _doc_id: DocId) -> Result<i64> {
-        Ok(self.0)
+    fn get_with_ctx(
+        &self,
+        ctx: NumericDocValuesContext,
+        _doc_id: DocId,
+    ) -> Result<(i64, NumericDocValuesContext)> {
+        Ok((self.0, ctx))
     }
 }
 
@@ -226,8 +230,12 @@ impl<F> NumericDocValues for RandomAccessNumericDocValues<F>
 where
     F: Fn(&RandomAccessInput, DocId) -> Result<i64> + Send + Sync,
 {
-    fn get(&self, doc_id: DocId) -> Result<i64> {
+    fn get_with_ctx(
+        &self,
+        ctx: NumericDocValuesContext,
+        doc_id: DocId,
+    ) -> Result<(i64, NumericDocValuesContext)> {
         let consumer = &self.consumer;
-        consumer(self.input.as_ref(), doc_id)
+        consumer(self.input.as_ref(), doc_id).map(|x| (x, ctx))
     }
 }
