@@ -8,7 +8,7 @@ use core::index::point_values::PointValues;
 use core::index::FieldInfos;
 use core::index::{SegmentCommitInfo, SegmentInfo, SegmentReadState, SegmentWriteState};
 use core::store::{DirectoryRc, IOContext};
-use core::util::Bits;
+use core::util::{Bits, BitsRef};
 use error::Result;
 use std::sync::Arc;
 
@@ -192,16 +192,16 @@ pub trait NormsFormat {
 /// @lucene.experimental */
 pub trait LiveDocsFormat {
     /// Creates a new Bits, with all bits set, for the specified size.
-    fn new_live_docs(&self, size: i32) -> Result<Bits>;
+    fn new_live_docs(&self, size: i32) -> Result<BitsRef>;
     /// Creates a new mutablebits of the same bits set and size of existing.
-    fn new_live_docs_from_existing(&self, existing: &Bits) -> Result<Bits>;
+    fn new_live_docs_from_existing(&self, existing: &Bits) -> Result<BitsRef>;
     /// Read live docs bits.
     fn read_live_docs(
         &self,
         dir: DirectoryRc,
         info: &SegmentCommitInfo,
         context: &IOContext,
-    ) -> Result<Bits>;
+    ) -> Result<BitsRef>;
 
     /// Persist live docs bits.  Use {@link
     /// SegmentCommitInfo#getNextDelGen} to determine the

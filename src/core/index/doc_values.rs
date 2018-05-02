@@ -13,7 +13,9 @@ use core::index::{SortedSetDocValues, SortedSetDocValuesRef};
 use core::util::DocId;
 use error::Result;
 
-use core::util::{Bits, BitsRef, ImmutableBits, MatchNoBits};
+use core::util::{Bits, BitsContext, BitsRef, MatchNoBits};
+
+use std::sync::Arc;
 
 pub struct EmptyBinaryDocValues;
 
@@ -85,8 +87,7 @@ impl DocValues {
     /// An empty SortedNumericDocValues which returns zero values for every document
     pub fn empty_sorted_numeric(max_doc: usize) -> Box<SortedNumericDocValues> {
         let dv = Box::new(DocValues::empty_numeric());
-        let mybox = Box::new(MatchNoBits::new(max_doc));
-        let docs_with_field = Bits::new(mybox);
+        let docs_with_field = Arc::new(MatchNoBits::new(max_doc));
         Box::new(SingletonSortedNumericDocValues::new(dv, docs_with_field))
     }
 
@@ -101,24 +102,24 @@ impl DocValues {
 
     pub fn singleton_sorted_numeric_doc_values(
         numeric_doc_values_in: Box<NumericDocValues>,
-        docs_with_field: Bits,
+        docs_with_field: BitsRef,
     ) -> SingletonSortedNumericDocValues {
         SingletonSortedNumericDocValues::new(numeric_doc_values_in, docs_with_field)
     }
 
-    pub fn docs_with_value_sorted(dv: Box<SortedDocValues>, max_doc: i32) -> Bits {
-        let boxed = SortedDocValuesBits { dv, max_doc };
-        Bits::new(Box::new(boxed))
+    pub fn docs_with_value_sorted(dv: Box<SortedDocValues>, max_doc: i32) -> BitsRef {
+        Arc::new(SortedDocValuesBits { dv, max_doc })
     }
 
-    pub fn docs_with_value_sorted_set(dv: Box<SortedSetDocValues>, max_doc: i32) -> Bits {
-        let boxed = SortedSetDocValuesBits { dv, max_doc };
-        Bits::new(Box::new(boxed))
+    pub fn docs_with_value_sorted_set(dv: Box<SortedSetDocValues>, max_doc: i32) -> BitsRef {
+        Arc::new(SortedSetDocValuesBits { dv, max_doc })
     }
 
-    pub fn docs_with_value_sorted_numeric(dv: Box<SortedNumericDocValues>, max_doc: i32) -> Bits {
-        let boxed = SortedNumericDocValuesBits { dv, max_doc };
-        Bits::new(Box::new(boxed))
+    pub fn docs_with_value_sorted_numeric(
+        dv: Box<SortedNumericDocValues>,
+        max_doc: i32,
+    ) -> BitsRef {
+        Arc::new(SortedNumericDocValuesBits { dv, max_doc })
     }
 
     pub fn get_docs_with_field(reader: &LeafReader, field: &str) -> Result<BitsRef> {
@@ -159,10 +160,10 @@ struct SortedDocValuesBits {
     max_doc: i32,
 }
 
-impl ImmutableBits for SortedDocValuesBits {
-    fn get(&self, index: usize) -> Result<bool> {
+impl Bits for SortedDocValuesBits {
+    fn get_with_ctx(&self, ctx: BitsContext, index: usize) -> Result<(bool, BitsContext)> {
         let ord = self.dv.get_ord(index as DocId)?;
-        Ok(ord >= 0)
+        Ok((ord >= 0, ctx))
     }
 
     fn len(&self) -> usize {
@@ -175,11 +176,11 @@ struct SortedSetDocValuesBits {
     max_doc: i32,
 }
 
-impl ImmutableBits for SortedSetDocValuesBits {
-    fn get(&self, index: usize) -> Result<bool> {
-        let mut ctx = self.dv.set_document(index as DocId)?;
-        let ord = self.dv.next_ord(&mut ctx)?;
-        Ok(ord != NO_MORE_ORDS)
+impl Bits for SortedSetDocValuesBits {
+    fn get_with_ctx(&self, ctx: BitsContext, index: usize) -> Result<(bool, BitsContext)> {
+        let mut dv_ctx = self.dv.set_document(index as DocId)?;
+        let ord = self.dv.next_ord(&mut dv_ctx)?;
+        Ok((ord != NO_MORE_ORDS, ctx))
     }
     fn len(&self) -> usize {
         self.max_doc as usize
@@ -191,10 +192,11 @@ struct SortedNumericDocValuesBits {
     max_doc: i32,
 }
 
-impl ImmutableBits for SortedNumericDocValuesBits {
-    fn get(&self, index: usize) -> Result<bool> {
-        let ctx = self.dv.set_document(index as DocId)?;
-        Ok(self.dv.count(&ctx) != 0)
+impl Bits for SortedNumericDocValuesBits {
+    fn get_with_ctx(&self, ctx: BitsContext, index: usize) -> Result<(bool, BitsContext)> {
+        let dv_ctx = self.dv
+            .set_document(ctx.map(|c| (0, 0, Some(c))), index as DocId)?;
+        Ok((self.dv.count(&dv_ctx) != 0, ctx))
     }
     fn len(&self) -> usize {
         self.max_doc as usize

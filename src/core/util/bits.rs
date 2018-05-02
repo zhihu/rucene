@@ -1,72 +1,20 @@
 use core::store::IndexInput;
 use core::store::RandomAccessInput;
 use error::Result;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-pub trait ImmutableBits: Send + Sync {
-    fn get(&self, index: usize) -> Result<bool>;
+pub type BitsContext = Option<[u8; 64]>;
+
+pub trait Bits: Send + Sync {
+    fn get_with_ctx(&self, ctx: BitsContext, index: usize) -> Result<(bool, BitsContext)>;
+    fn get(&self, index: usize) -> Result<bool> {
+        self.get_with_ctx(None, index).map(|x| x.0)
+    }
     fn id(&self) -> i32 {
         0
     }
     fn len(&self) -> usize;
     fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-}
-
-pub trait MutableBits: Send + Sync {
-    fn get(&mut self, index: usize) -> Result<bool>;
-    fn id(&self) -> i32 {
-        0
-    }
-    fn len(&self) -> usize;
-    fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-}
-
-pub enum Bits {
-    Immutable(Box<ImmutableBits>),
-    Mutable(Mutex<Box<MutableBits>>),
-}
-
-impl Bits {
-    pub fn new(b: Box<ImmutableBits>) -> Self {
-        Bits::Immutable(b)
-    }
-
-    pub fn new_mut(b: Box<MutableBits>) -> Self {
-        Bits::Mutable(Mutex::new(b))
-    }
-
-    pub fn get(&self, index: usize) -> Result<bool> {
-        match *self {
-            Bits::Immutable(ref b) => b.get(index),
-            Bits::Mutable(ref b) => b.lock()?.get(index),
-        }
-    }
-
-    pub fn id(&self) -> i32 {
-        match *self {
-            Bits::Immutable(ref b) => b.id(),
-            Bits::Mutable(ref b) => {
-                let b = b.lock().unwrap();
-                b.id()
-            }
-        }
-    }
-
-    pub fn len(&self) -> usize {
-        match *self {
-            Bits::Immutable(ref b) => b.len(),
-            Bits::Mutable(ref b) => {
-                let b = b.lock().unwrap();
-                b.len()
-            }
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 }
@@ -83,9 +31,9 @@ impl MatchAllBits {
     }
 }
 
-impl ImmutableBits for MatchAllBits {
-    fn get(&self, _index: usize) -> Result<bool> {
-        Ok(true)
+impl Bits for MatchAllBits {
+    fn get_with_ctx(&self, ctx: BitsContext, _index: usize) -> Result<(bool, BitsContext)> {
+        Ok((true, ctx))
     }
 
     fn id(&self) -> i32 {
@@ -107,9 +55,9 @@ impl MatchNoBits {
     }
 }
 
-impl ImmutableBits for MatchNoBits {
-    fn get(&self, _index: usize) -> Result<bool> {
-        Ok(false)
+impl Bits for MatchNoBits {
+    fn get_with_ctx(&self, ctx: BitsContext, _index: usize) -> Result<(bool, BitsContext)> {
+        Ok((false, ctx))
     }
 
     fn len(&self) -> usize {
@@ -118,7 +66,7 @@ impl ImmutableBits for MatchNoBits {
 }
 
 pub struct LiveBits {
-    input: Mutex<Box<RandomAccessInput>>,
+    input: Box<RandomAccessInput>,
     count: usize,
 }
 
@@ -126,16 +74,14 @@ impl LiveBits {
     pub fn new(data: &IndexInput, offset: i64, count: usize) -> Result<LiveBits> {
         let length = (count + 7) >> 3;
         let input = data.random_access_slice(offset, length as i64)?;
-        let input = Mutex::new(input);
         Ok(LiveBits { input, count })
     }
 }
 
-impl ImmutableBits for LiveBits {
-    fn get(&self, index: usize) -> Result<bool> {
-        let input = self.input.lock()?;
-        let bitset = input.read_byte((index >> 3) as i64)?;
-        Ok((bitset & (1u8 << (index & 0x7))) != 0)
+impl Bits for LiveBits {
+    fn get_with_ctx(&self, ctx: BitsContext, index: usize) -> Result<(bool, BitsContext)> {
+        let bitset = self.input.read_byte((index >> 3) as i64)?;
+        Ok(((bitset & (1u8 << (index & 0x7))) != 0, ctx))
     }
 
     fn len(&self) -> usize {
@@ -181,13 +127,13 @@ impl FixedBits {
     }
 }
 
-impl ImmutableBits for FixedBits {
-    fn get(&self, index: usize) -> Result<bool> {
+impl Bits for FixedBits {
+    fn get_with_ctx(&self, ctx: BitsContext, index: usize) -> Result<(bool, BitsContext)> {
         assert!(index < self.num_bits);
         let i = index >> 6;
 
         let bit_mask = 1i64 << (index % 64) as i64;
-        Ok(self.bits[i] & bit_mask != 0)
+        Ok((self.bits[i] & bit_mask != 0, ctx))
     }
 
     fn len(&self) -> usize {

@@ -5,7 +5,7 @@ use core::codec::format::LiveDocsFormat;
 use core::index::{file_name_from_generation, SegmentCommitInfo};
 use core::store::{DirectoryRc, IOContext};
 use core::util::numeric::to_base36;
-use core::util::{Bits, FixedBits};
+use core::util::{Bits, BitsRef, FixedBits};
 use error::ErrorKind::CorruptIndex;
 use error::*;
 
@@ -17,11 +17,11 @@ const VERSION_CURRENT: i32 = VERSION_START;
 pub struct Lucene50LiveDocsFormat {}
 
 impl LiveDocsFormat for Lucene50LiveDocsFormat {
-    fn new_live_docs(&self, _size: i32) -> Result<Bits> {
+    fn new_live_docs(&self, _size: i32) -> Result<BitsRef> {
         unimplemented!()
     }
 
-    fn new_live_docs_from_existing(&self, _existing: &Bits) -> Result<Bits> {
+    fn new_live_docs_from_existing(&self, _existing: &Bits) -> Result<BitsRef> {
         unimplemented!()
     }
 
@@ -30,7 +30,7 @@ impl LiveDocsFormat for Lucene50LiveDocsFormat {
         dir: DirectoryRc,
         info: &SegmentCommitInfo,
         context: &IOContext,
-    ) -> Result<Bits> {
+    ) -> Result<BitsRef> {
         let gen = info.del_gen;
         let name = file_name_from_generation(info.info.name.as_str(), EXTENSION, gen);
         let length = info.info.max_doc as usize;
@@ -55,7 +55,7 @@ impl LiveDocsFormat for Lucene50LiveDocsFormat {
 
         let fix_bits = FixedBits::new(Arc::new(bits), length);
         if fix_bits.length() - fix_bits.cardinality() == info.del_count as usize {
-            Ok(Bits::new(Box::new(fix_bits)))
+            Ok(Arc::new(fix_bits))
         } else {
             bail!(CorruptIndex(format!(
                 "bits.deleted= {} info.delcount= {}",

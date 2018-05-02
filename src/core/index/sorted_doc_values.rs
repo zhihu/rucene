@@ -39,7 +39,7 @@ pub trait SortedDocValues: BinaryDocValues {
     fn term_iterator<'a, 'b: 'a>(&'b self) -> Result<Box<TermIterator + 'a>>;
 }
 
-pub type SortedDocValuesRef = Arc<Box<SortedDocValues>>;
+pub type SortedDocValuesRef = Arc<SortedDocValues>;
 
 pub struct TailoredSortedDocValues {
     ordinals: Box<LongValues>,

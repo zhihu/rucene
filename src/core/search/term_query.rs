@@ -7,7 +7,7 @@ use core::index::term::TermState;
 use core::index::LeafReader;
 use core::index::{Term, TermContext};
 use core::index::{POSTINGS_FREQS, POSTINGS_NONE};
-use core::search::posting_iterator::{PostingIterator, EmptyPostingIterator};
+use core::search::posting_iterator::{EmptyPostingIterator, PostingIterator};
 use core::search::searcher::IndexSearcher;
 use core::search::statistics::*;
 use core::search::term_scorer::TermScorer;
@@ -106,7 +106,11 @@ impl TermWeight {
         }
     }
 
-    fn create_postings_iterator(&self, reader: &LeafReader, flags: i32) -> Result<Box<PostingIterator>> {
+    fn create_postings_iterator(
+        &self,
+        reader: &LeafReader,
+        flags: i32,
+    ) -> Result<Box<PostingIterator>> {
         if let Some(state) = self.term_states.get(&reader.doc_base()) {
             reader.postings_from_state(&self.term, state.as_ref(), flags)
         } else {

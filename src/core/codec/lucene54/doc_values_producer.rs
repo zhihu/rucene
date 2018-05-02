@@ -18,7 +18,7 @@ use core::index::segment_file_name;
 use core::util::packed::MonotonicBlockPackedReader;
 use core::util::packed::{DirectMonotonicMeta, DirectMonotonicReader, DirectReader};
 use core::util::LongValues;
-use core::util::{Bits, ImmutableBits, LiveBits, MatchAllBits, MatchNoBits, SparseBits};
+use core::util::{BitsRef, LiveBits, MatchAllBits, MatchNoBits, SparseBits};
 use core::util::{DeltaLongValues, GcdLongValues, LiveLongValues, SparseLongValues, TableLongValues};
 
 use error::ErrorKind::{CorruptIndex, IllegalArgument};
@@ -802,17 +802,16 @@ impl Lucene54DocValuesProducer {
         Ok(())
     }
 
-    fn get_live_bits(&self, offset: i64, count: usize) -> Result<Bits> {
-        let mybox: Box<ImmutableBits> = match offset as i32 {
-            lucene54::ALL_MISSING => Box::new(MatchNoBits::new(count)),
-            lucene54::ALL_LIVE => Box::new(MatchAllBits::new(count)),
+    fn get_live_bits(&self, offset: i64, count: usize) -> Result<BitsRef> {
+        Ok(match offset as i32 {
+            lucene54::ALL_MISSING => Arc::new(MatchNoBits::new(count)),
+            lucene54::ALL_LIVE => Arc::new(MatchAllBits::new(count)),
             _ => {
                 let data = self.data.as_ref().clone()?;
                 let boxed = LiveBits::new(data.as_ref(), offset, count)?;
-                Box::new(boxed)
+                Arc::new(boxed)
             }
-        };
-        Ok(Bits::new(mybox))
+        })
     }
 }
 
@@ -826,7 +825,7 @@ impl Lucene54DocValuesProducer {
     fn get_numeric_delta_compressed(&self, entry: &NumericEntryLink) -> Result<DeltaLongValues> {
         let slice = self.data
             .random_access_slice(entry.offset, entry.end_offset - entry.offset)?;
-        let slice = Arc::new(slice);
+        let slice = Arc::from(slice);
         let delta = entry.min_value;
         let inbox = DirectReader::get_instance(slice, entry.bits_per_value, 0)?;
         Ok(DeltaLongValues::new(inbox, delta))
@@ -835,7 +834,7 @@ impl Lucene54DocValuesProducer {
     fn get_numeric_gcd_compressed(&self, entry: &NumericEntryLink) -> Result<GcdLongValues> {
         let slice = self.data
             .random_access_slice(entry.offset, entry.end_offset - entry.offset)?;
-        let slice = Arc::new(slice);
+        let slice = Arc::from(slice);
         let base = entry.min_value;
         let mult = entry.gcd;
         let inbox = DirectReader::get_instance(slice, entry.bits_per_value, 0)?;
@@ -845,14 +844,14 @@ impl Lucene54DocValuesProducer {
     fn get_numeric_table_compressed(&self, entry: &NumericEntryLink) -> Result<TableLongValues> {
         let data = self.data.as_ref().clone()?;
         let slice = data.random_access_slice(entry.offset, entry.end_offset - entry.offset)?;
-        let slice = Arc::new(slice);
+        let slice = Arc::from(slice);
         let table = entry.table.clone();
         let ords = DirectReader::get_instance(slice, entry.bits_per_value, 0)?;
         Ok(TableLongValues::new(ords, table))
     }
 
     fn get_numeric_sparse_compressed(&self, entry: &NumericEntryLink) -> Result<SparseLongValues> {
-        let docs_with_field = self.get_sparse_live_bits_by_entry(&entry)?;
+        let docs_with_field = Arc::new(self.get_sparse_live_bits_by_entry(&entry)?);
 
         debug_assert!(!entry.non_missing_values.is_none());
 
@@ -936,7 +935,7 @@ impl Lucene54DocValuesProducer {
         let length = entry.offset - entry.missing_offset;
 
         let doc_ids_data = self.data.random_access_slice(entry.missing_offset, length)?;
-        let doc_ids_data = Arc::new(doc_ids_data);
+        let doc_ids_data = Arc::from(doc_ids_data);
 
         if let Some(ref meta) = entry.monotonic_meta {
             let doc_ids = DirectMonotonicReader::get_instance(meta.as_ref(), &doc_ids_data)?;
@@ -976,7 +975,7 @@ impl Lucene54DocValuesProducer {
 
         let addresses_data = self.data
             .random_access_slice(bytes.addresses_offset, addresses_length)?;
-        let addresses_data = Arc::new(addresses_data);
+        let addresses_data = Arc::from(addresses_data);
         let addresses = DirectMonotonicReader::get_instance(meta.as_ref(), &addresses_data)?;
         let data_length = bytes.addresses_offset - bytes.offset;
         let data = self.data.slice("var-binary", bytes.offset, data_length)?;
@@ -1073,7 +1072,7 @@ impl Lucene54DocValuesProducer {
         let data = self.data
             .random_access_slice(entry.offset, entry.end_offset - entry.offset)?;
         if let Some(ref meta) = entry.monotonic_meta {
-            DirectMonotonicReader::get_instance(meta.as_ref(), &Arc::new(data))
+            DirectMonotonicReader::get_instance(meta.as_ref(), &Arc::from(data))
         } else {
             unreachable!();
         }
@@ -1302,12 +1301,11 @@ impl DocValuesProducer for Lucene54DocValuesProducer {
                 })?;
                 if numeric_entry.format == lucene54::SPARSE_COMPRESSED {
                     let values = self.get_numeric_sparse_compressed(numeric_entry)?;
-                    let docs_with_field = Bits::new_mut(Box::new(values.docs_with_field_clone()));
-                    let boxed = DocValues::singleton_sorted_numeric_doc_values(
+                    let docs_with_field = values.docs_with_field_clone();
+                    Ok(Box::new(DocValues::singleton_sorted_numeric_doc_values(
                         Box::new(values),
                         docs_with_field,
-                    );
-                    Ok(Box::new(boxed))
+                    )))
                 } else {
                     let offset = numeric_entry.missing_offset;
                     let count = self.max_doc as usize;
@@ -1317,28 +1315,25 @@ impl DocValuesProducer for Lucene54DocValuesProducer {
                     match offset as i32 {
                         lucene54::ALL_MISSING => {
                             let living_room = MatchNoBits::new(count);
-                            let boxed = DocValues::singleton_sorted_numeric_doc_values(
+                            Ok(Box::new(DocValues::singleton_sorted_numeric_doc_values(
                                 values,
-                                Bits::new(Box::new(living_room)),
-                            );
-                            Ok(Box::new(boxed))
+                                Arc::new(living_room),
+                            )))
                         }
                         lucene54::ALL_LIVE => {
                             let living_room = MatchAllBits::new(count);
-                            let boxed = DocValues::singleton_sorted_numeric_doc_values(
+                            Ok(Box::new(DocValues::singleton_sorted_numeric_doc_values(
                                 values,
-                                Bits::new(Box::new(living_room)),
-                            );
-                            Ok(Box::new(boxed))
+                                Arc::new(living_room),
+                            )))
                         }
                         _ => {
                             let mut data = self.data.as_ref().clone()?;
                             let living_room = LiveBits::new(data.borrow_mut(), offset, count)?;
-                            let boxed = DocValues::singleton_sorted_numeric_doc_values(
+                            Ok(Box::new(DocValues::singleton_sorted_numeric_doc_values(
                                 values,
-                                Bits::new(Box::new(living_room)),
-                            );
-                            Ok(Box::new(boxed))
+                                Arc::new(living_room),
+                            )))
                         }
                     }
                 }
@@ -1352,17 +1347,20 @@ impl DocValuesProducer for Lucene54DocValuesProducer {
                     IllegalArgument(format!("no field named {} in ord_indexes", field.name))
                 })?;
                 let ord_index = self.get_ord_index_instance(ord_entry)?;
-                let boxed = AddressedSortedNumericDocValues::new(values, ord_index);
-                Ok(Box::new(boxed))
+                Ok(Box::new(AddressedSortedNumericDocValues::new(
+                    values, ord_index,
+                )))
             }
             lucene54::SORTED_SET_TABLE => {
                 let numeric_entry = self.ords
                     .get(&field.name)
                     .ok_or_else(|| IllegalArgument(format!("No Ords field named {}", field.name)))?;
                 let ordinals: Box<LongValues> = self.get_numeric_by_entry(numeric_entry)?;
-                let boxed =
-                    TabledSortedNumericDocValues::new(ordinals, &ss.table, &ss.table_offsets);
-                Ok(Box::new(boxed))
+                Ok(Box::new(TabledSortedNumericDocValues::new(
+                    ordinals,
+                    &ss.table,
+                    &ss.table_offsets,
+                )))
             }
             _ => bail!(IllegalArgument(format!(
                 "Unknown format {} of SortedNumeric field {}",
@@ -1393,7 +1391,7 @@ impl DocValuesProducer for Lucene54DocValuesProducer {
         }
     }
 
-    fn get_docs_with_field(&self, field: &FieldInfo) -> Result<Bits> {
+    fn get_docs_with_field(&self, field: &FieldInfo) -> Result<BitsRef> {
         match field.doc_values_type {
             DocValuesType::SortedSet => {
                 let dv = self.get_sorted_set(field)?;
@@ -1418,8 +1416,7 @@ impl DocValuesProducer for Lucene54DocValuesProducer {
                     IllegalArgument(format!("No numeric field named {} found", field.name))
                 })?;
                 if ne.format == lucene54::SPARSE_COMPRESSED {
-                    let boxed = self.get_sparse_live_bits_by_entry(&ne)?;
-                    Ok(Bits::new_mut(Box::new(boxed)))
+                    Ok(Arc::new(self.get_sparse_live_bits_by_entry(&ne)?))
                 } else {
                     self.get_live_bits(ne.missing_offset, self.max_doc as usize)
                 }

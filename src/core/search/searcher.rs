@@ -1,10 +1,11 @@
-use std::sync::Arc;
+use std::borrow::Borrow;
 use std::fmt;
+use std::sync::Arc;
 
 use core::index::multi_fields::MultiFields;
-use core::index::{IndexReader, LeafReader};
 use core::index::Term;
 use core::index::TermContext;
+use core::index::{IndexReader, LeafReader};
 use core::search::bm25_similarity::BM25Similarity;
 use core::search::bulk_scorer::BulkScorer;
 use core::search::cache_policy::{QueryCachingPolicy, UsageTrackingQueryCachingPolicy};
@@ -13,7 +14,7 @@ use core::search::collector::Collector;
 use core::search::lru_query_cache::{LRUQueryCache, QueryCache};
 use core::search::statistics::{CollectionStatistics, TermStatistics};
 use core::search::{Query, Weight, NO_MORE_DOCS};
-use core::search::{Similarity, SimScorer, SimWeight, SimilarityProducer};
+use core::search::{SimScorer, SimWeight, Similarity, SimilarityProducer};
 use error::*;
 
 /// Implements search over a single IndexReader.
@@ -53,7 +54,7 @@ impl Similarity for NonScoringSimilarity {
     fn compute_weight(
         &self,
         _collection_stats: &CollectionStatistics,
-        _term_stats: &TermStatistics
+        _term_stats: &TermStatistics,
     ) -> Box<SimWeight> {
         Box::new(NonScoringSimWeight {})
     }
@@ -135,7 +136,7 @@ impl IndexSearcher {
                 }
 
                 let live_docs = reader.live_docs();
-                match bulk_scorer.score(collector, Some(&live_docs), 0, NO_MORE_DOCS) {
+                match bulk_scorer.score(collector, Some(live_docs.borrow()), 0, NO_MORE_DOCS) {
                     Err(Error(
                         ErrorKind::Collector(collector::ErrorKind::CollectionTerminated),
                         _,
@@ -173,13 +174,16 @@ impl IndexSearcher {
         Ok(weight)
     }
 
-    ///
     /// Creates a normalized weight for a top-level `Query`.
     /// The query is rewritten by this method and `Query#createWeight` called,
     /// afterwards the `Weight` is normalized. The returned `Weight`
     /// can then directly be used to get a `Scorer`.
     ///
-    pub fn create_normalized_weight(&self, query: &Query, needs_scores: bool) -> Result<Box<Weight>> {
+    pub fn create_normalized_weight(
+        &self,
+        query: &Query,
+        needs_scores: bool,
+    ) -> Result<Box<Weight>> {
         let mut weight = self.create_weight(query, needs_scores)?;
         let v = weight.value_for_normalization();
         let mut norm: f32 = self.similarity("", needs_scores).query_norm(v);

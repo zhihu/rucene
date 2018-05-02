@@ -1,17 +1,17 @@
 use error::*;
-use std::fmt;
 use std::f32;
+use std::fmt;
 
 use core::index::LeafReader;
-use core::search::term_query::TermQuery;
 use core::search::searcher::IndexSearcher;
+use core::search::term_query::TermQuery;
 use core::search::{Query, Scorer, Weight};
 
 const BOOST_QUERY: &str = "boost";
 
 pub struct BoostQuery {
     query: Box<Query>,
-    boost: f32
+    boost: f32,
 }
 
 impl BoostQuery {
@@ -19,9 +19,7 @@ impl BoostQuery {
         if (boost - 1.0f32).abs() <= f32::EPSILON {
             query
         } else {
-            Box::new(BoostQuery{
-                query, boost
-            })
+            Box::new(BoostQuery { query, boost })
         }
     }
 }
@@ -44,23 +42,24 @@ impl Query for BoostQuery {
 
 impl fmt::Display for BoostQuery {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "BoostQuery(query: {}, boost: {})", &self.query, self.boost)
+        write!(
+            f,
+            "BoostQuery(query: {}, boost: {})",
+            &self.query, self.boost
+        )
     }
 }
 
 pub struct BoostWeight {
     weight: Box<Weight>,
-    boost: f32
+    boost: f32,
 }
 
 impl BoostWeight {
     pub fn new(weight: Box<Weight>, boost: f32) -> BoostWeight {
         assert!((boost - 1.0f32).abs() > f32::EPSILON);
 
-        BoostWeight {
-            weight,
-            boost
-        }
+        BoostWeight { weight, boost }
     }
 }
 
@@ -92,6 +91,10 @@ impl Weight for BoostWeight {
 
 impl fmt::Display for BoostWeight {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "BoostWeight(weight: {}, boost: {})", &self.weight, self.boost)
+        write!(
+            f,
+            "BoostWeight(weight: {}, boost: {})",
+            &self.weight, self.boost
+        )
     }
 }

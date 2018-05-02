@@ -42,7 +42,7 @@ pub trait SortedSetDocValues: Send + Sync {
     fn term_iterator<'a, 'b: 'a>(&'b self) -> Result<Box<TermIterator + 'a>>;
 }
 
-pub type SortedSetDocValuesRef = Arc<Box<SortedSetDocValues>>;
+pub type SortedSetDocValuesRef = Arc<SortedSetDocValues>;
 
 pub trait RandomAccessOrds: SortedSetDocValues {
     fn ord_at(&self, ctx: &SortedSetDocValuesContext, index: i32) -> Result<i64>;

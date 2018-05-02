@@ -1,15 +1,14 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use core::search::{DocIterator, NO_MORE_DOCS};
 use core::util::bit_util::{self, UnsignedShift};
-use core::util::ImmutableBits;
+use core::util::{Bits, BitsContext};
 
 use error::*;
 
-pub type BitSetRef = Arc<Mutex<Box<BitSet>>>;
 pub type ImmutableBitSetRef = Arc<ImmutableBitSet>;
 
-pub trait ImmutableBitSet: ImmutableBits {
+pub trait ImmutableBitSet: Bits {
     /// Return the number of bits that are set.
     /// this method is likely to run in linear time
     fn cardinality(&self) -> usize;
@@ -252,15 +251,18 @@ impl BitSet for FixedBitSet {
     }
 }
 
-impl ImmutableBits for FixedBitSet {
+impl Bits for FixedBitSet {
     #[inline]
-    fn get(&self, index: usize) -> Result<bool> {
+    fn get_with_ctx(&self, ctx: BitsContext, index: usize) -> Result<(bool, BitsContext)> {
         debug_assert!(index < self.num_bits);
         let i = index >> 6; // div 64
                             // signed shift will keep a negative index and force an
                             // array-index-out-of-bounds-exception, removing the need for an explicit check.
         let mask = 1i64 << (index & 0x3fusize);
-        Ok(unsafe { *self.bits.as_ptr().offset(i as isize) & mask != 0 })
+        Ok((
+            unsafe { *self.bits.as_ptr().offset(i as isize) & mask != 0 },
+            ctx,
+        ))
     }
 
     fn len(&self) -> usize {

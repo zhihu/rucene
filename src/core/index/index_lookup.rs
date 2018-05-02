@@ -335,8 +335,7 @@ impl LeafIndexField {
                 LeafIndexFieldTerm::new(key, &self.field_name, flags, self.doc_id, &self.fields)?;
             index_field_term.validate_flags(flags)?;
             let index_field_term_ref = index_field_term;
-            self.terms
-                .insert(String::from(key), index_field_term_ref);
+            self.terms.insert(String::from(key), index_field_term_ref);
         }
         let index_field_term_ref = self.terms.get_mut(key).unwrap();
         index_field_term_ref.validate_flags(flags)?;
@@ -412,8 +411,7 @@ impl LeafIndexLookup {
         if !self.index_fields.contains_key(key) {
             let index_field = LeafIndexField::new(key, self.doc_id, Arc::clone(&self.fields));
             let index_field_ref = index_field;
-            self.index_fields
-                .insert(String::from(key), index_field_ref);
+            self.index_fields.insert(String::from(key), index_field_ref);
         }
         self.index_fields.get_mut(key).unwrap()
     }
