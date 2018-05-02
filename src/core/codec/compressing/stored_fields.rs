@@ -712,7 +712,6 @@ impl CompressingStoredFieldsReader {
     }
 
     fn clone(&self) -> Result<Self> {
-        let _a = ComputeTime::new(file!(), "CompressingSFReader::clone");
         Ok(CompressingStoredFieldsReader {
             version: self.version,
             field_infos: self.field_infos.clone(),

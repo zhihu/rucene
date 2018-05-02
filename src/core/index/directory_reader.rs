@@ -62,13 +62,10 @@ impl IndexReader for StandardDirectoryReader {
         if doc_id < 0 || doc_id > self.max_doc {
             bail!("invalid doc id: {}", doc_id);
         }
-        let mut i = 0usize;
-        while i < self.starts.len() {
-            if self.starts[i + 1] > doc_id {
-                break;
-            }
-            i += 1;
-        }
+        let i = match self.starts.binary_search_by(|&probe| probe.cmp(&doc_id)) {
+            Ok(i) => i,
+            Err(i) => i - 1,
+        };
         assert!(i < self.readers.len());
         self.readers[i].term_vector(doc_id - self.starts[i])
     }
@@ -79,11 +76,9 @@ impl IndexReader for StandardDirectoryReader {
         }
 
         let pos = match self.starts.binary_search_by(|&probe| probe.cmp(&doc_id)) {
-            Ok(i) => i + 1,
-            Err(i) => i,
+            Ok(i) => i,
+            Err(i) => i - 1,
         };
-        debug_assert!(pos < self.readers.len());
-
         let mut visitor = DocumentStoredFieldVisitor::new(&fields_load);
         self.readers[pos].document(doc_id - self.starts[pos], &mut visitor)?;
         Ok(visitor.document())
