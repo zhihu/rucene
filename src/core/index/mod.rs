@@ -696,8 +696,12 @@ pub mod tests {
     }
 
     impl NumericDocValues for MockNumericValues {
-        fn get(&self, doc_id: DocId) -> Result<i64> {
-            Ok(i64::from(self.num[&doc_id]))
+        fn get_with_ctx(
+            &self,
+            ctx: NumericDocValuesContext,
+            doc_id: DocId,
+        ) -> Result<(i64, NumericDocValuesContext)> {
+            Ok((i64::from(self.num[&doc_id]), ctx))
         }
     }
 

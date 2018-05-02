@@ -1,7 +1,7 @@
-use core::index::NumericDocValues;
+use core::index::{NumericDocValues, NumericDocValuesContext};
 use core::util::DocId;
-use core::util::LongValues;
 use core::util::{Bits, BitsContext};
+use core::util::{LongValues, LongValuesContext};
 use error::ErrorKind::{IllegalArgument, IllegalState};
 use error::Result;
 
@@ -48,7 +48,7 @@ impl SparseBitsContext {
     }
 
     fn deserialize(mut from: &[u8]) -> Result<Self> {
-        if from.len() != SPARSE_BITS_CONTEXT_SERIALIZED_SIZE {
+        if from.len() < SPARSE_BITS_CONTEXT_SERIALIZED_SIZE {
             bail!(IllegalArgument(
                 "Serialized bytes is not for SparseBitsContext".into()
             ))
@@ -241,19 +241,31 @@ impl SparseLongValues {
 }
 
 impl LongValues for SparseLongValues {
-    fn get64(&self, doc_id: i64) -> Result<i64> {
-        let mut ctx = self.docs_with_field.context();
-        if self.docs_with_field.get64(&mut ctx, doc_id)?.0 {
+    fn get64_with_ctx(
+        &self,
+        ctx: LongValuesContext,
+        index: i64,
+    ) -> Result<(i64, LongValuesContext)> {
+        let mut ctx = match ctx {
+            Some(c) => SparseBitsContext::deserialize(&c)?,
+            None => self.docs_with_field.context(),
+        };
+        let (exists, new_ctx) = self.docs_with_field.get64(&mut ctx, index)?;
+        if exists {
             let r = self.values.get64(ctx.index)?;
-            Ok(r)
+            Ok((r, new_ctx))
         } else {
-            Ok(self.missing_value)
+            Ok((self.missing_value, new_ctx))
         }
     }
 }
 
 impl NumericDocValues for SparseLongValues {
-    fn get(&self, doc_id: DocId) -> Result<i64> {
-        LongValues::get64(self, i64::from(doc_id))
+    fn get_with_ctx(
+        &self,
+        ctx: NumericDocValuesContext,
+        doc_id: DocId,
+    ) -> Result<(i64, NumericDocValuesContext)> {
+        LongValues::get64_with_ctx(self, ctx, i64::from(doc_id))
     }
 }

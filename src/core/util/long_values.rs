@@ -1,24 +1,41 @@
-use core::index::NumericDocValues;
+use core::index::{NumericDocValues, NumericDocValuesContext};
 use core::util::BitsRef;
 use core::util::DocId;
 use error::Result;
 
 /// Abstraction over an array of longs.
+pub type LongValuesContext = NumericDocValuesContext;
+
 pub trait LongValues: NumericDocValues {
-    fn get64(&self, index: i64) -> Result<i64>;
+    fn get64(&self, index: i64) -> Result<i64> {
+        self.get64_with_ctx(None, index).map(|x| x.0)
+    }
+    fn get64_with_ctx(
+        &self,
+        ctx: LongValuesContext,
+        index: i64,
+    ) -> Result<(i64, LongValuesContext)>;
 }
 
 pub struct EmptyLongValues;
 
 impl LongValues for EmptyLongValues {
-    fn get64(&self, _index: i64) -> Result<i64> {
-        Ok(0)
+    fn get64_with_ctx(
+        &self,
+        ctx: LongValuesContext,
+        _index: i64,
+    ) -> Result<(i64, LongValuesContext)> {
+        Ok((0, ctx))
     }
 }
 
 impl NumericDocValues for EmptyLongValues {
-    fn get(&self, _doc_id: DocId) -> Result<i64> {
-        Ok(0)
+    fn get_with_ctx(
+        &self,
+        ctx: NumericDocValuesContext,
+        _doc_id: DocId,
+    ) -> Result<(i64, NumericDocValuesContext)> {
+        Ok((0, ctx))
     }
 }
 
@@ -34,15 +51,23 @@ impl LiveLongValues {
 }
 
 impl LongValues for LiveLongValues {
-    fn get64(&self, index: i64) -> Result<i64> {
-        let bitwise = self.live.get(index as usize)?;
-        Ok(if bitwise { self.constant } else { 0 })
+    fn get64_with_ctx(
+        &self,
+        ctx: LongValuesContext,
+        index: i64,
+    ) -> Result<(i64, LongValuesContext)> {
+        let (bitwise, ctx) = self.live.get_with_ctx(ctx, index as usize)?;
+        Ok((if bitwise { self.constant } else { 0 }, ctx))
     }
 }
 
 impl NumericDocValues for LiveLongValues {
-    fn get(&self, doc_id: DocId) -> Result<i64> {
-        LongValues::get64(self, i64::from(doc_id))
+    fn get_with_ctx(
+        &self,
+        ctx: NumericDocValuesContext,
+        doc_id: DocId,
+    ) -> Result<(i64, NumericDocValuesContext)> {
+        LongValues::get64_with_ctx(self, ctx, i64::from(doc_id))
     }
 }
 
@@ -58,15 +83,23 @@ impl DeltaLongValues {
 }
 
 impl LongValues for DeltaLongValues {
-    fn get64(&self, index: i64) -> Result<i64> {
-        let packed = self.values.get64(index)?;
-        Ok(self.delta + packed)
+    fn get64_with_ctx(
+        &self,
+        ctx: LongValuesContext,
+        index: i64,
+    ) -> Result<(i64, LongValuesContext)> {
+        let (packed, ctx) = self.values.get64_with_ctx(ctx, index)?;
+        Ok((self.delta + packed, ctx))
     }
 }
 
 impl NumericDocValues for DeltaLongValues {
-    fn get(&self, doc_id: DocId) -> Result<i64> {
-        LongValues::get64(self, i64::from(doc_id))
+    fn get_with_ctx(
+        &self,
+        ctx: NumericDocValuesContext,
+        doc_id: DocId,
+    ) -> Result<(i64, NumericDocValuesContext)> {
+        LongValues::get64_with_ctx(self, ctx, i64::from(doc_id))
     }
 }
 
@@ -87,15 +120,23 @@ impl GcdLongValues {
 }
 
 impl LongValues for GcdLongValues {
-    fn get64(&self, index: i64) -> Result<i64> {
-        let val = self.quotient_reader.get64(index)?;
-        Ok(self.base + self.mult * val)
+    fn get64_with_ctx(
+        &self,
+        ctx: LongValuesContext,
+        index: i64,
+    ) -> Result<(i64, LongValuesContext)> {
+        let (val, ctx) = self.quotient_reader.get64_with_ctx(ctx, index)?;
+        Ok((self.base + self.mult * val, ctx))
     }
 }
 
 impl NumericDocValues for GcdLongValues {
-    fn get(&self, doc_id: DocId) -> Result<i64> {
-        LongValues::get64(self, i64::from(doc_id))
+    fn get_with_ctx(
+        &self,
+        ctx: NumericDocValuesContext,
+        doc_id: DocId,
+    ) -> Result<(i64, NumericDocValuesContext)> {
+        LongValues::get64_with_ctx(self, ctx, i64::from(doc_id))
     }
 }
 
@@ -111,14 +152,22 @@ impl TableLongValues {
 }
 
 impl LongValues for TableLongValues {
-    fn get64(&self, index: i64) -> Result<i64> {
-        let val = self.ords.get64(index)?;
-        Ok(self.table[val as usize])
+    fn get64_with_ctx(
+        &self,
+        ctx: LongValuesContext,
+        index: i64,
+    ) -> Result<(i64, LongValuesContext)> {
+        let (val, ctx) = self.ords.get64_with_ctx(ctx, index)?;
+        Ok((self.table[val as usize], ctx))
     }
 }
 
 impl NumericDocValues for TableLongValues {
-    fn get(&self, doc_id: DocId) -> Result<i64> {
-        LongValues::get64(self, i64::from(doc_id))
+    fn get_with_ctx(
+        &self,
+        ctx: NumericDocValuesContext,
+        doc_id: DocId,
+    ) -> Result<(i64, NumericDocValuesContext)> {
+        LongValues::get64_with_ctx(self, ctx, i64::from(doc_id))
     }
 }
