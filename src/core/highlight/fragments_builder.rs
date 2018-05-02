@@ -29,7 +29,7 @@ impl BaseFragmentsBuilder {
             post_tags: post_tags.map_or(vec!["</b>".to_owned()], |x| x.to_vec()),
             multi_valued_separator: ' ',
             boundary_scanner: boundary_scanner
-                .map_or(Box::new(SimpleBoundaryScanner::new(None, None)), |x| x),
+                .unwrap_or_else(|| Box::new(SimpleBoundaryScanner::new(None, None))),
             discrete_multi_value_highlighting: false,
         }
     }

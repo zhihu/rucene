@@ -408,7 +408,6 @@ impl CompressingTermVectorsReader {
         }
 
         // read field numbers and flags
-        let mut field_num_offs = Vec::with_capacity(num_fields);
         let bits_per_off = unsigned_bits_required(field_nums.len() as i64 - 1);
         let all_field_num_off = get_reader_no_header(
             vectors_stream,
@@ -458,11 +457,10 @@ impl CompressingTermVectorsReader {
             flags_reader.as_ref().unwrap().as_ref()
         };
 
-        let extension: Vec<_> = (0..num_fields)
+        let field_num_offs: Vec<_> = (0..num_fields)
             .map(|i| all_field_num_off.get((skip + i) as usize) as i32)
             .collect();
 
-        field_num_offs.extend(extension);
         // number of terms per field for all fields
         let bits_required = vectors_stream.read_vint()?;
         let num_terms = get_reader_no_header(
@@ -593,7 +591,7 @@ impl CompressingTermVectorsReader {
                 &position_index,
             )?
         } else {
-            vec![Vec::with_capacity(0); num_fields as usize]
+            vec![Vec::with_capacity(0); num_fields]
         };
 
         let mut start_offsets: Vec<Vec<i32>> = Vec::with_capacity(num_fields);

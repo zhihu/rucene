@@ -1148,7 +1148,7 @@ pub struct SimpleBoundaryScanner {
 impl SimpleBoundaryScanner {
     pub fn new(max_scan: Option<i32>, boundary_chars: Option<&Vec<char>>) -> SimpleBoundaryScanner {
         SimpleBoundaryScanner {
-            max_scan: max_scan.map_or(DEFAULT_MAX_SCAN, |x| x),
+            max_scan: max_scan.unwrap_or(DEFAULT_MAX_SCAN),
             boundary_chars: match boundary_chars {
                 Some(x) => x.clone(),
                 None => SimpleBoundaryScanner::boundary_chars_to_vec(DEFAULT_BOUNDARY_CHARS),
