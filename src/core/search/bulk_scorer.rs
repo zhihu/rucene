@@ -39,7 +39,7 @@ impl<'a> BulkScorer<'a> {
         max: DocId,
     ) -> Result<DocId> {
         let current_doc = if min == 0 && max == NO_MORE_DOCS {
-            self.scorer.next()?
+            self.scorer.approximate_next()?
         } else {
             self.scorer.approximate_advance(min)?
         };

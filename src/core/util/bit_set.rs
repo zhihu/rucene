@@ -144,13 +144,6 @@ impl FixedBitSet {
         (self.bits[self.num_words - 1] & mask) == 0
     }
 
-    pub fn clear(&mut self, index: i32) {
-        assert!(index < self.num_bits as i32);
-        let word_num = index >> 6;
-        let mask = 1i64 << i64::from(index & 0x3fi32);
-        self.bits[word_num as usize] &= !mask;
-    }
-
     pub fn flip(&mut self, start_index: usize, end_index: usize) {
         debug_assert!(start_index < self.num_bits);
         debug_assert!(end_index <= self.num_bits);
@@ -178,6 +171,30 @@ impl FixedBitSet {
             }
         }
         self.bits[end_word] ^= end_mask;
+    }
+
+    /// returns true if the sets have any elements in common
+    pub fn intersects(&self, other: &FixedBitSet) -> bool {
+        // Depends on the ghost bits being clear!
+        let pos = self.num_words.min(other.num_words);
+        for i in 0..pos {
+            if (self.bits[i] & other.bits[i]) != 0 {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn set_or(&mut self, other: &FixedBitSet) {
+        self.do_or(&other.bits, other.num_words);
+    }
+
+    fn do_or(&mut self, other_arr: &[i64], other_num_words: usize) {
+        assert!(other_num_words <= self.num_words);
+        let this_arr = &mut self.bits;
+        for i in 0..other_num_words {
+            this_arr[i] |= other_arr[i];
+        }
     }
 }
 

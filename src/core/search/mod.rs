@@ -35,6 +35,7 @@ pub mod util;
 // Queries
 pub mod boolean_query;
 pub mod boost;
+pub mod phrase_query;
 pub mod query_string;
 pub mod term_query;
 
@@ -205,32 +206,6 @@ impl DocIterator for EmptyDocIterator {
     fn cost(&self) -> usize {
         0usize
     }
-}
-
-/// This trait defines methods to iterate over a set of non-decreasing
-/// term positions in one document.
-///
-pub trait TermIterator {
-    /// Advances to the next term in the document
-    ///
-    /// *NOTE:* you should call `has_next()` before calling `next()`.
-    ///
-    fn next(&mut self);
-
-    /// Checks whether the iterator exhausted.
-    fn has_next(&self) -> bool;
-
-    /// Returns start offset of current term.
-    fn start_offset(&self) -> u32;
-
-    /// Returns end offset of current term.
-    fn end_offset(&self) -> u32;
-
-    /// Returns position of current term.
-    fn position(&self) -> u32;
-
-    /// Returns payload of current term related to corresponding doc.
-    fn payload(&self) -> &[u8];
 }
 
 /// Common scoring functionality for different types of queries.
@@ -416,7 +391,7 @@ pub trait Similarity: Display {
     fn compute_weight(
         &self,
         collection_stats: &CollectionStatistics,
-        term_stats: &TermStatistics,
+        term_stats: &[TermStatistics],
     ) -> Box<SimWeight>;
 
     /// Computes the normalization value for a query given the sum of the
