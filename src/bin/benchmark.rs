@@ -1,17 +1,15 @@
-extern crate num_cpus;
 extern crate rucene;
 
 use std::env;
+use std::fs::File;
 use std::io::*;
 use std::path::Path;
 use std::sync::Arc;
-use std::thread;
 use std::time;
 use std::usize;
 
 use rucene::core::index::StandardDirectoryReader;
-use rucene::core::search::collector::{ChainedCollector, Collector,
-                                      EarlyTerminatingSortingCollector, TopDocsCollector};
+use rucene::core::search::collector::{EarlyTerminatingSortingCollector, TopDocsCollector};
 use rucene::core::search::query_string::*;
 use rucene::core::search::searcher::*;
 use rucene::core::store::MmapDirectory;
@@ -32,14 +30,11 @@ fn benchmark_queries(
             QueryStringQueryBuilder::new(query.clone(), vec![(field.into(), 1.0)], 1, 1.0)
                 .build()
                 .unwrap();
-        if limit == usize::MAX {
-            let mut early_collector = EarlyTerminatingSortingCollector::new(limit);
-            let mut collectors: Vec<&mut Collector> = Vec::new();
-            collectors.push(&mut early_collector);
-            collectors.push(&mut top_collector);
-            let mut collector = ChainedCollector::new(collectors);
+        if limit != usize::MAX {
+            let mut early_collector =
+                EarlyTerminatingSortingCollector::new(&mut top_collector, limit);
             searcher
-                .search(real_query.as_ref(), &mut collector)
+                .search(real_query.as_ref(), &mut early_collector)
                 .unwrap();
         } else {
             searcher
@@ -109,66 +104,26 @@ fn benchmark_with_limit(searcher: &IndexSearcher, field: &str, queries: &[String
     println!("max: {}", format_result(&results[len - 1]));
 }
 
-fn benchmark(index: String, field: String) {
-    let threads = num_cpus::get();
+fn benchmark(index: String, field: String, input: String) {
     let directory = Arc::new(MmapDirectory::new(&Path::new(&index), 1024 * 1024).unwrap());
+    let queries: Vec<String> = File::open(&input)
+        .map(BufReader::new)
+        .map(BufReader::lines)
+        .map(|i| i.filter_map(Result::ok))
+        .map(Iterator::collect)
+        .expect("No query to run");
 
-    let mut queries: Vec<String> = Vec::new();
-
-    loop {
-        let mut line = String::new();
-        match stdin().read_line(&mut line) {
-            Ok(n) => {
-                if n == 0 {
-                    break;
-                };
-                let line = line.trim();
-                if line.is_empty() {
-                    continue;
-                }
-                let input: Vec<&str> = line.split(',').map(|x| x.trim()).collect();
-                let query = input[0].into();
-                queries.push(query);
-            }
-            Err(_) => break,
-        }
-    }
-
-    if queries.is_empty() {
-        panic!("No query to run")
-    }
-
-    let queries_per_thread = (queries.len() + threads - 1) / threads;
     let reader = Arc::new(StandardDirectoryReader::open(directory).unwrap());
     let searcher = Arc::new(IndexSearcher::new(reader.clone()));
-    let threads: Vec<thread::JoinHandle<_>> = (0..threads)
-        .map(|_| {
-            let field = field.clone();
-            let mut thread_queries = Vec::with_capacity(queries_per_thread);
-            for _ in 0..queries_per_thread {
-                if let Some(query) = queries.pop() {
-                    thread_queries.push(query);
-                } else {
-                    break;
-                }
-            }
-            let searcher = searcher.clone();
-            thread::spawn(move || {
-                benchmark_with_limit(searcher.as_ref(), &field, &thread_queries, 50);
-                benchmark_with_limit(searcher.as_ref(), &field, &thread_queries, 100);
-                benchmark_with_limit(searcher.as_ref(), &field, &thread_queries, 100);
-            })
-        })
-        .collect();
-    for handle in threads {
-        handle.join().unwrap();
-    }
+    benchmark_with_limit(searcher.as_ref(), &field, &queries, 100);
+    benchmark_with_limit(searcher.as_ref(), &field, &queries, 50);
+    benchmark_with_limit(searcher.as_ref(), &field, &queries, 100);
 }
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    if args.len() != 3 {
+    if args.len() != 4 {
         panic!("Missing required arguments");
     }
-    benchmark(args[1].clone(), args[2].clone());
+    benchmark(args[1].clone(), args[2].clone(), args[3].clone());
 }

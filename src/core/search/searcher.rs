@@ -1,5 +1,6 @@
+use std::collections::HashMap;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use core::index::multi_fields::MultiFields;
 use core::index::Term;
@@ -97,6 +98,7 @@ pub struct IndexSearcher {
     query_cache: Box<QueryCache>,
     #[allow(dead_code)]
     cache_policy: Arc<QueryCachingPolicy>,
+    collection_statistics: RwLock<HashMap<String, CollectionStatistics>>,
 }
 
 impl IndexSearcher {
@@ -114,6 +116,7 @@ impl IndexSearcher {
             sim_producer,
             query_cache: Box::new(LRUQueryCache::new(1000, max_doc)),
             cache_policy: Arc::new(UsageTrackingQueryCachingPolicy::default()),
+            collection_statistics: RwLock::new(HashMap::new()),
         }
     }
 
@@ -209,24 +212,35 @@ impl IndexSearcher {
         )
     }
 
-    pub fn collections_statistics(&self, field: String) -> Result<CollectionStatistics> {
+    pub fn collections_statistics(&self, field: &str) -> Result<CollectionStatistics> {
+        {
+            let statistics = self.collection_statistics.read().unwrap();
+            if let Some(stat) = statistics.get(field) {
+                return Ok(stat.clone());
+            }
+        }
+        // slow path
         let reader = self.reader.as_ref();
 
         let mut doc_count = 0i32;
         let mut sum_total_term_freq = 0i64;
         let mut sum_doc_freq = 0i64;
-        if let Some(terms) = MultiFields::get_terms(reader, &field)? {
+        if let Some(terms) = MultiFields::get_terms(reader, field)? {
             doc_count = terms.doc_count()?;
             sum_total_term_freq = terms.sum_total_term_freq()?;
             sum_doc_freq = terms.sum_doc_freq()?;
         }
-        Ok(CollectionStatistics::new(
-            field,
+        let stat = CollectionStatistics::new(
+            field.into(),
             i64::from(reader.max_doc()),
             i64::from(doc_count),
             sum_total_term_freq,
             sum_doc_freq,
-        ))
+        );
+
+        let mut statistics = self.collection_statistics.write().unwrap();
+        statistics.insert(field.into(), stat);
+        Ok(statistics[field].clone())
     }
 }
 
