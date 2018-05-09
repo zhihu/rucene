@@ -1,11 +1,7 @@
-extern crate flate2;
-
 mod stored_fields;
-
 pub use self::stored_fields::*;
 
 mod term_vectors;
-
 pub use self::term_vectors::*;
 
 use error::*;
@@ -13,8 +9,8 @@ use std;
 use std::cmp::min;
 use std::io::{Read, Write};
 
-use core::codec::compressing::flate2::read::{DeflateDecoder, DeflateEncoder};
-use core::codec::compressing::flate2::Compression;
+use flate2::read::{DeflateDecoder, DeflateEncoder};
+use flate2::Compression;
 
 use core::store::{DataInput, DataOutput};
 use core::util::packed_misc::{get_mutable_by_ratio, rshift_32, rshift_64, unsigned_bits_required};
@@ -118,7 +114,7 @@ impl LZ4 {
             if match_len == 0x0f {
                 let mut len = compressed.read_byte()?;
                 while len == 0xff {
-                    match_len += 0xffi32;
+                    match_len += 0xFF;
                     len = compressed.read_byte()?;
                 }
                 match_len += i32::from(len) & 0xff;

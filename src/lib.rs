@@ -19,6 +19,7 @@ extern crate serde_json;
 extern crate byteorder;
 extern crate bytes;
 extern crate crc;
+extern crate flate2;
 extern crate memmap;
 extern crate num_traits;
 extern crate thread_local;

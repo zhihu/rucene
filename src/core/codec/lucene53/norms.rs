@@ -130,7 +130,7 @@ impl Lucene53NormsProducer {
                 .field_info_by_number(field_num)
                 .ok_or_else(|| IllegalArgument(format!("Invalid field number: {}", field_num)))?;
             if !field_info.has_norms() {
-                bail!(CorruptIndex(format!("Invalid field: {}", &field_info.name)))
+                bail!(CorruptIndex(format!("Invalid field: {}", field_info.name)))
             }
             let bytes_per_value = input.read_byte()?;
             match bytes_per_value {
