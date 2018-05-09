@@ -583,10 +583,8 @@ impl Decompress for LZ4Decompressor {
     ) -> Result<()> {
         debug_assert!(offset + length <= original_length);
         // add 7 padding bytes, this is not necessary but can help decompression run faster
-        if bytes.len() < original_length + 7usize {
-            for _ in 0..original_length + 7usize - bytes.len() {
-                bytes.push(0u8);
-            }
+        if bytes.len() < original_length + 7 {
+            bytes.resize(original_length + 7, 0u8);
         }
         let decompressed_len = LZ4::decompress(input, offset + length, bytes.as_mut(), 0)?;
         if decompressed_len > original_length {

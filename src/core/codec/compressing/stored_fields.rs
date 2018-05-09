@@ -276,8 +276,6 @@ pub struct CompressingStoredFieldsReader {
     offsets: Vec<i32>,
     num_stored_fields: Vec<i32>,
     start_pointer: i64,
-    spare: Vec<u8>,
-    spare_position: OffsetAndLength,
     bytes: Vec<u8>,
     bytes_position: OffsetAndLength,
     // from document data input
@@ -381,8 +379,6 @@ impl CompressingStoredFieldsReader {
             offsets: Vec::new(),
             num_stored_fields: Vec::new(),
             start_pointer: 0i64,
-            spare: Vec::new(),
-            spare_position: OffsetAndLength(0, 0),
             bytes: vec![0u8; chunk_size as usize * 2],
             bytes_position: OffsetAndLength(0, 0),
             current_doc: SerializedDocument {
@@ -732,8 +728,6 @@ impl CompressingStoredFieldsReader {
             offsets: self.offsets.clone(),
             num_stored_fields: self.num_stored_fields.clone(),
             start_pointer: self.start_pointer,
-            spare: self.spare.clone(),
-            spare_position: self.spare_position.clone(),
             bytes: self.bytes.clone(),
             bytes_position: self.bytes_position.clone(),
             current_doc: SerializedDocument {

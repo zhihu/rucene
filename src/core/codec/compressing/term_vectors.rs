@@ -275,10 +275,7 @@ impl CompressingTermVectorsReader {
             let f = flags.get(i) as i32;
             let term_count = num_terms.get(i) as usize;
             if (f & flag) != 0 {
-                for j in 0..term_count {
-                    let freq: i32 = term_freqs[term_index + j];
-                    to_skip += freq;
-                }
+                to_skip += term_freqs[term_index..term_index + term_count].iter().sum::<i32>();
             }
             term_index += term_count;
         }
@@ -295,14 +292,17 @@ impl CompressingTermVectorsReader {
                 while j < total_freq as usize {
                     let next_positions_off = self.reader
                         .next_longs_ref(vectors_stream, total_freq as usize - j)?;
-                    for k in 0..next_positions_off.1 {
-                        field_positions.push(self.reader.values[next_positions_off.0 + k] as i32);
-                        j += 1;
-                    }
+                    let extended: Vec<_> = self.reader.values
+                        [next_positions_off.0..next_positions_off.0 + next_positions_off.1]
+                        .iter()
+                        .map(|&x| x as i32)
+                        .collect();
+                    field_positions.extend(extended);
+                    j += next_positions_off.1;
                 }
                 positions.push(field_positions);
             } else {
-                positions.push(Vec::with_capacity(0usize));
+                positions.push(Vec::with_capacity(0));
             }
             term_index += term_count;
         }
@@ -386,7 +386,7 @@ impl CompressingTermVectorsReader {
         }
 
         // read field numbers that have term vectors
-        let token = i32::from(vectors_stream.read_byte()?) & 0xffi32;
+        let token = i32::from(vectors_stream.read_byte()?) & 0xFF;
         debug_assert_ne!(token, 0);
         let bits_per_field_num = token & 0x1f;
         let mut total_distinct_fields = token.unsigned_shift(5usize) as usize;
@@ -402,10 +402,13 @@ impl CompressingTermVectorsReader {
             bits_per_field_num,
             1,
         )?;
-        let mut field_nums = Vec::with_capacity(total_distinct_fields);
-        for _ in 0..field_nums.capacity() {
-            field_nums.push(it.next(vectors_stream)? as i32);
-        }
+
+        let field_nums = {
+            let result: Result<Vec<_>> = (0..total_distinct_fields)
+                .map(|_| Ok(it.next(vectors_stream)? as i32))
+                .collect();
+            result?
+        };
 
         // read field numbers and flags
         let bits_per_off = unsigned_bits_required(field_nums.len() as i64 - 1);
@@ -494,14 +497,16 @@ impl CompressingTermVectorsReader {
             for i in 0..num_fields {
                 let term_count = num_terms.as_ref().get(skip + i) as usize;
                 let mut field_prefix_lengths = Vec::with_capacity(term_count as usize);
-                let mut j = 0usize;
+                let mut j = 0;
                 while j < term_count {
                     let next = self.reader.next_longs_ref(vectors_stream, term_count - j)?;
-                    for k in 0..next.1 {
-                        field_prefix_lengths.push(self.reader.values[next.0 + k] as i32);
-                        j += 1;
-                    }
+                    let extended: Vec<_> = (0..next.1)
+                        .map(|k| self.reader.values[next.0 + k] as i32)
+                        .collect();
+                    field_prefix_lengths.extend(extended);
+                    j += next.1;
                 }
+
                 prefix_lengths.push(field_prefix_lengths);
             }
             let skip_size = total_terms as i64 - self.reader.ord;
@@ -521,10 +526,11 @@ impl CompressingTermVectorsReader {
                 let mut j = 0usize;
                 while j < term_count {
                     let next = self.reader.next_longs_ref(vectors_stream, term_count - j)?;
-                    for k in 0..next.1 {
-                        field_suffix_lengths.push(self.reader.values[next.0 + k] as i32);
-                        j += 1;
-                    }
+                    let extended: Vec<_> = (0..next.1)
+                        .map(|k| self.reader.values[next.0 + k] as i32)
+                        .collect();
+                    field_suffix_lengths.extend(extended);
+                    j += next.1;
                 }
                 suffix_lengths.push(field_suffix_lengths);
                 field_lengths.push(suffix_lengths[i].iter().sum());
@@ -546,10 +552,11 @@ impl CompressingTermVectorsReader {
             let mut i = 0usize;
             while i < total_terms {
                 let next = self.reader.next_longs_ref(vectors_stream, total_terms - i)?;
-                for k in 0..next.1 {
-                    term_freqs.push(1 + self.reader.values[next.0 + k] as i32);
-                    i += 1;
-                }
+                let extended: Vec<_> = (0..next.1)
+                    .map(|k| self.reader.values[next.0 + k] as i32 + 1)
+                    .collect();
+                term_freqs.extend(extended);
+                i += next.1;
             }
         }
 
@@ -750,14 +757,12 @@ impl CompressingTermVectorsReader {
             payload_len as usize,
         );
 
-        let mut field_flags = Vec::with_capacity(num_fields);
-        for i in 0..num_fields {
-            field_flags.push(flags.get(skip + i) as i32);
-        }
-        let mut field_num_terms = Vec::with_capacity(num_fields);
-        for i in 0..num_fields {
-            field_num_terms.push(num_terms.as_ref().get(skip + i) as i32);
-        }
+        let field_flags: Vec<_> = (0..num_fields)
+            .map(|i| flags.get(skip + i) as i32)
+            .collect();
+        let field_num_terms: Vec<_> = (0..num_fields)
+            .map(|i| num_terms.as_ref().get(skip + i) as i32)
+            .collect();
 
         let mut field_term_freqs = Vec::with_capacity(num_fields);
         {
@@ -767,12 +772,9 @@ impl CompressingTermVectorsReader {
             }
             for i in 0..num_fields {
                 let term_count = num_terms.as_ref().get(skip + i) as usize;
-                let mut cur_term_freqs = Vec::with_capacity(term_count);
-                for _ in 0..term_count {
-                    cur_term_freqs.push(term_freqs[term_idx]);
-                    term_idx += 1;
-                }
-                field_term_freqs.push(cur_term_freqs);
+                let curr_term_freqs = term_freqs[term_idx..term_idx + term_count].to_vec();
+                term_idx += term_count;
+                field_term_freqs.push(curr_term_freqs);
             }
         }
 
@@ -879,11 +881,14 @@ impl TVFields {
 
 impl Fields for TVFields {
     fn fields(&self) -> Vec<String> {
-        let mut field_names = Vec::with_capacity(self.field_num_offs.len());
-        for i in 0..self.field_num_offs.len() {
-            let field_num = self.field_nums[self.field_num_offs[i] as usize];
-            field_names.push(self.field_infos.by_number[&field_num].name.clone());
-        }
+        let field_names: Vec<_> = self.field_num_offs
+            .iter()
+            .map(|&k| {
+                self.field_infos.by_number[&self.field_nums[k as usize]]
+                    .name
+                    .clone()
+            })
+            .collect();
         field_names
     }
 
@@ -1064,9 +1069,7 @@ impl TVTermsIterator {
         let suffix_len = self.fields_data.suffix_lengths[self.data_index][ord] as usize;
         let term_len = prefix_len + suffix_len;
         if self.term.len() < term_len {
-            for _ in 0..term_len - self.term.len() {
-                self.term.push(0u8);
-            }
+            self.term.resize(term_len, 0u8);
         } else if self.term.len() > term_len {
             self.term.truncate(term_len);
         }
