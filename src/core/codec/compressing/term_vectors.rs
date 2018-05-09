@@ -275,7 +275,9 @@ impl CompressingTermVectorsReader {
             let f = flags.get(i) as i32;
             let term_count = num_terms.get(i) as usize;
             if (f & flag) != 0 {
-                to_skip += term_freqs[term_index..term_index + term_count].iter().sum::<i32>();
+                to_skip += term_freqs[term_index..term_index + term_count]
+                    .iter()
+                    .sum::<i32>();
             }
             term_index += term_count;
         }
@@ -568,18 +570,19 @@ impl CompressingTermVectorsReader {
         for i in 0..total_fields {
             let f = flags.get(i) as i32;
             let term_count = num_terms.get(i) as i32;
-            for _j in 0..term_count {
-                let freq = term_freqs[term_index];
-                term_index += 1;
-                if (f & POSITIONS) != 0 {
-                    total_positions += freq;
-                }
-                if (f & OFFSETS) != 0 {
-                    total_offsets += freq;
-                }
-                if (f & PAYLOADS) != 0 {
-                    total_payloads += freq;
-                }
+            let total_freq = term_freqs[term_index..term_index + term_count]
+                .iter()
+                .sum::<i32>();
+            term_index += term_count;
+
+            if (f & POSITIONS) != 0 {
+                total_positions += total_freq;
+            }
+            if (f & OFFSETS) != 0 {
+                total_offsets += total_freq;
+            }
+            if (f & PAYLOADS) != 0 {
+                total_payloads += total_freq;
             }
             debug_assert!(i != total_fields - 1usize || term_index == total_terms);
         }
