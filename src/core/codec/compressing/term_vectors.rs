@@ -607,10 +607,12 @@ impl CompressingTermVectorsReader {
         let mut start_offsets: Vec<Vec<i32>> = Vec::with_capacity(num_fields);
         let mut lengths: Vec<Vec<i32>> = Vec::with_capacity(num_fields);
         if total_offsets > 0 {
-            let mut chars_per_term = Vec::with_capacity(field_nums.len());
-            for _ in 0..chars_per_term.capacity() {
-                chars_per_term.push(f32::from_bits(vectors_stream.read_int()? as u32));
-            }
+            let chars_per_term = {
+                let result: Result<Vec<_>> = (0..field_nums.len())
+                    .map(|_| Ok(f32::from_bits(vectors_stream.read_int()? as u32)))
+                    .collect();
+                result?
+            };
             start_offsets = self.read_positions(
                 vectors_stream,
                 skip,

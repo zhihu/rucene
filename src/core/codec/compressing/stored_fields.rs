@@ -18,7 +18,7 @@ use core::store::DirectoryRc;
 use core::util::bit_util::{UnsignedShift, ZigZagEncoding};
 use core::util::packed_misc::{get_reader_iterator_no_header, get_reader_no_header};
 use core::util::packed_misc::{Format, OffsetAndLength, Reader, ReaderIterator};
-use core::util::{ComputeTime, DocId};
+use core::util::DocId;
 
 pub struct CompressingStoredFieldsFormat {
     format_name: String,
