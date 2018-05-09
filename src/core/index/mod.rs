@@ -317,38 +317,38 @@ impl Serialize for SegmentInfo {
 /// instance on DocumentWriterPerThread, or via sync'd code by
 /// DocumentsWriterDeleteQueue
 pub struct BufferedUpdates {
-    /*
-    num_term_deletes: AtomicIsize,
-    num_numeric_updates: AtomicIsize,
-    num_binary_updates: AtomicIsize,
-
-    ///TODO: rename thes three: put "deleted" prefix in front:
-    terms: HashMap<Term, i32>,
-    queries: HashMap<Query, i32>,
-    doc_ids: Vec<i32>,
-
-    ///Map<dvField,Map<updateTerm,NumericUpdate>>
-    ///For each field we keep an ordered list of NumericUpdates, key'd by the
-    ///update Term. LinkedHashMap guarantees we will later traverse the map in
-    ///insertion order (so that if two terms affect the same document, the last
-    ///one that came in wins), and helps us detect faster if the same Term is
-    ///used to update the same field multiple times (so we later traverse it
-    ///only once).
-    numeric_updates: HashMap<String, HashMap<Term, NumericDocValuesUpdate>>,
-
-    ///Map<dvField,Map<updateTerm,BinaryUpdate>>
-    ///For each field we keep an ordered list of BinaryUpdates, key'd by the
-    ///update Term. LinkedHashMap guarantees we will later traverse the map in
-    ///insertion order (so that if two terms affect the same document, the last
-    ///one that came in wins), and helps us detect faster if the same Term is
-    ///used to update the same field multiple times (so we later traverse it
-    ///only once).
-    binary_update: HashMap<String, HashMap<Term, BinaryDocValuesUpdate>>,
-
-    bytes_used: AtomicI64,
-    gen: i64,
-    segmentName: String,
-    */
+    //
+// num_term_deletes: AtomicIsize,
+// num_numeric_updates: AtomicIsize,
+// num_binary_updates: AtomicIsize,
+//
+// TODO: rename thes three: put "deleted" prefix in front:
+// terms: HashMap<Term, i32>,
+// queries: HashMap<Query, i32>,
+// doc_ids: Vec<i32>,
+//
+// Map<dvField,Map<updateTerm,NumericUpdate>>
+// For each field we keep an ordered list of NumericUpdates, key'd by the
+// update Term. LinkedHashMap guarantees we will later traverse the map in
+// insertion order (so that if two terms affect the same document, the last
+// one that came in wins), and helps us detect faster if the same Term is
+// used to update the same field multiple times (so we later traverse it
+// only once).
+// numeric_updates: HashMap<String, HashMap<Term, NumericDocValuesUpdate>>,
+//
+// Map<dvField,Map<updateTerm,BinaryUpdate>>
+// For each field we keep an ordered list of BinaryUpdates, key'd by the
+// update Term. LinkedHashMap guarantees we will later traverse the map in
+// insertion order (so that if two terms affect the same document, the last
+// one that came in wins), and helps us detect faster if the same Term is
+// used to update the same field multiple times (so we later traverse it
+// only once).
+// binary_update: HashMap<String, HashMap<Term, BinaryDocValuesUpdate>>,
+//
+// bytes_used: AtomicI64,
+// gen: i64,
+// segmentName: String,
+//
 }
 
 /// A Term represents a word from text.  This is the unit of search.  It is

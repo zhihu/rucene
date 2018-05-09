@@ -329,7 +329,7 @@ impl BaseFragmentsBuilder {
     }
 
     #[inline]
-    fn tag<'a>(tags: &'a [String], num: i32) -> &'a str {
+    fn tag(tags: &[String], num: i32) -> &str {
         let num = num as usize % tags.len();
         tags[num].as_ref()
     }
