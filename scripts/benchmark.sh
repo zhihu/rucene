@@ -21,4 +21,15 @@ fi
 
 . $RUCENE_HOME/scripts/common.sh
 
-cat $QUERY_PATH | $RUCENE_TARGET_HOME/benchmark $INDEX_PATH $FIELD
+cd $RUCENE_HOME/java
+ant
+CLASSPATH=build
+for dependency in lib/*.jar
+do
+  CLASSPATH=$CLASSPATH:$dependency
+done
+
+echo "Benchmark with rucene"
+$RUCENE_TARGET_HOME/benchmark $INDEX_PATH $FIELD $QUERY_PATH
+echo "Benchmark with lucene"
+java -cp $CLASSPATH com.zhihu.rucene.Benchmark $INDEX_PATH $FIELD $QUERY_PATH

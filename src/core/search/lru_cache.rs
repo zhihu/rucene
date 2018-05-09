@@ -89,10 +89,11 @@ impl<K: Clone + Hash + Eq, V> LRUCache<K, V> {
             let idx = self.free_indexes
                 .pop()
                 .unwrap_or_else(|| self.entries.len());
-            self.first.map(|e| {
+            if let Some(ent) = self.first {
                 let prev = Some(idx);
-                self.entries[e].prev = prev;
-            });
+                self.entries[ent].prev = prev;
+            };
+
             // This is the new head
             let ent = CacheEntry {
                 key: key.clone(),
@@ -254,7 +255,9 @@ impl<K: Clone + Hash + Eq, V> LRUCache<K, V> {
     }
 
     fn add_head_idx(&mut self, i: usize) {
-        self.first.map(|f| self.entries[f].prev = Some(i));
+        if let Some(f) = self.first {
+            self.entries[f].prev = Some(i);
+        }
         self.entries[i].prev = None;
         self.entries[i].next = self.first;
         self.first = Some(i);

@@ -32,7 +32,7 @@ impl StandardDirectoryReader {
         let mut starts = Vec::with_capacity(readers.len() + 1);
         let mut max_doc = 0;
         let mut num_docs = 0;
-        for reader in readers.iter_mut() {
+        for reader in &mut readers {
             reader.set_doc_base(max_doc);
             starts.push(max_doc);
             max_doc += reader.max_docs();

@@ -477,8 +477,8 @@ impl CompressingTermVectorsReader {
         )?;
 
         let total_terms = (0..total_fields)
-            .map(|i| num_terms.as_ref().get(i) as i32)
-            .fold(0, |acc, x| acc + x) as usize;
+            .map(|i| num_terms.as_ref().get(i) as usize)
+            .sum();
 
         // term length
         let mut doc_off = 0;

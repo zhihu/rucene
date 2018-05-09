@@ -9,7 +9,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.charset.*;
 
 import org.apache.lucene.analysis.Analyzer;
-import org.apache.lucene.analysis.core.KeywordAnalyzer;
+import org.apache.lucene.analysis.core.WhitespaceAnalyzer;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.index.*;
 import org.apache.lucene.queryparser.classic.QueryParser;
@@ -110,7 +110,7 @@ public class Verify {
     IndexReader reader = DirectoryReader.open(FSDirectory.open(Paths.get(index)));
 
     IndexSearcher searcher = new IndexSearcher(reader);
-    Analyzer analyzer = new KeywordAnalyzer();
+    Analyzer analyzer = new WhitespaceAnalyzer();
     BufferedReader queries = Files.newBufferedReader(Paths.get(args[2]), StandardCharsets.UTF_8);
     QueryParser parser = new QueryParser(field, analyzer);
 

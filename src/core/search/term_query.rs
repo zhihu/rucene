@@ -37,7 +37,7 @@ impl Query for TermQuery {
         let (term_stats, collection_stats) = if needs_scores {
             (
                 vec![searcher.term_statistics(self.term.clone(), &term_context)],
-                searcher.collections_statistics(self.term.field.clone())?,
+                searcher.collections_statistics(&self.term.field)?,
             )
         } else {
             (
