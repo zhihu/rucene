@@ -569,7 +569,7 @@ impl CompressingTermVectorsReader {
         let mut term_index = 0usize;
         for i in 0..total_fields {
             let f = flags.get(i) as i32;
-            let term_count = num_terms.get(i) as i32;
+            let term_count = num_terms.get(i) as usize;
             let total_freq = term_freqs[term_index..term_index + term_count]
                 .iter()
                 .sum::<i32>();
