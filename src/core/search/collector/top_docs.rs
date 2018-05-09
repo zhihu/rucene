@@ -53,7 +53,6 @@ impl TopDocsCollector {
         }
 
         score_docs.reverse();
-
         TopDocs::Score(TopScoreDocs::new(self.total_hits, score_docs))
     }
 
@@ -63,17 +62,14 @@ impl TopDocsCollector {
         self.total_hits += 1;
 
         let at_capacity = self.pq.len() == self.estimated_hits;
-        let reader_context = self.reader_context.as_ref().unwrap();
+        let ord = self.reader_context.as_ref().map(|x| x.ord).unwrap();
 
         if !at_capacity {
-            let score_doc = ScoreDoc::new(doc_id, score, reader_context.ord);
+            let score_doc = ScoreDoc::new(doc_id, score, ord);
             self.pq.push(score_doc);
-        } else if let Some(doc) = self.pq.pop() {
+        } else if let Some(mut doc) = self.pq.peek_mut() {
             if doc.score < score {
-                let score_doc = ScoreDoc::new(doc_id, score, reader_context.ord);
-                self.pq.push(score_doc);
-            } else {
-                self.pq.push(doc);
+                doc.reset(doc_id, score, ord);
             }
         }
     }

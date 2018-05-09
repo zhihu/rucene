@@ -1,171 +1,17 @@
 use core::index::LeafReader;
+use core::search::disi::*;
 use core::search::searcher::IndexSearcher;
 use core::search::term_query::TermQuery;
-use core::search::{two_phase_next, DocIterator, Query, Scorer, Weight, NO_MORE_DOCS};
+use core::search::{two_phase_next, DocIterator, Query, Scorer, Weight};
 use core::util::DocId;
 use error::ErrorKind::IllegalArgument;
 use error::Result;
 
-use std::cell::RefCell;
-use std::cmp::{Ord, Ordering};
-use std::collections::binary_heap::Iter;
-use std::collections::BinaryHeap;
 use std::f32;
 use std::fmt;
 
-#[derive(Eq)]
-pub struct ScorerWrapper {
-    pub scorer: RefCell<Box<Scorer>>,
-    pub doc: DocId,
-    pub matches: Option<bool>,
-}
-
-impl ScorerWrapper {
-    fn new(scorer: Box<Scorer>) -> ScorerWrapper {
-        ScorerWrapper {
-            scorer: RefCell::new(scorer),
-            doc: -1,
-            matches: None,
-        }
-    }
-
-    #[allow(dead_code)]
-    fn cost(&self) -> usize {
-        self.scorer.borrow().cost()
-    }
-
-    fn scorer(&mut self) -> &mut Scorer {
-        self.scorer.get_mut().as_mut()
-    }
-
-    fn set_doc(&mut self, doc: DocId) {
-        if self.doc != doc {
-            self.matches = None;
-        }
-        self.doc = doc;
-    }
-}
-
-impl Scorer for ScorerWrapper {
-    fn score(&mut self) -> Result<f32> {
-        self.scorer().score()
-    }
-
-    fn support_two_phase(&self) -> bool {
-        self.scorer.borrow().support_two_phase()
-    }
-}
-
-impl DocIterator for ScorerWrapper {
-    fn doc_id(&self) -> DocId {
-        self.scorer.borrow().doc_id()
-    }
-
-    fn next(&mut self) -> Result<DocId> {
-        let doc_id = self.scorer().next()?;
-        self.set_doc(doc_id);
-        Ok(doc_id)
-    }
-
-    fn advance(&mut self, target: DocId) -> Result<DocId> {
-        let doc_id = self.scorer().advance(target)?;
-        self.set_doc(doc_id);
-        Ok(doc_id)
-    }
-
-    fn matches(&mut self) -> Result<bool> {
-        if self.matches.is_none() {
-            self.matches = Some(self.scorer().matches()?);
-        }
-
-        Ok(self.matches.unwrap())
-    }
-
-    fn match_cost(&self) -> f32 {
-        self.scorer.borrow().match_cost()
-    }
-
-    fn approximate_next(&mut self) -> Result<DocId> {
-        let doc_id = self.scorer().approximate_next()?;
-        self.set_doc(doc_id);
-        Ok(doc_id)
-    }
-
-    fn approximate_advance(&mut self, target: DocId) -> Result<DocId> {
-        let doc_id = self.scorer().approximate_advance(target)?;
-        self.set_doc(doc_id);
-        Ok(doc_id)
-    }
-
-    fn cost(&self) -> usize {
-        self.scorer.borrow().cost()
-    }
-}
-
-impl Ord for ScorerWrapper {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.scorer
-            .borrow()
-            .doc_id()
-            .cmp(&other.scorer.borrow().doc_id())
-            .reverse()
-    }
-}
-
-impl PartialEq for ScorerWrapper {
-    fn eq(&self, other: &Self) -> bool {
-        self.scorer.borrow().doc_id() == other.scorer.borrow().doc_id()
-    }
-}
-
-impl PartialOrd for ScorerWrapper {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-pub struct ScorerPriorityQueue(BinaryHeap<ScorerWrapper>);
-
-impl ScorerPriorityQueue {
-    fn new() -> ScorerPriorityQueue {
-        ScorerPriorityQueue(BinaryHeap::new())
-    }
-
-    fn pop(&mut self) -> ScorerWrapper {
-        self.0.pop().unwrap()
-    }
-
-    fn push(&mut self, wrapper: ScorerWrapper) {
-        self.0.push(wrapper);
-    }
-
-    fn push_all(&mut self, wrapper: Vec<ScorerWrapper>) {
-        for w in wrapper {
-            self.push(w);
-        }
-    }
-
-    fn peek(&self) -> &ScorerWrapper {
-        self.0.peek().unwrap()
-    }
-
-    #[allow(dead_code)]
-    fn iter(&self) -> Iter<ScorerWrapper> {
-        self.0.iter()
-    }
-
-    #[allow(dead_code)]
-    fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-}
-
 pub struct DisjunctionSumScorer {
-    sub_scorers: ScorerPriorityQueue,
+    sub_scorers: DisiPriorityQueue,
     cost: usize,
     support_two_phase: bool,
     two_phase_match_cost: f32,
@@ -183,14 +29,8 @@ impl DisjunctionSumScorer {
         } else {
             0f32
         };
-        let mut sub_scorers = ScorerPriorityQueue::new();
-        for scorer in children {
-            let wrapper = ScorerWrapper::new(scorer);
-            sub_scorers.push(wrapper);
-        }
-
         DisjunctionSumScorer {
-            sub_scorers,
+            sub_scorers: DisiPriorityQueue::new(children),
             cost,
             support_two_phase,
             two_phase_match_cost,
@@ -199,11 +39,11 @@ impl DisjunctionSumScorer {
 }
 
 impl DisjunctionScorer for DisjunctionSumScorer {
-    fn sub_scorers(&self) -> &ScorerPriorityQueue {
+    fn sub_scorers(&self) -> &DisiPriorityQueue {
         &self.sub_scorers
     }
 
-    fn sub_scorers_mut(&mut self) -> &mut ScorerPriorityQueue {
+    fn sub_scorers_mut(&mut self) -> &mut DisiPriorityQueue {
         &mut self.sub_scorers
     }
 
@@ -222,25 +62,25 @@ impl DisjunctionScorer for DisjunctionSumScorer {
 
 impl Scorer for DisjunctionSumScorer {
     fn score(&mut self) -> Result<f32> {
-        let mut top_scorers = self.pop_top_scorers();
         let mut score: f32 = 0.0;
-
-        for scorer in &mut top_scorers {
+        self.foreach_top_scorer(|scorer| {
             if scorer.matches()? {
                 score += scorer.score()?;
             }
-        }
-
-        self.sub_scorers.push_all(top_scorers);
-
+            Ok(true)
+        })?;
         Ok(score)
     }
 }
 
 pub trait DisjunctionScorer {
-    fn sub_scorers(&self) -> &ScorerPriorityQueue;
+    fn sub_scorers(&self) -> &DisiPriorityQueue {
+        unimplemented!();
+    }
 
-    fn sub_scorers_mut(&mut self) -> &mut ScorerPriorityQueue;
+    fn sub_scorers_mut(&mut self) -> &mut DisiPriorityQueue {
+        unimplemented!();
+    }
 
     fn two_phase_match_cost(&self) -> f32;
 
@@ -248,36 +88,29 @@ pub trait DisjunctionScorer {
 
     fn support_two_phase_iter(&self) -> bool;
 
-    /// Get the list of scorers which are on the current doc.
-    fn pop_top_scorers(&mut self) -> Vec<ScorerWrapper> {
-        let current_doc = self.sub_scorers().peek().doc;
-        debug_assert_ne!(
-            current_doc, -1,
-            "You should call iterator::next() first before scoring"
-        );
-        debug_assert_ne!(
-            current_doc, NO_MORE_DOCS,
-            "You should check remain docs before scoring"
-        );
-
-        let mut top_scorers: Vec<ScorerWrapper> = Vec::new();
-
-        while !self.sub_scorers().is_empty() {
-            let scorer = self.sub_scorers_mut().pop();
-            if scorer.doc == current_doc {
-                top_scorers.push(scorer);
+    /// for each of the list of scorers which are on the current doc.
+    fn foreach_top_scorer<F>(&mut self, mut f: F) -> Result<()>
+    where
+        F: FnMut(&mut DisiWrapper) -> Result<bool>,
+    {
+        let mut disi = Some(self.sub_scorers().top_list());
+        loop {
+            if let Some(scorer) = disi {
+                if !f(scorer)? {
+                    break;
+                }
+                disi = scorer.next_scorer();
             } else {
-                self.sub_scorers_mut().push(scorer);
                 break;
             }
         }
-        top_scorers
+        Ok(())
     }
 }
 
 impl<T: DisjunctionScorer + Scorer> DocIterator for T {
     fn doc_id(&self) -> DocId {
-        self.sub_scorers().peek().doc
+        self.sub_scorers().peek().doc()
     }
 
     fn next(&mut self) -> Result<DocId> {
@@ -297,15 +130,14 @@ impl<T: DisjunctionScorer + Scorer> DocIterator for T {
     fn matches(&mut self) -> Result<bool> {
         if self.support_two_phase_iter() {
             let mut matches = false;
-            let mut top_scorers = self.pop_top_scorers();
-            for scorer in &mut top_scorers {
-                if scorer.matches()? {
+            self.foreach_top_scorer(|scorer| {
+                Ok(if scorer.matches()? {
                     matches = true;
-                    break;
-                }
-            }
-
-            self.sub_scorers_mut().push_all(top_scorers);
+                    false
+                } else {
+                    true
+                })
+            })?;
             Ok(matches)
         } else {
             Ok(true)
@@ -319,7 +151,7 @@ impl<T: DisjunctionScorer + Scorer> DocIterator for T {
     fn approximate_next(&mut self) -> Result<DocId> {
         let sub_scorers = self.sub_scorers_mut();
         let mut top = sub_scorers.pop();
-        let doc = top.doc;
+        let doc = top.doc();
 
         loop {
             let next_doc = top.approximate_next()?;
@@ -328,12 +160,12 @@ impl<T: DisjunctionScorer + Scorer> DocIterator for T {
             sub_scorers.push(top);
 
             top = sub_scorers.pop();
-            if top.doc != doc {
+            if top.doc() != doc {
                 break;
             }
         }
 
-        let current_doc = top.doc;
+        let current_doc = top.doc();
         sub_scorers.push(top);
 
         Ok(current_doc)
@@ -344,16 +176,17 @@ impl<T: DisjunctionScorer + Scorer> DocIterator for T {
         let mut top = sub_scorers.pop();
 
         loop {
-            top.doc = top.approximate_advance(target)?;
+            let doc = top.approximate_advance(target)?;
+            top.set_doc(doc);
             sub_scorers.push(top);
 
             top = sub_scorers.pop();
-            if top.doc >= target {
+            if top.doc() >= target {
                 break;
             }
         }
 
-        let current_doc = top.doc;
+        let current_doc = top.doc();
         sub_scorers.push(top);
 
         Ok(current_doc)
@@ -520,7 +353,7 @@ impl fmt::Display for DisjunctionMaxWeight {
 }
 
 pub struct DisjunctionMaxScorer {
-    sub_scorers: ScorerPriorityQueue,
+    sub_scorers: DisiPriorityQueue,
     cost: usize,
     support_two_phase: bool,
     two_phase_match_cost: f32,
@@ -539,14 +372,8 @@ impl DisjunctionMaxScorer {
         } else {
             0f32
         };
-        let mut sub_scorers = ScorerPriorityQueue::new();
-        for scorer in children {
-            let wrapper = ScorerWrapper::new(scorer);
-            sub_scorers.push(wrapper);
-        }
-
         DisjunctionMaxScorer {
-            sub_scorers,
+            sub_scorers: DisiPriorityQueue::new(children),
             cost,
             support_two_phase,
             two_phase_match_cost,
@@ -557,11 +384,9 @@ impl DisjunctionMaxScorer {
 
 impl Scorer for DisjunctionMaxScorer {
     fn score(&mut self) -> Result<f32> {
-        let mut top_scorers = self.pop_top_scorers();
         let mut score_sum = 0.0f32;
         let mut score_max = f32::NEG_INFINITY;
-
-        for scorer in &mut top_scorers {
+        self.foreach_top_scorer(|scorer| {
             if scorer.matches()? {
                 let sub_score = scorer.score()?;
                 score_sum += sub_score;
@@ -569,19 +394,18 @@ impl Scorer for DisjunctionMaxScorer {
                     score_max = sub_score;
                 }
             }
-        }
-        self.sub_scorers.push_all(top_scorers);
-
+            Ok(true)
+        })?;
         Ok(score_max + (score_sum - score_max) * self.tie_breaker_multiplier)
     }
 }
 
 impl DisjunctionScorer for DisjunctionMaxScorer {
-    fn sub_scorers(&self) -> &ScorerPriorityQueue {
+    fn sub_scorers(&self) -> &DisiPriorityQueue {
         &self.sub_scorers
     }
 
-    fn sub_scorers_mut(&mut self) -> &mut ScorerPriorityQueue {
+    fn sub_scorers_mut(&mut self) -> &mut DisiPriorityQueue {
         &mut self.sub_scorers
     }
 

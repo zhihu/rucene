@@ -123,7 +123,7 @@ impl Query for PhraseQuery {
         }
 
         let collection_stats = if needs_scores {
-            searcher.collections_statistics(self.field.clone())?
+            searcher.collections_statistics(&self.field)?
         } else {
             CollectionStatistics::new(self.field.clone(), max_doc, -1, -1, -1)
         };

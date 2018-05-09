@@ -21,6 +21,12 @@ impl ScoreDoc {
         }
     }
 
+    pub fn reset(&mut self, doc: DocId, score: f32, shard_index: usize) {
+        self.doc = doc;
+        self.score = score;
+        self.shard_index = shard_index;
+    }
+
     pub fn order_by_doc(d1: &ScoreDoc, d2: &ScoreDoc) -> Ordering {
         if d1.doc < d2.doc {
             Ordering::Less

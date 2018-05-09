@@ -23,6 +23,7 @@ pub mod point_range;
 pub mod posting_iterator;
 
 pub mod bulk_scorer;
+pub mod disi;
 pub mod field_comparator;
 pub mod req_opt;
 pub mod rescorer;

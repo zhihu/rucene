@@ -1,3 +1,4 @@
+#[derive(Clone)]
 pub struct CollectionStatistics {
     pub field: String,
     pub max_doc: i64,

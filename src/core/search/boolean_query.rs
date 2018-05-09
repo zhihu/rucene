@@ -66,7 +66,7 @@ impl Query for BooleanQuery {
         for q in &self.filter_queries {
             must_weights.push(searcher.create_weight(q.as_ref(), false)?);
         }
-        let mut should_weights = Vec::new();
+        let mut should_weights = Vec::with_capacity(self.should_queries.len());
         for q in &self.should_queries {
             should_weights.push(searcher.create_weight(q.as_ref(), needs_scores)?);
         }
