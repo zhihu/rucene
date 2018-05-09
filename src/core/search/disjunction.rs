@@ -74,13 +74,9 @@ impl Scorer for DisjunctionSumScorer {
 }
 
 pub trait DisjunctionScorer {
-    fn sub_scorers(&self) -> &DisiPriorityQueue {
-        unimplemented!();
-    }
+    fn sub_scorers(&self) -> &DisiPriorityQueue;
 
-    fn sub_scorers_mut(&mut self) -> &mut DisiPriorityQueue {
-        unimplemented!();
-    }
+    fn sub_scorers_mut(&mut self) -> &mut DisiPriorityQueue;
 
     fn two_phase_match_cost(&self) -> f32;
 
@@ -94,15 +90,11 @@ pub trait DisjunctionScorer {
         F: FnMut(&mut DisiWrapper) -> Result<bool>,
     {
         let mut disi = Some(self.sub_scorers().top_list());
-        loop {
-            if let Some(scorer) = disi {
-                if !f(scorer)? {
-                    break;
-                }
-                disi = scorer.next_scorer();
-            } else {
+        while let Some(scorer) = disi {
+            if !f(scorer)? {
                 break;
             }
+            disi = scorer.next_scorer();
         }
         Ok(())
     }

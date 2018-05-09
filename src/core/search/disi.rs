@@ -58,7 +58,7 @@ impl DisiWrapper {
         self.scorer.doc_id()
     }
 
-    pub fn next(&mut self) -> Result<DocId> {
+    pub fn next_doc(&mut self) -> Result<DocId> {
         let doc_id = self.scorer().next()?;
         self.set_doc(doc_id);
         Ok(doc_id)
@@ -167,6 +167,7 @@ impl DisiPriorityQueue {
     }
 
     /// Get the list of scorers which are on the current doc.
+    #[allow(mut_from_ref)]
     pub fn top_list(&self) -> &mut DisiWrapper {
         unsafe { &mut *self.do_top_list() }
     }
@@ -192,7 +193,7 @@ impl DisiPriorityQueue {
 
     unsafe fn top_list_to(
         mut list: *mut DisiWrapper,
-        heap: &Vec<*mut DisiWrapper>,
+        heap: &[*mut DisiWrapper],
         size: isize,
         i: isize,
     ) -> *mut DisiWrapper {
@@ -239,6 +240,7 @@ impl DisiPriorityQueue {
         result
     }
 
+    #[allow(mut_from_ref)]
     pub fn peek(&self) -> &mut DisiWrapper {
         unsafe {
             let result = self.heap[0];
