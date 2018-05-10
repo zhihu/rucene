@@ -1,2 +1,5 @@
-pub mod search;
-pub mod token;
+mod search;
+pub use self::search::*;
+
+mod token;
+pub use self::token::*;

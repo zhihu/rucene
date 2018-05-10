@@ -1,3 +1,4 @@
+use std::str::FromStr;
 use std::sync::Arc;
 
 use core::codec::compressing::{CompressingStoredFieldsFormat, CompressionMode};
@@ -7,7 +8,7 @@ use core::codec::writer::StoredFieldsWriter;
 use core::index::field_info::FieldInfos;
 use core::index::SegmentInfo;
 use core::store::{DirectoryRc, IOContext};
-use error::*;
+use error::{Error as CoreError, Result};
 
 const MODE_KEY: &str = "Lucene50StoredFieldsFormat.mode";
 
@@ -17,13 +18,15 @@ pub enum StoredFieldCompressMode {
     BestCompression,
 }
 
-impl StoredFieldCompressMode {
-    pub fn from_string(value: &str) -> StoredFieldCompressMode {
-        if value.eq("BEST_SPEED") {
+impl FromStr for StoredFieldCompressMode {
+    type Err = CoreError;
+    fn from_str(v: &str) -> Result<Self> {
+        let r = if v == "BEST_SPEED" {
             StoredFieldCompressMode::BestSpeed
         } else {
             StoredFieldCompressMode::BestCompression
-        }
+        };
+        Ok(r)
     }
 }
 
@@ -76,7 +79,7 @@ impl StoredFieldsFormat for Lucene50StoredFieldsFormat {
         ioctx: &IOContext,
     ) -> Result<Box<StoredFieldsReader>> {
         if let Some(value) = si.attributes.get(MODE_KEY) {
-            let mode = StoredFieldCompressMode::from_string(value);
+            let mode = StoredFieldCompressMode::from_str(value)?;
 
             self.format(&mode)?
                 .fields_reader(directory, si, field_info, ioctx)
