@@ -294,11 +294,10 @@ impl CompressingTermVectorsReader {
                 while j < total_freq as usize {
                     let next_positions_off = self.reader
                         .next_longs_ref(vectors_stream, total_freq as usize - j)?;
-                    let extended: Vec<_> = self.reader.values
+                    let extended = self.reader.values
                         [next_positions_off.0..next_positions_off.0 + next_positions_off.1]
                         .iter()
-                        .map(|&x| x as i32)
-                        .collect();
+                        .map(|&x| x as i32);
                     field_positions.extend(extended);
                     j += next_positions_off.1;
                 }
@@ -502,9 +501,7 @@ impl CompressingTermVectorsReader {
                 let mut j = 0;
                 while j < term_count {
                     let next = self.reader.next_longs_ref(vectors_stream, term_count - j)?;
-                    let extended: Vec<_> = (0..next.1)
-                        .map(|k| self.reader.values[next.0 + k] as i32)
-                        .collect();
+                    let extended = (0..next.1).map(|k| self.reader.values[next.0 + k] as i32);
                     field_prefix_lengths.extend(extended);
                     j += next.1;
                 }
@@ -528,9 +525,7 @@ impl CompressingTermVectorsReader {
                 let mut j = 0usize;
                 while j < term_count {
                     let next = self.reader.next_longs_ref(vectors_stream, term_count - j)?;
-                    let extended: Vec<_> = (0..next.1)
-                        .map(|k| self.reader.values[next.0 + k] as i32)
-                        .collect();
+                    let extended = (0..next.1).map(|k| self.reader.values[next.0 + k] as i32);
                     field_suffix_lengths.extend(extended);
                     j += next.1;
                 }
@@ -554,9 +549,7 @@ impl CompressingTermVectorsReader {
             let mut i = 0usize;
             while i < total_terms {
                 let next = self.reader.next_longs_ref(vectors_stream, total_terms - i)?;
-                let extended: Vec<_> = (0..next.1)
-                    .map(|k| self.reader.values[next.0 + k] as i32 + 1)
-                    .collect();
+                let extended = (0..next.1).map(|k| self.reader.values[next.0 + k] as i32 + 1);
                 term_freqs.extend(extended);
                 i += next.1;
             }
