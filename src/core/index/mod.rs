@@ -317,8 +317,8 @@ impl Serialize for SegmentInfo {
 /// instance on DocumentWriterPerThread, or via sync'd code by
 /// DocumentsWriterDeleteQueue
 pub struct BufferedUpdates {
-    //
 // num_term_deletes: AtomicIsize,
+
 // num_numeric_updates: AtomicIsize,
 // num_binary_updates: AtomicIsize,
 //

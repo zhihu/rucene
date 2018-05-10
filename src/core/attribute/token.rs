@@ -18,7 +18,7 @@ impl OffsetAttribute {
         self.start_offset
     }
 
-    pub fn set_offset(&mut self, start_offset: i32, end_offset: i32) -> Result<()> {
+    pub fn set_offsets(&mut self, start_offset: i32, end_offset: i32) -> Result<()> {
         // TODO: we could assert that this is set-once, ie,
         // current values are -1?  Very few token filters should
         // change offsets once set by the tokenizer... and
@@ -28,7 +28,7 @@ impl OffsetAttribute {
         if start_offset < 0 || end_offset < start_offset {
             bail!(
                 "startOffset must be non-negative, and endOffset must be >= startOffset; got \
-                 startOffset={},endOffset={}",
+                 startOffset={}, endOffset={}",
                 start_offset,
                 end_offset
             )
@@ -51,6 +51,7 @@ impl OffsetAttribute {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct PositionIncrementAttribute {
     position_increment: i32,
 }
@@ -100,7 +101,7 @@ pub struct PayloadAttribute {
 impl PayloadAttribute {
     pub fn new(payload: &[u8]) -> PayloadAttribute {
         PayloadAttribute {
-            payload: Vec::from(payload),
+            payload: payload.to_vec(),
         }
     }
 

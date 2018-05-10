@@ -10,7 +10,7 @@ use std::sync::Arc;
 use serde::ser::SerializeStruct;
 use serde::{Serialize, Serializer};
 
-use core::attribute::token::{OffsetAttribute, PayloadAttribute, PositionIncrementAttribute};
+use core::attribute::{OffsetAttribute, PayloadAttribute, PositionIncrementAttribute};
 use core::index::term::*;
 use core::index::{DocValuesType, IndexOptions};
 
