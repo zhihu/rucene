@@ -9,22 +9,19 @@ use std::f32;
 pub struct ScoreDoc {
     pub doc: DocId,
     pub score: f32,
-    pub shard_index: usize,
 }
 
 impl ScoreDoc {
-    pub fn new(doc: DocId, score: f32, shard_index: usize) -> ScoreDoc {
+    pub fn new(doc: DocId, score: f32) -> ScoreDoc {
         ScoreDoc {
             doc,
             score,
-            shard_index,
         }
     }
 
-    pub fn reset(&mut self, doc: DocId, score: f32, shard_index: usize) {
+    pub fn reset(&mut self, doc: DocId, score: f32) {
         self.doc = doc;
         self.score = score;
-        self.shard_index = shard_index;
     }
 
     pub fn order_by_doc(d1: &ScoreDoc, d2: &ScoreDoc) -> Ordering {
@@ -149,13 +146,6 @@ impl ScoreDocHit {
         match *self {
             ScoreDocHit::Score(ref s) => s.doc,
             ScoreDocHit::Field(ref f) => f.doc,
-        }
-    }
-
-    pub fn shard_index(&self) -> usize {
-        match *self {
-            ScoreDocHit::Score(ref s) => s.shard_index,
-            ScoreDocHit::Field(ref f) => f.shard_index,
         }
     }
 

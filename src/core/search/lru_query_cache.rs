@@ -11,7 +11,7 @@ use core::search::lru_cache::LRUCache;
 use core::index::LeafReader;
 use core::search::bulk_scorer::BulkScorer;
 use core::search::cache_policy::QueryCachingPolicy;
-use core::search::collector::Collector;
+use core::search::collector::{SearchCollector, Collector, LeafCollector};
 use core::search::match_all::ConstantScoreScorer;
 use core::search::Weight;
 use core::search::{DocIdSet, DocIterator, EmptyDocIterator};
@@ -422,18 +422,34 @@ pub struct BitSetLeafCollector {
     cost: i64,
 }
 
-impl Collector for BitSetLeafCollector {
+impl SearchCollector for BitSetLeafCollector {
     fn set_next_reader(&mut self, _reader_ord: usize, _reader: &LeafReader) -> Result<()> {
         Ok(())
     }
+
+    fn support_parallel(&self) -> bool {
+        false
+    }
+
+    fn leaf_collector(&mut self, _reader: &LeafReader) -> Box<LeafCollector> {
+        unimplemented!()
+    }
+
+    fn finish(&mut self) -> Result<()> {
+        unimplemented!()
+    }
+}
+
+impl Collector for BitSetLeafCollector {
+    fn needs_scores(&self) -> bool {
+        false
+    }
+
     fn collect(&mut self, doc: DocId, _scorer: &mut Scorer) -> Result<()> {
         self.cost += 1;
         self.bit_set.set(doc as usize);
 
         Ok(())
-    }
-    fn needs_scores(&self) -> bool {
-        false
     }
 }
 
@@ -441,15 +457,31 @@ pub struct DocIdSetLeafCollector {
     doc_id_set: RoaringDocIdSetBuilder,
 }
 
-impl Collector for DocIdSetLeafCollector {
+impl SearchCollector for DocIdSetLeafCollector {
     fn set_next_reader(&mut self, _reader_ord: usize, _reader: &LeafReader) -> Result<()> {
         Ok(())
     }
-    fn collect(&mut self, doc: DocId, _scorer: &mut Scorer) -> Result<()> {
-        self.doc_id_set.add_doc(doc)
+
+    fn support_parallel(&self) -> bool {
+        false
     }
+
+    fn leaf_collector(&mut self, _reader: &LeafReader) -> Box<LeafCollector> {
+        unimplemented!()
+    }
+
+    fn finish(&mut self) -> Result<()> {
+        unimplemented!()
+    }
+}
+
+impl Collector for DocIdSetLeafCollector {
     fn needs_scores(&self) -> bool {
         false
+    }
+
+    fn collect(&mut self, doc: DocId, _scorer: &mut Scorer) -> Result<()> {
+        self.doc_id_set.add_doc(doc)
     }
 }
 

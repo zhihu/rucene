@@ -31,9 +31,9 @@ impl<'a> BulkScorer<'a> {
     /// Although `max` would be a legal return value for this method, higher
     /// values might help callers skip more efficiently over non-matching portions
     /// of the docID space.
-    pub fn score(
+    pub fn score<T: Collector + ?Sized>(
         &mut self,
-        collector: &mut Collector,
+        collector: &mut T,
         accept_docs: Option<&Bits>,
         min: DocId,
         max: DocId,
@@ -47,9 +47,9 @@ impl<'a> BulkScorer<'a> {
         self.score_range(collector, accept_docs, current_doc, max)
     }
 
-    fn score_range(
+    fn score_range<T: Collector + ?Sized>(
         &mut self,
-        collector: &mut Collector,
+        collector: &mut T,
         accept_docs: Option<&Bits>,
         min: DocId,
         max: DocId,
@@ -61,9 +61,9 @@ impl<'a> BulkScorer<'a> {
         }
     }
 
-    fn score_range_in_docs_set(
+    fn score_range_in_docs_set<T: Collector + ?Sized>(
         &mut self,
-        collector: &mut Collector,
+        collector: &mut T,
         accept_docs: &Bits,
         min: DocId,
         max: DocId,
@@ -87,9 +87,9 @@ impl<'a> BulkScorer<'a> {
         Ok(current_doc)
     }
 
-    fn score_range_all(
+    fn score_range_all<T: Collector + ?Sized>(
         &mut self,
-        collector: &mut Collector,
+        collector: &mut T,
         min: DocId,
         max: DocId,
     ) -> Result<DocId> {
@@ -117,6 +117,7 @@ mod tests {
     use core::search::tests::*;
 
     use core::index::tests::*;
+    use core::search::collector::SearchCollector;
     use core::search::collector::top_docs::*;
     use core::util::*;
 

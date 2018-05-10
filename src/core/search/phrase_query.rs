@@ -381,6 +381,9 @@ pub struct PostingsAndPosition {
     up_to: i32,
 }
 
+unsafe impl Send for PostingsAndPosition {}
+unsafe impl Sync for PostingsAndPosition {}
+
 impl PostingsAndPosition {
     pub fn new(postings: *mut PostingIterator, offset: i32) -> PostingsAndPosition {
         PostingsAndPosition {
@@ -567,6 +570,9 @@ struct PhrasePositions {
     pub terms: Vec<Term>,               // for repetitions initialization
 }
 
+unsafe impl Send for PhrasePositions {}
+unsafe impl Sync for PhrasePositions {}
+
 impl PhrasePositions {
     fn new(postings: *mut PostingIterator, offset: i32, ord: i32, terms: Vec<Term>) -> Self {
         PhrasePositions {
@@ -628,6 +634,9 @@ struct PPElement {
     pub index: usize,               // index in SloppyPhraseScorer.phrasePositions
     pub pp: *const PhrasePositions, // pointer to target
 }
+
+unsafe impl Send for PPElement {}
+unsafe impl Sync for PPElement {}
 
 impl fmt::Debug for PPElement {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {

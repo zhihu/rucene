@@ -123,6 +123,9 @@ pub struct DisiPriorityQueue {
     _buffer: Vec<DisiWrapper>,
 }
 
+unsafe impl Send for DisiPriorityQueue {}
+unsafe impl Sync for DisiPriorityQueue {}
+
 impl DisiPriorityQueue {
     fn left_node(node: isize) -> isize {
         ((node + 1) << 1) - 1

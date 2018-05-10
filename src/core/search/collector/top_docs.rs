@@ -3,16 +3,19 @@ use std::f32;
 use std::usize;
 
 use core::index::LeafReader;
-use core::search::collector::Collector;
+use core::search::collector::{Collector, LeafCollector, SearchCollector};
 use core::search::top_docs::{ScoreDoc, ScoreDocHit, TopDocs, TopScoreDocs};
 use core::search::Scorer;
 use core::util::DocId;
 use error::*;
 
+use crossbeam_channel::{unbounded, Sender, Receiver};
+use std::mem;
+
 type ScoreDocPriorityQueue = BinaryHeap<ScoreDoc>;
 
 struct LeafReaderContext {
-    ord: usize,
+    _ord: usize,
     doc_base: DocId,
 }
 
@@ -30,6 +33,8 @@ pub struct TopDocsCollector {
     total_hits: usize,
 
     reader_context: Option<LeafReaderContext>,
+
+    channel: Option<(Sender<ScoreDoc>, Receiver<ScoreDoc>)>
 }
 
 impl TopDocsCollector {
@@ -40,6 +45,7 @@ impl TopDocsCollector {
             estimated_hits,
             total_hits: 0,
             reader_context: None,
+            channel: None
         }
     }
 
@@ -62,14 +68,13 @@ impl TopDocsCollector {
         self.total_hits += 1;
 
         let at_capacity = self.pq.len() == self.estimated_hits;
-        let ord = self.reader_context.as_ref().map(|x| x.ord).unwrap();
 
         if !at_capacity {
-            let score_doc = ScoreDoc::new(doc_id, score, ord);
+            let score_doc = ScoreDoc::new(doc_id, score);
             self.pq.push(score_doc);
         } else if let Some(mut doc) = self.pq.peek_mut() {
             if doc.score < score {
-                doc.reset(doc_id, score, ord);
+                doc.reset(doc_id, score);
             }
         }
     }
@@ -79,15 +84,43 @@ impl TopDocsCollector {
     }
 }
 
-impl Collector for TopDocsCollector {
+impl SearchCollector for TopDocsCollector {
     fn set_next_reader(&mut self, reader_ord: usize, reader: &LeafReader) -> Result<()> {
         let reader_context = LeafReaderContext {
-            ord: reader_ord,
+            _ord: reader_ord,
             doc_base: reader.doc_base(),
         };
         self.reader_context = Some(reader_context);
 
         Ok(())
+    }
+
+    fn support_parallel(&self) -> bool {
+        true
+    }
+
+    fn leaf_collector(&mut self, reader: &LeafReader) -> Box<LeafCollector> {
+        if self.channel.is_none() {
+            self.channel = Some(unbounded());
+        }
+        Box::new(TopDocsLeafCollector::new(reader.doc_base(), self.channel.as_ref().unwrap().0.clone()))
+    }
+
+    fn finish(&mut self) -> Result<()> {
+        debug_assert!(self.channel.is_some());
+        let channel = mem::replace(&mut self.channel, None);
+        let (sender, receiver) = channel.unwrap();
+        drop(sender);
+        while let Ok(doc) = receiver.recv() {
+            self.add_doc(doc.doc, doc.score)
+        }
+        Ok(())
+    }
+}
+
+impl Collector for TopDocsCollector {
+    fn needs_scores(&self) -> bool {
+        true
     }
 
     fn collect(&mut self, doc: DocId, scorer: &mut Scorer) -> Result<()> {
@@ -101,9 +134,41 @@ impl Collector for TopDocsCollector {
 
         Ok(())
     }
+}
 
+struct TopDocsLeafCollector {
+    doc_base: DocId,
+    channel: Sender<ScoreDoc>
+}
+
+impl TopDocsLeafCollector {
+    pub fn new(
+        doc_base: DocId,
+        channel: Sender<ScoreDoc>
+    ) -> TopDocsLeafCollector {
+        TopDocsLeafCollector {
+            doc_base, channel
+        }
+    }
+}
+
+impl LeafCollector for TopDocsLeafCollector {
+    fn finish_leaf(&mut self) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl Collector for TopDocsLeafCollector {
     fn needs_scores(&self) -> bool {
         true
+    }
+
+    fn collect(&mut self, doc: i32, scorer: &mut Scorer) -> Result<()> {
+        let score_doc = ScoreDoc::new(doc + self.doc_base, scorer.score()?);
+        if self.channel.send(score_doc).is_err() {
+            bail!("collect score doc failed for channel send!");
+        }
+        Ok(())
     }
 }
 
