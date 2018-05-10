@@ -237,19 +237,19 @@ impl Lucene50SkipReader {
 
         // fields for Lucene50SkipReader part
         let max_skip_levels = max_skip_levels as usize;
-        let doc_pointer = vec![0 as i64; max_skip_levels];
+        let doc_pointer = vec![0_i64; max_skip_levels];
         let mut pos_pointer = None;
         let mut pos_buffer_upto = None;
         let mut payload_byte_upto = None;
         let mut pay_pointer = None;
         if has_pos {
-            pos_pointer = Some(vec![0 as i64; max_skip_levels]);
-            pos_buffer_upto = Some(vec![0 as i32; max_skip_levels]);
+            pos_pointer = Some(vec![0_i64; max_skip_levels]);
+            pos_buffer_upto = Some(vec![0_i32; max_skip_levels]);
             if has_payloads {
-                payload_byte_upto = Some(vec![0 as i32; max_skip_levels]);
+                payload_byte_upto = Some(vec![0_i32; max_skip_levels]);
             }
             if has_offsets || has_payloads {
-                pay_pointer = Some(vec![0 as i64; max_skip_levels]);
+                pay_pointer = Some(vec![0_i64; max_skip_levels]);
             }
         };
         Lucene50SkipReader {
