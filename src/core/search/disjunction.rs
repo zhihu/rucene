@@ -418,6 +418,7 @@ impl DisjunctionScorer for DisjunctionMaxScorer {
 mod tests {
     use super::*;
     use core::search::tests::*;
+    use core::search::NO_MORE_DOCS;
 
     #[test]
     fn test_disjunction_iterator() {

@@ -232,6 +232,10 @@ impl LeafReader for SegmentReader {
         Ok(self.core.fields())
     }
 
+    fn name(&self) -> &str {
+        &self.si.info.name
+    }
+
     fn doc_base(&self) -> DocId {
         self.doc_base
     }

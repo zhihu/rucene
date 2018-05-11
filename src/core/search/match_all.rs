@@ -77,13 +77,13 @@ impl fmt::Display for MatchAllDocsWeight {
     }
 }
 
-pub struct ConstantScoreScorer<T: DocIterator + ?Sized> {
+pub struct ConstantScoreScorer<T: DocIterator + Send + Sync + ?Sized> {
     score: f32,
     iterator: Box<T>,
     cost: usize,
 }
 
-impl<T: DocIterator + ?Sized> ConstantScoreScorer<T> {
+impl<T: DocIterator + Send + Sync + ?Sized> ConstantScoreScorer<T> {
     pub fn new(score: f32, iterator: Box<T>, cost: usize) -> ConstantScoreScorer<T> {
         ConstantScoreScorer {
             score,
@@ -93,13 +93,13 @@ impl<T: DocIterator + ?Sized> ConstantScoreScorer<T> {
     }
 }
 
-impl<T: DocIterator + ?Sized> Scorer for ConstantScoreScorer<T> {
+impl<T: DocIterator + Send + Sync + ?Sized> Scorer for ConstantScoreScorer<T> {
     fn score(&mut self) -> Result<f32> {
         Ok(self.score)
     }
 }
 
-impl<T: DocIterator + ?Sized> DocIterator for ConstantScoreScorer<T> {
+impl<T: DocIterator + Send + Sync + ?Sized> DocIterator for ConstantScoreScorer<T> {
     fn doc_id(&self) -> DocId {
         self.iterator.doc_id()
     }

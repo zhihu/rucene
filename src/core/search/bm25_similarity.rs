@@ -225,14 +225,14 @@ mod tests {
     #[test]
     fn test_idf() {
         let collection_stats = CollectionStatistics::new(String::from("world"), 11, -1, 0, 0);
-        let term_stats = TermStatistics::new(Vec::new(), 1, -1);
+        let term_stats = vec![TermStatistics::new(Vec::new(), 1, -1)];
         assert!(
             (BM25Similarity::idf(&term_stats, &collection_stats) - (8f32).ln())
                 < ::std::f32::EPSILON
         );
 
         let collection_stats = CollectionStatistics::new(String::from("world"), 11, 32, 0, 0);
-        let term_stats = TermStatistics::new(Vec::new(), 1, -1);
+        let term_stats = vec![TermStatistics::new(Vec::new(), 1, -1)];
         assert!(
             (BM25Similarity::idf(&term_stats, &collection_stats) - (22f32).ln())
                 < ::std::f32::EPSILON
@@ -254,7 +254,7 @@ mod tests {
     #[test]
     fn test_bm25_similarity() {
         let collection_stats = CollectionStatistics::new(String::from("world"), 11, 32, 120, 0);
-        let term_stats = TermStatistics::new(Vec::new(), 1, -1);
+        let term_stats = vec![TermStatistics::new(Vec::new(), 1, -1)];
         let bm25_sim = BM25Similarity::new(1.2, 0.75);
         let sim_weight = bm25_sim.compute_weight(&collection_stats, &term_stats);
 
