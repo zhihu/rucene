@@ -331,15 +331,15 @@ impl Format {
 
     pub fn byte_count(
         &self,
-        packed_ints_version: i32,
+        _packed_ints_version: i32,
         value_count: i32,
         bits_per_value: i32,
     ) -> i64 {
         match *self {
-            Format::Packed => (value_count * bits_per_value + 7) as i64 / 8,
+            Format::Packed => i64::from(value_count * bits_per_value + 7) / 8,
             _ => {
                 let values_per_block = 64 / bits_per_value;
-                ((value_count + values_per_block - 1) / values_per_block) as i64 * 8
+                i64::from((value_count + values_per_block - 1) / values_per_block) * 8
             }
         }
     }
@@ -2063,7 +2063,7 @@ pub fn get_encoder(
 
 pub fn get_decoder(
     format: &Format,
-    version: i32,
+    _version: i32,
     bits_per_value: i32,
 ) -> Result<Box<PackedIntDecoder>> {
     // check_version(version)?;

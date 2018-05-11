@@ -67,7 +67,7 @@ impl Default for CompressingTermVectorsFormat {
 }
 
 impl TermVectorsFormat for CompressingTermVectorsFormat {
-    fn vectors_reader(
+    fn tv_reader(
         &self,
         directory: DirectoryRc,
         si: &SegmentInfo,
@@ -85,7 +85,7 @@ impl TermVectorsFormat for CompressingTermVectorsFormat {
         ).map(|tvf| -> Box<TermVectorsReader> { Box::new(tvf) })
     }
 
-    fn vectors_writer(
+    fn tv_writer(
         &self,
         _directory: DirectoryRc,
         _segment_info: &SegmentInfo,

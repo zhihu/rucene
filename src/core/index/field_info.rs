@@ -1,10 +1,9 @@
 use error::ErrorKind::{IllegalArgument, IllegalState};
-use error::*;
+use error::Result;
 use std::cmp::max;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::mem::discriminant;
-use std::result;
 use std::sync::Arc;
 
 use serde::ser::SerializeStruct;
@@ -216,7 +215,7 @@ pub struct FieldInfos {
 }
 
 impl Serialize for FieldInfos {
-    fn serialize<S>(&self, serializer: S) -> result::Result<S::Ok, S::Error>
+    fn serialize<S>(&self, serializer: S) -> ::std::result::Result<S::Ok, S::Error>
     where
         S: Serializer,
     {

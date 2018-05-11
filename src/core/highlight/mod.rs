@@ -25,13 +25,8 @@ pub trait Encoder {
     fn encode_text<'a>(&self, original: &'a str) -> Cow<'a, str>;
 }
 
-pub struct DefaultEncoder {}
-
-impl Default for DefaultEncoder {
-    fn default() -> DefaultEncoder {
-        DefaultEncoder {}
-    }
-}
+#[derive(Debug, Copy, Clone, Default)]
+pub struct DefaultEncoder;
 
 impl Encoder for DefaultEncoder {
     fn encode_text<'a>(&self, original: &'a str) -> Cow<'a, str> {
@@ -39,13 +34,8 @@ impl Encoder for DefaultEncoder {
     }
 }
 
-pub struct SimpleHtmlEncoder {}
-
-impl Default for SimpleHtmlEncoder {
-    fn default() -> SimpleHtmlEncoder {
-        SimpleHtmlEncoder {}
-    }
-}
+#[derive(Debug, Copy, Clone, Default)]
+pub struct SimpleHtmlEncoder;
 
 impl Encoder for SimpleHtmlEncoder {
     fn encode_text<'a>(&self, original: &'a str) -> Cow<'a, str> {
@@ -853,22 +843,16 @@ impl FieldTermStack {
     }
 
     pub fn pop(&mut self) -> Option<TermInfo> {
-        if !self.term_list.is_empty() {
-            let term_info = self.term_list[0].clone();
-            self.term_list.remove(0);
-
-            Some(term_info)
-        } else {
-            None
-        }
+        self.term_list.pop()
     }
 
+
     pub fn push(&mut self, term_info: TermInfo) {
-        self.term_list.insert(0, term_info);
+        self.term_list.push(term_info)
     }
 
     pub fn is_empty(&self) -> bool {
-        self.term_list.len() == 0
+        self.term_list.is_empty()
     }
 }
 
