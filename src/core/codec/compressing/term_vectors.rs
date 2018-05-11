@@ -390,7 +390,7 @@ impl CompressingTermVectorsReader {
         let token = i32::from(vectors_stream.read_byte()?) & 0xFF;
         debug_assert_ne!(token, 0);
         let bits_per_field_num = token & 0x1f;
-        let mut total_distinct_fields = token.unsigned_shift(5usize) as usize;
+        let mut total_distinct_fields = token.unsigned_shift(5) as usize;
         if total_distinct_fields == 0x07 {
             total_distinct_fields += vectors_stream.read_vint()? as usize;
         }

@@ -336,8 +336,11 @@ impl Format {
         bits_per_value: i32,
     ) -> i64 {
         match *self {
-            Format::Packed => (f64::from(value_count * bits_per_value) / 8f64).ceil() as i64,
-            _ => i64::from(8 * self.long_count(packed_ints_version, value_count, bits_per_value)),
+            Format::Packed => (value_count * bits_per_value + 7) as i64 / 8,
+            _ => {
+                let values_per_block = 64 / bits_per_value;
+                ((values_count + values_per_block - 1) / values_per_block) as i64 * 8
+            }
         }
     }
     /// Computes how many long blocks are needed to store <code>values</code>
@@ -351,15 +354,11 @@ impl Format {
         match *self {
             Format::Packed => {
                 let byte_count = self.byte_count(packed_ints_version, value_count, bits_per_value);
-                if (byte_count % 8) == 0 {
-                    (byte_count / 8) as i32
-                } else {
-                    (byte_count / 8 + 1) as i32
-                }
+                ((byte_count + 7) / 8) as i32
             }
             _ => {
                 let values_per_block = 64 / bits_per_value;
-                (f64::from(value_count) / f64::from(values_per_block)).ceil() as i32
+                (values_count + values_per_block - 1) / values_per_block
             }
         }
     }
@@ -2067,7 +2066,7 @@ pub fn get_decoder(
     version: i32,
     bits_per_value: i32,
 ) -> Result<Box<PackedIntDecoder>> {
-    check_version(version)?;
+    // check_version(version)?;
     Ok(bulk_operation_of(format, bits_per_value).as_decoder())
 }
 
