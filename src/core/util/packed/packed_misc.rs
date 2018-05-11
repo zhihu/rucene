@@ -339,7 +339,7 @@ impl Format {
             Format::Packed => (value_count * bits_per_value + 7) as i64 / 8,
             _ => {
                 let values_per_block = 64 / bits_per_value;
-                ((values_count + values_per_block - 1) / values_per_block) as i64 * 8
+                ((value_count + values_per_block - 1) / values_per_block) as i64 * 8
             }
         }
     }
@@ -358,7 +358,7 @@ impl Format {
             }
             _ => {
                 let values_per_block = 64 / bits_per_value;
-                (values_count + values_per_block - 1) / values_per_block
+                (value_count + values_per_block - 1) / values_per_block
             }
         }
     }
