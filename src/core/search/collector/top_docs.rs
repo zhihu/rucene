@@ -34,6 +34,7 @@ pub struct TopDocsCollector {
 
     reader_context: Option<LeafReaderContext>,
 
+    // TODO used for parallel collect, maybe should be move the new struct for parallel search
     channel: Option<(Sender<ScoreDoc>, Receiver<ScoreDoc>)>
 }
 
@@ -99,11 +100,12 @@ impl SearchCollector for TopDocsCollector {
         true
     }
 
-    fn leaf_collector(&mut self, reader: &LeafReader) -> Box<LeafCollector> {
+    fn leaf_collector(&mut self, reader: &LeafReader) -> Result<Box<LeafCollector>> {
         if self.channel.is_none() {
             self.channel = Some(unbounded());
         }
-        Box::new(TopDocsLeafCollector::new(reader.doc_base(), self.channel.as_ref().unwrap().0.clone()))
+        Ok(Box::new(TopDocsLeafCollector::new(
+            reader.doc_base(), self.channel.as_ref().unwrap().0.clone())))
     }
 
     fn finish(&mut self) -> Result<()> {
@@ -153,6 +155,7 @@ impl TopDocsLeafCollector {
 }
 
 impl LeafCollector for TopDocsLeafCollector {
+    /// may do clean up and notify parent that leaf is ended
     fn finish_leaf(&mut self) -> Result<()> {
         Ok(())
     }

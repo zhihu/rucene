@@ -27,15 +27,22 @@ impl<'a> SearchCollector for ChainedCollector<'a> {
     }
 
     fn support_parallel(&self) -> bool {
-        false
+        self.collectors.iter().all(|it| it.support_parallel())
     }
 
-    fn leaf_collector(&mut self, _reader: &LeafReader) -> Box<LeafCollector> {
-        unimplemented!()
+    fn leaf_collector(&mut self, reader: &LeafReader) -> Result<Box<LeafCollector>> {
+        let mut leaf_collectors = Vec::with_capacity(self.collectors.len());
+        for c in &mut self.collectors {
+            leaf_collectors.push(c.leaf_collector(reader)?);
+        }
+        Ok(Box::new(ChainedLeafCollector { collectors: leaf_collectors }))
     }
 
     fn finish(&mut self) -> Result<()> {
-        unimplemented!()
+        for collector in &mut self.collectors {
+            collector.finish()?;
+        }
+        Ok(())
     }
 }
 
@@ -47,6 +54,34 @@ impl<'a> Collector for ChainedCollector<'a> {
     fn collect(&mut self, doc: DocId, scorer: &mut Scorer) -> Result<()> {
         for collector in &mut self.collectors {
             collector.collect(doc, scorer)?;
+        }
+
+        Ok(())
+    }
+}
+
+struct ChainedLeafCollector {
+    collectors: Vec<Box<LeafCollector>>
+}
+
+impl Collector for ChainedLeafCollector {
+    fn needs_scores(&self) -> bool {
+        self.collectors.iter().any(|c| c.needs_scores())
+    }
+
+    fn collect(&mut self, doc: i32, scorer: &mut Scorer) -> Result<()> {
+        for collector in &mut self.collectors {
+            collector.collect(doc, scorer)?;
+        }
+
+        Ok(())
+    }
+}
+
+impl LeafCollector for ChainedLeafCollector {
+    fn finish_leaf(&mut self) -> Result<()> {
+        for collector in &mut self.collectors {
+            collector.as_mut().finish_leaf()?;
         }
 
         Ok(())

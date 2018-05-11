@@ -766,6 +766,10 @@ pub mod tests {
             self.doc_base
         }
 
+        fn name(&self) -> &str {
+            "test"
+        }
+
         fn fields(&self) -> Result<FieldsProducerRef> {
             unimplemented!()
         }

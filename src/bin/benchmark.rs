@@ -10,6 +10,7 @@ use std::usize;
 
 use rucene::core::index::StandardDirectoryReader;
 use rucene::core::search::collector::{EarlyTerminatingSortingCollector, TopDocsCollector};
+use rucene::core::search::collector::ChainedCollector;
 use rucene::core::search::query_string::*;
 use rucene::core::search::searcher::*;
 use rucene::core::store::MmapDirectory;
@@ -32,9 +33,11 @@ fn benchmark_queries(
                 .unwrap();
         if limit != usize::MAX {
             let mut early_collector =
-                EarlyTerminatingSortingCollector::new(&mut top_collector, limit);
+                EarlyTerminatingSortingCollector::new(limit);
+            let mut chained_collector = ChainedCollector::new(
+                vec![&mut early_collector, &mut top_collector]);
             searcher
-                .search(real_query.as_ref(), &mut early_collector)
+                .search(real_query.as_ref(), &mut chained_collector)
                 .unwrap();
         } else {
             searcher

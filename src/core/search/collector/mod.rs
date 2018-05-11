@@ -5,20 +5,16 @@ use core::search::Scorer;
 use core::util::DocId;
 
 pub mod top_docs;
+pub use self::top_docs::TopDocsCollector;
 
-pub use self::top_docs::*;
-
-pub mod early_terminating;
-
-pub use self::early_terminating::*;
+mod early_terminating;
+pub use self::early_terminating::EarlyTerminatingSortingCollector;
 
 mod timeout;
+pub use self::timeout::TimeoutCollector;
 
-pub use self::timeout::*;
-
-pub mod chain;
-
-pub use self::chain::*;
+mod chain;
+pub use self::chain::ChainedCollector;
 
 error_chain! {
     types {
@@ -66,7 +62,7 @@ pub trait SearchCollector: Collector {
     fn support_parallel(&self) -> bool;
 
     /// segment collector for parallel search
-    fn leaf_collector(&mut self, reader: &LeafReader) -> Box<LeafCollector>;
+    fn leaf_collector(&mut self, reader: &LeafReader) -> Result<Box<LeafCollector>>;
 
     fn finish(&mut self) -> Result<()>;
 }

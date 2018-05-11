@@ -431,7 +431,7 @@ impl SearchCollector for BitSetLeafCollector {
         false
     }
 
-    fn leaf_collector(&mut self, _reader: &LeafReader) -> Box<LeafCollector> {
+    fn leaf_collector(&mut self, _reader: &LeafReader) -> Result<Box<LeafCollector>> {
         unimplemented!()
     }
 
@@ -466,7 +466,7 @@ impl SearchCollector for DocIdSetLeafCollector {
         false
     }
 
-    fn leaf_collector(&mut self, _reader: &LeafReader) -> Box<LeafCollector> {
+    fn leaf_collector(&mut self, _reader: &LeafReader) -> Result<Box<LeafCollector>> {
         unimplemented!()
     }
 

@@ -124,8 +124,9 @@ impl IndexSearcher {
         }
     }
 
-    pub fn set_thread_pool(&mut self, num_threads: usize) {
-        if num_threads > 0 {
+    pub fn with_thread_pool(&mut self, num_threads: usize) {
+        // at least 2 thread to support parallel
+        if num_threads > 1 {
             let thread_pool = ThreadPoolBuilder::with_default_factory("search".into())
                 .thread_count(num_threads).build();
             self.thread_pool = Some(thread_pool);
@@ -141,7 +142,7 @@ impl IndexSearcher {
             // some in running segment maybe wrong, just skip it!
             // TODO maybe we should matching more specific error type
             if let Err(e) = collector.set_next_reader(ord, *reader) {
-                error!("set next reader failed!, {:?}", e);
+                error!("set next reader for leaf {} failed!, {:?}", reader.name(), e);
                 continue;
             }
             let live_docs = reader.live_docs();
@@ -195,17 +196,23 @@ impl IndexSearcher {
 
                 for (_ord, reader) in self.reader.leaves().iter().enumerate() {
                     let scorer = weight.create_scorer(*reader)?;
-                    let leaf_collector = collector.leaf_collector(*reader);
-                    let live_docs = reader.live_docs();
-                    thread_pool.execute(move |_ctx| {
-                        let mut collector = leaf_collector;
-                        if let Err(e) = Self::do_search(scorer, collector.as_mut(), &live_docs) {
-                            error!("do search parallel failed by '{:?}', may return partial result", e);
+                    match collector.leaf_collector(*reader) {
+                        Ok(leaf_collector) => {
+                            let live_docs = reader.live_docs();
+                            thread_pool.execute(move |_ctx| {
+                                let mut collector = leaf_collector;
+                                if let Err(e) = Self::do_search(scorer, collector.as_mut(), &live_docs) {
+                                    error!("do search parallel failed by '{:?}', may return partial result", e);
+                                }
+                                if let Err(e) = collector.finish_leaf() {
+                                    error!("finish search parallel failed by '{:?}', may return partial result", e);
+                                }
+                            })
                         }
-                        if let Err(e) = collector.finish_leaf() {
-                            error!("finish search parallel failed by '{:?}', may return partial result", e);
+                        Err(e) => {
+                            error!("create leaf collector for leaf {} failed with '{:?}'", reader.name(), e);
                         }
-                    })
+                    }
                 }
                 return collector.finish();
             }
