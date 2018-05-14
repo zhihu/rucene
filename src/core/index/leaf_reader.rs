@@ -18,9 +18,12 @@ use error::Result;
 pub trait LeafReader {
     fn fields(&self) -> Result<FieldsProducerRef>;
 
+    fn name(&self) -> &str;
+
     fn terms(&self, field: &str) -> Result<Option<TermsRef>> {
         self.fields()?.terms(field)
     }
+
     fn doc_base(&self) -> DocId;
 
     fn docs(&self, term: &Term, flags: i32) -> Result<Box<DocIterator>> {

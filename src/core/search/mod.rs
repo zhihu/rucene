@@ -80,7 +80,7 @@ pub const NO_MORE_DOCS: DocId = i32::MAX;
 /// a sentinel object. Implementations of this class are expected to consider
 /// `std:i32:MAX` as an invalid value.
 ///
-pub trait DocIterator {
+pub trait DocIterator: Send + Sync {
     /// Creates a `TermIterator` over current doc.
     ///
     /// TODO: Uncomment after implementing all the `DocIterator`s and `Scorer`s
@@ -210,7 +210,7 @@ impl DocIterator for EmptyDocIterator {
 }
 
 /// Common scoring functionality for different types of queries.
-pub trait Scorer: DocIterator {
+pub trait Scorer: DocIterator + Send + Sync {
     /// Returns the score of the current document matching the query.
     /// Initially invalid, until `DocIterator::next()` or
     /// `DocIterator::advance(DocId)` is called on the `iterator()`
@@ -413,7 +413,7 @@ pub trait Similarity: Display {
     }
 }
 
-pub trait SimScorer: Send {
+pub trait SimScorer: Send + Sync {
     /// Score a single document
     /// @param doc document id within the inverted index segment
     /// @param freq sloppy term frequency

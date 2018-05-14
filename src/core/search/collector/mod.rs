@@ -5,20 +5,16 @@ use core::search::Scorer;
 use core::util::DocId;
 
 pub mod top_docs;
+pub use self::top_docs::TopDocsCollector;
 
-pub use self::top_docs::*;
-
-pub mod early_terminating;
-
-pub use self::early_terminating::*;
+mod early_terminating;
+pub use self::early_terminating::EarlyTerminatingSortingCollector;
 
 mod timeout;
+pub use self::timeout::TimeoutCollector;
 
-pub use self::timeout::*;
-
-pub mod chain;
-
-pub use self::chain::*;
+mod chain;
+pub use self::chain::ChainedCollector;
 
 error_chain! {
     types {
@@ -57,10 +53,24 @@ error_chain! {
 /// example, a collector that simply counts the total number
 /// of hits would skip it.
 ///
-pub trait Collector {
+pub trait SearchCollector: Collector {
     /// This method is called before collecting on a new leaf.
     ///
     fn set_next_reader(&mut self, reader_ord: usize, reader: &LeafReader) -> Result<()>;
+
+    /// iff this collector support parallel collect
+    fn support_parallel(&self) -> bool;
+
+    /// segment collector for parallel search
+    fn leaf_collector(&mut self, reader: &LeafReader) -> Result<Box<LeafCollector>>;
+
+    fn finish(&mut self) -> Result<()>;
+}
+
+pub trait Collector {
+    /// Indicates if document scores are needed by this collector.
+    /// return `true` if scores are needed.
+    fn needs_scores(&self) -> bool;
 
     /// Called once for every document matching a query, with the unbased document
     /// number.
@@ -74,8 +84,10 @@ pub trait Collector {
     /// Doing so can slow searches by an order of magnitude or more.
     ///
     fn collect(&mut self, doc: DocId, scorer: &mut Scorer) -> Result<()>;
-
-    /// Indicates if document scores are needed by this collector.
-    /// return `true` if scores are needed.
-    fn needs_scores(&self) -> bool;
 }
+
+pub trait LeafCollector: Collector + Send + Sync {
+    fn finish_leaf(&mut self) -> Result<()>;
+}
+
+
