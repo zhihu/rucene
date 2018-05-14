@@ -803,10 +803,10 @@ impl FieldTermStack {
             // now look for dups at the same position, linking them together
             term_list.sort_by(|o1, o2| o1.position.cmp(&o2.position));
 
+            let num_terms = term_list.len();
             let mut i = 0usize;
-            while i < term_list.len() {
-                let mut j = i + 1;
-                while j < term_list.len() {
+            while i < num_terms {
+                for j in (i + 1)..num_terms {
                     if term_list[j].position == term_list[i].position {
                         let term_info = term_list[j].clone();
                         term_list[i].next.push(term_info);
@@ -814,8 +814,6 @@ impl FieldTermStack {
                     } else {
                         break;
                     }
-
-                    j += 1;
                 }
 
                 i += term_list[i].next.len() + 1;
@@ -845,7 +843,6 @@ impl FieldTermStack {
     pub fn pop(&mut self) -> Option<TermInfo> {
         self.term_list.pop()
     }
-
 
     pub fn push(&mut self, term_info: TermInfo) {
         self.term_list.push(term_info)
@@ -973,11 +970,8 @@ impl FieldPhraseList {
         let mut sequence: Vec<usize> = vec![];
         {
             let mut current_index: Vec<usize> = vec![0; to_merge.len()];
-            let mut all_infos: Vec<&Vec<WeightedPhraseInfo>> = Vec::with_capacity(to_merge.len());
 
-            for field_phrase_list in &to_merge {
-                all_infos.push(&field_phrase_list.phrase_list);
-            }
+            let all_infos: Vec<_> = to_merge.iter().map(|x| &x.phrase_list).collect();
 
             loop {
                 let mut min_offset = to_merge.len();
@@ -990,18 +984,22 @@ impl FieldPhraseList {
                         min_offset = i;
                     }
 
-                    if all_infos[i][current_index[i]].start_offset()
-                        < all_infos[min_offset][current_index[min_offset]].start_offset()
-                        || (all_infos[i][current_index[i]].start_offset()
-                            == all_infos[min_offset][current_index[min_offset]].start_offset()
-                            && all_infos[i][current_index[i]].end_offset()
-                                < all_infos[min_offset][current_index[min_offset]].end_offset())
-                        || (all_infos[i][current_index[i]].start_offset()
-                            == all_infos[min_offset][current_index[min_offset]].start_offset()
-                            && all_infos[i][current_index[i]].end_offset()
-                                == all_infos[min_offset][current_index[min_offset]].end_offset()
-                            && all_infos[i][current_index[i]].boost
-                                < all_infos[min_offset][current_index[min_offset]].boost)
+                    let (pivot_start_offset, pivot_end_offset, pivot_boost) = {
+                        let phrase = &all_infos[min_offset][current_index[min_offset]];
+                        (phrase.start_offset(), phrase.end_offset(), phrase.boost)
+                    };
+
+                    let (curr_start_offset, curr_end_offset, curr_boost) = {
+                        let phrase = &all_infos[i][current_index[i]];
+                        (phrase.start_offset(), phrase.end_offset(), phrase.boost)
+                    };
+
+                    if curr_start_offset < pivot_start_offset
+                        || curr_start_offset == pivot_start_offset
+                            && curr_end_offset < pivot_end_offset
+                        || curr_start_offset == pivot_start_offset
+                            && curr_end_offset == pivot_end_offset
+                            && curr_boost < pivot_boost
                     {
                         min_offset = i;
                     }
@@ -1016,19 +1014,13 @@ impl FieldPhraseList {
             }
         }
 
-        let mut weighted_phrase_infos: Vec<WeightedPhraseInfo> = vec![];
-        let mut iter_list = Vec::with_capacity(to_merge.len());
-        let mut to_merge_iter = to_merge.into_iter();
-
-        while !to_merge_iter.is_empty() {
-            iter_list.push(to_merge_iter.next().unwrap().phrase_list.into_iter());
-        }
-
-        for index in sequence {
-            if let Some(w) = iter_list[index].next() {
-                weighted_phrase_infos.push(w)
-            }
-        }
+        let weighted_phrase_infos: Vec<_> = {
+            let heads: Vec<_> = to_merge.iter().map(|ref x| x.phrase_list.first()).collect();
+            sequence
+                .into_iter()
+                .filter_map(|idx| heads[idx].cloned())
+                .collect()
+        };
 
         // Step 2.  Walk the sorted list merging overlaps
 
