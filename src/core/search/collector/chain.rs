@@ -1,5 +1,5 @@
 use core::index::LeafReader;
-use core::search::collector::{SearchCollector, Collector, LeafCollector};
+use core::search::collector::{Collector, LeafCollector, SearchCollector};
 use core::search::Scorer;
 use core::util::DocId;
 use error::*;
@@ -35,7 +35,9 @@ impl<'a> SearchCollector for ChainedCollector<'a> {
         for c in &mut self.collectors {
             leaf_collectors.push(c.leaf_collector(reader)?);
         }
-        Ok(Box::new(ChainedLeafCollector { collectors: leaf_collectors }))
+        Ok(Box::new(ChainedLeafCollector {
+            collectors: leaf_collectors,
+        }))
     }
 
     fn finish(&mut self) -> Result<()> {
@@ -61,7 +63,7 @@ impl<'a> Collector for ChainedCollector<'a> {
 }
 
 struct ChainedLeafCollector {
-    collectors: Vec<Box<LeafCollector>>
+    collectors: Vec<Box<LeafCollector>>,
 }
 
 impl Collector for ChainedLeafCollector {
@@ -87,4 +89,3 @@ impl LeafCollector for ChainedLeafCollector {
         Ok(())
     }
 }
-

@@ -1,12 +1,12 @@
 use core::index::LeafReader;
 use core::search::collector;
-use core::search::collector::{SearchCollector, Collector, LeafCollector};
+use core::search::collector::{Collector, LeafCollector, SearchCollector};
 use core::search::Scorer;
 use core::util::DocId;
 use error::*;
-use std::time::{Duration, SystemTime};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 pub struct TimeoutCollector {
     timeout_duration: Duration,
@@ -37,7 +37,7 @@ impl SearchCollector for TimeoutCollector {
         Ok(Box::new(TimeoutLeafCollector::new(
             self.timeout_duration,
             self.start_time,
-            Arc::clone(&self.timeout)
+            Arc::clone(&self.timeout),
         )))
     }
 
@@ -66,17 +66,19 @@ impl Collector for TimeoutCollector {
 struct TimeoutLeafCollector {
     timeout_duration: Duration,
     start_time: SystemTime,
-    timeout: Arc<AtomicBool>
+    timeout: Arc<AtomicBool>,
 }
 
 impl TimeoutLeafCollector {
     pub fn new(
         timeout_duration: Duration,
         start_time: SystemTime,
-        timeout: Arc<AtomicBool>
+        timeout: Arc<AtomicBool>,
     ) -> TimeoutLeafCollector {
         TimeoutLeafCollector {
-            timeout_duration, start_time, timeout
+            timeout_duration,
+            start_time,
+            timeout,
         }
     }
 }

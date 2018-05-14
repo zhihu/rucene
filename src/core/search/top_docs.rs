@@ -13,10 +13,7 @@ pub struct ScoreDoc {
 
 impl ScoreDoc {
     pub fn new(doc: DocId, score: f32) -> ScoreDoc {
-        ScoreDoc {
-            doc,
-            score,
-        }
+        ScoreDoc { doc, score }
     }
 
     pub fn reset(&mut self, doc: DocId, score: f32) {

@@ -11,7 +11,7 @@ use core::search::lru_cache::LRUCache;
 use core::index::LeafReader;
 use core::search::bulk_scorer::BulkScorer;
 use core::search::cache_policy::QueryCachingPolicy;
-use core::search::collector::{SearchCollector, Collector, LeafCollector};
+use core::search::collector::{Collector, LeafCollector, SearchCollector};
 use core::search::match_all::ConstantScoreScorer;
 use core::search::Weight;
 use core::search::{DocIdSet, DocIterator, EmptyDocIterator};

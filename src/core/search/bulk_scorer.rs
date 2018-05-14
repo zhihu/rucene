@@ -117,8 +117,8 @@ mod tests {
     use core::search::tests::*;
 
     use core::index::tests::*;
-    use core::search::collector::SearchCollector;
     use core::search::collector::top_docs::*;
+    use core::search::collector::SearchCollector;
     use core::util::*;
 
     #[test]

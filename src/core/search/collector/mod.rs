@@ -89,5 +89,3 @@ pub trait Collector {
 pub trait LeafCollector: Collector + Send + Sync {
     fn finish_leaf(&mut self) -> Result<()>;
 }
-
-
