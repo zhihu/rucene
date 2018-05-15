@@ -6,7 +6,7 @@ use core::util::DocId;
 use error::*;
 
 use std::borrow::Cow;
-use std::cmp::{max, Ordering};
+use std::cmp::{self, Ordering};
 use std::collections::HashMap;
 use std::f32::EPSILON;
 
@@ -63,11 +63,22 @@ impl Encoder for SimpleHtmlEncoder {
 ///
 // Term offsets (start + end)
 //
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq, Ord, Debug)]
 pub struct Toffs {
     pub start_offset: i32,
     pub end_offset: i32,
 }
+
+impl PartialOrd for Toffs {
+    fn partial_cmp(&self, rhs: &Toffs) -> Option<Ordering> {
+        if self.start_offset != rhs.start_offset {
+            self.start_offset.partial_cmp(&rhs.start_offset)
+        } else {
+            self.end_offset.partial_cmp(&rhs.end_offset)
+        }
+    }
+}
+
 
 impl Toffs {
     pub fn new(start_offset: i32, end_offset: i32) -> Toffs {
@@ -297,88 +308,26 @@ impl WeightedPhraseInfo {
             "toMerge must contain at least one WeightedPhraseInfo."
         );
 
-        let mut sequence: Vec<usize> = vec![];
+        let mut terms_offsets = vec![];
         {
-            let mut current_index: Vec<usize> = vec![0; to_merge.len()];
-
-            let all_toffs: Vec<_> = to_merge.iter().map(|x| &x.terms_offsets).collect();
-
-            loop {
-                let mut min_offset = to_merge.len();
-                for i in 0..to_merge.len() {
-                    if current_index[i] >= all_toffs[i].len() {
-                        continue;
-                    }
-
-                    if min_offset == to_merge.len() {
-                        min_offset = i;
-                    }
-
-                    if all_toffs[i][current_index[i]].start_offset
-                        < all_toffs[min_offset][current_index[min_offset]].start_offset
-                        || (all_toffs[i][current_index[i]].start_offset
-                            == all_toffs[min_offset][current_index[min_offset]].start_offset
-                            && all_toffs[i][current_index[i]].end_offset
-                                < all_toffs[min_offset][current_index[min_offset]].end_offset)
-                    {
-                        min_offset = i;
-                    }
-                }
-
-                if min_offset != to_merge.len() {
-                    sequence.push(min_offset);
-                    current_index[min_offset] += 1;
+            let mut all_term_offsets: Vec<_> = to_merge.iter().flat_map(|x| &x.terms_offsets).collect();
+            all_term_offsets.sort_by(|&o1, &o2| o1.cmp(&o2));
+            let mut work = all_term_offsets[0].clone();
+            for curr in all_term_offsets.iter().skip(1) {
+                if curr.start_offset <= work.end_offset {
+                    work.end_offset = cmp::max(curr.end_offset, work.end_offset);
                 } else {
-                    break;
+                    terms_offsets.push(work.clone());
+                    work = Clone::clone(curr);
                 }
             }
+
+            terms_offsets.push(work);
         }
 
         let seqnum = to_merge[0].seqnum;
-        let mut boost = 0f32;
-        let mut terms_infos: Vec<TermInfo> = vec![];
-        let mut toffs_iter_list = Vec::with_capacity(to_merge.len());
-        let mut to_merge_iter = to_merge.into_iter();
-
-        while !to_merge_iter.is_empty() {
-            let info = to_merge_iter.next().unwrap();
-
-            boost += info.boost;
-
-            let mut term_info_iter = info.terms_infos.into_iter();
-            while !term_info_iter.is_empty() {
-                terms_infos.push(term_info_iter.next().unwrap());
-            }
-
-            toffs_iter_list.push(info.terms_offsets.into_iter());
-        }
-
-        let mut toffs: Vec<Toffs> = vec![];
-        for index in sequence {
-            if let Some(t) = toffs_iter_list[index].next() {
-                toffs.push(t)
-            }
-        }
-
-        // Step 2.  Walk the sorted list merging overlaps
-        let mut terms_offsets: Vec<Toffs> = vec![];
-        let mut iter_list = toffs.into_iter();
-
-        if !iter_list.is_empty() {
-            let mut work = iter_list.next().unwrap();
-
-            while !iter_list.is_empty() {
-                let curr = iter_list.next().unwrap();
-                if curr.start_offset <= work.end_offset {
-                    work.end_offset = max(work.end_offset, curr.end_offset);
-                } else {
-                    let merge_work = work;
-                    terms_offsets.push(merge_work);
-                    work = curr;
-                }
-            }
-            terms_offsets.push(work);
-        }
+        let boost: f32 = to_merge.iter().fold(0.0_f32, |acc, x| acc + x.boost);
+        let terms_infos: Vec<_> = to_merge.into_iter().flat_map(|x| x.terms_infos).collect();
 
         WeightedPhraseInfo {
             terms_offsets,
@@ -1023,7 +972,7 @@ impl FieldPhraseList {
                 let curr = iter.next().unwrap();
 
                 if curr.start_offset() <= work_end_offset {
-                    work_end_offset = max(work_end_offset, curr.end_offset());
+                    work_end_offset = cmp::max(work_end_offset, curr.end_offset());
                     work.push(curr);
                 } else {
                     work_end_offset = curr.end_offset();
