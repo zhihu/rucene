@@ -79,7 +79,6 @@ impl PartialOrd for Toffs {
     }
 }
 
-
 impl Toffs {
     pub fn new(start_offset: i32, end_offset: i32) -> Toffs {
         Toffs {
@@ -308,9 +307,10 @@ impl WeightedPhraseInfo {
             "toMerge must contain at least one WeightedPhraseInfo."
         );
 
-        let mut terms_offsets = vec![];
-        {
-            let mut all_term_offsets: Vec<_> = to_merge.iter().flat_map(|x| &x.terms_offsets).collect();
+        let terms_offsets = {
+            let mut all_term_offsets: Vec<_> =
+                to_merge.iter().flat_map(|x| &x.terms_offsets).collect();
+            let mut terms_offsets = Vec::with_capacity(all_term_offsets.len());
             all_term_offsets.sort_by(|&o1, &o2| o1.cmp(&o2));
             let mut work = all_term_offsets[0].clone();
             for curr in all_term_offsets.iter().skip(1) {
@@ -323,7 +323,8 @@ impl WeightedPhraseInfo {
             }
 
             terms_offsets.push(work);
-        }
+            terms_offsets
+        };
 
         let seqnum = to_merge[0].seqnum;
         let boost: f32 = to_merge.iter().fold(0.0_f32, |acc, x| acc + x.boost);
