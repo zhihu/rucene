@@ -9,8 +9,8 @@ use std::time;
 use std::usize;
 
 use rucene::core::index::StandardDirectoryReader;
-use rucene::core::search::collector::{EarlyTerminatingSortingCollector, TopDocsCollector};
 use rucene::core::search::collector::ChainedCollector;
+use rucene::core::search::collector::{EarlyTerminatingSortingCollector, TopDocsCollector};
 use rucene::core::search::query_string::*;
 use rucene::core::search::searcher::*;
 use rucene::core::store::MmapDirectory;
@@ -32,16 +32,15 @@ fn benchmark_queries(
                 .build()
                 .unwrap();
         if limit != usize::MAX {
-            let mut early_collector =
-                EarlyTerminatingSortingCollector::new(limit);
-            let mut chained_collector = ChainedCollector::new(
-                vec![&mut early_collector, &mut top_collector]);
+            let mut early_collector = EarlyTerminatingSortingCollector::new(limit);
+            let mut chained_collector =
+                ChainedCollector::new(vec![&mut early_collector, &mut top_collector]);
             searcher
-                .search(real_query.as_ref(), &mut chained_collector)
+                .search_parallel(real_query.as_ref(), &mut chained_collector)
                 .unwrap();
         } else {
             searcher
-                .search(real_query.as_ref(), &mut top_collector)
+                .search_parallel(real_query.as_ref(), &mut top_collector)
                 .unwrap();
         }
         results.push((
@@ -117,7 +116,9 @@ fn benchmark(index: String, field: String, input: String) {
         .expect("No query to run");
 
     let reader = Arc::new(StandardDirectoryReader::open(directory).unwrap());
-    let searcher = Arc::new(IndexSearcher::new(reader.clone()));
+    let mut searcher = IndexSearcher::new(reader.clone());
+    searcher.with_thread_pool(16);
+    let searcher = Arc::new(searcher);
     benchmark_with_limit(searcher.as_ref(), &field, &queries, 100);
     benchmark_with_limit(searcher.as_ref(), &field, &queries, 50);
     benchmark_with_limit(searcher.as_ref(), &field, &queries, 100);
