@@ -1,6 +1,6 @@
 use core::index::LeafReader;
 use core::search::collector;
-use core::search::collector::{SearchCollector, Collector, LeafCollector};
+use core::search::collector::{Collector, LeafCollector, SearchCollector};
 use core::search::Scorer;
 use core::util::DocId;
 use error::*;
@@ -45,7 +45,7 @@ impl SearchCollector for EarlyTerminatingSortingCollector {
         assert!(self.support_parallel());
         Ok(Box::new(EarlyTerminatingLeafCollector::new(
             self.num_docs_to_collect_per_reader,
-            Arc::clone(&self.early_terminated)
+            Arc::clone(&self.early_terminated),
         )))
     }
 
@@ -81,7 +81,7 @@ pub struct EarlyTerminatingLeafCollector {
 impl EarlyTerminatingLeafCollector {
     pub fn new(
         num_docs_to_collect: usize,
-        early_terminated: Arc<AtomicBool>
+        early_terminated: Arc<AtomicBool>,
     ) -> EarlyTerminatingLeafCollector {
         EarlyTerminatingLeafCollector {
             early_terminated,

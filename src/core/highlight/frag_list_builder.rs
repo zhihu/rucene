@@ -12,14 +12,10 @@ pub struct BaseFragListBuilder {
 
 impl BaseFragListBuilder {
     pub fn new(margin: Option<i32>) -> BaseFragListBuilder {
-        let margin_default: i32 = 6;
+        const MARGIN_DEFAULT: i32 = 6;
+        let margin = margin.unwrap_or(MARGIN_DEFAULT);
+
         let min_frag_char_size_factor: i32 = 3;
-
-        let margin = match margin {
-            Some(x) => x,
-            None => margin_default,
-        };
-
         BaseFragListBuilder {
             margin,
             min_frag_char_size: max(1, margin * min_frag_char_size_factor),
@@ -111,6 +107,7 @@ impl BaseFragListBuilder {
         Ok(())
     }
 
+    #[inline]
     fn accept_phrase(info: &WeightedPhraseInfo, match_length: i32, frag_char_size: i32) -> bool {
         info.terms_offsets.len() <= 1 || match_length <= frag_char_size
     }

@@ -56,8 +56,8 @@ pub struct Task<C> {
 
 impl<C: Context> Task<C> {
     fn new<F>(job: F) -> Task<C>
-        where
-                for<'r> F: FnOnce(&'r mut C) + Send + 'static,
+    where
+        for<'r> F: FnOnce(&'r mut C) + Send + 'static,
     {
         Task {
             task: Box::new(job),
@@ -161,8 +161,8 @@ pub struct ThreadPool<Ctx> {
 }
 
 impl<Ctx> ThreadPool<Ctx>
-    where
-        Ctx: Context + 'static,
+where
+    Ctx: Context + 'static,
 {
     fn new<C: ContextFactory<Ctx>>(
         name: &str,
@@ -203,9 +203,9 @@ impl<Ctx> ThreadPool<Ctx>
     }
 
     pub fn execute<F>(&self, job: F)
-        where
-            F: FnOnce(&mut Ctx) + Send + 'static,
-            Ctx: Context,
+    where
+        F: FnOnce(&mut Ctx) + Send + 'static,
+        Ctx: Context,
     {
         let task = Task::new(job);
         let &(ref lock, ref cvar) = &*self.state;
@@ -255,8 +255,8 @@ struct Worker<C> {
 }
 
 impl<C> Worker<C>
-    where
-        C: Context,
+where
+    C: Context,
 {
     fn new(
         state: Arc<(Mutex<ScheduleState<C>>, Condvar)>,

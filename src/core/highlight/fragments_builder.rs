@@ -188,17 +188,10 @@ impl BaseFragmentsBuilder {
             }
         }
 
-        let mut result: Vec<WeightedFragInfo> = vec![];
-        let mut iter = field_name_to_frag_infos.into_iter();
-
-        while !iter.is_empty() {
-            let weighted_frag_infos = iter.next().unwrap();
-
-            for weighted_frag_info in weighted_frag_infos.1 {
-                result.push(weighted_frag_info);
-            }
-        }
-
+        let mut result: Vec<_> = field_name_to_frag_infos
+            .into_iter()
+            .flat_map(|(_k, v)| v)
+            .collect();
         result.sort_by(|a, b| a.start_offset.cmp(&b.start_offset));
 
         result

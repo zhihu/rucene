@@ -368,7 +368,7 @@ impl SegmentCoreReaders {
             &ctx,
         )?;
         let term_vectors_reader = if core_field_infos.has_vectors {
-            Some(codec.term_vectors_format().vectors_reader(
+            Some(codec.term_vectors_format().tv_reader(
                 cfs_dir.clone(),
                 si,
                 core_field_infos.clone(),

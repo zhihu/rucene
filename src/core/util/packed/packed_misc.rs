@@ -331,13 +331,16 @@ impl Format {
 
     pub fn byte_count(
         &self,
-        packed_ints_version: i32,
+        _packed_ints_version: i32,
         value_count: i32,
         bits_per_value: i32,
     ) -> i64 {
         match *self {
-            Format::Packed => (f64::from(value_count * bits_per_value) / 8f64).ceil() as i64,
-            _ => i64::from(8 * self.long_count(packed_ints_version, value_count, bits_per_value)),
+            Format::Packed => i64::from(value_count * bits_per_value + 7) / 8,
+            _ => {
+                let values_per_block = 64 / bits_per_value;
+                i64::from((value_count + values_per_block - 1) / values_per_block) * 8
+            }
         }
     }
     /// Computes how many long blocks are needed to store <code>values</code>
@@ -351,15 +354,11 @@ impl Format {
         match *self {
             Format::Packed => {
                 let byte_count = self.byte_count(packed_ints_version, value_count, bits_per_value);
-                if (byte_count % 8) == 0 {
-                    (byte_count / 8) as i32
-                } else {
-                    (byte_count / 8 + 1) as i32
-                }
+                ((byte_count + 7) / 8) as i32
             }
             _ => {
                 let values_per_block = 64 / bits_per_value;
-                (f64::from(value_count) / f64::from(values_per_block)).ceil() as i32
+                (value_count + values_per_block - 1) / values_per_block
             }
         }
     }
@@ -698,9 +697,11 @@ impl Direct8 {
         // because packed ints have not always been byte-aligned
         let remain = Format::Packed.byte_count(packed_ints_version, value_count as i32, 8)
             - value_count as i64;
-        for _i in 0..remain {
-            let _ = input.read_byte();
+
+        if remain > 0 {
+            let _ = input.skip_bytes(remain as usize);
         }
+
         Ok(res)
     }
 }
@@ -1304,10 +1305,8 @@ impl Packed64 {
         let long_count =
             format.long_count(VERSION_CURRENT, value_count as i32, bits_per_value) as usize;
         let byte_count = format.byte_count(packed_ints_version, value_count as i32, bits_per_value);
-        let mut blocks = Vec::with_capacity(long_count);
-        for _i in 0..blocks.capacity() {
-            blocks.push(0i64);
-        }
+        let mut blocks = vec![0_i64; long_count as usize];
+
         for i in 0..byte_count / 8 {
             blocks[i as usize] = input.read_long()?;
         }
@@ -1329,13 +1328,13 @@ impl Packed64 {
         })
     }
 
-    fn gcd(&self, a: i32, b: i32) -> i32 {
+    fn gcd(a: i32, b: i32) -> i32 {
         if a < b {
-            self.gcd(b, a)
+            Self::gcd(b, a)
         } else if b == 0 {
             a
         } else {
-            self.gcd(b, a % b)
+            Self::gcd(b, a % b)
         }
     }
 }
@@ -1511,7 +1510,7 @@ impl Mutable for Packed64 {
         debug_assert!(unsigned_bits_required(val) <= self.bits_per_value);
         debug_assert!(from <= to);
 
-        let n_aligned_values = 64usize / self.gcd(64, self.bits_per_value) as usize;
+        let n_aligned_values = 64usize / Self::gcd(64, self.bits_per_value) as usize;
         let span = to - from;
         if span <= 3 * n_aligned_values {
             <Packed64 as Mutable>::fill(self, from, to, val);

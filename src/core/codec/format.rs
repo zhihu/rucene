@@ -86,7 +86,7 @@ pub trait StoredFieldsFormat {
 pub trait TermVectorsFormat {
     /// Returns a {@link TermVectorsReader} to read term
     /// vectors.
-    fn vectors_reader(
+    fn tv_reader(
         &self,
         directory: DirectoryRc,
         si: &SegmentInfo,
@@ -96,7 +96,7 @@ pub trait TermVectorsFormat {
 
     /// Returns a {@link TermVectorsWriter} to write term
     /// vectors.
-    fn vectors_writer(
+    fn tv_writer(
         &self,
         directory: DirectoryRc,
         segment_info: &SegmentInfo,

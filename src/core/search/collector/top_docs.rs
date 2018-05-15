@@ -9,7 +9,7 @@ use core::search::Scorer;
 use core::util::DocId;
 use error::*;
 
-use crossbeam_channel::{unbounded, Sender, Receiver};
+use crossbeam_channel::{unbounded, Receiver, Sender};
 use std::mem;
 
 type ScoreDocPriorityQueue = BinaryHeap<ScoreDoc>;
@@ -35,7 +35,7 @@ pub struct TopDocsCollector {
     reader_context: Option<LeafReaderContext>,
 
     // TODO used for parallel collect, maybe should be move the new struct for parallel search
-    channel: Option<(Sender<ScoreDoc>, Receiver<ScoreDoc>)>
+    channel: Option<(Sender<ScoreDoc>, Receiver<ScoreDoc>)>,
 }
 
 impl TopDocsCollector {
@@ -46,7 +46,7 @@ impl TopDocsCollector {
             estimated_hits,
             total_hits: 0,
             reader_context: None,
-            channel: None
+            channel: None,
         }
     }
 
@@ -105,7 +105,9 @@ impl SearchCollector for TopDocsCollector {
             self.channel = Some(unbounded());
         }
         Ok(Box::new(TopDocsLeafCollector::new(
-            reader.doc_base(), self.channel.as_ref().unwrap().0.clone())))
+            reader.doc_base(),
+            self.channel.as_ref().unwrap().0.clone(),
+        )))
     }
 
     fn finish(&mut self) -> Result<()> {
@@ -140,17 +142,12 @@ impl Collector for TopDocsCollector {
 
 struct TopDocsLeafCollector {
     doc_base: DocId,
-    channel: Sender<ScoreDoc>
+    channel: Sender<ScoreDoc>,
 }
 
 impl TopDocsLeafCollector {
-    pub fn new(
-        doc_base: DocId,
-        channel: Sender<ScoreDoc>
-    ) -> TopDocsLeafCollector {
-        TopDocsLeafCollector {
-            doc_base, channel
-        }
+    pub fn new(doc_base: DocId, channel: Sender<ScoreDoc>) -> TopDocsLeafCollector {
+        TopDocsLeafCollector { doc_base, channel }
     }
 }
 

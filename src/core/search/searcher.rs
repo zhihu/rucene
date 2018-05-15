@@ -13,7 +13,7 @@ use core::search::collector;
 use core::search::collector::{Collector, SearchCollector};
 use core::search::lru_query_cache::{LRUQueryCache, QueryCache};
 use core::search::statistics::{CollectionStatistics, TermStatistics};
-use core::search::{Query, Weight, NO_MORE_DOCS, Scorer};
+use core::search::{Query, Scorer, Weight, NO_MORE_DOCS};
 use core::search::{SimScorer, SimWeight, Similarity, SimilarityProducer};
 use core::util::bits::BitsRef;
 use core::util::thread_pool::{DefaultContext, ThreadPool, ThreadPoolBuilder};
@@ -101,7 +101,7 @@ pub struct IndexSearcher {
     #[allow(dead_code)]
     cache_policy: Arc<QueryCachingPolicy>,
     collection_statistics: RwLock<HashMap<String, CollectionStatistics>>,
-    thread_pool: Option<ThreadPool<DefaultContext>>
+    thread_pool: Option<ThreadPool<DefaultContext>>,
 }
 
 impl IndexSearcher {
@@ -120,7 +120,7 @@ impl IndexSearcher {
             query_cache: Box::new(LRUQueryCache::new(1000, max_doc)),
             cache_policy: Arc::new(UsageTrackingQueryCachingPolicy::default()),
             collection_statistics: RwLock::new(HashMap::new()),
-            thread_pool: None
+            thread_pool: None,
         }
     }
 
@@ -128,7 +128,8 @@ impl IndexSearcher {
         // at least 2 thread to support parallel
         if num_threads > 1 {
             let thread_pool = ThreadPoolBuilder::with_default_factory("search".into())
-                .thread_count(num_threads).build();
+                .thread_count(num_threads)
+                .build();
             self.thread_pool = Some(thread_pool);
         }
     }
@@ -142,7 +143,11 @@ impl IndexSearcher {
             // some in running segment maybe wrong, just skip it!
             // TODO maybe we should matching more specific error type
             if let Err(e) = collector.set_next_reader(ord, *reader) {
-                error!("set next reader for leaf {} failed!, {:?}", reader.name(), e);
+                error!(
+                    "set next reader for leaf {} failed!, {:?}",
+                    reader.name(),
+                    e
+                );
                 continue;
             }
             let live_docs = reader.live_docs();
@@ -156,22 +161,19 @@ impl IndexSearcher {
     fn do_search<T: Collector + ?Sized>(
         scorer: Box<Scorer>,
         collector: &mut T,
-        live_docs: &BitsRef
+        live_docs: &BitsRef,
     ) -> Result<()> {
         let mut scorer = scorer;
         let mut bulk_scorer = BulkScorer::new(scorer.as_mut());
         {
             match bulk_scorer.score(collector, Some(live_docs.as_ref()), 0, NO_MORE_DOCS) {
-                Err(Error(
-                        ErrorKind::Collector(collector::ErrorKind::CollectionTerminated),
-                        _,
-                    )) => {
+                Err(Error(ErrorKind::Collector(collector::ErrorKind::CollectionTerminated), _)) => {
                     // Collection was terminated prematurely
                 }
                 Err(Error(
-                        ErrorKind::Collector(collector::ErrorKind::LeafCollectionTerminated),
-                        _,
-                    ))
+                    ErrorKind::Collector(collector::ErrorKind::LeafCollectionTerminated),
+                    _,
+                ))
                 | Ok(_) => {
                     // Leaf collection was terminated prematurely,
                     // continue with the following leaf
@@ -185,11 +187,7 @@ impl IndexSearcher {
         Ok(())
     }
 
-    pub fn search_parallel(
-        &self,
-        query: &Query,
-        collector: &mut SearchCollector
-    ) -> Result<()> {
+    pub fn search_parallel(&self, query: &Query, collector: &mut SearchCollector) -> Result<()> {
         if self.reader.leaves().len() > 1 {
             if let Some(ref thread_pool) = self.thread_pool {
                 let weight = self.create_weight(query, collector.needs_scores())?;
@@ -201,16 +199,30 @@ impl IndexSearcher {
                             let live_docs = reader.live_docs();
                             thread_pool.execute(move |_ctx| {
                                 let mut collector = leaf_collector;
-                                if let Err(e) = Self::do_search(scorer, collector.as_mut(), &live_docs) {
-                                    error!("do search parallel failed by '{:?}', may return partial result", e);
+                                if let Err(e) =
+                                    Self::do_search(scorer, collector.as_mut(), &live_docs)
+                                {
+                                    error!(
+                                        "do search parallel failed by '{:?}', may return partial \
+                                         result",
+                                        e
+                                    );
                                 }
                                 if let Err(e) = collector.finish_leaf() {
-                                    error!("finish search parallel failed by '{:?}', may return partial result", e);
+                                    error!(
+                                        "finish search parallel failed by '{:?}', may return \
+                                         partial result",
+                                        e
+                                    );
                                 }
                             })
                         }
                         Err(e) => {
-                            error!("create leaf collector for leaf {} failed with '{:?}'", reader.name(), e);
+                            error!(
+                                "create leaf collector for leaf {} failed with '{:?}'",
+                                reader.name(),
+                                e
+                            );
                         }
                     }
                 }
@@ -360,16 +372,23 @@ mod tests {
 
         let mut top_collector = TopDocsCollector::new(3);
         {
-            let mut early_terminating_collector = EarlyTerminatingSortingCollector::new(
-                &mut top_collector, 3);
+            let mut early_terminating_collector =
+                EarlyTerminatingSortingCollector::new(&mut top_collector, 3);
 
             let query = MockQuery::new(vec![1, 5, 3, 4, 2]);
             {
                 let searcher = IndexSearcher::new(index_reader);
-                searcher.search(&query, &mut early_terminating_collector).unwrap();
+                searcher
+                    .search(&query, &mut early_terminating_collector)
+                    .unwrap();
             }
 
-            assert_eq!(early_terminating_collector.early_terminated.load(Ordering::Relaxed), true);
+            assert_eq!(
+                early_terminating_collector
+                    .early_terminated
+                    .load(Ordering::Relaxed),
+                true
+            );
         }
 
         let top_docs = top_collector.top_docs();

@@ -34,7 +34,7 @@ impl Field {
             field_type,
             name: name.to_string(),
             fields_data,
-            boost: 1.0f32,
+            boost: 1.0_f32,
         }
     }
 

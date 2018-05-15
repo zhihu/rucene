@@ -1,10 +1,7 @@
-use core::doc::Document;
-use core::doc::DocumentStoredFieldVisitor;
+use core::doc::{Document, DocumentStoredFieldVisitor};
 use core::index::field_info::Fields;
-use core::index::IndexReader;
-use core::index::LeafReader;
-use core::index::SegmentInfos;
-use core::index::{get_segment_file_name, SegmentReader};
+use core::index::{get_segment_file_name, SegmentInfos};
+use core::index::{IndexReader, LeafReader, SegmentReader};
 use core::store::{DirectoryRc, IOContext};
 use core::util::DocId;
 use error::Result;
@@ -66,7 +63,7 @@ impl IndexReader for StandardDirectoryReader {
             Ok(i) => i,
             Err(i) => i - 1,
         };
-        assert!(i < self.readers.len());
+        debug_assert!(i < self.readers.len());
         self.readers[i].term_vector(doc_id - self.starts[i])
     }
 
