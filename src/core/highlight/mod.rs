@@ -258,19 +258,16 @@ pub struct WeightedPhraseInfo {
 
 impl WeightedPhraseInfo {
     pub fn new(terms_infos: Vec<TermInfo>, boost: f32, seqnum: Option<i32>) -> WeightedPhraseInfo {
-        let seqnum = match seqnum {
-            Some(x) => x,
-            None => 0,
-        };
+        debug_assert!(!terms_infos.is_empty());
 
-        assert!(!terms_infos.is_empty());
+        let seqnum = seqnum.unwrap_or(0);
         let mut terms_offsets: Vec<Toffs> = Vec::with_capacity(terms_infos.len());
         {
             let ti = &terms_infos[0];
             terms_offsets.push(Toffs::new(ti.start_offset, ti.end_offset));
             if terms_infos.len() > 1 {
                 let mut pos = ti.position;
-                for ti in (&terms_infos).iter().skip(1) {
+                for ti in terms_infos.iter().skip(1) {
                     if ti.position - pos == 1 {
                         let pos = terms_offsets.len() - 1;
                         terms_offsets[pos].end_offset = ti.end_offset;
@@ -303,11 +300,8 @@ impl WeightedPhraseInfo {
         let mut sequence: Vec<usize> = vec![];
         {
             let mut current_index: Vec<usize> = vec![0; to_merge.len()];
-            let mut all_toffs: Vec<&Vec<Toffs>> = Vec::with_capacity(to_merge.len());
 
-            for item in &to_merge {
-                all_toffs.push(&item.terms_offsets);
-            }
+            let all_toffs: Vec<_> = to_merge.iter().map(|x| &x.terms_offsets).collect();
 
             loop {
                 let mut min_offset = to_merge.len();
@@ -395,13 +389,9 @@ impl WeightedPhraseInfo {
     }
 
     pub fn text(&self) -> String {
-        let mut text = String::from("");
-
-        for ti in &self.terms_infos {
-            text.push_str(ti.text.as_str());
-        }
-
-        text
+        self.terms_infos
+            .iter()
+            .fold(String::new(), |acc, ti| acc + &ti.text)
     }
 
     pub fn start_offset(&self) -> i32 {
@@ -409,7 +399,7 @@ impl WeightedPhraseInfo {
     }
 
     pub fn end_offset(&self) -> i32 {
-        self.terms_offsets[self.terms_offsets.len() - 1].end_offset
+        self.terms_offsets.last().unwrap().end_offset
     }
 
     pub fn is_offset_overlap(&self, other: &WeightedPhraseInfo) -> bool {
@@ -465,10 +455,7 @@ impl QueryPhraseMap {
 
     fn mark_terminal(&mut self, slop: Option<i32>, boost: f32, term_or_phrase_number: i32) {
         self.terminal = true;
-        self.slop = match slop {
-            Some(s) => s,
-            None => 0,
-        };
+        self.slop = slop.unwrap_or(0);
         self.boost = boost;
         self.term_or_phrase_number = term_or_phrase_number;
     }
@@ -479,7 +466,6 @@ impl QueryPhraseMap {
             self.sub_map.insert(text.clone(), QueryPhraseMap::default());
         }
 
-        assert!(self.sub_map.contains_key(&text));
         self.sub_map
             .get_mut(&text)
             .unwrap()
@@ -801,7 +787,7 @@ impl FieldTermStack {
             }
 
             // now look for dups at the same position, linking them together
-            term_list.sort_by(|o1, o2| o1.position.cmp(&o2.position));
+            term_list.sort_by(|o1, o2| o2.position.cmp(&o1.position));
 
             let num_terms = term_list.len();
             let mut i = 0usize;
