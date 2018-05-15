@@ -378,7 +378,9 @@ fn verify_against_lucene_with(
             .build()
             .unwrap();
         let mut collector = TopDocsCollector::new(docs.len());
-        searcher.search(query.as_ref(), &mut collector).unwrap();
+        searcher
+            .search_parallel(query.as_ref(), &mut collector)
+            .unwrap();
         collector.top_docs()
     };
     let rucene_docs: Vec<DocId> = top_docs.score_docs().iter().map(|x| x.doc_id()).collect();
@@ -915,7 +917,9 @@ fn verify_point_values_against_lucene(
 fn verify_against_lucene(index: String, field: String) -> Result<()> {
     let directory = Arc::new(MmapDirectory::new(&Path::new(&index), 1024 * 1024).unwrap());
     let reader = Arc::new(StandardDirectoryReader::open(directory).unwrap());
-    let searcher = Arc::new(IndexSearcher::new(reader.clone()));
+    let mut searcher = IndexSearcher::new(reader.clone());
+    searcher.with_thread_pool(16);
+    let searcher = Arc::new(searcher);
     let mut input = stdin();
     eprintln!("Verifying doc values of index '{}'", index);
     verify_doc_values_against_lucene(reader.clone(), &mut input)?;
