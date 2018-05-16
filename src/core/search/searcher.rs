@@ -315,8 +315,8 @@ impl IndexSearcher {
 mod tests {
     use super::*;
     use core::index::tests::*;
-    use core::search::collector::early_terminating::*;
     use core::search::collector::top_docs::*;
+    use core::search::collector::*;
     use core::search::term_query::TermQuery;
     use core::search::tests::*;
     use core::search::*;
@@ -372,15 +372,16 @@ mod tests {
 
         let mut top_collector = TopDocsCollector::new(3);
         {
-            let mut early_terminating_collector =
-                EarlyTerminatingSortingCollector::new(&mut top_collector, 3);
-
-            let query = MockQuery::new(vec![1, 5, 3, 4, 2]);
+            let mut early_terminating_collector = EarlyTerminatingSortingCollector::new(3);
             {
-                let searcher = IndexSearcher::new(index_reader);
-                searcher
-                    .search(&query, &mut early_terminating_collector)
-                    .unwrap();
+                let collectors: Vec<&mut SearchCollector> =
+                    vec![&mut early_terminating_collector, &mut top_collector];
+                let mut chained_collector = ChainedCollector::new(collectors);
+                let query = MockQuery::new(vec![1, 5, 3, 4, 2]);
+                {
+                    let searcher = IndexSearcher::new(index_reader);
+                    searcher.search(&query, &mut chained_collector).unwrap();
+                }
             }
 
             assert_eq!(
