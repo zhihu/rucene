@@ -139,7 +139,7 @@ impl CacheData {
 
     /// Whether evictions are required.
     fn requires_eviction(&self) -> Result<bool> {
-        Ok(self.unique_queries.len() > self.max_size)
+        Ok(self.unique_queries.len() >= self.max_size)
     }
 
     pub fn get(
@@ -162,6 +162,8 @@ impl CacheData {
         leaf_reader: &LeafReader,
         set: Box<DocIdSet>,
     ) -> Result<()> {
+        self.evict_if_necessary()?;
+
         let query_key = if self.unique_queries.contains_key(&query_key.to_string()) {
             self.unique_queries
                 .get(&query_key.to_string())
@@ -185,7 +187,7 @@ impl CacheData {
             leaf_cache.put_if_absent(&query_key, set);
         }
 
-        self.evict_if_necessary()
+        Ok(())
     }
 
     fn evict_if_necessary(&mut self) -> Result<()> {
