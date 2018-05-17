@@ -84,8 +84,7 @@ impl<K: Clone + Hash + Eq, V> LRUCache<K, V> {
             entry.value = Some(value);
             old
         } else {
-            assert!(self.len() < self.capacity);
-            // self.ensure_room();
+            self.ensure_room();
             // Update old head
             let idx = self.free_indexes
                 .pop()
