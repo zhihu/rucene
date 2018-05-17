@@ -951,10 +951,13 @@ impl FieldPhraseList {
         }
 
         let weighted_phrase_infos: Vec<_> = {
-            let heads: Vec<_> = to_merge.iter().map(|ref x| x.phrase_list.first()).collect();
+            let mut heads: Vec<_> = to_merge
+                .into_iter()
+                .map(|x| x.phrase_list.into_iter())
+                .collect();
             sequence
                 .into_iter()
-                .filter_map(|idx| heads[idx].cloned())
+                .filter_map(|idx| heads[idx].next())
                 .collect()
         };
 
