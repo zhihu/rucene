@@ -104,6 +104,14 @@ pub struct IndexSearcher {
     thread_pool: Option<ThreadPool<DefaultContext>>,
 }
 
+impl Drop for IndexSearcher {
+    fn drop(&mut self) {
+        if let Some(ref mut pool) = self.thread_pool {
+            let _ = pool.stop();
+        }
+    }
+}
+
 impl IndexSearcher {
     pub fn new(reader: Arc<IndexReader>) -> IndexSearcher {
         Self::with_similarity(reader, Box::new(DefaultSimilarityProducer {}))
