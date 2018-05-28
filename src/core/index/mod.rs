@@ -436,6 +436,15 @@ impl TermContext {
             self.total_term_freq = -1
         }
     }
+
+    pub fn get_term_state(&self, reader: &LeafReader) -> Option<&TermState> {
+        for (doc_base, state) in &self.states {
+            if *doc_base == reader.doc_base() {
+                return Some(state.as_ref());
+            }
+        }
+        None
+    }
 }
 
 /// Embeds a [read-only] SegmentInfo and adds per-commit
