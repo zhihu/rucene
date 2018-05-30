@@ -78,8 +78,9 @@ impl BM25Similarity {
         SmallFloat::float_to_byte315(boost / (field_length as f32).sqrt())
     }
 
-    fn decode_norm_value(b: u8) -> f32 {
-        NORM_TABLE[b as usize]
+    #[inline]
+    fn decode_norm_value(b: usize) -> f32 {
+        NORM_TABLE[b]
     }
 
     fn idf(term_stats: &[TermStatistics], collection_stats: &CollectionStatistics) -> f32 {
@@ -89,6 +90,7 @@ impl BM25Similarity {
         } else {
             collection_stats.doc_count
         };
+
         for term_stat in term_stats {
             let doc_freq = term_stat.doc_freq;
             idf += (1.0 + (doc_count as f64 - doc_freq as f64 + 0.5) / (doc_freq as f64 + 0.5)).ln()
@@ -111,7 +113,7 @@ impl Similarity for BM25Similarity {
         let mut cache: [f32; 256] = [0f32; 256];
         for (i, c) in cache.iter_mut().enumerate() {
             *c = self.k1
-                * ((1.0 - self.b) + self.b * (BM25Similarity::decode_norm_value(i as u8) / avgdl));
+                * ((1.0 - self.b) + self.b * (BM25Similarity::decode_norm_value(i) / avgdl));
         }
 
         Box::new(BM25SimWeight::new(self.k1, self.b, idf, field, cache))
@@ -210,18 +212,17 @@ impl SimWeight for BM25SimWeight {
 mod tests {
     use super::*;
     use core::index::tests::MockLeafReader;
-    use std::string::String;
 
     // copy from Lucene TestBM25Similarity
     #[test]
     fn test_sane_norm_values() {
         for i in 0..256 {
-            let len = BM25Similarity::decode_norm_value(i as u8);
+            let len = BM25Similarity::decode_norm_value(i);
             assert!(len >= 0f32);
             assert!(!len.is_nan());
             assert!(!len.is_infinite());
             if i > 0 {
-                assert!(len < BM25Similarity::decode_norm_value((i - 1) as u8));
+                assert!(len < BM25Similarity::decode_norm_value(i - 1));
             }
         }
     }
@@ -257,7 +258,7 @@ mod tests {
 
     #[test]
     fn test_bm25_similarity() {
-        let collection_stats = CollectionStatistics::new(String::from("world"), 11, 32, 120, 0);
+        let collection_stats = CollectionStatistics::new(String::from("world"), 32, 32, 120, -1);
         let term_stats = vec![TermStatistics::new(Vec::new(), 1, -1)];
         let bm25_sim = BM25Similarity::new(1.2, 0.75);
         let sim_weight = bm25_sim.compute_weight(&collection_stats, &term_stats);
