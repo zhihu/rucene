@@ -9,7 +9,7 @@ use std::sync::Arc;
 use serde::ser::SerializeStruct;
 use serde::{Serialize, Serializer};
 
-use core::attribute::{OffsetAttribute, PayloadAttribute, PositionIncrementAttribute};
+// use core::attribute::{OffsetAttribute, PayloadAttribute, PositionIncrementAttribute};
 use core::index::term::*;
 use core::index::{DocValuesType, IndexOptions};
 
@@ -193,9 +193,9 @@ pub struct FieldInvertState {
     pub last_start_offset: i32,
     pub last_position: i32,
     // attribute_source: AttributeSource,
-    pub offset_attribute: OffsetAttribute,
-    pub pos_incr_attribute: PositionIncrementAttribute,
-    pub payload_attribute: PayloadAttribute,
+    // pub offset_attribute: OffsetAttribute,
+    // pub pos_incr_attribute: PositionIncrementAttribute,
+    // pub payload_attribute: PayloadAttribute,
     // term_attribute: TermToBytesRefAttribute,
 }
 
