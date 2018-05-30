@@ -15,10 +15,10 @@ impl CollectionStatistics {
         sum_total_term_freq: i64,
         sum_doc_freq: i64,
     ) -> CollectionStatistics {
-        assert!(max_doc >= 0);
-        assert!(doc_count >= -1 && doc_count <= max_doc); // #docs with field must be <= #docs
-        assert!(sum_doc_freq == -1 || sum_doc_freq >= doc_count); // #postings must be >= #docs with field
-        assert!(sum_total_term_freq == -1 || sum_total_term_freq >= sum_doc_freq); // #positions must be >= #postings
+        debug_assert!(max_doc >= 0);
+        debug_assert!(doc_count >= -1 && doc_count <= max_doc); // #docs with field must be <= #docs
+        debug_assert!(sum_doc_freq == -1 || sum_doc_freq >= doc_count); // #postings must be >= #docs with field
+        debug_assert!(sum_total_term_freq == -1 || sum_total_term_freq >= sum_doc_freq); // #positions must be >= #postings
         CollectionStatistics {
             field,
             max_doc,
