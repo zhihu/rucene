@@ -1,9 +1,8 @@
-use core::doc::BINARY_DOC_VALUES_FIELD_TYPE;
-use core::doc::{Field, FieldType};
+use std::ops::Deref;
+
+use core::doc::{Field, FieldType, BINARY_DOC_VALUES_FIELD_TYPE};
 use core::index::fieldable::Fieldable;
 use core::util::VariantValue;
-
-use std::ops::Deref;
 
 pub struct BinaryDocValuesField {
     field: Field,

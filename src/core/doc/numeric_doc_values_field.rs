@@ -21,7 +21,7 @@ impl NumericDocValuesField {
     pub fn numeric_value(&self) -> i64 {
         match *self.field.fields_data() {
             VariantValue::Long(v) => v,
-            _ => panic!("Oops, SHOULD NOT REACH HERE!"),
+            _ => unreachable!(),
         }
     }
 }

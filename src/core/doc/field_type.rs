@@ -1,5 +1,6 @@
-use core::index::{DocValuesType, IndexOptions};
 use std::fmt;
+
+use core::index::{DocValuesType, IndexOptions};
 
 #[derive(Clone, Default, PartialEq, Hash, Serialize, Debug)]
 pub struct FieldType {
@@ -68,8 +69,8 @@ impl FieldType {
         &self.index_options
     }
 
-    pub fn doc_values_type(&self) -> &DocValuesType {
-        &self.doc_values_type
+    pub fn doc_values_type(&self) -> DocValuesType {
+        self.doc_values_type
     }
 
     pub fn set_index_options(&mut self, value: IndexOptions) {
