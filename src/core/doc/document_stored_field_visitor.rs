@@ -24,15 +24,15 @@ impl DocumentStoredFieldVisitor {
 }
 
 impl StoredFieldVisitor for DocumentStoredFieldVisitor {
-    fn binary_field(&mut self, field_info: &FieldInfo, value: &[u8]) {
+    fn binary_field(&mut self, field_info: &FieldInfo, value: Vec<u8>) {
         self.fields.push(StoredField::new(
             &field_info.name,
             None,
-            VariantValue::from(value),
+            VariantValue::Binary(value),
         ));
     }
 
-    fn string_field(&mut self, field_info: &FieldInfo, value: &[u8]) {
+    fn string_field(&mut self, field_info: &FieldInfo, value: Vec<u8>) {
         let field_type = FieldType::new(
             true,
             true,
@@ -45,14 +45,17 @@ impl StoredFieldVisitor for DocumentStoredFieldVisitor {
             DocValuesType::Null,
         );
 
-        if let Ok(s) = ::std::str::from_utf8(value) {
-            self.fields.push(StoredField::new(
-                &field_info.name,
-                Some(field_type),
-                VariantValue::from(s),
-            ));
-        } else {
-            assert!(false, format!("from_utf8({:?}) failed.", value));
+        match String::from_utf8(value) {
+            Ok(s) => {
+                self.fields.push(StoredField::new(
+                    &field_info.name,
+                    Some(field_type),
+                    VariantValue::VString(s),
+                ));
+            },
+            Err(e) => {
+                assert!(false, format!("string_field failed: {:?}", e));
+            }
         }
     }
 

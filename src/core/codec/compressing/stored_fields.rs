@@ -400,13 +400,13 @@ impl CompressingStoredFieldsReader {
                 let length = self.read_vint()? as usize;
                 let mut data = vec![0u8; length];
                 self.read_bytes(data.as_mut(), 0, length)?;
-                visitor.binary_field(info, data.as_ref());
+                visitor.binary_field(info, data);
             }
             STRING => {
                 let length = self.read_vint()? as usize;
                 let mut data = vec![0u8; length];
                 self.read_bytes(data.as_mut(), 0, length)?;
-                visitor.string_field(info, data.as_ref());
+                visitor.string_field(info, data);
             }
             NUMERIC_INT => {
                 visitor.int_field(info, self.read_zint()?);
