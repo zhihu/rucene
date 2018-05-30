@@ -231,8 +231,8 @@ impl TermIterator for CompressedBinaryTermIterator {
         }
     }
 
-    fn term(&mut self) -> Result<Vec<u8>> {
-        Ok(self.term[0..self.term_length as usize].to_vec())
+    fn term(&self) -> Result<&[u8]> {
+        Ok(&self.term[0..self.term_length as usize])
     }
 
     fn ord(&mut self) -> Result<i64> {

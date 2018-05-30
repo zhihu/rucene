@@ -77,9 +77,8 @@ impl<'a> TermIterator for SortedSetDocValuesTermIterator<'a> {
         Ok(())
     }
 
-    fn term(&mut self) -> Result<Vec<u8>> {
-        // FIXME: use &[u8] instead
-        Ok(self.scratch.clone())
+    fn term(&self) -> Result<&[u8]> {
+        Ok(&self.scratch)
     }
 
     fn ord(&mut self) -> Result<i64> {

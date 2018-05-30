@@ -155,7 +155,8 @@ pub trait Terms: Send + Sync {
         } else if size > 0 {
             let mut iterator = self.iterator()?;
             iterator.as_mut().seek_exact_ord(size - 1)?;
-            return iterator.as_mut().term();
+            let term = iterator.as_mut().term()?;
+            return Ok(term.to_vec());
         }
 
         // otherwise: binary search
@@ -326,7 +327,7 @@ pub trait TermIterator {
 
     /// Returns current term. Do not call this when the enum
     /// is unpositioned.
-    fn term(&mut self) -> Result<Vec<u8>>;
+    fn term(&self) -> Result<&[u8]>;
 
     /// Returns ordinal position for current term.  This is an
     /// optional method (the codec may throw {@link
@@ -382,8 +383,17 @@ pub trait TermIterator {
     }
 }
 
-#[derive(Default)]
-pub struct EmptyTermIterator;
+pub struct EmptyTermIterator {
+    data: Vec<u8>,
+}
+
+impl Default for EmptyTermIterator {
+    fn default() -> EmptyTermIterator {
+        EmptyTermIterator {
+            data: vec![0; 1]
+        }
+    }
+}
 
 impl TermIterator for EmptyTermIterator {
     fn next(&mut self) -> Result<Vec<u8>> {
@@ -399,9 +409,8 @@ impl TermIterator for EmptyTermIterator {
         unreachable!()
     }
 
-    fn term(&mut self) -> Result<Vec<u8>> {
-        // TODO fix me
-        Ok(Vec::new())
+    fn term(&self) -> Result<&[u8]> {
+        Ok(&self.data[0..0])
     }
 
     fn ord(&mut self) -> Result<i64> {

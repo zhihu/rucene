@@ -142,7 +142,8 @@ impl LongBinaryDocValues for CompressedBinaryDocValues {
     fn get64(&self, id: i64) -> Result<Vec<u8>> {
         let mut term_iterator = self.get_term_iterator()?;
         term_iterator.seek_exact_ord(id)?;
-        term_iterator.term()
+        let term = term_iterator.term()?;
+        Ok(term.to_vec())
     }
 }
 

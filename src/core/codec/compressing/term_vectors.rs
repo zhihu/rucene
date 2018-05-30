@@ -1123,8 +1123,8 @@ impl TermIterator for TVTermsIterator {
         unimplemented!()
     }
 
-    fn term(&mut self) -> Result<Vec<u8>> {
-        Ok(self.term.clone())
+    fn term(&self) -> Result<&[u8]> {
+        Ok(&self.term)
     }
 
     fn ord(&mut self) -> Result<i64> {
