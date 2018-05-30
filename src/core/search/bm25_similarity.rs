@@ -54,6 +54,9 @@ impl BM25Similarity {
         1.0 / (distance as f32 + 1.0)
     }
 
+    /// The default implementation computes the average as sumTotalTermFreq / docCount,
+    /// or returns 1 if the index does not store sumTotalTermFreq:
+    /// any field that omits frequency information).
     fn avg_field_length(collection_stats: &CollectionStatistics) -> f32 {
         let sum_total_term_freq = collection_stats.sum_total_term_freq;
         if sum_total_term_freq <= 0 {
@@ -81,12 +84,13 @@ impl BM25Similarity {
 
     fn idf(term_stats: &[TermStatistics], collection_stats: &CollectionStatistics) -> f32 {
         let mut idf = 0.0f32;
+        let doc_count = if collection_stats.doc_count == -1 {
+            collection_stats.max_doc
+        } else {
+            collection_stats.doc_count
+        };
         for term_stat in term_stats {
             let doc_freq = term_stat.doc_freq;
-            let mut doc_count = collection_stats.doc_count;
-            if doc_count == -1 {
-                doc_count = collection_stats.max_doc
-            };
             idf += (1.0 + (doc_count as f64 - doc_freq as f64 + 0.5) / (doc_freq as f64 + 0.5)).ln()
                 as f32;
         }
@@ -231,7 +235,7 @@ mod tests {
                 < ::std::f32::EPSILON
         );
 
-        let collection_stats = CollectionStatistics::new(String::from("world"), 11, 32, 0, 0);
+        let collection_stats = CollectionStatistics::new(String::from("world"), 35, 32, -1, -1);
         let term_stats = vec![TermStatistics::new(Vec::new(), 1, -1)];
         assert!(
             (BM25Similarity::idf(&term_stats, &collection_stats) - (22f32).ln())
@@ -241,13 +245,13 @@ mod tests {
 
     #[test]
     fn test_avg_field_length() {
-        let collection_stats = CollectionStatistics::new(String::from("world"), 11, 32, 0, 0);
+        let collection_stats = CollectionStatistics::new(String::from("world"), 11, 5, 0, -1);
         assert!((BM25Similarity::avg_field_length(&collection_stats) - 1f32) < ::std::f32::EPSILON);
 
-        let collection_stats = CollectionStatistics::new(String::from("world"), 3, 2, 8, 0);
+        let collection_stats = CollectionStatistics::new(String::from("world"), 3, 2, 8, -1);
         assert!((BM25Similarity::avg_field_length(&collection_stats) - 4f32) < ::std::f32::EPSILON);
 
-        let collection_stats = CollectionStatistics::new(String::from("world"), 3, -1, 9, 0);
+        let collection_stats = CollectionStatistics::new(String::from("world"), 3, -1, 9, -1);
         assert!((BM25Similarity::avg_field_length(&collection_stats) - 3f32) < ::std::f32::EPSILON);
     }
 
