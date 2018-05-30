@@ -15,6 +15,10 @@ impl CollectionStatistics {
         sum_total_term_freq: i64,
         sum_doc_freq: i64,
     ) -> CollectionStatistics {
+        debug_assert!(max_doc >= 0);
+        debug_assert!(doc_count >= -1 && doc_count <= max_doc); // #docs with field must be <= #docs
+        debug_assert!(sum_doc_freq == -1 || sum_doc_freq >= doc_count); // #postings must be >= #docs with field
+        debug_assert!(sum_total_term_freq == -1 || sum_total_term_freq >= sum_doc_freq); // #positions must be >= #postings
         CollectionStatistics {
             field,
             max_doc,
@@ -50,12 +54,13 @@ mod tests {
 
     #[test]
     fn test_collection_statistics() {
-        let collection_statistics = CollectionStatistics::new(String::from("hello"), 5, 10, 4, 3);
+        let collection_statistics =
+            CollectionStatistics::new(String::from("hello"), 25, 10, 14, 13);
         assert_eq!(collection_statistics.field, "hello");
-        assert_eq!(collection_statistics.max_doc, 5);
+        assert_eq!(collection_statistics.max_doc, 25);
         assert_eq!(collection_statistics.doc_count, 10);
-        assert_eq!(collection_statistics.sum_total_term_freq, 4);
-        assert_eq!(collection_statistics.sum_doc_freq, 3);
+        assert_eq!(collection_statistics.sum_total_term_freq, 14);
+        assert_eq!(collection_statistics.sum_doc_freq, 13);
     }
 
     #[test]
