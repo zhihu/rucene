@@ -1,8 +1,8 @@
-use core::doc::Field;
-use core::doc::NUMERIC_DOC_VALUES_FIELD_TYPE;
+use std::ops::Deref;
+
+use core::doc::{Field, NUMERIC_DOC_VALUES_FIELD_TYPE};
 use core::index::fieldable::Fieldable;
 use core::util::VariantValue;
-use std::ops::Deref;
 
 pub struct DoubleDocValuesField {
     field: Field,
@@ -23,7 +23,7 @@ impl DoubleDocValuesField {
         let val = self.field.fields_data();
         match *val {
             VariantValue::Double(d) => d,
-            _ => panic!("Oops, NEVER reach here."),
+            _ => unreachable!(),
         }
     }
 }

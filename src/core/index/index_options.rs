@@ -1,6 +1,6 @@
 use error::*;
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub enum IndexOptions {
     Null,
     Docs,

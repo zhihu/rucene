@@ -3,20 +3,18 @@ use core::index::stored_field_visitor::{Status, StoredFieldVisitor};
 use core::index::DocValuesType;
 use core::util::VariantValue;
 
-use super::document::Document;
-use super::field_type::FieldType;
-use super::stored_field::StoredField;
+use core::doc::{Document, FieldType, StoredField};
 
 pub struct DocumentStoredFieldVisitor {
     pub fields: Vec<StoredField>,
-    pub fields_load: Vec<String>,
+    pub fields_to_add: Vec<String>,
 }
 
 impl DocumentStoredFieldVisitor {
-    pub fn new(fields_load: &[String]) -> DocumentStoredFieldVisitor {
+    pub fn new(fields_to_add: &[String]) -> DocumentStoredFieldVisitor {
         DocumentStoredFieldVisitor {
             fields: vec![],
-            fields_load: fields_load.to_owned(),
+            fields_to_add: fields_to_add.to_owned(),
         }
     }
 
@@ -26,15 +24,15 @@ impl DocumentStoredFieldVisitor {
 }
 
 impl StoredFieldVisitor for DocumentStoredFieldVisitor {
-    fn binary_field(&mut self, field_info: &FieldInfo, value: &[u8]) {
+    fn binary_field(&mut self, field_info: &FieldInfo, value: Vec<u8>) {
         self.fields.push(StoredField::new(
             &field_info.name,
             None,
-            VariantValue::Binary(value.to_vec()),
+            VariantValue::Binary(value),
         ));
     }
 
-    fn string_field(&mut self, field_info: &FieldInfo, value: &[u8]) {
+    fn string_field(&mut self, field_info: &FieldInfo, value: Vec<u8>) {
         let field_type = FieldType::new(
             true,
             true,
@@ -43,18 +41,21 @@ impl StoredFieldVisitor for DocumentStoredFieldVisitor {
             false,
             false,
             field_info.has_norms(),
-            field_info.index_options.clone(),
+            field_info.index_options,
             DocValuesType::Null,
         );
 
-        if let Ok(str) = String::from_utf8(value.to_vec()) {
-            self.fields.push(StoredField::new(
-                &field_info.name,
-                Some(field_type),
-                VariantValue::VString(str),
-            ));
-        } else {
-            assert!(false, format!("from_utf8({:?}) failed.", value));
+        match String::from_utf8(value) {
+            Ok(s) => {
+                self.fields.push(StoredField::new(
+                    &field_info.name,
+                    Some(field_type),
+                    VariantValue::VString(s),
+                ));
+            },
+            Err(e) => {
+                assert!(false, format!("string_field failed: {:?}", e));
+            }
         }
     }
 
@@ -91,7 +92,7 @@ impl StoredFieldVisitor for DocumentStoredFieldVisitor {
     }
 
     fn needs_field(&self, field_info: &FieldInfo) -> Status {
-        if self.fields_load.is_empty() || self.fields_load.contains(&field_info.name) {
+        if self.fields_to_add.is_empty() || self.fields_to_add.contains(&field_info.name) {
             Status::YES
         } else {
             Status::NO

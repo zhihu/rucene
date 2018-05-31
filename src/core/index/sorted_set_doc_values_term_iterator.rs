@@ -30,7 +30,7 @@ impl<'a> TermIterator for SortedSetDocValuesTermIterator<'a> {
             Ok(Vec::new())
         } else {
             let bytes = self.values.lookup_ord(self.current_ord)?;
-            self.scratch = bytes.to_vec();
+            self.scratch = bytes;
             Ok(self.scratch.clone())
         }
     }
@@ -48,7 +48,7 @@ impl<'a> TermIterator for SortedSetDocValuesTermIterator<'a> {
             } else {
                 // TODO: hmm can we avoid this "extra" lookup?
                 let bytes = self.values.lookup_ord(self.current_ord)?;
-                self.scratch = bytes.to_vec();
+                self.scratch = bytes;
                 Ok(SeekStatus::NotFound)
             }
         }
@@ -73,13 +73,12 @@ impl<'a> TermIterator for SortedSetDocValuesTermIterator<'a> {
         assert!(ord >= 0 && ord < self.values.get_value_count() as i64);
         self.current_ord = ord;
         let bytes = self.values.lookup_ord(self.current_ord)?;
-        self.scratch = bytes.to_vec();
+        self.scratch = bytes;
         Ok(())
     }
 
-    fn term(&mut self) -> Result<Vec<u8>> {
-        // FIXME: use &[u8] instead
-        Ok(self.scratch.clone())
+    fn term(&self) -> Result<&[u8]> {
+        Ok(&self.scratch)
     }
 
     fn ord(&mut self) -> Result<i64> {

@@ -38,7 +38,7 @@ impl MappedFieldType {
     }
 
     pub fn support_doc_values(&self) -> bool {
-        *(self.field_type.doc_values_type()) == DocValuesType::Null
+        self.field_type.doc_values_type() == DocValuesType::Null
     }
 }
 

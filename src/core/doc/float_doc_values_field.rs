@@ -1,8 +1,8 @@
-use core::doc::Field;
-use core::doc::NUMERIC_DOC_VALUES_FIELD_TYPE;
+use std::ops::Deref;
+
+use core::doc::{Field, NUMERIC_DOC_VALUES_FIELD_TYPE};
 use core::index::fieldable::Fieldable;
 use core::util::VariantValue;
-use std::ops::Deref;
 
 pub struct FloatDocValuesField {
     field: Field,
@@ -20,10 +20,10 @@ impl FloatDocValuesField {
     }
 
     pub fn float_value(&self) -> f32 {
-        let val = self.field.fields_data();
-        match *val {
-            VariantValue::Float(fval) => fval,
-            _ => panic!("Oops, NEVER reach here."),
+        let data = self.field.fields_data();
+        match *data {
+            VariantValue::Float(val) => val,
+            _ => unreachable!(),
         }
     }
 }

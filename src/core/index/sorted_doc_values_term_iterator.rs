@@ -78,9 +78,8 @@ impl<'a> TermIterator for SortedDocValuesTermIterator<'a> {
         self.seek_exact_ord(state.ord())
     }
 
-    fn term(&mut self) -> Result<Vec<u8>> {
-        // FIXME: use &[u8] instead
-        Ok(self.scratch.clone())
+    fn term(&self) -> Result<&[u8]> {
+            Ok(&self.scratch)
     }
 
     fn ord(&mut self) -> Result<i64> {
