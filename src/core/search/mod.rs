@@ -21,6 +21,7 @@ pub mod match_all;
 pub mod min_score;
 pub mod point_range;
 pub mod posting_iterator;
+pub mod spans;
 
 pub mod bulk_scorer;
 pub mod disi;

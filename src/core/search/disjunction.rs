@@ -11,7 +11,7 @@ use std::f32;
 use std::fmt;
 
 pub struct DisjunctionSumScorer {
-    sub_scorers: DisiPriorityQueue,
+    sub_scorers: DisiPriorityQueue<Scorer>,
     cost: usize,
     support_two_phase: bool,
     two_phase_match_cost: f32,
@@ -39,11 +39,11 @@ impl DisjunctionSumScorer {
 }
 
 impl DisjunctionScorer for DisjunctionSumScorer {
-    fn sub_scorers(&self) -> &DisiPriorityQueue {
+    fn sub_scorers(&self) -> &DisiPriorityQueue<Scorer> {
         &self.sub_scorers
     }
 
-    fn sub_scorers_mut(&mut self) -> &mut DisiPriorityQueue {
+    fn sub_scorers_mut(&mut self) -> &mut DisiPriorityQueue<Scorer> {
         &mut self.sub_scorers
     }
 
@@ -65,7 +65,7 @@ impl Scorer for DisjunctionSumScorer {
         let mut score: f32 = 0.0;
         self.foreach_top_scorer(|scorer| {
             if scorer.matches()? {
-                score += scorer.score()?;
+                score += scorer.inner_mut().score()?;
             }
             Ok(true)
         })?;
@@ -74,9 +74,9 @@ impl Scorer for DisjunctionSumScorer {
 }
 
 pub trait DisjunctionScorer {
-    fn sub_scorers(&self) -> &DisiPriorityQueue;
+    fn sub_scorers(&self) -> &DisiPriorityQueue<Scorer>;
 
-    fn sub_scorers_mut(&mut self) -> &mut DisiPriorityQueue;
+    fn sub_scorers_mut(&mut self) -> &mut DisiPriorityQueue<Scorer>;
 
     fn two_phase_match_cost(&self) -> f32;
 
@@ -87,7 +87,7 @@ pub trait DisjunctionScorer {
     /// for each of the list of scorers which are on the current doc.
     fn foreach_top_scorer<F>(&mut self, mut f: F) -> Result<()>
     where
-        F: FnMut(&mut DisiWrapper) -> Result<bool>,
+        F: FnMut(&mut DisiWrapper<Scorer>) -> Result<bool>,
     {
         let mut disi = Some(self.sub_scorers().top_list());
         while let Some(scorer) = disi {
@@ -100,7 +100,10 @@ pub trait DisjunctionScorer {
     }
 }
 
-impl<T: DisjunctionScorer + Scorer> DocIterator for T {
+impl<T> DocIterator for T
+where
+    T: DisjunctionScorer + Scorer,
+{
     fn doc_id(&self) -> DocId {
         self.sub_scorers().peek().doc()
     }
@@ -142,46 +145,28 @@ impl<T: DisjunctionScorer + Scorer> DocIterator for T {
 
     fn approximate_next(&mut self) -> Result<DocId> {
         let sub_scorers = self.sub_scorers_mut();
-        let mut top = sub_scorers.pop();
-        let doc = top.doc();
+        let doc = sub_scorers.peek().doc();
 
         loop {
-            let next_doc = top.approximate_next()?;
-            top.set_doc(next_doc);
-            // Reinsert top to the queue
-            sub_scorers.push(top);
-
-            top = sub_scorers.pop();
-            if top.doc() != doc {
+            sub_scorers.peek_mut().approximate_next()?;
+            if sub_scorers.peek().doc() != doc {
                 break;
             }
         }
 
-        let current_doc = top.doc();
-        sub_scorers.push(top);
-
-        Ok(current_doc)
+        Ok(sub_scorers.peek().doc())
     }
 
     fn approximate_advance(&mut self, target: DocId) -> Result<DocId> {
         let sub_scorers = self.sub_scorers_mut();
-        let mut top = sub_scorers.pop();
-
         loop {
-            let doc = top.approximate_advance(target)?;
-            top.set_doc(doc);
-            sub_scorers.push(top);
-
-            top = sub_scorers.pop();
-            if top.doc() >= target {
+            sub_scorers.peek_mut().approximate_advance(target)?;
+            if sub_scorers.peek().doc() >= target {
                 break;
             }
         }
 
-        let current_doc = top.doc();
-        sub_scorers.push(top);
-
-        Ok(current_doc)
+        Ok(sub_scorers.peek().doc())
     }
 }
 
@@ -345,7 +330,7 @@ impl fmt::Display for DisjunctionMaxWeight {
 }
 
 pub struct DisjunctionMaxScorer {
-    sub_scorers: DisiPriorityQueue,
+    sub_scorers: DisiPriorityQueue<Scorer>,
     cost: usize,
     support_two_phase: bool,
     two_phase_match_cost: f32,
@@ -380,7 +365,7 @@ impl Scorer for DisjunctionMaxScorer {
         let mut score_max = f32::NEG_INFINITY;
         self.foreach_top_scorer(|scorer| {
             if scorer.matches()? {
-                let sub_score = scorer.score()?;
+                let sub_score = scorer.inner_mut().score()?;
                 score_sum += sub_score;
                 if sub_score > score_max {
                     score_max = sub_score;
@@ -393,11 +378,11 @@ impl Scorer for DisjunctionMaxScorer {
 }
 
 impl DisjunctionScorer for DisjunctionMaxScorer {
-    fn sub_scorers(&self) -> &DisiPriorityQueue {
+    fn sub_scorers(&self) -> &DisiPriorityQueue<Scorer> {
         &self.sub_scorers
     }
 
-    fn sub_scorers_mut(&mut self) -> &mut DisiPriorityQueue {
+    fn sub_scorers_mut(&mut self) -> &mut DisiPriorityQueue<Scorer> {
         &mut self.sub_scorers
     }
 
