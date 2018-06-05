@@ -5,7 +5,6 @@ use core::doc::SORTED_NUMERIC_DOC_VALUES_FIELD_TYPE;
 use core::index::Fieldable;
 use core::util::VariantValue;
 
-
 pub struct SortedNumericDocValuesField {
     field: Field,
 }

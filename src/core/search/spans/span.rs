@@ -451,7 +451,7 @@ pub trait ConjunctionSpans: Spans {
 // impl<T> DocIterator for T where T: DisjunctionScorer + Scorer 冲突
 // 所以目前只能实现为 macro
 macro_rules! conjunction_span_doc_iter {
-    ($t: ty) => {
+    ($t:ty) => {
         impl DocIterator for $t {
             fn doc_id(&self) -> i32 {
                 self.conjunction_span_base().conjunction.doc_id()
