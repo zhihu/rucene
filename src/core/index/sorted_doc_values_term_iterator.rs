@@ -79,7 +79,7 @@ impl<'a> TermIterator for SortedDocValuesTermIterator<'a> {
     }
 
     fn term(&self) -> Result<&[u8]> {
-            Ok(&self.scratch)
+        Ok(&self.scratch)
     }
 
     fn ord(&mut self) -> Result<i64> {

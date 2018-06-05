@@ -13,7 +13,7 @@ pub trait FieldComparator: fmt::Display {
 
     fn compare_bottom(&self, value: VariantValue) -> i32;
 
-    fn copy(&mut self, slot: usize, value: VariantValue);
+    fn copy(&mut self, slot: usize, value: &VariantValue);
 
     fn get_information_from_reader(&mut self, reader: &LeafReader);
 
@@ -54,15 +54,15 @@ impl FieldComparator for RelevanceComparator {
     fn compare_bottom(&self, value: VariantValue) -> i32 {
         let score = match value {
             VariantValue::Float(f) => f,
-            _ => panic!("Should be f32."),
+            _ => unreachable!(),
         };
         score.partial_cmp(&self.bottom).unwrap() as i32
     }
 
-    fn copy(&mut self, slot: usize, value: VariantValue) {
-        let score = match value {
+    fn copy(&mut self, slot: usize, value: &VariantValue) {
+        let score = match *value {
             VariantValue::Float(f) => f,
-            _ => panic!("Should be f32."),
+            _ => unreachable!(),
         };
         self.scores[slot] = score;
     }
@@ -119,15 +119,15 @@ impl FieldComparator for DocComparator {
     fn compare_bottom(&self, value: VariantValue) -> i32 {
         let doc_id = match value {
             VariantValue::Int(i) => i + self.doc_base,
-            _ => panic!("Should be i32."),
+            _ => unreachable!(),
         };
         self.bottom.partial_cmp(&doc_id).unwrap() as i32
     }
 
-    fn copy(&mut self, slot: usize, value: VariantValue) {
-        let doc_id = match value {
+    fn copy(&mut self, slot: usize, value: &VariantValue) {
+        let doc_id = match *value {
             VariantValue::Int(i) => i + self.doc_base,
-            _ => panic!("Should be i32."),
+            _ => unreachable!(),
         };
         self.doc_ids[slot] = doc_id;
     }
@@ -160,9 +160,9 @@ mod tests {
     fn test_relevance_comparator() {
         let mut comparator = RelevanceComparator::new(3);
         {
-            comparator.copy(0, VariantValue::Float(1f32));
-            comparator.copy(1, VariantValue::Float(2f32));
-            comparator.copy(2, VariantValue::Float(3f32));
+            comparator.copy(0, &VariantValue::Float(1f32));
+            comparator.copy(1, &VariantValue::Float(2f32));
+            comparator.copy(2, &VariantValue::Float(3f32));
         }
 
         assert_eq!(comparator.compare(0, 1), 1);
@@ -182,9 +182,9 @@ mod tests {
         let leaf_reader = MockLeafReader::new(0);
         {
             comparator.get_information_from_reader(&leaf_reader);
-            comparator.copy(0, VariantValue::Int(1));
-            comparator.copy(1, VariantValue::Int(2));
-            comparator.copy(2, VariantValue::Int(3));
+            comparator.copy(0, &VariantValue::Int(1));
+            comparator.copy(1, &VariantValue::Int(2));
+            comparator.copy(2, &VariantValue::Int(3));
         }
 
         assert_eq!(comparator.compare(0, 1), -1);

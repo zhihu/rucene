@@ -4,7 +4,6 @@ use core::doc::{Field, SORTED_SET_DOC_VALUES_FIELD_TYPE};
 use core::index::fieldable::Fieldable;
 use core::util::VariantValue;
 
-
 pub struct SortedSetDocValuesField {
     field: Field,
 }

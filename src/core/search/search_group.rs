@@ -22,38 +22,31 @@ impl SortInfo {
 
 #[derive(Debug, Clone, Eq)]
 pub struct CollectedSearchGroup {
-    pub group_value: Option<VariantValue>,
+    pub group_value: VariantValue,
     pub sort_info_list: Vec<SortInfo>,
 
     pub top_doc: DocId,
     pub comparator_slot: usize,
 }
 
-impl Default for CollectedSearchGroup {
-    fn default() -> Self {
+impl CollectedSearchGroup {
+    pub fn new(
+        group_value: VariantValue,
+        sort_info_list: Vec<SortInfo>,
+        top_doc: DocId,
+        comparator_slot: usize,
+    ) -> Self {
         CollectedSearchGroup {
-            group_value: None,
-            sort_info_list: Vec::new(),
-            top_doc: 0,
-            comparator_slot: 0usize,
+            group_value,
+            sort_info_list,
+            top_doc,
+            comparator_slot,
         }
     }
 }
 
 impl Ord for CollectedSearchGroup {
     fn cmp(&self, other: &CollectedSearchGroup) -> Ordering {
-        if let Some(group_value) = self.group_value.as_ref() {
-            if let Some(other_value) = other.group_value.as_ref() {
-                let cmp = group_value.cmp(other_value);
-                if cmp != Ordering::Equal {
-                    return cmp;
-                }
-            } else {
-                return Ordering::Greater;
-            }
-        } else if other.group_value.is_some() {
-            return Ordering::Less;
-        }
         debug_assert_eq!(self.sort_info_list.len(), other.sort_info_list.len());
         for (index, sort_info) in self.sort_info_list.iter().enumerate() {
             match sort_info
@@ -82,15 +75,14 @@ impl PartialOrd for CollectedSearchGroup {
 
 impl Hash for CollectedSearchGroup {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        if let Some(group_value) = self.group_value.as_ref() {
-            group_value.hash(state)
-        }
+        self.group_value.hash(state)
     }
 }
 
 impl PartialEq for CollectedSearchGroup {
     fn eq(&self, other: &CollectedSearchGroup) -> bool {
-        self.cmp(other) == Ordering::Equal
+        self.group_value.cmp(&other.group_value) == Ordering::Equal
+            && self.cmp(other) == Ordering::Equal
     }
 }
 
@@ -100,20 +92,17 @@ mod tests {
 
     #[test]
     fn test_collected_search_group() {
-        let mut collected_search_group = CollectedSearchGroup::default();
-
-        collected_search_group.group_value = Some(VariantValue::Int(1));
-        collected_search_group.sort_info_list = vec![
-            SortInfo::new(SortFieldType::Score, VariantValue::Int(1)),
-            SortInfo::new(SortFieldType::Doc, VariantValue::Int(2)),
-        ];
-        collected_search_group.top_doc = 3;
-        collected_search_group.comparator_slot = 0;
-
-        assert_eq!(
-            collected_search_group.group_value,
-            Some(VariantValue::Int(1))
+        let collected_search_group = CollectedSearchGroup::new(
+            VariantValue::Int(1),
+            vec![
+                SortInfo::new(SortFieldType::Score, VariantValue::Int(1)),
+                SortInfo::new(SortFieldType::Doc, VariantValue::Int(2)),
+            ],
+            3,
+            0,
         );
+
+        assert_eq!(collected_search_group.group_value, VariantValue::Int(1));
         assert_eq!(
             collected_search_group.sort_info_list,
             vec![
@@ -127,62 +116,57 @@ mod tests {
 
     #[test]
     fn test_compare_collected_search_group() {
-        let mut collected_search_group_one = CollectedSearchGroup::default();
-        collected_search_group_one.group_value = Some(VariantValue::Int(1));
-        collected_search_group_one.sort_info_list = vec![
-            SortInfo::new(SortFieldType::Score, VariantValue::Int(1)),
-            SortInfo::new(SortFieldType::Doc, VariantValue::Int(2)),
-        ];
-        collected_search_group_one.top_doc = 10;
+        let collected_search_group_one = CollectedSearchGroup::new(
+            VariantValue::Int(1),
+            vec![
+                SortInfo::new(SortFieldType::Score, VariantValue::Int(1)),
+                SortInfo::new(SortFieldType::Doc, VariantValue::Int(2)),
+            ],
+            10,
+            0,
+        );
 
         // Equal
         {
-            let mut collected_search_group_two = CollectedSearchGroup::default();
-            collected_search_group_two.group_value = Some(VariantValue::Int(1));
-            collected_search_group_two.top_doc = 10;
-            collected_search_group_two.sort_info_list = vec![
-                SortInfo::new(SortFieldType::Score, VariantValue::Int(1)),
-                SortInfo::new(SortFieldType::Doc, VariantValue::Int(2)),
-            ];
+            let collected_search_group_two = CollectedSearchGroup::new(
+                VariantValue::Int(1),
+                vec![
+                    SortInfo::new(SortFieldType::Score, VariantValue::Int(1)),
+                    SortInfo::new(SortFieldType::Doc, VariantValue::Int(2)),
+                ],
+                10,
+                0,
+            );
 
             assert_eq!(collected_search_group_one, collected_search_group_two);
         }
 
-        // Unequal because second group_value is None
-        {
-            let mut collected_search_group_two = CollectedSearchGroup::default();
-            collected_search_group_two.group_value = None;
-            collected_search_group_two.top_doc = 10;
-            collected_search_group_two.sort_info_list = vec![
-                SortInfo::new(SortFieldType::Score, VariantValue::Int(1)),
-                SortInfo::new(SortFieldType::Doc, VariantValue::Int(2)),
-            ];
-
-            assert_ne!(collected_search_group_one, collected_search_group_two);
-        }
-
         // Unequal because group_values is different
         {
-            let mut collected_search_group_two = CollectedSearchGroup::default();
-            collected_search_group_two.group_value = Some(VariantValue::Int(2));
-            collected_search_group_two.top_doc = 10;
-            collected_search_group_two.sort_info_list = vec![
-                SortInfo::new(SortFieldType::Score, VariantValue::Int(1)),
-                SortInfo::new(SortFieldType::Doc, VariantValue::Int(2)),
-            ];
+            let collected_search_group_two = CollectedSearchGroup::new(
+                VariantValue::Int(2),
+                vec![
+                    SortInfo::new(SortFieldType::Score, VariantValue::Int(1)),
+                    SortInfo::new(SortFieldType::Doc, VariantValue::Int(2)),
+                ],
+                10,
+                0,
+            );
 
             assert_ne!(collected_search_group_one, collected_search_group_two);
         }
 
         // Less because second sort_info_list of group_two is greater
         {
-            let mut collected_search_group_two = CollectedSearchGroup::default();
-            collected_search_group_two.group_value = Some(VariantValue::Int(2));
-            collected_search_group_two.top_doc = 10;
-            collected_search_group_two.sort_info_list = vec![
-                SortInfo::new(SortFieldType::Score, VariantValue::Int(1)),
-                SortInfo::new(SortFieldType::Doc, VariantValue::Int(3)),
-            ];
+            let collected_search_group_two = CollectedSearchGroup::new(
+                VariantValue::Int(1),
+                vec![
+                    SortInfo::new(SortFieldType::Score, VariantValue::Int(1)),
+                    SortInfo::new(SortFieldType::Doc, VariantValue::Int(3)),
+                ],
+                10,
+                0,
+            );
 
             assert_eq!(
                 collected_search_group_one.cmp(&collected_search_group_two),
@@ -196,13 +180,15 @@ mod tests {
 
         // Greater because second sort_info_list of group_one is greater
         {
-            let mut collected_search_group_two = CollectedSearchGroup::default();
-            collected_search_group_two.group_value = Some(VariantValue::Int(1));
-            collected_search_group_two.top_doc = 10;
-            collected_search_group_two.sort_info_list = vec![
-                SortInfo::new(SortFieldType::Score, VariantValue::Int(2)),
-                SortInfo::new(SortFieldType::Doc, VariantValue::Int(3)),
-            ];
+            let collected_search_group_two = CollectedSearchGroup::new(
+                VariantValue::Int(1),
+                vec![
+                    SortInfo::new(SortFieldType::Score, VariantValue::Int(2)),
+                    SortInfo::new(SortFieldType::Doc, VariantValue::Int(2)),
+                ],
+                10,
+                0,
+            );
 
             assert_eq!(
                 collected_search_group_one.cmp(&collected_search_group_two),
@@ -216,14 +202,15 @@ mod tests {
 
         // Less because top_doc of group_two is greater
         {
-            let mut collected_search_group_two = CollectedSearchGroup::default();
-            collected_search_group_two.group_value = Some(VariantValue::Int(1));
-            collected_search_group_two.top_doc = 10;
-            collected_search_group_two.sort_info_list = vec![
-                SortInfo::new(SortFieldType::Score, VariantValue::Int(1)),
-                SortInfo::new(SortFieldType::Doc, VariantValue::Int(2)),
-            ];
-            collected_search_group_two.top_doc = 11;
+            let collected_search_group_two = CollectedSearchGroup::new(
+                VariantValue::Int(1),
+                vec![
+                    SortInfo::new(SortFieldType::Score, VariantValue::Int(1)),
+                    SortInfo::new(SortFieldType::Doc, VariantValue::Int(2)),
+                ],
+                11,
+                0,
+            );
 
             assert_eq!(
                 collected_search_group_one.cmp(&collected_search_group_two),

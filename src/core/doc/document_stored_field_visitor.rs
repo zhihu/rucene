@@ -52,7 +52,7 @@ impl StoredFieldVisitor for DocumentStoredFieldVisitor {
                     Some(field_type),
                     VariantValue::VString(s),
                 ));
-            },
+            }
             Err(e) => {
                 assert!(false, format!("string_field failed: {:?}", e));
             }

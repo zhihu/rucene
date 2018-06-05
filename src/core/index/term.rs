@@ -389,9 +389,7 @@ pub struct EmptyTermIterator {
 
 impl Default for EmptyTermIterator {
     fn default() -> EmptyTermIterator {
-        EmptyTermIterator {
-            data: vec![0; 1]
-        }
+        EmptyTermIterator { data: vec![0; 1] }
     }
 }
 
