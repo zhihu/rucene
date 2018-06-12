@@ -64,13 +64,13 @@ impl BaseFragmentsBuilder {
             for field in fields {
                 let string_value = format!("{}", field.field.fields_data());
                 if string_value.is_empty() {
-                    field_end = 0;
+                    field_end += 1;
                     continue;
                 }
 
                 field_start = field_end;
                 // + 1 for going to next field with same name.
-                field_end += string_value.len() as i32 + 1;
+                field_end += string_value.chars().count() as i32 + 1;
 
                 if frag_info.start_offset >= field_start && frag_info.end_offset >= field_start
                     && frag_info.start_offset <= field_end
@@ -88,7 +88,7 @@ impl BaseFragmentsBuilder {
                 }
 
                 if frag_info.start_offset >= field_end
-                    && frag_info.sub_infos[0].terms_offsets[0].start_offset >= field_end
+                    || frag_info.sub_infos[0].terms_offsets[0].start_offset >= field_end
                 {
                     continue;
                 }
