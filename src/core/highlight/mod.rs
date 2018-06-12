@@ -143,7 +143,7 @@ impl WeightedFragInfo {
             Ordering::Greater
         } else if o1.start_offset < o2.start_offset {
             Ordering::Less
-        } else if o1.start_offset == o2.start_offset {
+        } else if o1.start_offset > o2.start_offset {
             Ordering::Greater
         } else {
             Ordering::Equal
