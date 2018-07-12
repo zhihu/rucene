@@ -308,10 +308,14 @@ impl BaseFragmentsBuilder {
         let buffer_chars: Vec<char> = buffer.chars().collect();
         if buffer_chars.len() < eo as usize || modified_start_offset[0] > eo {
             bail!(
-                "get fragmets source error, source len: {}, highlight required slice [{}..{}]",
+                "get fragmets source error, source len: {}, highlight required slice [{}..{}], \
+                 so={} eo={} buffer={}",
                 buffer_chars.len(),
                 modified_start_offset[0],
-                eo
+                eo,
+                start_offset,
+                end_offset,
+                buffer,
             );
         }
         let ret: String = buffer_chars[modified_start_offset[0] as usize..eo as usize]

@@ -227,6 +227,9 @@ pub struct CollapseTopFieldDocs {
     /// The total number of hits for the query.
     pub total_hits: usize,
 
+    /// The total group number of hits for the query.
+    pub total_groups: usize,
+
     /// The top hits for the query.
     pub score_docs: Vec<ScoreDocHit>,
 
@@ -247,6 +250,7 @@ impl CollapseTopFieldDocs {
     pub fn new(
         field: String,
         total_hits: usize,
+        total_groups: usize,
         score_docs: Vec<ScoreDocHit>,
         sort_fields: Vec<SortField>,
         collapse_values: Vec<VariantValue>,
@@ -254,6 +258,7 @@ impl CollapseTopFieldDocs {
     ) -> CollapseTopFieldDocs {
         CollapseTopFieldDocs {
             total_hits,
+            total_groups,
             score_docs,
             max_score,
             fields: sort_fields,
@@ -279,6 +284,14 @@ impl TopDocs {
             TopDocs::Score(ref s) => s.total_hits,
             TopDocs::Field(ref f) => f.total_hits,
             TopDocs::Collapse(ref c) => c.total_hits,
+        }
+    }
+
+    pub fn total_groups(&self) -> usize {
+        match *self {
+            TopDocs::Score(ref s) => s.total_hits,
+            TopDocs::Field(ref f) => f.total_hits,
+            TopDocs::Collapse(ref c) => c.total_groups,
         }
     }
 
