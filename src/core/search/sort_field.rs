@@ -39,8 +39,12 @@ impl SortField {
         &self.field_type
     }
 
-    pub fn reverse(&self) -> bool {
-        self.is_reverse
+    pub fn reverse(&self) -> i32 {
+        if self.is_reverse {
+            -1
+        } else {
+            1
+        }
     }
 
     pub fn get_comparator(
