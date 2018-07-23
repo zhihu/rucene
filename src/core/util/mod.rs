@@ -30,6 +30,9 @@ pub use self::doc_id_set_builder::*;
 mod compute_time;
 pub use self::compute_time::*;
 
+pub mod context;
+pub use self::context::*;
+
 pub mod bit_set;
 pub mod bit_util;
 pub mod bkd;

@@ -11,7 +11,7 @@ use core::search::statistics::TermStatistics;
 use core::search::term_query::TermQuery;
 use core::search::top_docs::TopDocs;
 use core::util::bit_set::ImmutableBitSetRef;
-use core::util::DocId;
+use core::util::{DocId, IndexedContext, KeyedContext};
 use error::*;
 
 pub mod collector;
@@ -224,6 +224,10 @@ pub trait Scorer: DocIterator + Send + Sync {
     fn support_two_phase(&self) -> bool {
         false
     }
+
+    fn score_context(&mut self) -> Result<IndexedContext> {
+        unimplemented!()
+    }
 }
 
 // helper function for doc iterator support two phase
@@ -320,6 +324,16 @@ pub trait Weight: Display {
     fn value_for_normalization(&self) -> f32;
 
     fn needs_scores(&self) -> bool;
+
+    fn create_batch_scorer(&self) -> Option<Box<BatchScorer>> {
+        None
+    }
+}
+
+pub trait BatchScorer: Send + Sync {
+    fn scores(&self, _score_context: Vec<&IndexedContext>) -> Result<Vec<f32>> {
+        unimplemented!()
+    }
 }
 
 /// Similarity defines the components of Lucene scoring.
@@ -394,6 +408,7 @@ pub trait Similarity: Display {
         &self,
         collection_stats: &CollectionStatistics,
         term_stats: &[TermStatistics],
+        context: Option<&KeyedContext>,
     ) -> Box<SimWeight>;
 
     /// Computes the normalization value for a query given the sum of the
@@ -409,7 +424,7 @@ pub trait Similarity: Display {
     /// @param valueForNormalization the sum of the term normalization values
     /// @return a normalization factor for query weights
     ///
-    fn query_norm(&self, _value_for_normalization: f32) -> f32 {
+    fn query_norm(&self, _value_for_normalization: f32, _context: Option<&KeyedContext>) -> f32 {
         1.0f32
     }
 }

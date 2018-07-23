@@ -24,7 +24,7 @@ use core::search::{two_phase_next, DocIterator, NO_MORE_DOCS};
 use core::search::{SimScorer, SimWeight, Similarity};
 use core::util::bit_set::{BitSet, FixedBitSet, ImmutableBitSet};
 use core::util::bits::Bits;
-use core::util::DocId;
+use core::util::{DocId, KeyedContext};
 
 pub const PHRASE: &str = "phrase";
 
@@ -34,13 +34,25 @@ pub struct PhraseQuery {
     terms: Vec<Term>,
     positions: Vec<i32>,
     slop: i32,
+    ctxs: Option<Vec<KeyedContext>>,
 }
 
 impl PhraseQuery {
-    pub fn new(terms: Vec<Term>, positions: Vec<i32>, slop: i32) -> Result<PhraseQuery> {
+    pub fn new<T: Into<Option<Vec<KeyedContext>>>>(
+        terms: Vec<Term>,
+        positions: Vec<i32>,
+        slop: i32,
+        ctxs: T,
+    ) -> Result<PhraseQuery> {
+        let ctxs = ctxs.into();
         debug_assert_eq!(
             terms.len(),
             positions.len(),
+            "Must have as many terms as positions"
+        );
+        debug_assert_eq!(
+            terms.len(),
+            ctxs.as_ref().map(Vec::len).unwrap_or_else(|| terms.len()),
             "Must have as many terms as positions"
         );
         assert!(slop >= 0, format!("Slop must be >= 0, got {}", slop));
@@ -83,12 +95,17 @@ impl PhraseQuery {
             terms,
             positions,
             slop,
+            ctxs,
         })
     }
 
-    pub fn build(terms: Vec<Term>, slop: i32) -> Result<PhraseQuery> {
+    pub fn build<T: Into<Option<Vec<KeyedContext>>>>(
+        terms: Vec<Term>,
+        slop: i32,
+        ctxs: T,
+    ) -> Result<PhraseQuery> {
         let positions = Self::increment_positions(terms.len());
-        Self::new(terms, positions, slop)
+        Self::new(terms, positions, slop, ctxs)
     }
 
     fn increment_positions(length: usize) -> Vec<i32> {
@@ -129,7 +146,7 @@ impl Query for PhraseQuery {
         };
 
         let similarity = searcher.similarity(&self.field, needs_scores);
-        let sim_weight = similarity.compute_weight(&collection_stats, &term_stats);
+        let sim_weight = similarity.compute_weight(&collection_stats, &term_stats, None);
 
         Ok(Box::new(PhraseWeight::new(
             self.field.clone(),
@@ -145,9 +162,13 @@ impl Query for PhraseQuery {
 
     fn extract_terms(&self) -> Vec<TermQuery> {
         let mut term_query_list: Vec<TermQuery> = vec![];
+        let ctxs = self.ctxs
+            .as_ref()
+            .map(|ctxs| Clone::clone(ctxs).into_iter().map(Some).collect())
+            .unwrap_or_else(|| vec![None; self.terms.len()]);
 
-        for term in &self.terms {
-            term_query_list.push(TermQuery::new(term.clone(), 1.0f32));
+        for (term, ctx) in self.terms.iter().zip(ctxs.into_iter()) {
+            term_query_list.push(TermQuery::new(term.clone(), 1.0f32, ctx));
         }
 
         term_query_list

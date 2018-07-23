@@ -265,9 +265,11 @@ pub fn build_sim_weight(
         term_stats.push(searcher.term_statistics(term, ctx.as_ref()));
     }
     let collection_stats = searcher.collections_statistics(field)?;
-    Ok(Some(
-        similarity.compute_weight(&collection_stats, &term_stats),
-    ))
+    Ok(Some(similarity.compute_weight(
+        &collection_stats,
+        &term_stats,
+        None,
+    )))
 }
 
 pub trait SpanWeight: Weight {

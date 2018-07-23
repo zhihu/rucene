@@ -8,7 +8,7 @@ use core::search::{DocIterator, Payload, NO_MORE_DOCS};
 use core::util::DocId;
 use error::*;
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct TermPosition {
     pub position: i32,
     pub start_offset: i32,

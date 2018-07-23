@@ -1,55 +1,130 @@
 use error::*;
 
+use core::index::LeafReader;
 use core::search::searcher::IndexSearcher;
 use core::search::sort_field::SortFieldType;
 use core::search::top_docs::ScoreDocHit;
 use core::search::top_docs::TopDocs;
-use core::search::RescoreRequest;
-use core::search::Rescorer;
-use core::util::VariantValue;
+use core::search::{BatchScorer, RescoreRequest, Rescorer, Weight};
+use core::util::{IndexedContext, VariantValue};
 use std::collections::HashMap;
 
 #[derive(Default)]
 pub struct QueryRescorer;
 
 impl QueryRescorer {
-    fn query_rescore(
+    fn batch_rescore(
         &self,
-        searcher: &IndexSearcher,
+        readers: &[&LeafReader],
         req: &RescoreRequest,
-        top_docs: &TopDocs,
-    ) -> Result<Vec<ScoreDocHit>> {
-        let mut hits = top_docs.score_docs().clone();
-        if hits.len() > req.window_size {
-            hits.truncate(req.window_size);
-        }
-        hits.sort_by(ScoreDocHit::order_by_doc);
-
+        hits: &mut [ScoreDocHit],
+        weight: &Weight,
+        score_field_index: i32,
+        batch_scorer: &BatchScorer,
+    ) -> Result<()> {
         let mut hit_upto = 0usize;
-        // let mut reader_upto = -1;
         let mut end_doc = 0;
         let mut doc_base = 0;
-        let readers = searcher.reader.leaves();
+        let mut reader_idx: i32 = -1;
+        let mut current_reader_idx = -1;
+        let mut scorer = None;
+        let mut score_contexts: Vec<Option<IndexedContext>> = Vec::with_capacity(hits.len());
+        // first pass, collect score contexts first
+        while hit_upto < hits.len() {
+            let doc_id = hits[hit_upto].doc_id();
+            while doc_id >= end_doc && reader_idx < readers.len() as i32 - 1 {
+                // reader_upto += 1;
+                reader_idx += 1;
+                end_doc = readers[reader_idx as usize].doc_base()
+                    + readers[reader_idx as usize].max_doc();
+            }
+
+            if reader_idx != current_reader_idx {
+                let reader = readers[reader_idx as usize];
+                doc_base = reader.doc_base();
+                let current_scorer = weight.create_scorer(reader)?;
+                scorer = Some(current_scorer);
+                current_reader_idx = reader_idx;
+            }
+
+            if let Some(ref mut scorer) = scorer {
+                let target_doc = doc_id - doc_base;
+                let mut actual_doc = scorer.doc_id();
+                if actual_doc < target_doc {
+                    actual_doc = scorer.advance(target_doc)?;
+                }
+
+                if actual_doc == target_doc {
+                    score_contexts.push(Some(scorer.score_context()?));
+                } else {
+                    // query did not match this doc
+                    debug_assert!(actual_doc > target_doc);
+                    score_contexts.push(None);
+                }
+            } else {
+                score_contexts.push(None);
+            }
+
+            hit_upto += 1;
+        }
+
+        let scores = batch_scorer.scores(
+            score_contexts
+                .iter()
+                .filter(|x| x.is_some())
+                .map(|x| x.as_ref())
+                .map(|x| x.unwrap())
+                .collect(),
+        )?;
+
+        // second pass, update score
+        hit_upto = 0;
+        let mut score_upto = 0usize;
+        while hit_upto < hits.len() {
+            let current_score = hits[hit_upto].score();
+            if score_contexts[hit_upto].is_some() {
+                hits[hit_upto].set_score(self.combine_score(
+                    req,
+                    current_score,
+                    true,
+                    scores[score_upto],
+                ));
+                score_upto += 1;
+            } else {
+                hits[hit_upto].set_score(self.combine_score(req, current_score, false, 0.0f32));
+            }
+
+            if score_field_index >= 0 {
+                match hits[hit_upto] {
+                    ScoreDocHit::Field(ref mut f) => {
+                        f.fields[score_field_index as usize] = VariantValue::from(f.score);
+                    }
+                    ScoreDocHit::Score(_) => {
+                        unreachable!();
+                    }
+                }
+            }
+
+            hit_upto += 1;
+        }
+        Ok(())
+    }
+
+    fn iterative_rescore(
+        &self,
+        readers: &[&LeafReader],
+        req: &RescoreRequest,
+        hits: &mut [ScoreDocHit],
+        weight: &Weight,
+        score_field_index: i32,
+    ) -> Result<()> {
+        let mut hit_upto = 0usize;
+        let mut end_doc = 0;
+        let mut doc_base = 0;
         let mut reader_idx: i32 = -1;
         let mut current_reader_idx = -1;
         let mut scorer = None;
 
-        let mut score_field_index = -1;
-        match *top_docs {
-            TopDocs::Field(ref f) => for (index, field) in f.fields.iter().enumerate() {
-                if *field.field_type() == SortFieldType::Score {
-                    score_field_index = index as i32;
-                }
-            },
-            TopDocs::Collapse(ref c) => for (index, field) in c.fields.iter().enumerate() {
-                if *field.field_type() == SortFieldType::Score {
-                    score_field_index = index as i32;
-                }
-            },
-            _ => {}
-        }
-
-        let weight = req.query.create_weight(searcher, true)?;
         while hit_upto < hits.len() {
             let doc_id = hits[hit_upto].doc_id();
             let current_score = hits[hit_upto].score();
@@ -103,6 +178,53 @@ impl QueryRescorer {
             }
 
             hit_upto += 1;
+        }
+        Ok(())
+    }
+
+    fn query_rescore(
+        &self,
+        searcher: &IndexSearcher,
+        req: &RescoreRequest,
+        top_docs: &TopDocs,
+    ) -> Result<Vec<ScoreDocHit>> {
+        let mut hits = top_docs.score_docs().clone();
+        if hits.len() > req.window_size {
+            hits.truncate(req.window_size);
+        }
+        hits.sort_by(ScoreDocHit::order_by_doc);
+
+        let readers = searcher.reader.leaves();
+        let mut score_field_index = -1;
+        match *top_docs {
+            TopDocs::Field(ref f) => for (index, field) in f.fields.iter().enumerate() {
+                if *field.field_type() == SortFieldType::Score {
+                    score_field_index = index as i32;
+                    break;
+                }
+            },
+            TopDocs::Collapse(ref c) => for (index, field) in c.fields.iter().enumerate() {
+                if *field.field_type() == SortFieldType::Score {
+                    score_field_index = index as i32;
+                    break;
+                }
+            },
+            _ => {}
+        }
+
+        let weight = req.query.create_weight(searcher, true)?;
+
+        if let Some(batch_scorer) = weight.create_batch_scorer() {
+            self.batch_rescore(
+                &readers,
+                req,
+                &mut hits,
+                weight.as_ref(),
+                score_field_index,
+                batch_scorer.as_ref(),
+            )?;
+        } else {
+            self.iterative_rescore(&readers, req, &mut hits, weight.as_ref(), score_field_index)?;
         }
 
         // TODO: we should do a partial sort (of only topN)
