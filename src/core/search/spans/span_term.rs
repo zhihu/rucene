@@ -6,7 +6,7 @@ use core::search::spans::span::{build_sim_weight, PostingsFlag, NO_MORE_POSITION
 use core::search::spans::span::{SpanCollector, SpanQuery, SpanWeight, Spans};
 use core::search::term_query::TermQuery;
 use core::search::{DocIterator, Query, Scorer, SimWeight, Weight, NO_MORE_DOCS};
-use core::util::DocId;
+use core::util::{DocId, KeyedContext};
 
 use error::{ErrorKind, Result};
 
@@ -20,11 +20,13 @@ const SPAN_TERM_QUERY: &str = "span_term";
 /// This should not be used for terms that are indexed at position Integer.MAX_VALUE.
 pub struct SpanTermQuery {
     pub term: Term,
+    pub ctx: Option<KeyedContext>,
 }
 
 impl SpanTermQuery {
-    pub fn new(term: Term) -> Self {
-        SpanTermQuery { term }
+    pub fn new<T: Into<Option<KeyedContext>>>(term: Term, ctx: T) -> Self {
+        let ctx = ctx.into();
+        SpanTermQuery { term, ctx }
     }
 }
 
@@ -41,7 +43,11 @@ impl Query for SpanTermQuery {
     }
 
     fn extract_terms(&self) -> Vec<TermQuery> {
-        vec![TermQuery::new(self.term.clone(), 1.0f32)]
+        vec![TermQuery::new(
+            self.term.clone(),
+            1.0f32,
+            Clone::clone(&self.ctx),
+        )]
     }
 
     fn query_type(&self) -> &'static str {

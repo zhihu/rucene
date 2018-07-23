@@ -159,7 +159,7 @@ impl QueryStringQueryBuilder {
     }
 
     fn term_query(&self, term: String, field: String, boost: f32) -> Box<Query> {
-        Box::new(TermQuery::new(Term::new(field, term.into()), boost))
+        Box::new(TermQuery::new(Term::new(field, term.into()), boost, None))
     }
 
     fn build_field_query(&self, term_boost: String) -> Result<Box<Query>> {
@@ -214,7 +214,7 @@ impl QueryStringQueryBuilder {
                     .map(|term| Term::new(fb.0.clone(), term.as_bytes().to_vec()))
                     .collect();
                 queries.push(BoostQuery::build(
-                    Box::new(PhraseQuery::build(terms, slop)?),
+                    Box::new(PhraseQuery::build(terms, slop, None)?),
                     fb.1,
                 ))
             }

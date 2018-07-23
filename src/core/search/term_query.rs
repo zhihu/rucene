@@ -12,7 +12,7 @@ use core::search::searcher::IndexSearcher;
 use core::search::statistics::*;
 use core::search::term_scorer::TermScorer;
 use core::search::{Query, Scorer, SimWeight, Similarity, Weight};
-use core::util::DocId;
+use core::util::{DocId, KeyedContext};
 
 pub const TERM: &str = "term";
 
@@ -20,11 +20,13 @@ pub const TERM: &str = "term";
 pub struct TermQuery {
     pub term: Term,
     pub boost: f32,
+    pub ctx: Option<KeyedContext>,
 }
 
 impl TermQuery {
-    pub fn new(term: Term, boost: f32) -> TermQuery {
-        TermQuery { term, boost }
+    pub fn new<T: Into<Option<KeyedContext>>>(term: Term, boost: f32, ctx: T) -> TermQuery {
+        let ctx = ctx.into();
+        TermQuery { term, boost, ctx }
     }
 }
 
@@ -46,7 +48,8 @@ impl Query for TermQuery {
             )
         };
         let similarity = searcher.similarity(&self.term.field, needs_scores);
-        let sim_weight = similarity.compute_weight(&collection_stats, &term_stats);
+        let sim_weight =
+            similarity.compute_weight(&collection_stats, &term_stats, self.ctx.as_ref());
         Ok(Box::new(TermWeight::new(
             self.term.clone(),
             term_context.states.into_iter().collect(),

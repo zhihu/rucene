@@ -17,6 +17,7 @@ use core::search::{Query, Scorer, Weight, NO_MORE_DOCS};
 use core::search::{SimScorer, SimWeight, Similarity, SimilarityProducer};
 use core::util::bits::BitsRef;
 use core::util::thread_pool::{DefaultContext, ThreadPool, ThreadPoolBuilder};
+use core::util::KeyedContext;
 use error::*;
 
 /// Implements search over a single IndexReader.
@@ -57,6 +58,7 @@ impl Similarity for NonScoringSimilarity {
         &self,
         _collection_stats: &CollectionStatistics,
         _term_stats: &[TermStatistics],
+        _context: Option<&KeyedContext>,
     ) -> Box<SimWeight> {
         Box::new(NonScoringSimWeight {})
     }
@@ -263,7 +265,7 @@ impl IndexSearcher {
     ) -> Result<Box<Weight>> {
         let mut weight = self.create_weight(query, needs_scores)?;
         let v = weight.value_for_normalization();
-        let mut norm: f32 = self.similarity("", needs_scores).query_norm(v);
+        let mut norm: f32 = self.similarity("", needs_scores).query_norm(v, None);
         if norm.is_finite() || norm.is_nan() {
             norm = 1.0f32;
         }

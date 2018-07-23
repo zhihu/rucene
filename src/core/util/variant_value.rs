@@ -15,6 +15,63 @@ pub enum VariantValue {
     Binary(Vec<u8>), // SHOULD BORROW ?
 }
 
+impl VariantValue {
+    pub fn get_bool(&self) -> Option<bool> {
+        match self {
+            VariantValue::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+    pub fn get_char(&self) -> Option<char> {
+        match self {
+            VariantValue::Char(c) => Some(*c),
+            _ => None,
+        }
+    }
+    pub fn get_short(&self) -> Option<i16> {
+        match self {
+            VariantValue::Short(s) => Some(*s),
+            _ => None,
+        }
+    }
+    pub fn get_int(&self) -> Option<i32> {
+        match self {
+            VariantValue::Int(i) => Some(*i),
+            _ => None,
+        }
+    }
+    pub fn get_long(&self) -> Option<i64> {
+        match self {
+            VariantValue::Long(l) => Some(*l),
+            _ => None,
+        }
+    }
+    pub fn get_float(&self) -> Option<f32> {
+        match self {
+            VariantValue::Float(f) => Some(*f),
+            _ => None,
+        }
+    }
+    pub fn get_double(&self) -> Option<f64> {
+        match self {
+            VariantValue::Double(d) => Some(*d),
+            _ => None,
+        }
+    }
+    pub fn get_string(&self) -> Option<&str> {
+        match self {
+            VariantValue::VString(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+    pub fn get_binary(&self) -> Option<&[u8]> {
+        match self {
+            VariantValue::Binary(b) => Some(b.as_slice()),
+            _ => None,
+        }
+    }
+}
+
 impl Eq for VariantValue {}
 
 impl fmt::Display for VariantValue {

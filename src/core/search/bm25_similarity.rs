@@ -11,7 +11,7 @@ use core::search::SimScorer;
 use core::search::SimWeight;
 use core::search::Similarity;
 use core::util::small_float::SmallFloat;
-use core::util::DocId;
+use core::util::{DocId, KeyedContext};
 
 /// BM25 Similarity. Introduced in Stephen E. Robertson, Steve Walker,
 /// Susan Jones, Micheline Hancock-Beaulieu, and Mike Gatford. Okapi at TREC-3.
@@ -106,6 +106,7 @@ impl Similarity for BM25Similarity {
         &self,
         collection_stats: &CollectionStatistics,
         term_stats: &[TermStatistics],
+        _context: Option<&KeyedContext>,
     ) -> Box<SimWeight> {
         let avgdl = BM25Similarity::avg_field_length(&collection_stats);
         let idf = BM25Similarity::idf(&term_stats, &collection_stats);
@@ -261,7 +262,7 @@ mod tests {
         let collection_stats = CollectionStatistics::new(String::from("world"), 32, 32, 120, -1);
         let term_stats = vec![TermStatistics::new(Vec::new(), 1, -1)];
         let bm25_sim = BM25Similarity::new(1.2, 0.75);
-        let sim_weight = bm25_sim.compute_weight(&collection_stats, &term_stats);
+        let sim_weight = bm25_sim.compute_weight(&collection_stats, &term_stats, None);
 
         assert!((sim_weight.get_value_for_normalization() - 9.554_543_5f32) < ::std::f32::EPSILON);
 
