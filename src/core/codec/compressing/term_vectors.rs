@@ -900,6 +900,7 @@ impl Fields for TVFields {
         for i in 0..self.field_num_offs.len() {
             if self.field_nums[self.field_num_offs[i] as usize] == field_info.number {
                 idx = i as i32;
+                break;
             }
         }
 
@@ -934,6 +935,34 @@ impl Fields for TVFields {
 
     fn size(&self) -> usize {
         self.field_num_offs.len()
+    }
+
+    fn terms_freq(&self, field: &str) -> usize {
+        let field_info = self.field_infos.by_name.get(field);
+        if field_info.is_none() {
+            return 0usize
+        }
+        let mut idx = -1;
+        let field_info = field_info.unwrap();
+        for i in 0..self.field_num_offs.len() {
+            if self.field_nums[self.field_num_offs[i] as usize] == field_info.number {
+                idx = i as i32;
+                break;
+            }
+        }
+
+        if idx == -1 || self.num_terms[idx as usize] == 0 {
+            // no term
+            return 0usize
+        }
+
+        let position_index = &self.fields_data.position_index[idx as usize];
+
+        if let Some(&total_freq) = position_index.last() {
+            total_freq as usize
+        } else {
+            0usize
+        }
     }
 }
 
