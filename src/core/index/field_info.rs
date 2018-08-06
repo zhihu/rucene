@@ -331,4 +331,7 @@ pub trait Fields: Send + Sync {
     fn fields(&self) -> Vec<String>;
     fn terms(&self, field: &str) -> Result<Option<TermsRef>>;
     fn size(&self) -> usize;
+    fn terms_freq(&self, _field: &str) -> usize {
+        unimplemented!()
+    }
 }
