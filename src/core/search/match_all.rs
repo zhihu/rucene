@@ -1,6 +1,8 @@
 use core::index::LeafReader;
+use core::search::explanation::Explanation;
 use core::search::searcher::IndexSearcher;
 use core::search::term_query::TermQuery;
+use core::search::two_phase_next;
 use core::search::{DocIterator, Query, Scorer, Weight, NO_MORE_DOCS};
 use core::util::DocId;
 use error::*;
@@ -68,6 +70,18 @@ impl Weight for MatchAllDocsWeight {
 
     fn needs_scores(&self) -> bool {
         false
+    }
+
+    fn explain(&self, reader: &LeafReader, doc: DocId) -> Result<Explanation> {
+        Ok(Explanation::new(
+            true,
+            self.weight,
+            format!("{}, product of:", self),
+            vec![
+                Explanation::new(true, self.weight, "boost".to_string(), vec![]),
+                Explanation::new(true, self.norm, "queryNorm".to_string(), vec![]),
+            ],
+        ))
     }
 }
 
@@ -205,7 +219,7 @@ impl Query for ConstantScoreQuery {
     }
 }
 
-struct ConstantScoreWeight {
+pub struct ConstantScoreWeight {
     sub_weight: Box<Weight>,
     query_norm: f32,
     query_weight: f32,
@@ -222,8 +236,8 @@ impl ConstantScoreWeight {
 }
 
 impl Weight for ConstantScoreWeight {
-    fn create_scorer(&self, leaf_reader: &LeafReader) -> Result<Box<Scorer>> {
-        let inner_scorer = self.sub_weight.create_scorer(leaf_reader)?;
+    fn create_scorer(&self, reader: &LeafReader) -> Result<Box<Scorer>> {
+        let inner_scorer = self.sub_weight.create_scorer(reader)?;
         let cost = inner_scorer.cost();
         Ok(Box::new(ConstantScoreScorer {
             score: self.query_weight,
@@ -247,6 +261,34 @@ impl Weight for ConstantScoreWeight {
 
     fn needs_scores(&self) -> bool {
         false
+    }
+
+    fn explain(&self, reader: &LeafReader, doc: DocId) -> Result<Explanation> {
+        let mut iterator = self.sub_weight.create_scorer(reader)?;
+        let exists = if iterator.support_two_phase() {
+            two_phase_next(iterator.as_mut())? == doc && iterator.matches()?
+        } else {
+            iterator.advance(doc)? == doc
+        };
+
+        if exists {
+            Ok(Explanation::new(
+                true,
+                self.query_weight,
+                format!("{}, product of:", self.sub_weight),
+                vec![
+                    Explanation::new(true, self.query_weight, "boost".to_string(), vec![]),
+                    Explanation::new(true, self.query_norm, "queryNorm".to_string(), vec![]),
+                ],
+            ))
+        } else {
+            Ok(Explanation::new(
+                false,
+                0.0f32,
+                format!("{} doesn't match id {}", self.sub_weight, doc),
+                vec![],
+            ))
+        }
     }
 }
 

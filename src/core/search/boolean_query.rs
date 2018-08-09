@@ -3,11 +3,13 @@ use std::fmt;
 use core::index::LeafReader;
 use core::search::conjunction::ConjunctionScorer;
 use core::search::disjunction::DisjunctionSumScorer;
+use core::search::explanation::Explanation;
 use core::search::match_all::ConstantScoreQuery;
 use core::search::req_opt::ReqOptScorer;
 use core::search::searcher::IndexSearcher;
 use core::search::term_query::TermQuery;
 use core::search::{Query, Scorer, Weight};
+use core::util::DocId;
 use error::*;
 
 pub struct BooleanQuery {
@@ -215,6 +217,98 @@ impl Weight for BooleanWeight {
 
     fn needs_scores(&self) -> bool {
         self.needs_scores
+    }
+
+    fn explain(&self, reader: &LeafReader, doc: DocId) -> Result<Explanation> {
+        let mut coord = 0;
+        let mut max_coord = 0;
+        let mut sum = 0.0f32;
+        let mut fail = false;
+        let mut match_count = 0;
+        let mut should_match_count = 0;
+
+        let mut subs: Vec<Explanation> = vec![];
+        for w in &self.must_weights {
+            let e = w.explain(reader, doc)?;
+            max_coord += 1;
+
+            if e.is_match() {
+                sum += e.value();
+                coord += 1;
+                match_count += 1;
+                subs.push(e);
+            } else {
+                fail = true;
+                subs.push(Explanation::new(
+                    false,
+                    0.0f32,
+                    format!("no match on required clause ({})", w),
+                    vec![e],
+                ));
+            }
+        }
+
+        for w in &self.should_weights {
+            let e = w.explain(reader, doc)?;
+            max_coord += 1;
+
+            if e.is_match() {
+                sum += e.value();
+                coord += 1;
+                match_count += 1;
+                should_match_count += 1;
+                subs.push(e);
+            }
+        }
+
+        if fail {
+            Ok(Explanation::new(
+                false,
+                0.0f32,
+                "Failure to meet condition(s) of required/prohibited clause(s)".to_string(),
+                subs,
+            ))
+        } else if match_count == 0 {
+            Ok(Explanation::new(
+                false,
+                0.0f32,
+                "No matching clauses".to_string(),
+                subs,
+            ))
+        } else if should_match_count < self.minimum_should_match {
+            Ok(Explanation::new(
+                false,
+                0.0f32,
+                format!(
+                    "Failure to match minimum number of optional clauses: {}<{}",
+                    should_match_count, self.minimum_should_match
+                ),
+                subs,
+            ))
+        } else {
+            // we have a match
+            let result = Explanation::new(true, sum, "sum of:".to_string(), subs);
+
+            let coord_factor = 1.0f32;
+            if coord_factor != 1.0f32 {
+                Ok(Explanation::new(
+                    true,
+                    sum * coord_factor,
+                    "product of:".to_string(),
+                    vec![
+                        result,
+                        Explanation::new(
+                            true,
+                            coord_factor,
+                            format!("coord({}/{})", coord, max_coord + 1),
+                            vec![],
+                        ),
+                    ],
+                ))
+            } else {
+                Ok(result)
+            }
+        }
     }
 }
 

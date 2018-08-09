@@ -1,6 +1,7 @@
 use core::index::LeafReader;
 use core::index::{Term, TermContext};
 use core::search::conjunction::ConjunctionScorer;
+use core::search::explanation::Explanation;
 use core::search::posting_iterator::{self, PostingIterator};
 use core::search::searcher::IndexSearcher;
 use core::search::{DocIterator, MatchNoDocScorer, Query, Scorer, SimScorer, SimWeight, Weight,
@@ -319,6 +320,40 @@ pub trait SpanWeight: Weight {
         };
         Ok(sim_scorer)
     }
+
+    fn explain_span(&self, reader: &LeafReader, doc: DocId) -> Result<Explanation> {
+        if let Some(spans) = self.get_spans(reader, &PostingsFlag::Positions)? {
+            let mut scorer = SpanScorer::new(spans, self.sim_scorer(reader)?);
+
+            if scorer.advance(doc)? == doc {
+                match self.sim_weight() {
+                    Some(ref w) => {
+                        scorer.ensure_freq()?;
+                        let freq = scorer.freq;
+                        let freq_expl =
+                            Explanation::new(true, freq, format!("phraseFreq={}", freq), vec![]);
+                        let score_expl = w.explain(reader, doc, freq_expl)?;
+                        let score_expl_value = score_expl.value();
+
+                        return Ok(Explanation::new(
+                            true,
+                            score_expl_value,
+                            format!("weight({} in {}), result of:", self, doc),
+                            vec![score_expl],
+                        ));
+                    }
+                    None => {}
+                };
+            }
+        }
+
+        Ok(Explanation::new(
+            false,
+            0.0f32,
+            "no matching term".to_string(),
+            vec![],
+        ))
+    }
 }
 
 /// a raw pointer to spans as scorer
@@ -328,6 +363,7 @@ struct SpansAsScorer {
 }
 
 unsafe impl Send for SpansAsScorer {}
+
 unsafe impl Sync for SpansAsScorer {}
 
 impl Scorer for SpansAsScorer {
@@ -379,10 +415,12 @@ impl DocIterator for SpansAsScorer {
 }
 
 pub struct ConjunctionSpanBase {
-    pub conjunction: ConjunctionScorer, // use to move to next doc with all clauses
+    pub conjunction: ConjunctionScorer,
+    // use to move to next doc with all clauses
     /// a first start position is available in current doc for next_start_position
     pub first_in_current_doc: bool,
-    pub one_exhausted_in_current_doc: bool, // one sub_spans exhausted in current doc
+    pub one_exhausted_in_current_doc: bool,
+    // one sub_spans exhausted in current doc
     pub two_phase_match_cost: f32,
 }
 
@@ -406,7 +444,8 @@ impl ConjunctionSpanBase {
         let two_phase_match_cost = Self::two_phase_match_cost(sub_spans);
         Ok(ConjunctionSpanBase {
             conjunction,
-            first_in_current_doc: true, // ensure for doc -1 that start/end positions are -1
+            first_in_current_doc: true,
+            // ensure for doc -1 that start/end positions are -1
             one_exhausted_in_current_doc: false,
             two_phase_match_cost,
         })

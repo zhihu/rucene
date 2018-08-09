@@ -1,5 +1,6 @@
 use core::index::LeafReader;
 use core::search::disi::*;
+use core::search::explanation::Explanation;
 use core::search::searcher::IndexSearcher;
 use core::search::term_query::TermQuery;
 use core::search::{two_phase_next, DocIterator, Query, Scorer, Weight};
@@ -313,6 +314,46 @@ impl Weight for DisjunctionMaxWeight {
 
     fn needs_scores(&self) -> bool {
         self.needs_scores
+    }
+
+    fn explain(&self, reader: &LeafReader, doc: DocId) -> Result<Explanation> {
+        let mut matched = false;
+        let mut max = f32::NEG_INFINITY;
+        let mut sum = 0.0f32;
+
+        let mut subs: Vec<Explanation> = vec![];
+        for w in &self.weights {
+            let e = w.explain(reader, doc)?;
+            if e.is_match() {
+                matched = true;
+                sum += e.value();
+                max = e.value().max(max);
+                subs.push(e);
+            }
+        }
+
+        if matched {
+            let score = max + (sum - max) * self.tie_breaker_multiplier;
+            let desc = if self.tie_breaker_multiplier == 0.0f32 {
+                "max of:"
+            } else {
+                "max plus "
+            };
+
+            Ok(Explanation::new(
+                true,
+                score,
+                format!("{} {} times others of:", desc, self.tie_breaker_multiplier),
+                subs,
+            ))
+        } else {
+            Ok(Explanation::new(
+                false,
+                0.0f32,
+                "No matching clause".to_string(),
+                vec![],
+            ))
+        }
     }
 }
 

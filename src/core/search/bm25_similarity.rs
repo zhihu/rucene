@@ -5,6 +5,7 @@ use std::sync::Arc;
 use core::index::field_info::FieldInvertState;
 use core::index::LeafReader;
 use core::index::NumericDocValues;
+use core::search::explanation::Explanation;
 use core::search::statistics::CollectionStatistics;
 use core::search::statistics::TermStatistics;
 use core::search::SimScorer;
@@ -99,6 +100,39 @@ impl BM25Similarity {
 
         idf
     }
+
+    fn idf_explain(
+        &self,
+        collection_stats: &CollectionStatistics,
+        term_stats: &[TermStatistics],
+    ) -> Explanation {
+        let mut idf_total = 0f32;
+        let mut details: Vec<Explanation> = vec![];
+        for stat in term_stats {
+            let doc_freq = stat.doc_freq;
+            let doc_count = if collection_stats.doc_count == -1 {
+                collection_stats.max_doc
+            } else {
+                collection_stats.doc_count
+            };
+
+            let idf = (1.0 + (doc_count as f64 - doc_freq as f64 + 0.5) / (doc_freq as f64 + 0.5))
+                .ln() as f32;
+            idf_total += idf;
+            details.push(Explanation::new(
+                true,
+                idf,
+                "idf, computed as log(1 + (docCount - docFreq + 0.5) / (docFreq + 0.5)) from:"
+                    .to_string(),
+                vec![
+                    Explanation::new(true, doc_freq as f32, "docFreq".to_string(), vec![]),
+                    Explanation::new(true, doc_count as f32, "docCount".to_string(), vec![]),
+                ],
+            ))
+        }
+
+        Explanation::new(true, idf_total, "idf() sum of:".to_string(), details)
+    }
 }
 
 impl Similarity for BM25Similarity {
@@ -117,7 +151,15 @@ impl Similarity for BM25Similarity {
                 * ((1.0 - self.b) + self.b * (BM25Similarity::decode_norm_value(i) / avgdl));
         }
 
-        Box::new(BM25SimWeight::new(self.k1, self.b, idf, field, cache))
+        Box::new(BM25SimWeight::new(
+            self.k1,
+            self.b,
+            idf,
+            field,
+            cache,
+            self.idf_explain(collection_stats, term_stats),
+            BM25Similarity::avg_field_length(collection_stats),
+        ))
     }
 }
 
@@ -175,10 +217,20 @@ pub struct BM25SimWeight {
     cache: Arc<[f32; 256]>,
     boost: f32,
     weight: f32,
+    idf_explanation: Explanation,
+    avg_dl: f32,
 }
 
 impl BM25SimWeight {
-    fn new(k1: f32, b: f32, idf: f32, field: String, cache: [f32; 256]) -> BM25SimWeight {
+    fn new(
+        k1: f32,
+        b: f32,
+        idf: f32,
+        field: String,
+        cache: [f32; 256],
+        idf_explanation: Explanation,
+        avg_dl: f32,
+    ) -> BM25SimWeight {
         let mut weight = BM25SimWeight {
             k1,
             b,
@@ -187,9 +239,109 @@ impl BM25SimWeight {
             cache: Arc::new(cache),
             boost: 1.0,
             weight: 0.0,
+            idf_explanation,
+            avg_dl,
         };
         weight.normalize(1.0, 1.0);
         weight
+    }
+
+    fn explain_tf_norm(
+        &self,
+        doc: DocId,
+        freq: Explanation,
+        norms: Option<Box<NumericDocValues>>,
+    ) -> Result<Explanation> {
+        let mut subs: Vec<Explanation> = vec![];
+
+        let freq_value = freq.value();
+        subs.push(freq);
+        subs.push(Explanation::new(
+            true,
+            self.k1,
+            "parameter k1".to_string(),
+            vec![],
+        ));
+
+        match norms {
+            Some(n) => {
+                let doc_len = NORM_TABLE[n.get(doc)? as usize];
+                subs.push(Explanation::new(
+                    true,
+                    self.b,
+                    "parameter b".to_string(),
+                    vec![],
+                ));
+                subs.push(Explanation::new(
+                    true,
+                    self.avg_dl,
+                    "avgFieldLength".to_string(),
+                    vec![],
+                ));
+                subs.push(Explanation::new(
+                    true,
+                    doc_len,
+                    "fieldLength".to_string(),
+                    vec![],
+                ));
+
+                Ok(Explanation::new(
+                    true,
+                    (freq_value * (self.k1 + 1.0f32))
+                        / (freq_value
+                            + self.k1 * (1.0f32 - self.b + self.b * doc_len / self.avg_dl)),
+                    "tfNorm, computed as (freq * (k1 + 1)) / (freq + k1 * (1 - b + b * \
+                     fieldLength / avgFieldLength)) from:"
+                        .to_string(),
+                    subs,
+                ))
+            }
+            _ => {
+                subs.push(Explanation::new(
+                    true,
+                    0.0f32,
+                    "parameter b (norms omitted for field)".to_string(),
+                    vec![],
+                ));
+
+                Ok(Explanation::new(
+                    true,
+                    (freq_value * (self.k1 + 1.0f32)) / (freq_value + self.k1),
+                    "tfNorm, computed as (freq * (k1 + 1)) / (freq + k1) from:".to_string(),
+                    subs,
+                ))
+            }
+        }
+    }
+
+    fn explain_score(
+        &self,
+        doc: DocId,
+        freq: Explanation,
+        norms: Option<Box<NumericDocValues>>,
+    ) -> Result<Explanation> {
+        let mut subs: Vec<Explanation> = vec![];
+
+        let boost_explanation = Explanation::new(true, self.boost, "boost".to_string(), vec![]);
+        let boost_value = boost_explanation.value();
+        if boost_value != 1.0f32 {
+            subs.push(boost_explanation);
+        }
+
+        let idf_value = self.idf_explanation.value();
+        subs.push(self.idf_explanation.clone());
+
+        let freq_string = freq.to_string(0);
+        let tf_explanation = self.explain_tf_norm(doc, freq, norms)?;
+        let tf_value = tf_explanation.value();
+        subs.push(tf_explanation);
+
+        Ok(Explanation::new(
+            true,
+            boost_value * idf_value * tf_value,
+            format!("score(doc={},freq={}), product of:", doc, freq_string),
+            subs,
+        ))
     }
 }
 
@@ -206,6 +358,11 @@ impl SimWeight for BM25SimWeight {
     fn sim_scorer(&self, reader: &LeafReader) -> Result<Box<SimScorer>> {
         let norm = reader.norm_values(&self.field)?;
         Ok(Box::new(BM25SimScorer::new(self, norm)))
+    }
+
+    fn explain(&self, reader: &LeafReader, doc: DocId, freq: Explanation) -> Result<Explanation> {
+        let norms = reader.norm_values(&self.field)?;
+        self.explain_score(doc, freq, norms)
     }
 }
 
