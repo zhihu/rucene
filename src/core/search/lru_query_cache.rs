@@ -12,7 +12,9 @@ use core::index::LeafReader;
 use core::search::bulk_scorer::BulkScorer;
 use core::search::cache_policy::QueryCachingPolicy;
 use core::search::collector::{Collector, LeafCollector, SearchCollector};
+use core::search::explanation::Explanation;
 use core::search::match_all::ConstantScoreScorer;
+use core::search::two_phase_next;
 use core::search::Weight;
 use core::search::{DocIdSet, DocIterator, EmptyDocIterator};
 use core::search::{MatchNoDocScorer, Scorer, NO_MORE_DOCS};
@@ -410,6 +412,34 @@ impl Weight for CachingWrapperWeight {
 
     fn needs_scores(&self) -> bool {
         self.weight.needs_scores()
+    }
+
+    fn explain(&self, reader: &LeafReader, doc: DocId) -> Result<Explanation> {
+        let mut iterator = self.weight.create_scorer(reader)?;
+        let exists = if iterator.support_two_phase() {
+            two_phase_next(iterator.as_mut())? == doc && iterator.matches()?
+        } else {
+            iterator.advance(doc)? == doc
+        };
+
+        if exists {
+            Ok(Explanation::new(
+                true,
+                1.0f32,
+                format!("{}, product of:", self.weight),
+                vec![
+                    Explanation::new(true, 1.0f32, "boost".to_string(), vec![]),
+                    Explanation::new(true, 1.0f32, "queryNorm".to_string(), vec![]),
+                ],
+            ))
+        } else {
+            Ok(Explanation::new(
+                false,
+                0.0f32,
+                format!("{} doesn't match id {}", self.weight, doc),
+                vec![],
+            ))
+        }
     }
 }
 

@@ -1,9 +1,11 @@
 use core::index::{LeafReader, Term, TermContext};
+use core::search::explanation::Explanation;
 use core::search::searcher::IndexSearcher;
 use core::search::spans::span::{build_sim_weight, PostingsFlag};
 use core::search::spans::span::{SpanQuery, SpanWeight, Spans};
 use core::search::term_query::TermQuery;
 use core::search::{Query, Scorer, SimWeight, Weight};
+use core::util::DocId;
 
 use error::Result;
 
@@ -148,6 +150,10 @@ impl Weight for SpanBoostWeight {
 
     fn needs_scores(&self) -> bool {
         true
+    }
+
+    fn explain(&self, reader: &LeafReader, doc: DocId) -> Result<Explanation> {
+        self.weight.explain_span(reader, doc)
     }
 }
 

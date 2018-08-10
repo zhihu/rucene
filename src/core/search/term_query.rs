@@ -7,6 +7,7 @@ use core::index::term::TermState;
 use core::index::LeafReader;
 use core::index::{Term, TermContext};
 use core::index::{POSTINGS_FREQS, POSTINGS_NONE};
+use core::search::explanation::Explanation;
 use core::search::posting_iterator::{EmptyPostingIterator, PostingIterator};
 use core::search::searcher::IndexSearcher;
 use core::search::statistics::*;
@@ -154,6 +155,40 @@ impl Weight for TermWeight {
 
     fn needs_scores(&self) -> bool {
         self.needs_scores
+    }
+
+    fn explain(&self, reader: &LeafReader, doc: DocId) -> Result<Explanation> {
+        let flags = if self.needs_scores {
+            POSTINGS_FREQS
+        } else {
+            POSTINGS_NONE
+        };
+
+        let mut postings_iterator = self.create_postings_iterator(reader, i32::from(flags))?;
+        let new_doc = postings_iterator.advance(doc)?;
+        if new_doc == doc {
+            let freq = postings_iterator.freq()? as f32;
+
+            let freq_expl = Explanation::new(true, freq, format!("termFreq={}", freq), vec![]);
+            let score_expl = self.sim_weight.explain(reader, doc, freq_expl)?;
+
+            Ok(Explanation::new(
+                true,
+                score_expl.value(),
+                format!(
+                    "weight({} in {}) [{}], result of:",
+                    self, doc, self.similarity
+                ),
+                vec![score_expl],
+            ))
+        } else {
+            Ok(Explanation::new(
+                false,
+                0f32,
+                "no matching term".to_string(),
+                vec![],
+            ))
+        }
     }
 }
 

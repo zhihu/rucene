@@ -940,7 +940,7 @@ impl Fields for TVFields {
     fn terms_freq(&self, field: &str) -> usize {
         let field_info = self.field_infos.by_name.get(field);
         if field_info.is_none() {
-            return 0usize
+            return 0usize;
         }
         let mut idx = -1;
         let field_info = field_info.unwrap();
@@ -953,7 +953,7 @@ impl Fields for TVFields {
 
         if idx == -1 || self.num_terms[idx as usize] == 0 {
             // no term
-            return 0usize
+            return 0usize;
         }
 
         let position_index = &self.fields_data.position_index[idx as usize];

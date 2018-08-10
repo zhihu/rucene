@@ -11,12 +11,14 @@ use core::search::bulk_scorer::BulkScorer;
 use core::search::cache_policy::{QueryCachingPolicy, UsageTrackingQueryCachingPolicy};
 use core::search::collector;
 use core::search::collector::{Collector, SearchCollector};
+use core::search::explanation::Explanation;
 use core::search::lru_query_cache::{LRUQueryCache, QueryCache};
 use core::search::statistics::{CollectionStatistics, TermStatistics};
 use core::search::{Query, Scorer, Weight, NO_MORE_DOCS};
 use core::search::{SimScorer, SimWeight, Similarity, SimilarityProducer};
 use core::util::bits::BitsRef;
 use core::util::thread_pool::{DefaultContext, ThreadPool, ThreadPoolBuilder};
+use core::util::DocId;
 use core::util::KeyedContext;
 use error::*;
 
@@ -318,6 +320,22 @@ impl IndexSearcher {
         let mut statistics = self.collection_statistics.write().unwrap();
         statistics.insert(field.into(), stat);
         Ok(statistics[field].clone())
+    }
+
+    pub fn explain(&self, query: &Query, doc: DocId) -> Result<Explanation> {
+        let reader = self.reader.leaf_reader_for_doc(doc);
+        let live_docs = reader.live_docs();
+        if !live_docs.get((doc - reader.doc_base()) as usize)? {
+            Ok(Explanation::new(
+                false,
+                0.0f32,
+                format!("Document {} if deleted", doc),
+                vec![],
+            ))
+        } else {
+            self.create_normalized_weight(query, true)?
+                .explain(reader, doc - reader.doc_base())
+        }
     }
 }
 

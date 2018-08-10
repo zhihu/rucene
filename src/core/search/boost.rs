@@ -3,9 +3,11 @@ use std::f32;
 use std::fmt;
 
 use core::index::LeafReader;
+use core::search::explanation::Explanation;
 use core::search::searcher::IndexSearcher;
 use core::search::term_query::TermQuery;
 use core::search::{Query, Scorer, Weight};
+use core::util::DocId;
 
 const BOOST_QUERY: &str = "boost";
 
@@ -86,6 +88,10 @@ impl Weight for BoostWeight {
 
     fn needs_scores(&self) -> bool {
         self.weight.needs_scores()
+    }
+
+    fn explain(&self, reader: &LeafReader, doc: DocId) -> Result<Explanation> {
+        self.weight.explain(reader, doc)
     }
 }
 

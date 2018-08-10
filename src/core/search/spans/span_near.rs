@@ -1,4 +1,5 @@
 use core::index::{LeafReader, Term, TermContext};
+use core::search::explanation::Explanation;
 use core::search::searcher::IndexSearcher;
 use core::search::spans::span::{build_sim_weight, PostingsFlag, NO_MORE_POSITIONS};
 use core::search::spans::span::{term_contexts, ConjunctionSpanBase, ConjunctionSpans};
@@ -250,6 +251,10 @@ impl Weight for SpanNearWeight {
     fn needs_scores(&self) -> bool {
         true
     }
+
+    fn explain(&self, reader: &LeafReader, doc: DocId) -> Result<Explanation> {
+        self.explain_span(reader, doc)
+    }
 }
 
 impl fmt::Display for SpanNearWeight {
@@ -441,11 +446,13 @@ conjunction_span_doc_iter!(NearSpansUnordered);
 struct SpansCell {
     parent: *mut NearSpansUnordered,
     spans: Box<Spans>,
-    index: usize, // index of this span in parent's `sub_span_cells` vec
+    index: usize,
+    // index of this span in parent's `sub_span_cells` vec
     span_length: i32,
 }
 
 unsafe impl Send for SpansCell {}
+
 unsafe impl Sync for SpansCell {}
 
 impl SpansCell {
@@ -546,6 +553,7 @@ struct SpansCellElement {
 }
 
 unsafe impl Send for SpansCellElement {}
+
 unsafe impl Sync for SpansCellElement {}
 
 impl SpansCellElement {
@@ -867,6 +875,10 @@ impl Weight for SpanGapWeight {
 
     fn needs_scores(&self) -> bool {
         false
+    }
+
+    fn explain(&self, reader: &LeafReader, doc: DocId) -> Result<Explanation> {
+        self.explain_span(reader, doc)
     }
 }
 

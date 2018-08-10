@@ -13,6 +13,7 @@ use core::index::Term;
 use core::index::TermContext;
 use core::index::POSTINGS_POSITIONS;
 use core::search::conjunction::ConjunctionScorer;
+use core::search::explanation::Explanation;
 use core::search::posting_iterator::{EmptyPostingIterator, PostingIterator};
 use core::search::searcher::IndexSearcher;
 use core::search::statistics::{CollectionStatistics, TermStatistics};
@@ -243,28 +244,28 @@ impl PhraseWeight {
 }
 
 impl Weight for PhraseWeight {
-    fn create_scorer(&self, leaf_reader: &LeafReader) -> Result<Box<Scorer>> {
+    fn create_scorer(&self, reader: &LeafReader) -> Result<Box<Scorer>> {
         debug_assert!(!self.terms.len() >= 2);
 
         let mut postings_freqs: Vec<PostingsAndFreq> = Vec::with_capacity(self.terms.len());
-        let mut term_iter: Box<TermIterator> =
-            if let Some(field_terms) = leaf_reader.terms(&self.field)? {
-                debug_assert!(
-                    field_terms.has_positions()?,
-                    format!(
-                        "field {} was indexed without position data; cannot run PhraseQuery \
-                         (phrase={:?})",
-                        self.field, self.terms
-                    )
-                );
-                field_terms.iterator()?
-            } else {
-                Box::new(EmptyTermIterator::default())
-            };
+        let mut term_iter: Box<TermIterator> = if let Some(field_terms) = reader.terms(&self.field)?
+        {
+            debug_assert!(
+                field_terms.has_positions()?,
+                format!(
+                    "field {} was indexed without position data; cannot run PhraseQuery \
+                     (phrase={:?})",
+                    self.field, self.terms
+                )
+            );
+            field_terms.iterator()?
+        } else {
+            Box::new(EmptyTermIterator::default())
+        };
 
         let mut total_match_cost = 0f32;
         for i in 0..self.terms.len() {
-            let postings = if let Some(state) = self.term_states[i].get(&leaf_reader.doc_base()) {
+            let postings = if let Some(state) = self.term_states[i].get(&reader.doc_base()) {
                 term_iter.seek_exact_state(self.terms[i].bytes.as_ref(), state.as_ref())?;
                 total_match_cost += self.term_positions_cost(term_iter.as_mut())?;
 
@@ -280,7 +281,7 @@ impl Weight for PhraseWeight {
             ));
         }
 
-        let sim_scorer = self.sim_weight.sim_scorer(leaf_reader)?;
+        let sim_scorer = self.sim_weight.sim_scorer(reader)?;
         let scorer: Box<Scorer> = if self.slop == 0 {
             // sort by increasing docFreq order
             // optimize exact case
@@ -318,6 +319,103 @@ impl Weight for PhraseWeight {
 
     fn needs_scores(&self) -> bool {
         self.needs_scores
+    }
+
+    fn explain(&self, reader: &LeafReader, doc: DocId) -> Result<Explanation> {
+        debug_assert!(!self.terms.len() >= 2);
+
+        let mut matched = true;
+        let mut postings_freqs: Vec<PostingsAndFreq> = Vec::with_capacity(self.terms.len());
+        let mut term_iter: Box<TermIterator> = if let Some(field_terms) = reader.terms(&self.field)?
+        {
+            debug_assert!(
+                field_terms.has_positions()?,
+                format!(
+                    "field {} was indexed without position data; cannot run PhraseQuery \
+                     (phrase={:?})",
+                    self.field, self.terms
+                )
+            );
+            field_terms.iterator()?
+        } else {
+            matched = false;
+            Box::new(EmptyTermIterator::default())
+        };
+
+        let mut total_match_cost = 0f32;
+        for i in 0..self.terms.len() {
+            let postings = if let Some(state) = self.term_states[i].get(&reader.doc_base()) {
+                term_iter.seek_exact_state(self.terms[i].bytes.as_ref(), state.as_ref())?;
+                total_match_cost += self.term_positions_cost(term_iter.as_mut())?;
+
+                term_iter.postings_with_flags(POSTINGS_POSITIONS)?
+            } else {
+                matched = false;
+                Box::new(EmptyPostingIterator::default())
+            };
+
+            postings_freqs.push(PostingsAndFreq::new(
+                postings,
+                self.positions[i],
+                &self.terms[i],
+            ));
+        }
+
+        if matched {
+            let sim_scorer = self.sim_weight.sim_scorer(reader)?;
+            if self.slop == 0 {
+                postings_freqs.sort();
+                let mut scorer = ExactPhraseScorer::new(
+                    postings_freqs,
+                    sim_scorer,
+                    self.needs_scores,
+                    total_match_cost,
+                );
+
+                if scorer.advance(doc)? == doc {
+                    let freq = scorer.freq as f32;
+                    let freq_expl =
+                        Explanation::new(true, freq, format!("phraseFreq={}", freq), vec![]);
+                    let score_expl = self.sim_weight.explain(reader, doc, freq_expl)?;
+
+                    return Ok(Explanation::new(
+                        true,
+                        score_expl.value(),
+                        format!("weight({} in {}), result of:", self, doc),
+                        vec![score_expl],
+                    ));
+                }
+            } else {
+                let mut scorer = SloppyPhraseScorer::new(
+                    postings_freqs,
+                    self.slop,
+                    sim_scorer,
+                    self.needs_scores,
+                    total_match_cost,
+                );
+
+                if scorer.advance(doc)? == doc {
+                    let freq = scorer.sloppy_freq;
+                    let freq_expl =
+                        Explanation::new(true, freq, format!("phraseFreq={}", freq), vec![]);
+                    let score_expl = self.sim_weight.explain(reader, doc, freq_expl)?;
+
+                    return Ok(Explanation::new(
+                        true,
+                        score_expl.value(),
+                        format!("weight({} in {}), result of:", self, doc),
+                        vec![score_expl],
+                    ));
+                }
+            }
+        }
+
+        Ok(Explanation::new(
+            false,
+            0.0f32,
+            "no matching term".to_string(),
+            vec![],
+        ))
     }
 }
 
@@ -403,6 +501,7 @@ pub struct PostingsAndPosition {
 }
 
 unsafe impl Send for PostingsAndPosition {}
+
 unsafe impl Sync for PostingsAndPosition {}
 
 impl PostingsAndPosition {
@@ -580,18 +679,28 @@ impl DocIterator for ExactPhraseScorer {
 
 /// Position of a term in a document that takes into account the term offset within the phrase.
 struct PhrasePositions {
-    pub position: i32,                  // position in doc
-    pub count: i32,                     // remaining pos in this doc
-    pub offset: i32,                    // position in phrase
-    pub ord: i32,                       // unique across all PhrasePositions instances
-    pub postings: *mut PostingIterator, // stream of docs & positions
-    pub next_pp_idx: i32,               // used to make list
-    pub rpt_group: i32,                 // >=0 indicates that this is a repeating PP
-    pub rpt_ind: i32,                   // index in the rptGroup
-    pub terms: Vec<Term>,               // for repetitions initialization
+    pub position: i32,
+    // position in doc
+    pub count: i32,
+    // remaining pos in this doc
+    pub offset: i32,
+    // position in phrase
+    pub ord: i32,
+    // unique across all PhrasePositions instances
+    pub postings: *mut PostingIterator,
+    // stream of docs & positions
+    pub next_pp_idx: i32,
+    // used to make list
+    pub rpt_group: i32,
+    // >=0 indicates that this is a repeating PP
+    pub rpt_ind: i32,
+    // index in the rptGroup
+    pub terms: Vec<Term>,
+    // for repetitions initialization
 }
 
 unsafe impl Send for PhrasePositions {}
+
 unsafe impl Sync for PhrasePositions {}
 
 impl PhrasePositions {
@@ -652,11 +761,14 @@ impl fmt::Debug for PhrasePositions {
 
 /// PhrasePositions element in priority queue
 struct PPElement {
-    pub index: usize,               // index in SloppyPhraseScorer.phrasePositions
-    pub pp: *const PhrasePositions, // pointer to target
+    pub index: usize,
+    // index in SloppyPhraseScorer.phrasePositions
+    pub pp: *const PhrasePositions,
+    // pointer to target
 }
 
 unsafe impl Send for PPElement {}
+
 unsafe impl Sync for PPElement {}
 
 impl fmt::Debug for PPElement {
@@ -728,22 +840,29 @@ impl DocIterator for PostingsIterAsScorer {
 }
 
 pub struct SloppyPhraseScorer {
-    conjunction: ConjunctionScorer, // a conjunction doc id set iterator
+    conjunction: ConjunctionScorer,
+    // a conjunction doc id set iterator
     phrase_positions: Vec<PhrasePositions>,
-    sloppy_freq: f32, // phrase frequency in current doc as computed by phraseFreq().
+    sloppy_freq: f32,
+    // phrase frequency in current doc as computed by phraseFreq().
     doc_scorer: Box<SimScorer>,
     slop: i32,
     num_postings: usize,
-    pq: BinaryHeap<PPElement>, // for advancing min position
-    end: i32,                  // current largest phrase position
-    has_rpts: bool,            /* flag indicating that there are repetitions (as checked in
-                                * first candidate doc) */
-    checked_rpts: bool, // flag to only check for repetitions in first candidate doc
+    pq: BinaryHeap<PPElement>,
+    // for advancing min position
+    end: i32,
+    // current largest phrase position
+    has_rpts: bool,
+    // flag indicating that there are repetitions (as checked in
+    // first candidate doc)
+    checked_rpts: bool,
+    // flag to only check for repetitions in first candidate doc
     has_multi_term_rpts: bool,
     // in each group are PPs that repeats each other (i.e. same term), sorted by (query) offset
     // value are index of related pp in self.phrase_positions
     rpt_group: Vec<Vec<usize>>,
-    rpt_stack: Vec<usize>, // temporary stack for switching colliding repeating pps
+    rpt_stack: Vec<usize>,
+    // temporary stack for switching colliding repeating pps
     num_matches: i32,
     needs_scores: bool,
     match_cost: f32,

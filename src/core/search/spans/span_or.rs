@@ -1,5 +1,6 @@
 use core::index::{LeafReader, Term, TermContext};
 use core::search::disi::DisiPriorityQueue;
+use core::search::explanation::Explanation;
 use core::search::searcher::IndexSearcher;
 use core::search::spans::span::{build_sim_weight, term_contexts, PostingsFlag, NO_MORE_POSITIONS};
 use core::search::spans::span::{SpanCollector, SpanQuery, SpanWeight, Spans};
@@ -180,6 +181,10 @@ impl Weight for SpanOrWeight {
     fn needs_scores(&self) -> bool {
         true
     }
+
+    fn explain(&self, reader: &LeafReader, doc: DocId) -> Result<Explanation> {
+        self.explain_span(reader, doc)
+    }
 }
 
 impl fmt::Display for SpanOrWeight {
@@ -205,6 +210,7 @@ struct SpanOrSpans {
 }
 
 unsafe impl Send for SpanOrSpans {}
+
 unsafe impl Sync for SpanOrSpans {}
 
 impl SpanOrSpans {

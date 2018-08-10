@@ -1,11 +1,13 @@
 use error::*;
 
 use core::index::LeafReader;
+use core::search::explanation::Explanation;
 use core::search::searcher::IndexSearcher;
 use core::search::sort_field::SortFieldType;
 use core::search::top_docs::ScoreDocHit;
 use core::search::top_docs::TopDocs;
 use core::search::{BatchScorer, RescoreRequest, Rescorer, Weight};
+use core::util::DocId;
 use core::util::{IndexedContext, VariantValue};
 use std::collections::HashMap;
 
@@ -291,6 +293,108 @@ impl QueryRescorer {
             c.collapse_values = collapse_value;
         }
     }
+
+    fn explain_lucene(
+        &self,
+        searcher: &IndexSearcher,
+        req: &RescoreRequest,
+        first: Explanation,
+        doc: DocId,
+    ) -> Result<Explanation> {
+        let second = searcher.explain(req.query.as_ref(), doc)?;
+        let second_value = second.value();
+        let first_value = first.value();
+
+        let score;
+        let second_expl = if second.is_match() {
+            score = self.combine_score(req, first_value, true, second_value);
+            Explanation::new(
+                true,
+                second_value,
+                "second pass score".to_string(),
+                vec![second],
+            )
+        } else {
+            score = self.combine_score(req, first_value, false, 0.0f32);
+            Explanation::new(false, 0.0f32, "no second pass score".to_string(), vec![])
+        };
+
+        let first_expl = Explanation::new(
+            true,
+            first_value,
+            "first pass score".to_string(),
+            vec![first],
+        );
+
+        Ok(Explanation::new(
+            true,
+            score,
+            "combined first and second pass score using Rescorer".to_string(),
+            vec![first_expl, second_expl],
+        ))
+    }
+
+    fn explain_es(
+        &self,
+        searcher: &IndexSearcher,
+        req: &RescoreRequest,
+        first: Explanation,
+        doc: DocId,
+    ) -> Result<Explanation> {
+        let rescore = searcher.explain(req.query.as_ref(), doc)?;
+        let rescore_value = rescore.value();
+        let first_value = first.value();
+        let primary_weight = 1.0f32;
+
+        let prim = if first.is_match() {
+            Explanation::new(
+                true,
+                first_value * primary_weight,
+                "product of:".to_string(),
+                vec![
+                    first,
+                    Explanation::new(true, primary_weight, "primaryWeight".to_string(), vec![]),
+                ],
+            )
+        } else {
+            Explanation::new(
+                false,
+                0.0f32,
+                "First pass did not match".to_string(),
+                vec![first],
+            )
+        };
+
+        // NOTE: we don't use Lucene's Rescorer.explain because we want to insert our own
+        // description with which ScoreMode was used.  Maybe we should add
+        // QueryRescorer.explainCombine to Lucene?
+        if rescore.is_match() {
+            let secondary_weight = 1.0f32;
+            let sec = Explanation::new(
+                true,
+                rescore_value * secondary_weight,
+                "product of:".to_string(),
+                vec![
+                    rescore,
+                    Explanation::new(
+                        true,
+                        secondary_weight,
+                        "secondaryWeight".to_string(),
+                        vec![],
+                    ),
+                ],
+            );
+
+            Ok(Explanation::new(
+                true,
+                self.combine_score(req, prim.value(), true, sec.value()),
+                "sum of:".to_string(),
+                vec![prim, sec],
+            ))
+        } else {
+            Ok(prim)
+        }
+    }
 }
 
 impl Rescorer for QueryRescorer {
@@ -309,5 +413,15 @@ impl Rescorer for QueryRescorer {
         self.combine_docs(top_docs, rescore_hits, rescore_req);
 
         Ok(())
+    }
+
+    fn explain(
+        &self,
+        searcher: &IndexSearcher,
+        req: &RescoreRequest,
+        first: Explanation,
+        doc: DocId,
+    ) -> Result<Explanation> {
+        self.explain_es(searcher, req, first, doc)
     }
 }

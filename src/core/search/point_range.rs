@@ -4,6 +4,7 @@ use std::fmt;
 use core::doc::{DoublePoint, FloatPoint, IntPoint, LongPoint};
 use core::index::point_values::{IntersectVisitor, PointValues, Relation};
 use core::index::LeafReader;
+use core::search::explanation::Explanation;
 use core::search::match_all::{AllDocsIterator, ConstantScoreScorer};
 use core::search::searcher::IndexSearcher;
 use core::search::term_query::TermQuery;
@@ -269,6 +270,10 @@ impl Weight for PointRangeWeight {
 
     fn needs_scores(&self) -> bool {
         false
+    }
+
+    fn explain(&self, reader: &LeafReader, doc: DocId) -> Result<Explanation> {
+        unimplemented!()
     }
 }
 

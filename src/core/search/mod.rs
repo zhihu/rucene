@@ -5,6 +5,7 @@ use std::hash::{Hash, Hasher};
 use std::i32;
 
 use core::index::LeafReader;
+use core::search::explanation::Explanation;
 use core::search::searcher::IndexSearcher;
 use core::search::statistics::CollectionStatistics;
 use core::search::statistics::TermStatistics;
@@ -52,6 +53,7 @@ pub mod searcher;
 
 // Statistics
 pub mod cache_policy;
+pub mod explanation;
 pub mod lru_cache;
 pub mod lru_query_cache;
 pub mod statistics;
@@ -300,7 +302,7 @@ pub trait Query: Display {
 }
 
 pub trait Weight: Display {
-    fn create_scorer(&self, leaf_reader: &LeafReader) -> Result<Box<Scorer>>;
+    fn create_scorer(&self, reader: &LeafReader) -> Result<Box<Scorer>>;
 
     fn hash_code(&self) -> u32 {
         let key = format!("{}", self);
@@ -328,6 +330,9 @@ pub trait Weight: Display {
     fn create_batch_scorer(&self) -> Option<Box<BatchScorer>> {
         None
     }
+
+    /// An explanation of the score computation for the named document.
+    fn explain(&self, reader: &LeafReader, doc: DocId) -> Result<Explanation>;
 }
 
 pub trait BatchScorer: Send + Sync {
@@ -455,6 +460,16 @@ pub trait SimWeight {
     fn normalize(&mut self, query_norm: f32, boost: f32);
 
     fn sim_scorer(&self, reader: &LeafReader) -> Result<Box<SimScorer>>;
+
+    /// Explain the score for a single document
+    fn explain(&self, reader: &LeafReader, doc: DocId, freq: Explanation) -> Result<Explanation> {
+        Ok(Explanation::new(
+            true,
+            self.sim_scorer(reader)?.score(doc, freq.value())?,
+            format!("score(doc={},freq={}), with freq of:", doc, freq.value()),
+            vec![freq],
+        ))
+    }
 }
 
 pub trait SimilarityProducer: Send + Sync {
@@ -474,6 +489,15 @@ pub trait Rescorer {
         rescore_ctx: &RescoreRequest,
         top_docs: &mut TopDocs,
     ) -> Result<()>;
+
+    /// Explains how the score for the specified document was computed.
+    fn explain(
+        &self,
+        searcher: &IndexSearcher,
+        req: &RescoreRequest,
+        first: Explanation,
+        doc: DocId,
+    ) -> Result<Explanation>;
 }
 
 pub struct RescoreRequest {

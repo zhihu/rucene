@@ -1,5 +1,6 @@
 use core::index::term::TermIterator;
 use core::index::{LeafReader, Term, TermContext};
+use core::search::explanation::Explanation;
 use core::search::posting_iterator::PostingIterator;
 use core::search::searcher::IndexSearcher;
 use core::search::spans::span::{build_sim_weight, PostingsFlag, NO_MORE_POSITIONS};
@@ -299,6 +300,10 @@ impl Weight for SpanTermWeight {
 
     fn needs_scores(&self) -> bool {
         true
+    }
+
+    fn explain(&self, reader: &LeafReader, doc: DocId) -> Result<Explanation> {
+        self.explain_span(reader, doc)
     }
 }
 
