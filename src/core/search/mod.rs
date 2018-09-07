@@ -414,6 +414,7 @@ pub trait Similarity: Display {
         collection_stats: &CollectionStatistics,
         term_stats: &[TermStatistics],
         context: Option<&KeyedContext>,
+        boost: f32,
     ) -> Box<SimWeight>;
 
     /// Computes the normalization value for a query given the sum of the
@@ -710,6 +711,10 @@ pub mod tests {
 
         fn needs_scores(&self) -> bool {
             false
+        }
+
+        fn explain(&self, _reader: &LeafReader, _doc: DocId) -> Result<Explanation> {
+            unimplemented!()
         }
     }
 

@@ -72,7 +72,7 @@ impl Weight for MatchAllDocsWeight {
         false
     }
 
-    fn explain(&self, reader: &LeafReader, doc: DocId) -> Result<Explanation> {
+    fn explain(&self, _reader: &LeafReader, _doc: DocId) -> Result<Explanation> {
         Ok(Explanation::new(
             true,
             self.weight,

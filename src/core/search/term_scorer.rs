@@ -37,7 +37,8 @@ impl Scorer for TermScorer {
     fn score(&mut self) -> Result<f32> {
         let doc_id = self.doc_id();
         let freq = self.freq();
-        Ok(self.boost * self.sim_scorer.score(doc_id, freq as f32)?)
+        self.boost;
+        Ok(self.sim_scorer.score(doc_id, freq as f32)?)
     }
 }
 

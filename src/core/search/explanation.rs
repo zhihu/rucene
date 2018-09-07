@@ -1,6 +1,3 @@
-use serde;
-use serde_json;
-
 #[derive(Serialize, Deserialize)]
 pub struct Explanation {
     is_match: bool,

@@ -270,6 +270,7 @@ pub fn build_sim_weight(
         &collection_stats,
         &term_stats,
         None,
+        1.0f32,
     )))
 }
 
