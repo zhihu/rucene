@@ -147,7 +147,7 @@ impl Query for PhraseQuery {
         };
 
         let similarity = searcher.similarity(&self.field, needs_scores);
-        let sim_weight = similarity.compute_weight(&collection_stats, &term_stats, None);
+        let sim_weight = similarity.compute_weight(&collection_stats, &term_stats, None, 1.0f32);
 
         Ok(Box::new(PhraseWeight::new(
             self.field.clone(),

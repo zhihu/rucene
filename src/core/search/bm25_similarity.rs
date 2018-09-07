@@ -141,6 +141,7 @@ impl Similarity for BM25Similarity {
         collection_stats: &CollectionStatistics,
         term_stats: &[TermStatistics],
         _context: Option<&KeyedContext>,
+        boost: f32,
     ) -> Box<SimWeight> {
         let avgdl = BM25Similarity::avg_field_length(&collection_stats);
         let idf = BM25Similarity::idf(&term_stats, &collection_stats);
@@ -159,6 +160,7 @@ impl Similarity for BM25Similarity {
             cache,
             self.idf_explain(collection_stats, term_stats),
             BM25Similarity::avg_field_length(collection_stats),
+            boost,
         ))
     }
 }
@@ -230,6 +232,7 @@ impl BM25SimWeight {
         cache: [f32; 256],
         idf_explanation: Explanation,
         avg_dl: f32,
+        boost: f32,
     ) -> BM25SimWeight {
         let mut weight = BM25SimWeight {
             k1,
@@ -242,7 +245,7 @@ impl BM25SimWeight {
             idf_explanation,
             avg_dl,
         };
-        weight.normalize(1.0, 1.0);
+        weight.normalize(1.0, boost);
         weight
     }
 
@@ -419,7 +422,7 @@ mod tests {
         let collection_stats = CollectionStatistics::new(String::from("world"), 32, 32, 120, -1);
         let term_stats = vec![TermStatistics::new(Vec::new(), 1, -1)];
         let bm25_sim = BM25Similarity::new(1.2, 0.75);
-        let sim_weight = bm25_sim.compute_weight(&collection_stats, &term_stats, None);
+        let sim_weight = bm25_sim.compute_weight(&collection_stats, &term_stats, None, 1.0f32);
 
         assert!((sim_weight.get_value_for_normalization() - 9.554_543_5f32) < ::std::f32::EPSILON);
 

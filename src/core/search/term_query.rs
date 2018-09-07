@@ -49,8 +49,12 @@ impl Query for TermQuery {
             )
         };
         let similarity = searcher.similarity(&self.term.field, needs_scores);
-        let sim_weight =
-            similarity.compute_weight(&collection_stats, &term_stats, self.ctx.as_ref());
+        let sim_weight = similarity.compute_weight(
+            &collection_stats,
+            &term_stats,
+            self.ctx.as_ref(),
+            self.boost,
+        );
         Ok(Box::new(TermWeight::new(
             self.term.clone(),
             term_context.states.into_iter().collect(),

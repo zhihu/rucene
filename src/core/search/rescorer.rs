@@ -294,45 +294,45 @@ impl QueryRescorer {
         }
     }
 
-    fn explain_lucene(
-        &self,
-        searcher: &IndexSearcher,
-        req: &RescoreRequest,
-        first: Explanation,
-        doc: DocId,
-    ) -> Result<Explanation> {
-        let second = searcher.explain(req.query.as_ref(), doc)?;
-        let second_value = second.value();
-        let first_value = first.value();
-
-        let score;
-        let second_expl = if second.is_match() {
-            score = self.combine_score(req, first_value, true, second_value);
-            Explanation::new(
-                true,
-                second_value,
-                "second pass score".to_string(),
-                vec![second],
-            )
-        } else {
-            score = self.combine_score(req, first_value, false, 0.0f32);
-            Explanation::new(false, 0.0f32, "no second pass score".to_string(), vec![])
-        };
-
-        let first_expl = Explanation::new(
-            true,
-            first_value,
-            "first pass score".to_string(),
-            vec![first],
-        );
-
-        Ok(Explanation::new(
-            true,
-            score,
-            "combined first and second pass score using Rescorer".to_string(),
-            vec![first_expl, second_expl],
-        ))
-    }
+    //    fn explain_lucene(
+    //        &self,
+    //        searcher: &IndexSearcher,
+    //        req: &RescoreRequest,
+    //        first: Explanation,
+    //        doc: DocId,
+    //    ) -> Result<Explanation> {
+    //        let second = searcher.explain(req.query.as_ref(), doc)?;
+    //        let second_value = second.value();
+    //        let first_value = first.value();
+    //
+    //        let score;
+    //        let second_expl = if second.is_match() {
+    //            score = self.combine_score(req, first_value, true, second_value);
+    //            Explanation::new(
+    //                true,
+    //                second_value,
+    //                "second pass score".to_string(),
+    //                vec![second],
+    //            )
+    //        } else {
+    //            score = self.combine_score(req, first_value, false, 0.0f32);
+    //            Explanation::new(false, 0.0f32, "no second pass score".to_string(), vec![])
+    //        };
+    //
+    //        let first_expl = Explanation::new(
+    //            true,
+    //            first_value,
+    //            "first pass score".to_string(),
+    //            vec![first],
+    //        );
+    //
+    //        Ok(Explanation::new(
+    //            true,
+    //            score,
+    //            "combined first and second pass score using Rescorer".to_string(),
+    //            vec![first_expl, second_expl],
+    //        ))
+    //    }
 
     fn explain_es(
         &self,

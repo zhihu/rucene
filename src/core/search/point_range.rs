@@ -272,7 +272,7 @@ impl Weight for PointRangeWeight {
         false
     }
 
-    fn explain(&self, reader: &LeafReader, doc: DocId) -> Result<Explanation> {
+    fn explain(&self, _reader: &LeafReader, _doc: DocId) -> Result<Explanation> {
         unimplemented!()
     }
 }

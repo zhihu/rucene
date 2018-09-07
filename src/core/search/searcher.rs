@@ -61,6 +61,7 @@ impl Similarity for NonScoringSimilarity {
         _collection_stats: &CollectionStatistics,
         _term_stats: &[TermStatistics],
         _context: Option<&KeyedContext>,
+        _boost: f32,
     ) -> Box<SimWeight> {
         Box::new(NonScoringSimWeight {})
     }
@@ -265,13 +266,13 @@ impl IndexSearcher {
         query: &Query,
         needs_scores: bool,
     ) -> Result<Box<Weight>> {
-        let mut weight = self.create_weight(query, needs_scores)?;
-        let v = weight.value_for_normalization();
-        let mut norm: f32 = self.similarity("", needs_scores).query_norm(v, None);
-        if norm.is_finite() || norm.is_nan() {
-            norm = 1.0f32;
-        }
-        weight.normalize(norm, 1.0f32);
+        let weight = self.create_weight(query, needs_scores)?;
+        //        let v = weight.value_for_normalization();
+        //        let mut norm: f32 = self.similarity("", needs_scores).query_norm(v, None);
+        //        if norm.is_finite() || norm.is_nan() {
+        //            norm = 1.0f32;
+        //        }
+        //        weight.normalize(norm, 1.0f32);
         Ok(weight)
     }
 
