@@ -404,11 +404,7 @@ impl QueryRescorer {
         req: &RescoreRequest,
         top_docs: &TopDocs,
     ) -> Result<(Vec<Option<Vec<FeatureResult>>>, Vec<f32>)> {
-        let mut hits = top_docs.score_docs().clone();
-        if hits.len() > req.window_size {
-            hits.truncate(req.window_size);
-        }
-        hits.sort_by(ScoreDocHit::order_by_doc);
+        let hits = top_docs.score_docs();
 
         let readers = searcher.reader.leaves();
         let mut score_field_index = -1;
@@ -506,6 +502,13 @@ impl Rescorer for QueryRescorer {
     ) -> Result<Vec<HashMap<String, VariantValue>>> {
         if top_docs.total_hits() == 0 || top_docs.score_docs().is_empty() {
             return Ok(Vec::new());
+        }
+        {
+            let hits = top_docs.score_docs_mut();
+            if hits.len() > rescore_req.window_size {
+                hits.truncate(rescore_req.window_size);
+            }
+            hits.sort_by(ScoreDocHit::order_by_doc);
         }
 
         let (score_features, previous_scores) = self.score_features(searcher, rescore_req, top_docs)?;
