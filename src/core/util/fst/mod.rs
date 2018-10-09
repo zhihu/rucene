@@ -1,3 +1,5 @@
+use std::fmt::Debug;
+use std::hash::Hash;
 use std::io;
 
 use core::store::{DataInput, DataOutput};
@@ -6,9 +8,10 @@ use error::*;
 // pub mod builder;
 pub mod bytes_output;
 pub mod bytes_store;
+pub mod fst_builder;
 pub mod fst_reader;
 
-pub trait Output: Clone {
+pub trait Output: Clone + Eq + Hash + Debug {
     type Value;
 
     fn prefix(&self, other: &Self) -> Self;
@@ -24,12 +27,22 @@ pub trait Output: Clone {
     fn value(&self) -> Self::Value;
 }
 
-pub trait OutputFactory {
+pub trait OutputFactory: Clone {
     type Value: Output;
 
     /// Return an empty Output
     ///
     fn empty(&self) -> Self::Value;
+
+    fn common(&self, o1: &Self::Value, o2: &Self::Value) -> Self::Value;
+
+    fn subtract(&self, o1: &Self::Value, o2: &Self::Value) -> Self::Value;
+
+    fn add(&self, prefix: &Self::Value, output: &Self::Value) -> Self::Value;
+
+    fn merge(&self, _o1: &Self::Value, _o2: &Self::Value) -> Self::Value {
+        panic!("UnsupportedOperation");
+    }
 
     /// Decode an output value previously written with `write`
     ///
@@ -173,6 +186,10 @@ pub mod tests {
         fn write_bytes(&mut self, b: &[u8], offset: usize, len: usize) -> Result<()> {
             self.bytes.extend_from_slice(&b[offset..(offset + len)]);
             Ok(())
+        }
+
+        fn as_data_output_mut(&mut self) -> &mut DataOutput {
+            self
         }
     }
 

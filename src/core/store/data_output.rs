@@ -113,4 +113,13 @@ pub trait DataOutput: Write {
         }
         Ok(())
     }
+
+    fn as_data_output_mut(&mut self) -> &mut DataOutput;
+}
+
+// a implement that can use Vec<u8> as a data output
+impl DataOutput for Vec<u8> {
+    fn as_data_output_mut(&mut self) -> &mut DataOutput {
+        self
+    }
 }

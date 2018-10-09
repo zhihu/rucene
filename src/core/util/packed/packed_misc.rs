@@ -208,6 +208,39 @@ pub fn get_mutable_by_format(
     }
 }
 
+pub fn get_mutable_by_ratio_as_reader(
+    value_count: usize,
+    bits_per_value: i32,
+    acceptable_overhead_ratio: f32,
+) -> Box<Reader> {
+    let format_and_bits = FormatAndBits::fastest(
+        value_count as i32,
+        bits_per_value,
+        acceptable_overhead_ratio,
+    );
+
+    debug_assert!(value_count > 0);
+    match format_and_bits.format {
+        Format::PackedSingleBlock => Box::new(Packed64SingleBlock::new(
+            value_count,
+            format_and_bits.bits_per_value,
+        )),
+        Format::Packed => match bits_per_value {
+            8 => Box::new(Direct8::new(value_count)),
+            16 => Box::new(Direct16::new(value_count)),
+            32 => Box::new(Direct32::new(value_count)),
+            64 => Box::new(Direct64::new(value_count)),
+            24 if value_count <= PACKED8_THREE_BLOCKS_MAX_SIZE as usize => {
+                Box::new(Packed8ThreeBlocks::new(value_count))
+            }
+            48 if value_count <= PACKED16_THREE_BLOCKS_MAX_SIZE as usize => {
+                Box::new(Packed16ThreeBlocks::new(value_count))
+            }
+            _ => Box::new(Packed64::new(value_count, format_and_bits.bits_per_value)),
+        },
+    }
+}
+
 pub fn max_value(bits_per_value: i32) -> i64 {
     debug_assert!(bits_per_value <= 64);
     if bits_per_value == 64 {
@@ -243,8 +276,8 @@ pub fn packed_ints_copy(
     }
 }
 
-fn copy_by_buf(
-    src: &Reader,
+pub fn copy_by_buf<T: Reader + ?Sized>(
+    src: &T,
     src_pos: usize,
     dest: &mut Mutable,
     dest_pos: usize,
@@ -600,6 +633,11 @@ pub trait Reader: Send + Sync {
 
     /// @return the number of values.
     fn size(&self) -> usize;
+
+    fn as_mutable(&self) -> &Mutable;
+
+    /// cast reader as mutable
+    fn as_mutable_mut(&mut self) -> &mut Mutable;
 }
 
 pub trait Mutable: Reader {
@@ -726,6 +764,14 @@ impl Reader for Direct8 {
     fn size(&self) -> usize {
         self.value_count
     }
+
+    fn as_mutable(&self) -> &Mutable {
+        self
+    }
+
+    fn as_mutable_mut(&mut self) -> &mut Mutable {
+        self
+    }
 }
 
 impl Mutable for Direct8 {
@@ -821,6 +867,14 @@ impl Reader for Direct16 {
 
     fn size(&self) -> usize {
         self.value_count
+    }
+
+    fn as_mutable(&self) -> &Mutable {
+        self
+    }
+
+    fn as_mutable_mut(&mut self) -> &mut Mutable {
+        self
     }
 }
 
@@ -919,6 +973,14 @@ impl Reader for Direct32 {
     fn size(&self) -> usize {
         self.value_count
     }
+
+    fn as_mutable(&self) -> &Mutable {
+        self
+    }
+
+    fn as_mutable_mut(&mut self) -> &mut Mutable {
+        self
+    }
 }
 
 impl Mutable for Direct32 {
@@ -1010,6 +1072,14 @@ impl Reader for Direct64 {
 
     fn size(&self) -> usize {
         self.value_count
+    }
+
+    fn as_mutable(&self) -> &Mutable {
+        self
+    }
+
+    fn as_mutable_mut(&mut self) -> &mut Mutable {
+        self
     }
 }
 
@@ -1104,6 +1174,14 @@ impl Reader for Packed8ThreeBlocks {
 
     fn size(&self) -> usize {
         self.value_count
+    }
+
+    fn as_mutable(&self) -> &Mutable {
+        self
+    }
+
+    fn as_mutable_mut(&mut self) -> &mut Mutable {
+        self
     }
 }
 
@@ -1203,6 +1281,14 @@ impl Reader for Packed16ThreeBlocks {
 
     fn size(&self) -> usize {
         self.value_count
+    }
+
+    fn as_mutable(&self) -> &Mutable {
+        self
+    }
+
+    fn as_mutable_mut(&mut self) -> &mut Mutable {
+        self
     }
 }
 
@@ -1362,7 +1448,7 @@ impl Reader for Packed64 {
         debug_assert!(index < self.value_count);
 
         let mut len = len.min(self.value_count - index);
-        debug_assert!(len < output.len());
+        debug_assert!(len <= output.len());
 
         let original_index = index;
         let mut index = index;
@@ -1417,6 +1503,14 @@ impl Reader for Packed64 {
     fn size(&self) -> usize {
         self.value_count
     }
+
+    fn as_mutable(&self) -> &Mutable {
+        self
+    }
+
+    fn as_mutable_mut(&mut self) -> &mut Mutable {
+        self
+    }
 }
 
 impl Mutable for Packed64 {
@@ -1454,7 +1548,7 @@ impl Mutable for Packed64 {
         debug_assert!(index as i64 >= 0 && index < self.value_count);
 
         let mut len = len.min(self.value_count - index);
-        debug_assert!(off + len < arr.len());
+        debug_assert!(off + len <= arr.len());
 
         let original_index = index;
         let mut index = index;
@@ -1685,6 +1779,14 @@ impl Reader for Packed64SingleBlock {
     fn size(&self) -> usize {
         self.value_count
     }
+
+    fn as_mutable(&self) -> &Mutable {
+        self
+    }
+
+    fn as_mutable_mut(&mut self) -> &mut Mutable {
+        self
+    }
 }
 
 impl Mutable for Packed64SingleBlock {
@@ -1890,6 +1992,14 @@ impl Reader for GrowableWriter {
 
     fn size(&self) -> usize {
         self.current.size()
+    }
+
+    fn as_mutable(&self) -> &Mutable {
+        self
+    }
+
+    fn as_mutable_mut(&mut self) -> &mut Mutable {
+        self
     }
 }
 
@@ -2295,7 +2405,7 @@ impl PackedIntEncoder for BulkOperationPacked {
         let mut blocks_offset = 0;
         for _i in 0..self.long_value_count * iterations {
             bits_left -= self.bits_per_value;
-            if bits_left < 0 {
+            if bits_left > 0 {
                 next_block |= values[values_offset];
                 values_offset += 1;
             } else if bits_left == 0 {
@@ -2424,6 +2534,7 @@ impl PackedIntDecoder for BulkOperationPacked {
                     << -bits_left)
                     | rshift_64(blocks[block_offset + 1], 64 + bits_left);
                 block_offset += 1;
+                bits_left += 64;
             } else {
                 *v = (blocks[block_offset] >> bits_left) & self.mask;
             }
@@ -2746,16 +2857,16 @@ const MIN_VALUE_EQUALS_0: i32 = 1;
 const BPV_SHIFT: i32 = 1;
 
 /// Return the number of blocks required to store `size` values on `block_size`
-pub fn num_blocks(size: u64, block_size: usize) -> usize {
-    let block_size = block_size as u64;
+pub fn num_blocks(size: usize, block_size: usize) -> usize {
+    let block_size = block_size;
     let padding = if (size % block_size) == 0 { 0 } else { 1 };
-    (size / block_size + padding) as usize
+    size / block_size + padding
 }
 
-pub fn check_block_size(block_size: usize, min_block_size: usize, max_block_size: usize) -> u32 {
+pub fn check_block_size(block_size: usize, min_block_size: usize, max_block_size: usize) -> usize {
     debug_assert!(block_size >= min_block_size && block_size <= max_block_size);
     debug_assert_eq!(block_size & (block_size - 1), 0);
-    block_size.trailing_zeros()
+    block_size.trailing_zeros() as usize
 }
 
 impl BlockPackedReaderIterator {

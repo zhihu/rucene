@@ -1,0 +1,177 @@
+use error::*;
+use std::cmp::{min, Ord, Ordering, PartialOrd};
+use std::hash::{Hash, Hasher};
+
+// const EMPTY_INTS: [i32; 0] = [0i32; 0];
+
+/// represents int[], as a slice (offset + length) into an
+/// existing int[].
+#[derive(Clone)]
+pub struct IntsRef {
+    ints: *const [i32],
+    pub offset: usize,
+    pub length: usize,
+}
+
+impl IntsRef {
+    pub fn new(ints: &[i32], offset: usize, length: usize) -> Self {
+        let res = IntsRef {
+            ints: ints as *const [i32],
+            offset,
+            length,
+        };
+        assert!(res.is_valid().is_ok());
+        res
+    }
+
+    pub fn ints(&self) -> &[i32] {
+        unsafe { &(*self.ints) }
+    }
+
+    fn is_valid(&self) -> Result<()> {
+        let ints = self.ints();
+        if self.length > self.ints().len() {
+            bail!(ErrorKind::IllegalState(format!(
+                "length is out of bounds: {}",
+                self.length
+            )));
+        }
+        if self.offset > ints.len() {
+            bail!(ErrorKind::IllegalState(format!(
+                "offset out of bounds: {}",
+                self.offset
+            )));
+        }
+        if self.offset + self.length > ints.len() {
+            bail!(ErrorKind::IllegalState(format!(
+                "offset+length out of bounds: offset={}, length:{}, bounds: {}",
+                self.offset,
+                self.length,
+                ints.len()
+            )));
+        }
+        Ok(())
+    }
+
+    //    pub fn deep_copy_of(other: &IntsRef) -> IntsRef {
+    //
+    //    }
+}
+
+impl Hash for IntsRef {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let ints = self.ints();
+        for i in self.offset..self.offset + self.length {
+            state.write_i32(ints[i])
+        }
+    }
+}
+
+impl PartialEq for IntsRef {
+    fn eq(&self, other: &IntsRef) -> bool {
+        if self.length == other.length {
+            let ints1 = &self.ints()[self.offset..self.offset + self.length];
+            let ints2 = &other.ints()[other.offset..other.offset + other.length];
+            for i in 0..self.length {
+                if ints1[i] != ints2[i] {
+                    return false;
+                }
+            }
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl Eq for IntsRef {}
+
+impl PartialOrd for IntsRef {
+    fn partial_cmp(&self, other: &IntsRef) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for IntsRef {
+    fn cmp(&self, other: &Self) -> Ordering {
+        let length = min(self.length, other.length);
+
+        let ints1 = &self.ints()[self.offset..self.offset + length];
+        let ints2 = &other.ints()[other.offset..other.offset + length];
+        for i in 0..length {
+            let c = ints1[i].cmp(&ints2[i]);
+            if c != Ordering::Equal {
+                return c;
+            }
+        }
+        (self.length - other.length).cmp(&0)
+    }
+}
+
+pub struct IntsRefBuilder {
+    ints: Vec<i32>,
+    pub offset: usize,
+    pub length: usize,
+}
+
+impl IntsRefBuilder {
+    pub fn new() -> IntsRefBuilder {
+        IntsRefBuilder {
+            ints: Vec::new(),
+            offset: 0,
+            length: 0,
+        }
+    }
+
+    pub fn ints(&self) -> &[i32] {
+        &self.ints
+    }
+
+    pub fn set_length(&mut self, length: usize) {
+        self.length = length;
+    }
+
+    pub fn clear(&mut self) {
+        self.set_length(0);
+    }
+
+    pub fn int_at(&self, offset: usize) -> i32 {
+        self.ints[offset]
+    }
+
+    pub fn set_int(&mut self, offset: usize, value: i32) {
+        self.ints[offset] = value;
+    }
+
+    pub fn append(&mut self, i: i32) {
+        let new_len = self.length + 1;
+        self.grow(new_len);
+        self.ints[self.length] = i;
+        self.length += 1;
+    }
+
+    pub fn grow(&mut self, new_length: usize) {
+        if self.ints.len() < new_length {
+            self.ints.resize(new_length, 0);
+        }
+    }
+
+    pub fn copy_ints(&mut self, other: &[i32], offset: usize, length: usize) {
+        self.grow(length);
+        self.ints[0..length].copy_from_slice(&other[offset..offset + length]);
+        self.length = length;
+    }
+
+    pub fn copy_ints_ref(&mut self, ints: &IntsRef) {
+        self.copy_ints(ints.ints(), ints.offset, ints.length)
+    }
+
+    pub fn get(&self) -> IntsRef {
+        debug_assert_eq!(self.offset, 0);
+        IntsRef {
+            ints: self.ints.as_ref() as *const [i32],
+            offset: 0,
+            length: self.length,
+        }
+    }
+}

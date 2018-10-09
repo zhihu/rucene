@@ -38,6 +38,7 @@ pub mod bit_util;
 pub mod bkd;
 pub mod doc_id_set;
 pub mod fst;
+pub mod ints_ref;
 pub mod io;
 pub mod math;
 pub mod small_float;

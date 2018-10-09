@@ -11,3 +11,6 @@ pub mod packed_misc;
 
 mod packed_ints_null_reader;
 pub use self::packed_ints_null_reader::*;
+
+mod paged_mutable;
+pub use self::paged_mutable::*;

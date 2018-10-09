@@ -6,11 +6,13 @@ use std::fs::{File, OpenOptions};
 use std::io::BufWriter;
 use std::io::Write;
 
+use flate2::CrcWriter;
+
 const CHUNK_SIZE: usize = 8192;
 
 pub struct FSIndexOutput {
     name: String,
-    writer: BufWriter<File>,
+    writer: CrcWriter<BufWriter<File>>,
     bytes_written: usize,
 }
 
@@ -20,7 +22,7 @@ impl FSIndexOutput {
 
         Ok(FSIndexOutput {
             name: String::from(name),
-            writer: BufWriter::with_capacity(CHUNK_SIZE, file),
+            writer: CrcWriter::new(BufWriter::with_capacity(CHUNK_SIZE, file)),
             bytes_written: 0,
         })
     }
@@ -35,7 +37,11 @@ impl Drop for FSIndexOutput {
     }
 }
 
-impl DataOutput for FSIndexOutput {}
+impl DataOutput for FSIndexOutput {
+    fn as_data_output_mut(&mut self) -> &mut DataOutput {
+        self
+    }
+}
 
 impl Write for FSIndexOutput {
     fn write(&mut self, buf: &[u8]) -> ::std::io::Result<usize> {
@@ -59,7 +65,8 @@ impl IndexOutput for FSIndexOutput {
     }
 
     fn checksum(&self) -> Result<i64> {
-        unimplemented!()
+        // self.writer.flush()?;
+        Ok((self.writer.crc().sum() as i64) & 0xffff_ffffi64)
     }
 }
 

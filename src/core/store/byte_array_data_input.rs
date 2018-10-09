@@ -1,6 +1,7 @@
-use core::store::DataInput;
+use core::store::{DataInput, DataOutput};
 use error::Result;
-use std::io::Read;
+use std::cmp::min;
+use std::io::{self, Read, Write};
 use std::sync::Arc;
 
 pub struct ByteArrayRef(Arc<Vec<u8>>);
@@ -76,32 +77,52 @@ impl<T: AsRef<[u8]>> Read for ByteArrayDataInput<T> {
     }
 }
 
-pub struct ByteSlicesDataInput<'a> {
-    bytes: &'a [u8],
-    pos: usize,
+pub struct ByteArrayDataOutput<T> {
+    bytes: T,
+    pub pos: usize,
+    limit: usize,
 }
 
-impl<'a> ByteSlicesDataInput<'a> {
-    pub fn new(bytes: &'a [u8]) -> ByteSlicesDataInput {
-        ByteSlicesDataInput { bytes, pos: 0usize }
+impl<T> ByteArrayDataOutput<T>
+where
+    T: AsMut<[u8]>,
+{
+    pub fn new(bytes: T, offset: usize, len: usize) -> ByteArrayDataOutput<T> {
+        ByteArrayDataOutput {
+            bytes,
+            pos: offset,
+            limit: offset + len,
+        }
     }
 
-    pub fn position(&self) -> usize {
-        self.pos
-    }
-
-    pub fn set_position(&mut self, pos: usize) {
-        self.pos = pos;
-    }
-}
-
-impl<'a> Read for ByteSlicesDataInput<'a> {
-    fn read(&mut self, buf: &mut [u8]) -> ::std::io::Result<usize> {
-        let size = ::std::cmp::min(buf.len(), self.bytes.len() - self.pos);
-        buf[0..size].copy_from_slice(&self.bytes[self.pos..self.pos + size]);
-        self.pos += size;
-        Ok(size)
+    #[inline]
+    fn bytes_slice(&mut self) -> &mut [u8] {
+        self.bytes.as_mut()
     }
 }
 
-impl<'a> DataInput for ByteSlicesDataInput<'a> {}
+impl<T> Write for ByteArrayDataOutput<T>
+where
+    T: AsMut<[u8]>,
+{
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let length = min(self.limit - self.pos, buf.len());
+        let pos = self.pos;
+        self.bytes_slice()[pos..pos + length].copy_from_slice(&buf[..length]);
+        self.pos += length;
+        Ok(length)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<T> DataOutput for ByteArrayDataOutput<T>
+where
+    T: AsMut<[u8]>,
+{
+    fn as_data_output_mut(&mut self) -> &mut DataOutput {
+        self
+    }
+}

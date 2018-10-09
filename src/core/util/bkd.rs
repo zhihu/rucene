@@ -1,6 +1,6 @@
 use core::codec::codec_util;
 use core::index::point_values::{IntersectVisitor, Relation};
-use core::store::{ByteArrayDataInput, ByteArrayRef, ByteSlicesDataInput, DataInput, IndexInput};
+use core::store::{ByteArrayDataInput, ByteArrayRef, DataInput, IndexInput};
 use core::util::bit_util::UnsignedShift;
 use core::util::math;
 use core::util::string_util::bytes_compare;
@@ -196,7 +196,7 @@ impl BKDReader {
     #[allow(dead_code)]
     fn min_leaf_block_fp(&self) -> Result<i64> {
         if self.packed_index.is_empty() {
-            ByteSlicesDataInput::new(self.packed_index.as_ref()).read_vlong()
+            ByteArrayDataInput::new(self.packed_index.as_ref()).read_vlong()
         } else {
             let mut min_fp = i64::max_value();
             for fp in self.leaf_block_fps.as_ref() {

@@ -1,4 +1,4 @@
-use core::util::packed_misc::Reader;
+use core::util::packed_misc::{Mutable, Reader};
 
 pub struct PackedIntsNullReader {
     value_count: usize,
@@ -27,5 +27,13 @@ impl Reader for PackedIntsNullReader {
     }
     fn size(&self) -> usize {
         self.value_count
+    }
+
+    fn as_mutable(&self) -> &Mutable {
+        panic!("mutable not implemented")
+    }
+
+    fn as_mutable_mut(&mut self) -> &mut Mutable {
+        panic!("mutable not implemented")
     }
 }

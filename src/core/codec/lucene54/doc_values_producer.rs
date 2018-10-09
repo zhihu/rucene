@@ -996,8 +996,8 @@ impl Lucene54DocValuesProducer {
         let mut data = self.data.as_ref().clone()?;
         let data: &mut IndexInput = data.borrow_mut();
         data.seek(bytes.addresses_offset)?;
-        let size =
-            ((bytes.count + i64::from(lucene54::INTERVAL_MASK)) >> lucene54::INTERVAL_SHIFT) as u64;
+        let size = ((bytes.count + i64::from(lucene54::INTERVAL_MASK)) >> lucene54::INTERVAL_SHIFT)
+            as usize;
         let addresses = MonotonicBlockPackedReader::new(
             data,
             bytes.packed_ints_version,
@@ -1032,7 +1032,7 @@ impl Lucene54DocValuesProducer {
             data.borrow_mut(),
             bytes.packed_ints_version,
             bytes.block_size as usize,
-            size as u64,
+            size as usize,
             false,
         )?;
         let data_size = data.read_vlong()?;
