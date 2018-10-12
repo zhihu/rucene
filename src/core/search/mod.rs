@@ -3,6 +3,7 @@ use std::fmt;
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};
 use std::i32;
+use std::collections::HashMap;
 
 use core::index::LeafReader;
 use core::search::explanation::Explanation;
@@ -12,7 +13,7 @@ use core::search::statistics::TermStatistics;
 use core::search::term_query::TermQuery;
 use core::search::top_docs::TopDocs;
 use core::util::bit_set::ImmutableBitSetRef;
-use core::util::{DocId, IndexedContext, KeyedContext};
+use core::util::{DocId, IndexedContext, KeyedContext, VariantValue};
 use error::*;
 
 pub mod collector;
@@ -228,6 +229,10 @@ pub trait Scorer: DocIterator + Send + Sync {
     }
 
     fn score_context(&mut self) -> Result<IndexedContext> {
+        unimplemented!()
+    }
+
+    fn score_feature(&mut self) -> Result<Vec<FeatureResult>> {
         unimplemented!()
     }
 }
@@ -491,6 +496,13 @@ pub trait Rescorer {
         top_docs: &mut TopDocs,
     ) -> Result<()>;
 
+    fn rescore_features(
+        &self,
+        searcher: &IndexSearcher,
+        rescore_ctx: &RescoreRequest,
+        top_docs: &mut TopDocs,
+    ) -> Result<Vec<HashMap<String, VariantValue>>>;
+
     /// Explains how the score for the specified document was computed.
     fn explain(
         &self,
@@ -507,6 +519,7 @@ pub struct RescoreRequest {
     rescore_weight: f32,
     rescore_mode: RescoreMode,
     pub window_size: usize,
+    pub rescore_movedout: bool,
 }
 
 impl RescoreRequest {
@@ -516,6 +529,7 @@ impl RescoreRequest {
         rescore_weight: f32,
         rescore_mode: RescoreMode,
         window_size: usize,
+        rescore_movedout: bool,
     ) -> RescoreRequest {
         RescoreRequest {
             query,
@@ -523,6 +537,7 @@ impl RescoreRequest {
             rescore_weight,
             rescore_mode,
             window_size,
+            rescore_movedout,
         }
     }
 }
@@ -556,6 +571,18 @@ impl fmt::Display for RescoreMode {
             RescoreMode::Min => write!(f, "min"),
             RescoreMode::Total => write!(f, "sum"),
             RescoreMode::Multiply => write!(f, "product"),
+        }
+    }
+}
+
+pub struct FeatureResult {
+    pub extra_params: HashMap<String, VariantValue>,
+}
+
+impl FeatureResult {
+    pub fn new(params: HashMap<String, VariantValue>) -> FeatureResult {
+        FeatureResult {
+            extra_params: params,
         }
     }
 }

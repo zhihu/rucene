@@ -1,15 +1,17 @@
 use error::*;
 
+use std::collections::HashMap;
+
 use core::index::LeafReader;
 use core::search::explanation::Explanation;
 use core::search::searcher::IndexSearcher;
+use core::search::FeatureResult;
 use core::search::sort_field::SortFieldType;
 use core::search::top_docs::ScoreDocHit;
 use core::search::top_docs::TopDocs;
 use core::search::{BatchScorer, RescoreRequest, Rescorer, Weight};
 use core::util::DocId;
 use core::util::{IndexedContext, VariantValue};
-use std::collections::HashMap;
 
 #[derive(Default)]
 pub struct QueryRescorer;
@@ -395,6 +397,84 @@ impl QueryRescorer {
             Ok(prim)
         }
     }
+
+    fn score_features(
+        &self,
+        searcher: &IndexSearcher,
+        req: &RescoreRequest,
+        top_docs: &TopDocs,
+    ) -> Result<(Vec<Option<Vec<FeatureResult>>>, Vec<f32>)> {
+        let hits = top_docs.score_docs();
+
+        let readers = searcher.reader.leaves();
+        let mut score_field_index = -1;
+        match *top_docs {
+            TopDocs::Field(ref f) => for (index, field) in f.fields.iter().enumerate() {
+                if *field.field_type() == SortFieldType::Score {
+                    score_field_index = index as i32;
+                    break;
+                }
+            },
+            TopDocs::Collapse(ref c) => for (index, field) in c.fields.iter().enumerate() {
+                if *field.field_type() == SortFieldType::Score {
+                    score_field_index = index as i32;
+                    break;
+                }
+            },
+            _ => {}
+        }
+
+        let weight = req.query.create_weight(searcher, true)?;
+
+        let mut hit_upto = 0usize;
+        let mut end_doc = 0;
+        let mut doc_base = 0;
+        let mut reader_idx: i32 = -1;
+        let mut current_reader_idx = -1;
+        let mut scorer = None;
+        let mut score_features: Vec<Option<Vec<FeatureResult>>> = Vec::with_capacity(hits.len());
+        let mut previous_scores = Vec::with_capacity(hits.len());
+        // first pass, collect score contexts first
+        while hit_upto < hits.len() {
+            let doc_id = hits[hit_upto].doc_id();
+            previous_scores.push(hits[hit_upto].score());
+            while doc_id >= end_doc && reader_idx < readers.len() as i32 - 1 {
+                // reader_upto += 1;
+                reader_idx += 1;
+                end_doc = readers[reader_idx as usize].doc_base()
+                    + readers[reader_idx as usize].max_doc();
+            }
+
+            if reader_idx != current_reader_idx {
+                let reader = readers[reader_idx as usize];
+                doc_base = reader.doc_base();
+                let current_scorer = weight.create_scorer(reader)?;
+                scorer = Some(current_scorer);
+                current_reader_idx = reader_idx;
+            }
+
+            if let Some(ref mut scorer) = scorer {
+                let target_doc = doc_id - doc_base;
+                let mut actual_doc = scorer.doc_id();
+                if actual_doc < target_doc {
+                    actual_doc = scorer.advance(target_doc)?;
+                }
+
+                if actual_doc == target_doc {
+                    score_features.push(Some(scorer.score_feature()?));
+                } else {
+                    // query did not match this doc
+                    debug_assert!(actual_doc > target_doc);
+                    score_features.push(None);
+                }
+            } else {
+                score_features.push(None);
+            }
+
+            hit_upto += 1;
+        }
+        Ok((score_features, previous_scores))
+    }
 }
 
 impl Rescorer for QueryRescorer {
@@ -409,10 +489,48 @@ impl Rescorer for QueryRescorer {
         }
 
         let rescore_hits = self.query_rescore(searcher, rescore_req, top_docs)?;
-
         self.combine_docs(top_docs, rescore_hits, rescore_req);
 
         Ok(())
+    }
+
+    fn rescore_features(
+        &self,
+        searcher: &IndexSearcher,
+        rescore_req: &RescoreRequest,
+        top_docs: &mut TopDocs,
+    ) -> Result<Vec<HashMap<String, VariantValue>>> {
+        if top_docs.total_hits() == 0 || top_docs.score_docs().is_empty() {
+            return Ok(Vec::new());
+        }
+        {
+            let hits = top_docs.score_docs_mut();
+            if hits.len() > rescore_req.window_size {
+                hits.truncate(rescore_req.window_size);
+            }
+            hits.sort_by(ScoreDocHit::order_by_doc);
+        }
+
+        let (score_features, previous_scores) = self.score_features(searcher, rescore_req, top_docs)?;
+        // only support one function (simple_ltr) in rescore request for now
+        let mut result_features = Vec::with_capacity(score_features.len());
+
+        for (feature, &score) in score_features.iter().zip(previous_scores.iter()) {
+            match feature {
+                Some(function_features) =>  {
+                    let mut feature_map = HashMap::new();
+                    for f in function_features.iter() {
+                        feature_map.extend(f.extra_params.clone());
+                    }
+                    feature_map.insert("previous_score".to_string(), VariantValue::from(score));
+                    result_features.push(feature_map);
+                },
+                None => {
+                   warn!("query did not match this doc");
+                }
+            }
+        }
+        Ok(result_features)
     }
 
     fn explain(

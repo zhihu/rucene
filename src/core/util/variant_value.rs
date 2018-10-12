@@ -1,8 +1,12 @@
 use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
+use std::collections::HashMap;
+use serde;
+use serde::ser::SerializeMap;
 
-#[derive(Debug, Clone, Serialize)]
+
+#[derive(Debug, Clone, Deserialize)]
 pub enum VariantValue {
     Bool(bool),
     Char(char),
@@ -13,6 +17,7 @@ pub enum VariantValue {
     Double(f64),
     VString(String), // SHOULD BORROW ?
     Binary(Vec<u8>), // SHOULD BORROW ?
+    Map(HashMap<String, VariantValue>)
 }
 
 impl VariantValue {
@@ -70,6 +75,13 @@ impl VariantValue {
             _ => None,
         }
     }
+
+    pub fn get_map(&self) -> Option<&HashMap<String, VariantValue>> {
+       match self {
+           VariantValue::Map(m) => Some(m),
+           _ => None,
+       }
+    }
 }
 
 impl Eq for VariantValue {}
@@ -86,6 +98,30 @@ impl fmt::Display for VariantValue {
             VariantValue::Double(d) => write!(f, "{:.6}", d),
             VariantValue::VString(ref s) => write!(f, "{}", s),
             VariantValue::Binary(ref _b) => write!(f, "Binary(unprintable)"),
+            VariantValue::Map(ref m) => write!(f, "{:?}", m),
+        }
+    }
+}
+
+impl serde::Serialize for VariantValue {
+    fn serialize<S>(&self, serializer: S) -> ::std::result::Result<S::Ok, S::Error> where S: serde::Serializer {
+        match *self {
+            VariantValue::Bool(b) => serializer.serialize_bool(b),
+            VariantValue::Char(c) => serializer.serialize_char(c),
+            VariantValue::Short(s) => serializer.serialize_i16(s),
+            VariantValue::Int(ival) => serializer.serialize_i32(ival),
+            VariantValue::Long(lval) => serializer.serialize_i64(lval),
+            VariantValue::Float(fval) => serializer.serialize_f32(fval),
+            VariantValue::Double(d) => serializer.serialize_f64(d),
+            VariantValue::VString(ref s) => serializer.serialize_str(s.as_str()),
+            VariantValue::Binary(ref b) => serializer.serialize_bytes(b),
+            VariantValue::Map(ref m) => {
+                let mut map = serializer.serialize_map(Some(m.len())).unwrap();
+                for (k, v) in m {
+                    map.serialize_entry(&k.to_string(), &v)?;
+                }
+                map.end()
+            }
         }
     }
 }
@@ -102,6 +138,7 @@ impl Hash for VariantValue {
             VariantValue::Double(ref d) => d.to_bits().hash(state),
             VariantValue::VString(ref s) => s.hash(state),
             VariantValue::Binary(ref v) => v.hash(state),
+            _ => ()
         }
     }
 }
@@ -171,6 +208,9 @@ impl PartialEq for VariantValue {
                 } else {
                     false
                 }
+            }
+            _ => {
+                unreachable!()
             }
         }
     }
