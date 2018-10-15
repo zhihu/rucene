@@ -94,7 +94,7 @@ impl SpanBoostWeight {
         searcher: &IndexSearcher,
         needs_scores: bool,
     ) -> Result<Self> {
-        let sim_weight = build_sim_weight(query.field(), searcher, term_contexts)?;
+        let sim_weight = build_sim_weight(query.field(), searcher, term_contexts, None)?;
         let weight = query.query.span_weight(searcher, needs_scores)?;
         Ok(SpanBoostWeight {
             sim_weight,

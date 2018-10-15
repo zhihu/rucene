@@ -175,7 +175,7 @@ impl SpanNearWeight {
         terms: HashMap<Term, Rc<TermContext>>,
     ) -> Result<Self> {
         let field = query.field().to_string();
-        let sim_weight = build_sim_weight(query.field(), searcher, terms)?;
+        let sim_weight = build_sim_weight(query.field(), searcher, terms, None)?;
         Ok(SpanNearWeight {
             field,
             sim_weight,
@@ -821,7 +821,7 @@ struct SpanGapWeight {
 
 impl SpanGapWeight {
     pub fn new(query: &SpanGapQuery, searcher: &IndexSearcher, width: i32) -> Result<Self> {
-        let sim_weight = build_sim_weight(query.field(), searcher, HashMap::new())?;
+        let sim_weight = build_sim_weight(query.field(), searcher, HashMap::new(), None)?;
         Ok(SpanGapWeight { width, sim_weight })
     }
 }

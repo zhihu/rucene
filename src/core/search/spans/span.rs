@@ -6,7 +6,7 @@ use core::search::posting_iterator::{self, PostingIterator};
 use core::search::searcher::IndexSearcher;
 use core::search::{DocIterator, MatchNoDocScorer, Query, Scorer, SimScorer, SimWeight, Weight,
                    NO_MORE_DOCS};
-use core::util::DocId;
+use core::util::{DocId, KeyedContext};
 use error::{ErrorKind, Result};
 
 use std::collections::HashMap;
@@ -255,6 +255,7 @@ pub fn build_sim_weight(
     field: &str,
     searcher: &IndexSearcher,
     term_contexts: HashMap<Term, Rc<TermContext>>,
+    ctx: Option<KeyedContext>,
 ) -> Result<Option<Box<SimWeight>>> {
     if field.is_empty() || term_contexts.is_empty() {
         return Ok(None);
@@ -269,7 +270,7 @@ pub fn build_sim_weight(
     Ok(Some(similarity.compute_weight(
         &collection_stats,
         &term_stats,
-        None,
+        ctx.as_ref(),
         1.0f32,
     )))
 }
