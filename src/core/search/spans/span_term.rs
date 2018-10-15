@@ -39,6 +39,7 @@ impl Query for SpanTermQuery {
             self,
             Rc::new(context),
             searcher,
+            self.ctx.clone(),
             needs_scores,
         )?))
     }
@@ -68,6 +69,7 @@ impl SpanQuery for SpanTermQuery {
             self,
             Rc::new(context),
             searcher,
+            self.ctx.clone(),
             needs_scores,
         )?))
     }
@@ -204,13 +206,14 @@ impl SpanTermWeight {
         query: &SpanTermQuery,
         term_context: Rc<TermContext>,
         searcher: &IndexSearcher,
+        ctx: Option<KeyedContext>,
         needs_scores: bool,
     ) -> Result<Self> {
         let mut term_contexts = HashMap::new();
         if needs_scores {
             term_contexts.insert(query.term.clone(), Rc::clone(&term_context));
         }
-        let sim_weight = build_sim_weight(query.term.field(), searcher, term_contexts)?;
+        let sim_weight = build_sim_weight(query.term.field(), searcher, term_contexts, ctx)?;
         Ok(SpanTermWeight {
             term: query.term.clone(),
             sim_weight,

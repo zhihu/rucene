@@ -109,7 +109,7 @@ impl SpanOrWeight {
         terms: HashMap<Term, Rc<TermContext>>,
     ) -> Result<Self> {
         assert!(sub_weights.len() >= 2);
-        let sim_weight = build_sim_weight(query.field(), searcher, terms)?;
+        let sim_weight = build_sim_weight(query.field(), searcher, terms, None)?;
         Ok(SpanOrWeight {
             sim_weight,
             sub_weights,
