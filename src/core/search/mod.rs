@@ -19,6 +19,7 @@ use error::*;
 pub mod collector;
 pub mod conjunction;
 pub mod disjunction;
+pub mod filter_query;
 pub mod match_all;
 pub mod min_score;
 pub mod point_range;
