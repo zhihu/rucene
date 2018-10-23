@@ -405,7 +405,6 @@ impl QueryRescorer {
         top_docs: &TopDocs,
     ) -> Result<(Vec<Option<Vec<FeatureResult>>>, Vec<f32>)> {
         let hits = top_docs.score_docs();
-
         let readers = searcher.reader.leaves();
         let weight = req.query.create_weight(searcher, true)?;
 
