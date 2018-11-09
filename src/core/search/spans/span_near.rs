@@ -6,7 +6,7 @@ use core::search::spans::span::{term_contexts, ConjunctionSpanBase, ConjunctionS
 use core::search::spans::span::{SpanCollector, SpanQuery, SpanWeight, Spans};
 use core::search::term_query::TermQuery;
 use core::search::{DocIterator, Query, Scorer, SimWeight, Weight, NO_MORE_DOCS};
-use core::util::DocId;
+use core::util::{DocId, KeyedContext, BM25_SIMILARITY_IDF};
 
 use error::{ErrorKind, Result};
 
@@ -98,21 +98,42 @@ impl SpanNearQuery {
         })
     }
 
+    fn merge_idf_ctx(ctx1: Option<KeyedContext>, ctx2: Option<KeyedContext>) -> Option<KeyedContext> {
+        if ctx1.is_none() {
+            ctx2
+        } else if ctx2.is_none() {
+            ctx1
+        } else {
+            let mut ctx = KeyedContext::default();
+            let w = ctx1.map_or(
+                0f32,
+                |v| v.get_float(BM25_SIMILARITY_IDF).unwrap_or(0f32))
+                +
+                ctx2.map_or(
+                    0f32,
+                    |v| v.get_float(BM25_SIMILARITY_IDF).unwrap_or(0f32));
+            ctx.set_float(BM25_SIMILARITY_IDF, w);
+            Some(ctx)
+        }
+    }
+
     fn span_near_weight(
         &self,
         searcher: &IndexSearcher,
         needs_scores: bool,
     ) -> Result<SpanNearWeight> {
         let mut sub_weights = Vec::with_capacity(self.clauses.len());
+        let mut ctx = None;
         for clause in &self.clauses {
             sub_weights.push(clause.span_weight(searcher, needs_scores)?);
+            ctx = Self::merge_idf_ctx(ctx, clause.ctx());
         }
         let term_contexts = if needs_scores {
             term_contexts(&sub_weights)
         } else {
             HashMap::new()
         };
-        SpanNearWeight::new(self, sub_weights, searcher, term_contexts)
+        SpanNearWeight::new(self, sub_weights, searcher, term_contexts, ctx)
     }
 }
 
@@ -173,9 +194,10 @@ impl SpanNearWeight {
         sub_weights: Vec<Box<SpanWeight>>,
         searcher: &IndexSearcher,
         terms: HashMap<Term, Arc<TermContext>>,
+        ctx: Option<KeyedContext>,
     ) -> Result<Self> {
         let field = query.field().to_string();
-        let sim_weight = build_sim_weight(query.field(), searcher, terms, None)?;
+        let sim_weight = build_sim_weight(query.field(), searcher, terms, ctx)?;
         Ok(SpanNearWeight {
             field,
             sim_weight,

@@ -34,16 +34,19 @@ pub struct PhraseQuery {
     terms: Vec<Term>,
     positions: Vec<i32>,
     slop: i32,
+    ctx: Option<KeyedContext>,
     ctxs: Option<Vec<KeyedContext>>,
 }
 
 impl PhraseQuery {
-    pub fn new<T: Into<Option<Vec<KeyedContext>>>>(
+    pub fn new<T: Into<Option<Vec<KeyedContext>>>, S: Into<Option<KeyedContext>>>(
         terms: Vec<Term>,
         positions: Vec<i32>,
         slop: i32,
+        ctx: S,
         ctxs: T,
     ) -> Result<PhraseQuery> {
+        let ctx = ctx.into();
         let ctxs = ctxs.into();
         debug_assert_eq!(
             terms.len(),
@@ -95,17 +98,19 @@ impl PhraseQuery {
             terms,
             positions,
             slop,
+            ctx,
             ctxs,
         })
     }
 
-    pub fn build<T: Into<Option<Vec<KeyedContext>>>>(
+    pub fn build<T: Into<Option<Vec<KeyedContext>>>, S: Into<Option<KeyedContext>>>(
         terms: Vec<Term>,
         slop: i32,
+        ctx: S,
         ctxs: T,
     ) -> Result<PhraseQuery> {
         let positions = Self::increment_positions(terms.len());
-        Self::new(terms, positions, slop, ctxs)
+        Self::new(terms, positions, slop, ctx, ctxs)
     }
 
     fn increment_positions(length: usize) -> Vec<i32> {
@@ -145,7 +150,8 @@ impl Query for PhraseQuery {
         };
 
         let similarity = searcher.similarity(&self.field, needs_scores);
-        let sim_weight = similarity.compute_weight(&collection_stats, &term_stats, None, 1.0f32);
+
+        let sim_weight = similarity.compute_weight(&collection_stats, &term_stats, self.ctx.as_ref(), 1.0f32);
 
         Ok(Box::new(PhraseWeight::new(
             self.field.clone(),

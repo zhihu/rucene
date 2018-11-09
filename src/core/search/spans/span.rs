@@ -26,6 +26,10 @@ pub trait SpanQuery: Query {
     fn field(&self) -> &str;
 
     fn span_weight(&self, searcher: &IndexSearcher, needs_scores: bool) -> Result<Box<SpanWeight>>;
+
+    fn ctx(&self) -> Option<KeyedContext> {
+        None
+    }
 }
 
 pub const NO_MORE_POSITIONS: i32 = i32::max_value();
@@ -356,6 +360,7 @@ pub trait SpanWeight: Weight {
             vec![],
         ))
     }
+
 }
 
 /// a raw pointer to spans as scorer

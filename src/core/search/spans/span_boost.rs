@@ -5,7 +5,7 @@ use core::search::spans::span::{build_sim_weight, PostingsFlag};
 use core::search::spans::span::{SpanQuery, SpanWeight, Spans};
 use core::search::term_query::TermQuery;
 use core::search::{Query, Scorer, SimWeight, Weight};
-use core::util::DocId;
+use core::util::{DocId, KeyedContext};
 
 use error::Result;
 
@@ -49,6 +49,10 @@ impl SpanQuery for SpanBoostQuery {
             let weight = self.span_boost_weight(searcher)?;
             Ok(Box::new(weight))
         }
+    }
+
+    fn ctx(&self) -> Option<KeyedContext> {
+        self.query.ctx()
     }
 }
 
