@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::fmt;
-use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 
 use core::index::multi_fields::MultiFields;
@@ -22,7 +21,6 @@ use core::util::thread_pool::{DefaultContext, ThreadPool, ThreadPoolBuilder};
 use core::util::DocId;
 use core::util::KeyedContext;
 use error::*;
-use std::time::SystemTime;
 
 /// Implements search over a single IndexReader.
 ///
@@ -108,7 +106,6 @@ pub struct IndexSearcher {
     #[allow(dead_code)]
     cache_policy: Arc<QueryCachingPolicy>,
     collection_statistics: RwLock<HashMap<String, CollectionStatistics>>,
-    pub term_contexts: RwLock<HashMap<String, Rc<TermContext>>>,
     thread_pool: Option<ThreadPool<DefaultContext>>,
 }
 
@@ -119,10 +116,6 @@ impl Drop for IndexSearcher {
         }
     }
 }
-
-unsafe impl Send for IndexSearcher {}
-
-unsafe impl Sync for IndexSearcher {}
 
 impl IndexSearcher {
     pub fn new(reader: Arc<IndexReader>) -> IndexSearcher {
@@ -140,7 +133,6 @@ impl IndexSearcher {
             query_cache: Box::new(LRUQueryCache::new(1000, max_doc)),
             cache_policy: Arc::new(UsageTrackingQueryCachingPolicy::default()),
             collection_statistics: RwLock::new(HashMap::new()),
-            term_contexts: RwLock::new(HashMap::new()),
             thread_pool: None,
         }
     }
@@ -298,44 +290,6 @@ impl IndexSearcher {
             i64::from(context.doc_freq),
             context.total_term_freq,
         )
-    }
-
-    pub fn term_state(&self, term: &Term) -> Result<Rc<TermContext>> {
-        let term_context: Rc<TermContext>;
-        let mut builded = false;
-        let term_key = format!("{}_{}", term.field, term.text()?);
-        if self.term_contexts.read().unwrap().contains_key(&term_key) {
-            builded = true;
-        }
-
-        let start = SystemTime::now();
-        if builded {
-            term_context = Rc::clone(self.term_contexts.read().unwrap().get(&term_key).unwrap());
-            println!(
-                "{} {} {} {:?}",
-                term.field,
-                term.text()?,
-                builded,
-                SystemTime::now().duration_since(start)
-            );
-        } else {
-            let mut context = TermContext::new(self.reader.as_ref());
-            context.build(self.reader.as_ref(), &term)?;
-            term_context = Rc::new(context);
-            self.term_contexts
-                .write()
-                .unwrap()
-                .insert(term_key.clone(), Rc::clone(&term_context));
-            println!(
-                "{} {} {} {:?}",
-                term.field,
-                term.text()?,
-                builded,
-                SystemTime::now().duration_since(start)
-            );
-        };
-
-        Ok(term_context)
     }
 
     pub fn collections_statistics(&self, field: &str) -> Result<CollectionStatistics> {

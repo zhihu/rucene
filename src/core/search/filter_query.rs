@@ -1,11 +1,11 @@
 use core::index::LeafReader;
+use core::search::{Query, Weight, Scorer};
+use core::search::{DocIterator, two_phase_next, FeatureResult};
 use core::search::explanation::Explanation;
 use core::search::searcher::IndexSearcher;
 use core::search::term_query::TermQuery;
-use core::search::{two_phase_next, DocIterator, FeatureResult};
-use core::search::{Query, Scorer, Weight};
-use core::util::context::IndexedContext;
 use core::util::DocId;
+use core::util::context::IndexedContext;
 use error::Result;
 
 use std::fmt;
@@ -27,8 +27,10 @@ pub struct FilterQuery {
 }
 
 impl FilterQuery {
-    pub fn new(query: Box<Query>, filters: Vec<Arc<FilterFunction>>) -> Self {
-        FilterQuery { query, filters }
+    pub fn new(query: Box<Query>, filters:  Vec<Arc<FilterFunction>>) -> Self {
+        FilterQuery {
+            query, filters
+        }
     }
 }
 
@@ -54,18 +56,9 @@ impl Query for FilterQuery {
 }
 
 impl fmt::Display for FilterQuery {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let filters_fmt: Vec<String> = self.filters
-            .as_slice()
-            .iter()
-            .map(|q| format!("{}", q))
-            .collect();
-        write!(
-            f,
-            "FilterQuery(query: {}, filter: {})",
-            &self.query,
-            filters_fmt.join(", ")
-        )
+    fn fmt(&self, f: & mut fmt::Formatter) -> fmt::Result {
+        let filters_fmt: Vec<String> = self.filters.as_slice().iter().map(|q| format!("{}", q)).collect();
+        write!(f, "FilterQuery(query: {}, filter: {})", &self.query, filters_fmt.join(", "))
     }
 }
 
@@ -81,7 +74,9 @@ impl Weight for FilterWeight {
         for filter in &self.filters {
             filters.push(filter.leaf_function(reader)?);
         }
-        Ok(Box::new(FilterScorer { scorer, filters }))
+        Ok(Box::new(FilterScorer {
+            scorer, filters
+        }))
     }
 
     fn query_type(&self) -> &'static str {
@@ -106,18 +101,9 @@ impl Weight for FilterWeight {
 }
 
 impl fmt::Display for FilterWeight {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let filters_fmt: Vec<String> = self.filters
-            .as_slice()
-            .iter()
-            .map(|q| format!("{}", q))
-            .collect();
-        write!(
-            f,
-            "FilterQuery(query: {}, filter: {})",
-            &self.weight,
-            filters_fmt.join(", ")
-        )
+    fn fmt(&self, f: & mut fmt::Formatter) -> fmt::Result {
+        let filters_fmt: Vec<String> = self.filters.as_slice().iter().map(|q| format!("{}", q)).collect();
+        write!(f, "FilterQuery(query: {}, filter: {})", &self.weight, filters_fmt.join(", "))
     }
 }
 
