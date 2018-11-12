@@ -5,7 +5,7 @@ use std::fmt;
 
 use core::index::term::TermState;
 use core::index::LeafReader;
-use core::index::{Term, TermContext};
+use core::index::Term;
 use core::index::{POSTINGS_FREQS, POSTINGS_NONE};
 use core::search::explanation::Explanation;
 use core::search::posting_iterator::{EmptyPostingIterator, PostingIterator};
@@ -34,12 +34,11 @@ impl TermQuery {
 impl Query for TermQuery {
     fn create_weight(&self, searcher: &IndexSearcher, needs_scores: bool) -> Result<Box<Weight>> {
         let reader = searcher.reader.as_ref();
-        let mut term_context = TermContext::new(reader);
-        term_context.build(reader, &self.term)?;
+        let term_context = searcher.term_state(&self.term)?;
         let max_doc = i64::from(reader.max_doc());
         let (term_stats, collection_stats) = if needs_scores {
             (
-                vec![searcher.term_statistics(self.term.clone(), &term_context)],
+                vec![searcher.term_statistics(self.term.clone(), term_context.as_ref())],
                 searcher.collections_statistics(&self.term.field)?,
             )
         } else {
@@ -57,7 +56,7 @@ impl Query for TermQuery {
         );
         Ok(Box::new(TermWeight::new(
             self.term.clone(),
-            term_context.states.into_iter().collect(),
+            term_context.term_states(),
             self.boost,
             similarity,
             sim_weight,
