@@ -10,7 +10,6 @@ use core::index::term::TermState;
 use core::index::term::{EmptyTermIterator, TermIterator};
 use core::index::LeafReader;
 use core::index::Term;
-use core::index::TermContext;
 use core::index::POSTINGS_POSITIONS;
 use core::search::conjunction::ConjunctionScorer;
 use core::search::explanation::Explanation;
@@ -133,11 +132,10 @@ impl Query for PhraseQuery {
         let mut term_stats: Vec<TermStatistics> = Vec::with_capacity(self.terms.len());
 
         for i in 0..self.terms.len() {
-            let mut term_context = TermContext::new(reader);
-            term_context.build(reader, &self.terms[i])?;
+            let term_context = searcher.term_state(&self.terms[i])?;
 
             term_stats.push(searcher.term_statistics(self.terms[i].clone(), &term_context));
-            term_states.push(term_context.states.into_iter().collect());
+            term_states.push(term_context.term_states());
         }
 
         let collection_stats = if needs_scores {
