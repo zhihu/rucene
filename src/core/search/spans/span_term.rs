@@ -33,10 +33,11 @@ impl SpanTermQuery {
 
 impl Query for SpanTermQuery {
     fn create_weight(&self, searcher: &IndexSearcher, needs_scores: bool) -> Result<Box<Weight>> {
-        let term_context = searcher.term_state(&self.term)?;
+        let mut context = TermContext::new(searcher.reader.as_ref());
+        context.build(searcher.reader.as_ref(), &self.term)?;
         Ok(Box::new(SpanTermWeight::new(
             self,
-            term_context,
+            Rc::new(context),
             searcher,
             self.ctx.clone(),
             needs_scores,
@@ -62,10 +63,11 @@ impl SpanQuery for SpanTermQuery {
     }
 
     fn span_weight(&self, searcher: &IndexSearcher, needs_scores: bool) -> Result<Box<SpanWeight>> {
-        let term_context = searcher.term_state(&self.term)?;
+        let mut context = TermContext::new(searcher.reader.as_ref());
+        context.build(searcher.reader.as_ref(), &self.term)?;
         Ok(Box::new(SpanTermWeight::new(
             self,
-            term_context,
+            Rc::new(context),
             searcher,
             self.ctx.clone(),
             needs_scores,

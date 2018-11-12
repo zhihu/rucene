@@ -1,5 +1,6 @@
 use error::ErrorKind::*;
-use error::*;
+use error::Result;
+
 use std::mem::transmute;
 use std::sync::Arc;
 
@@ -12,8 +13,6 @@ pub trait TermState {
     fn ord(&self) -> i64;
 
     fn serialize(&self) -> Vec<u8>;
-
-    fn clone_to(&self) -> Box<TermState>;
 }
 
 /// An ordinal based `TermState`
@@ -30,10 +29,6 @@ impl TermState for OrdTermState {
     fn serialize(&self) -> Vec<u8> {
         let r: [u8; 8] = unsafe { transmute(self.ord.to_be()) };
         r.to_vec()
-    }
-
-    fn clone_to(&self) -> Box<TermState> {
-        Box::new(OrdTermState { ord: self.ord })
     }
 }
 

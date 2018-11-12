@@ -1,9 +1,10 @@
-use serde;
-use serde::ser::SerializeMap;
 use std::cmp::Ordering;
-use std::collections::HashMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
+use std::collections::HashMap;
+use serde;
+use serde::ser::SerializeMap;
+
 
 #[derive(Debug, Clone, Deserialize)]
 pub enum VariantValue {
@@ -16,7 +17,7 @@ pub enum VariantValue {
     Double(f64),
     VString(String), // SHOULD BORROW ?
     Binary(Vec<u8>), // SHOULD BORROW ?
-    Map(HashMap<String, VariantValue>),
+    Map(HashMap<String, VariantValue>)
 }
 
 impl VariantValue {
@@ -76,10 +77,10 @@ impl VariantValue {
     }
 
     pub fn get_map(&self) -> Option<&HashMap<String, VariantValue>> {
-        match self {
-            VariantValue::Map(m) => Some(m),
-            _ => None,
-        }
+       match self {
+           VariantValue::Map(m) => Some(m),
+           _ => None,
+       }
     }
 }
 
@@ -103,10 +104,7 @@ impl fmt::Display for VariantValue {
 }
 
 impl serde::Serialize for VariantValue {
-    fn serialize<S>(&self, serializer: S) -> ::std::result::Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
+    fn serialize<S>(&self, serializer: S) -> ::std::result::Result<S::Ok, S::Error> where S: serde::Serializer {
         match *self {
             VariantValue::Bool(b) => serializer.serialize_bool(b),
             VariantValue::Char(c) => serializer.serialize_char(c),
@@ -140,7 +138,7 @@ impl Hash for VariantValue {
             VariantValue::Double(ref d) => d.to_bits().hash(state),
             VariantValue::VString(ref s) => s.hash(state),
             VariantValue::Binary(ref v) => v.hash(state),
-            _ => (),
+            _ => ()
         }
     }
 }
@@ -211,7 +209,9 @@ impl PartialEq for VariantValue {
                     false
                 }
             }
-            _ => unreachable!(),
+            _ => {
+                unreachable!()
+            }
         }
     }
 }

@@ -5,10 +5,10 @@ use std::collections::HashMap;
 use core::index::LeafReader;
 use core::search::explanation::Explanation;
 use core::search::searcher::IndexSearcher;
+use core::search::FeatureResult;
 use core::search::sort_field::SortFieldType;
 use core::search::top_docs::ScoreDocHit;
 use core::search::top_docs::TopDocs;
-use core::search::FeatureResult;
 use core::search::{BatchScorer, RescoreRequest, Rescorer, Weight};
 use core::util::DocId;
 use core::util::{IndexedContext, VariantValue};
@@ -493,23 +493,22 @@ impl Rescorer for QueryRescorer {
             hits.sort_by(ScoreDocHit::order_by_doc);
         }
 
-        let (score_features, previous_scores) =
-            self.score_features(searcher, rescore_req, top_docs)?;
+        let (score_features, previous_scores) = self.score_features(searcher, rescore_req, top_docs)?;
         // only support one function (simple_ltr) in rescore request for now
         let mut result_features = Vec::with_capacity(score_features.len());
 
         for (feature, &score) in score_features.iter().zip(previous_scores.iter()) {
             match feature {
-                Some(function_features) => {
+                Some(function_features) =>  {
                     let mut feature_map = HashMap::new();
                     for f in function_features.iter() {
                         feature_map.extend(f.extra_params.clone());
                     }
                     feature_map.insert("previous_score".to_string(), VariantValue::from(score));
                     result_features.push(feature_map);
-                }
+                },
                 None => {
-                    warn!("query did not match this doc");
+                   warn!("query did not match this doc");
                 }
             }
         }

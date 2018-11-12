@@ -1,5 +1,4 @@
 mod per_field;
-
 pub use self::per_field::*;
 
 pub mod blocktree;
@@ -15,7 +14,6 @@ pub mod reader;
 pub mod writer;
 
 mod producer;
-
 pub use self::producer::*;
 
 use std::sync::Arc;
@@ -192,10 +190,6 @@ impl TermState for BlockTermState {
             .unwrap();
         debug_assert!(buffer.len() == BLOCK_TERM_STATE_SERIALIZED_SIZE);
         buffer
-    }
-
-    fn clone_to(&self) -> Box<TermState> {
-        Box::new(self.clone())
     }
 }
 
