@@ -71,6 +71,10 @@ impl SpanQuery for SpanTermQuery {
             needs_scores,
         )?))
     }
+
+    fn ctx(&self) -> Option<KeyedContext> {
+        self.ctx.clone()
+    }
 }
 
 impl fmt::Display for SpanTermQuery {

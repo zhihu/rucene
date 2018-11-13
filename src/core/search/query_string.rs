@@ -214,7 +214,7 @@ impl QueryStringQueryBuilder {
                     .map(|term| Term::new(fb.0.clone(), term.as_bytes().to_vec()))
                     .collect();
                 queries.push(BoostQuery::build(
-                    Box::new(PhraseQuery::build(terms, slop, None)?),
+                    Box::new(PhraseQuery::build(terms, slop, None, None)?),
                     fb.1,
                 ))
             }
