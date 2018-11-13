@@ -13,7 +13,7 @@ use error::{ErrorKind, Result};
 
 use std::collections::HashMap;
 use std::fmt;
-use std::rc::Rc;
+use std::sync::Arc;
 
 const SPAN_TERM_QUERY: &str = "span_term";
 
@@ -33,11 +33,10 @@ impl SpanTermQuery {
 
 impl Query for SpanTermQuery {
     fn create_weight(&self, searcher: &IndexSearcher, needs_scores: bool) -> Result<Box<Weight>> {
-        let mut context = TermContext::new(searcher.reader.as_ref());
-        context.build(searcher.reader.as_ref(), &self.term)?;
+        let term_context = searcher.term_state(&self.term)?;
         Ok(Box::new(SpanTermWeight::new(
             self,
-            Rc::new(context),
+            term_context,
             searcher,
             self.ctx.clone(),
             needs_scores,
@@ -63,11 +62,10 @@ impl SpanQuery for SpanTermQuery {
     }
 
     fn span_weight(&self, searcher: &IndexSearcher, needs_scores: bool) -> Result<Box<SpanWeight>> {
-        let mut context = TermContext::new(searcher.reader.as_ref());
-        context.build(searcher.reader.as_ref(), &self.term)?;
+        let term_context = searcher.term_state(&self.term)?;
         Ok(Box::new(SpanTermWeight::new(
             self,
-            Rc::new(context),
+            term_context,
             searcher,
             self.ctx.clone(),
             needs_scores,
@@ -198,20 +196,20 @@ const TERM_OPS_PER_POS: i32 = 7;
 pub struct SpanTermWeight {
     term: Term,
     sim_weight: Option<Box<SimWeight>>,
-    term_context: Rc<TermContext>,
+    term_context: Arc<TermContext>,
 }
 
 impl SpanTermWeight {
     pub fn new(
         query: &SpanTermQuery,
-        term_context: Rc<TermContext>,
+        term_context: Arc<TermContext>,
         searcher: &IndexSearcher,
         ctx: Option<KeyedContext>,
         needs_scores: bool,
     ) -> Result<Self> {
         let mut term_contexts = HashMap::new();
         if needs_scores {
-            term_contexts.insert(query.term.clone(), Rc::clone(&term_context));
+            term_contexts.insert(query.term.clone(), Arc::clone(&term_context));
         }
         let sim_weight = build_sim_weight(query.term.field(), searcher, term_contexts, ctx)?;
         Ok(SpanTermWeight {
@@ -279,8 +277,8 @@ impl SpanWeight for SpanTermWeight {
         Ok(None)
     }
 
-    fn extract_term_contexts(&self, contexts: &mut HashMap<Term, Rc<TermContext>>) {
-        contexts.insert(self.term.clone(), Rc::clone(&self.term_context));
+    fn extract_term_contexts(&self, contexts: &mut HashMap<Term, Arc<TermContext>>) {
+        contexts.insert(self.term.clone(), Arc::clone(&self.term_context));
     }
 }
 

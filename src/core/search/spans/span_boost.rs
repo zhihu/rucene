@@ -12,7 +12,7 @@ use error::Result;
 use std::collections::HashMap;
 use std::f32;
 use std::fmt;
-use std::rc::Rc;
+use std::sync::Arc;
 
 const SPAN_BOOST_QUERY: &str = "span_boost";
 
@@ -30,10 +30,10 @@ impl SpanBoostQuery {
 
     fn span_boost_weight(&self, searcher: &IndexSearcher) -> Result<SpanBoostWeight> {
         let mut weight = self.query.span_weight(searcher, true)?;
-        let mut terms = HashMap::new();
-        weight.extract_term_contexts(&mut terms);
+        let mut term_contexts = HashMap::new();
+        weight.extract_term_contexts(&mut term_contexts);
         weight.do_normalize(1.0, self.boost);
-        SpanBoostWeight::new(self, terms, searcher, true)
+        SpanBoostWeight::new(self, term_contexts, searcher, true)
     }
 }
 
@@ -90,7 +90,7 @@ pub struct SpanBoostWeight {
 impl SpanBoostWeight {
     pub fn new(
         query: &SpanBoostQuery,
-        term_contexts: HashMap<Term, Rc<TermContext>>,
+        term_contexts: HashMap<Term, Arc<TermContext>>,
         searcher: &IndexSearcher,
         needs_scores: bool,
     ) -> Result<Self> {
@@ -125,7 +125,7 @@ impl SpanWeight for SpanBoostWeight {
         self.weight.get_spans(reader, required_postings)
     }
 
-    fn extract_term_contexts(&self, contexts: &mut HashMap<Term, Rc<TermContext>>) {
+    fn extract_term_contexts(&self, contexts: &mut HashMap<Term, Arc<TermContext>>) {
         self.weight.extract_term_contexts(contexts)
     }
 }

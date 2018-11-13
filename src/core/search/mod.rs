@@ -1,9 +1,9 @@
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::fmt;
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};
 use std::i32;
-use std::collections::HashMap;
 
 use core::index::LeafReader;
 use core::search::explanation::Explanation;
