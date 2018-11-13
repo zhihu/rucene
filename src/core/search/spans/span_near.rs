@@ -14,7 +14,7 @@ use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::collections::HashMap;
 use std::fmt;
-use std::rc::Rc;
+use std::sync::Arc;
 
 pub struct SpanNearQueryBuilder {
     ordered: bool,
@@ -172,7 +172,7 @@ impl SpanNearWeight {
         query: &SpanNearQuery,
         sub_weights: Vec<Box<SpanWeight>>,
         searcher: &IndexSearcher,
-        terms: HashMap<Term, Rc<TermContext>>,
+        terms: HashMap<Term, Arc<TermContext>>,
     ) -> Result<Self> {
         let field = query.field().to_string();
         let sim_weight = build_sim_weight(query.field(), searcher, terms, None)?;
@@ -224,7 +224,7 @@ impl SpanWeight for SpanNearWeight {
         Ok(None)
     }
 
-    fn extract_term_contexts(&self, contexts: &mut HashMap<Term, Rc<TermContext>>) {
+    fn extract_term_contexts(&self, contexts: &mut HashMap<Term, Arc<TermContext>>) {
         for weight in &self.sub_weights {
             weight.extract_term_contexts(contexts)
         }
@@ -847,7 +847,7 @@ impl SpanWeight for SpanGapWeight {
         Ok(Some(Box::new(GapSpans::new(self.width))))
     }
 
-    fn extract_term_contexts(&self, _contexts: &mut HashMap<Term, Rc<TermContext>>) {}
+    fn extract_term_contexts(&self, _contexts: &mut HashMap<Term, Arc<TermContext>>) {}
 }
 
 impl Weight for SpanGapWeight {

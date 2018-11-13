@@ -10,9 +10,9 @@ use core::util::{DocId, KeyedContext};
 use error::{ErrorKind, Result};
 
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::Arc;
 
-pub fn term_contexts(weights: &[Box<SpanWeight>]) -> HashMap<Term, Rc<TermContext>> {
+pub fn term_contexts(weights: &[Box<SpanWeight>]) -> HashMap<Term, Arc<TermContext>> {
     let mut terms = HashMap::new();
     for w in weights {
         w.extract_term_contexts(&mut terms);
@@ -254,7 +254,7 @@ impl DocIterator for SpanScorer {
 pub fn build_sim_weight(
     field: &str,
     searcher: &IndexSearcher,
-    term_contexts: HashMap<Term, Rc<TermContext>>,
+    term_contexts: HashMap<Term, Arc<TermContext>>,
     ctx: Option<KeyedContext>,
 ) -> Result<Option<Box<SimWeight>>> {
     if field.is_empty() || term_contexts.is_empty() {
@@ -288,7 +288,7 @@ pub trait SpanWeight: Weight {
     ) -> Result<Option<Box<Spans>>>;
 
     /// Collect all TermContexts used by this Weight
-    fn extract_term_contexts(&self, contexts: &mut HashMap<Term, Rc<TermContext>>);
+    fn extract_term_contexts(&self, contexts: &mut HashMap<Term, Arc<TermContext>>);
 
     fn do_create_scorer(&self, reader: &LeafReader) -> Result<Box<Scorer>> {
         if let Some(spans) = self.get_spans(reader, &PostingsFlag::Positions)? {

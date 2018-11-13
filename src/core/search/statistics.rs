@@ -37,8 +37,9 @@ pub struct TermStatistics {
 
 impl TermStatistics {
     pub fn new(term: Vec<u8>, doc_freq: i64, total_term_freq: i64) -> TermStatistics {
-        assert!(doc_freq >= 0);
-        assert!(total_term_freq == -1 || total_term_freq >= doc_freq);
+        debug_assert!(doc_freq >= 0);
+        debug_assert!(total_term_freq == -1 || total_term_freq >= doc_freq);
+
         TermStatistics {
             term,
             doc_freq,

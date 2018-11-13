@@ -106,6 +106,7 @@ pub struct IndexSearcher {
     #[allow(dead_code)]
     cache_policy: Arc<QueryCachingPolicy>,
     collection_statistics: RwLock<HashMap<String, CollectionStatistics>>,
+    pub term_contexts: RwLock<HashMap<String, Arc<TermContext>>>,
     thread_pool: Option<ThreadPool<DefaultContext>>,
 }
 
@@ -116,6 +117,10 @@ impl Drop for IndexSearcher {
         }
     }
 }
+
+unsafe impl Send for IndexSearcher {}
+
+unsafe impl Sync for IndexSearcher {}
 
 impl IndexSearcher {
     pub fn new(reader: Arc<IndexReader>) -> IndexSearcher {
@@ -133,6 +138,7 @@ impl IndexSearcher {
             query_cache: Box::new(LRUQueryCache::new(1000, max_doc)),
             cache_policy: Arc::new(UsageTrackingQueryCachingPolicy::default()),
             collection_statistics: RwLock::new(HashMap::new()),
+            term_contexts: RwLock::new(HashMap::new()),
             thread_pool: None,
         }
     }
@@ -290,6 +296,29 @@ impl IndexSearcher {
             i64::from(context.doc_freq),
             context.total_term_freq,
         )
+    }
+
+    pub fn term_state(&self, term: &Term) -> Result<Arc<TermContext>> {
+        let term_context: Arc<TermContext>;
+        let mut builded = false;
+        let term_key = format!("{}_{}", term.field, term.text()?);
+        if self.term_contexts.read().unwrap().contains_key(&term_key) {
+            builded = true;
+        }
+
+        if builded {
+            term_context = Arc::clone(self.term_contexts.read().unwrap().get(&term_key).unwrap());
+        } else {
+            let mut context = TermContext::new(self.reader.as_ref());
+            context.build(self.reader.as_ref(), &term)?;
+            term_context = Arc::new(context);
+            self.term_contexts
+                .write()
+                .unwrap()
+                .insert(term_key.clone(), Arc::clone(&term_context));
+        };
+
+        Ok(term_context)
     }
 
     pub fn collections_statistics(&self, field: &str) -> Result<CollectionStatistics> {

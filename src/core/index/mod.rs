@@ -82,12 +82,14 @@ use core::index::stored_field_visitor::StoredFieldVisitor;
 use core::index::term::TermState;
 use core::store::{DirectoryRc, IOContext};
 use core::util::{to_base36, Bits, DocId, Version};
-use error::Result;
+use error::*;
 
 pub mod field_info;
+
 pub use self::field_info::*;
 
 mod leaf_reader;
+
 pub use self::leaf_reader::*;
 
 pub mod term;
@@ -318,36 +320,36 @@ impl Serialize for SegmentInfo {
 /// DocumentsWriterDeleteQueue
 pub struct BufferedUpdates {
     // num_term_deletes: AtomicIsize,
-// num_numeric_updates: AtomicIsize,
-// num_binary_updates: AtomicIsize,
-//
-// TODO: rename thes three: put "deleted" prefix in front:
-// terms: HashMap<Term, i32>,
-// queries: HashMap<Query, i32>,
-// doc_ids: Vec<i32>,
-//
-// Map<dvField,Map<updateTerm,NumericUpdate>>
-// For each field we keep an ordered list of NumericUpdates, key'd by the
-// update Term. LinkedHashMap guarantees we will later traverse the map in
-// insertion order (so that if two terms affect the same document, the last
-// one that came in wins), and helps us detect faster if the same Term is
-// used to update the same field multiple times (so we later traverse it
-// only once).
-// numeric_updates: HashMap<String, HashMap<Term, NumericDocValuesUpdate>>,
-//
-// Map<dvField,Map<updateTerm,BinaryUpdate>>
-// For each field we keep an ordered list of BinaryUpdates, key'd by the
-// update Term. LinkedHashMap guarantees we will later traverse the map in
-// insertion order (so that if two terms affect the same document, the last
-// one that came in wins), and helps us detect faster if the same Term is
-// used to update the same field multiple times (so we later traverse it
-// only once).
-// binary_update: HashMap<String, HashMap<Term, BinaryDocValuesUpdate>>,
-//
-// bytes_used: AtomicI64,
-// gen: i64,
-// segmentName: String,
-//
+    // num_numeric_updates: AtomicIsize,
+    // num_binary_updates: AtomicIsize,
+    //
+    // TODO: rename thes three: put "deleted" prefix in front:
+    // terms: HashMap<Term, i32>,
+    // queries: HashMap<Query, i32>,
+    // doc_ids: Vec<i32>,
+    //
+    // Map<dvField,Map<updateTerm,NumericUpdate>>
+    // For each field we keep an ordered list of NumericUpdates, key'd by the
+    // update Term. LinkedHashMap guarantees we will later traverse the map in
+    // insertion order (so that if two terms affect the same document, the last
+    // one that came in wins), and helps us detect faster if the same Term is
+    // used to update the same field multiple times (so we later traverse it
+    // only once).
+    // numeric_updates: HashMap<String, HashMap<Term, NumericDocValuesUpdate>>,
+    //
+    // Map<dvField,Map<updateTerm,BinaryUpdate>>
+    // For each field we keep an ordered list of BinaryUpdates, key'd by the
+    // update Term. LinkedHashMap guarantees we will later traverse the map in
+    // insertion order (so that if two terms affect the same document, the last
+    // one that came in wins), and helps us detect faster if the same Term is
+    // used to update the same field multiple times (so we later traverse it
+    // only once).
+    // binary_update: HashMap<String, HashMap<Term, BinaryDocValuesUpdate>>,
+    //
+    // bytes_used: AtomicI64,
+    // gen: i64,
+    // segmentName: String,
+    //
 }
 
 /// A Term represents a word from text.  This is the unit of search.  It is
@@ -411,7 +413,7 @@ impl TermContext {
     }
 
     pub fn build(&mut self, reader: &IndexReader, term: &Term) -> Result<()> {
-        for reader in &reader.leaves() {
+        for reader in reader.leaves() {
             if let Some(terms) = reader.terms(&term.field)? {
                 let mut terms_enum = terms.iterator()?;
                 if terms_enum.seek_exact(&term.bytes)? {
@@ -444,6 +446,15 @@ impl TermContext {
             }
         }
         None
+    }
+
+    pub fn term_states(&self) -> HashMap<DocId, Box<TermState>> {
+        let mut term_states: HashMap<DocId, Box<TermState>> = HashMap::new();
+        for (doc_base, term_state) in &self.states {
+            term_states.insert(*doc_base, term_state.clone_to());
+        }
+
+        term_states
     }
 }
 
