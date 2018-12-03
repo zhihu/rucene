@@ -1,4 +1,3 @@
-use std::collections::hash_map::Entry as HashMapEntry;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
@@ -61,6 +60,7 @@ impl DocValuesFormat for PerFieldDocValuesFormat {
 
 pub struct DocValuesFieldsReader {
     fields: BTreeMap<String, DocValuesProducerRef>,
+    formats: HashMap<String, DocValuesProducerRef>,
 }
 
 impl DocValuesFieldsReader {
@@ -72,38 +72,33 @@ impl DocValuesFieldsReader {
                 continue;
             }
             if let Some(format) = info.attributes.get(PER_FIELD_FORMAT_KEY) {
-                let suffix = info.attributes.get(PER_FIELD_SUFFIX_KEY);
-                match suffix {
-                    None => bail!(IllegalState(format!(
+                if let Some(suffix) = info.attributes.get(PER_FIELD_SUFFIX_KEY) {
+                    let dv_format = format::doc_values_format_for_name(format)?;
+                    let segment_suffix =
+                        get_full_segment_suffix(&state.segment_suffix, get_suffix(format, suffix));
+
+                    if !formats.contains_key(&segment_suffix) {
+                        let segment_read_state =
+                            SegmentReadState::with_suffix(state, &segment_suffix);
+                        formats.insert(
+                            segment_suffix.clone(),
+                            Arc::from(dv_format.fields_producer(&segment_read_state)?),
+                        );
+                    }
+                    fields.insert(
+                        name.to_string(),
+                        Arc::clone(formats.get(&segment_suffix).as_ref().unwrap()),
+                    );
+                } else {
+                    bail!(IllegalState(format!(
                         "Missing attribute {} for field: {}",
                         PER_FIELD_SUFFIX_KEY, name
-                    ))),
-                    Some(suffix) => {
-                        let dv_format = format::doc_values_format_for_name(format)?;
-                        let segment_suffix = get_full_segment_suffix(
-                            &state.segment_suffix,
-                            get_suffix(format, suffix),
-                        );
-
-                        match formats.entry(segment_suffix.clone()) {
-                            HashMapEntry::Occupied(occupied) => {
-                                fields.insert(name.to_string(), Arc::clone(occupied.get()));
-                            }
-                            HashMapEntry::Vacant(mut vacant) => {
-                                let segment_read_state =
-                                    SegmentReadState::with_suffix(state, &segment_suffix);
-                                let dv_producer = dv_format.fields_producer(&segment_read_state)?;
-                                let dv_producer = Arc::from(dv_producer);
-                                vacant.insert(Arc::clone(&dv_producer));
-                                fields.insert(name.to_string(), dv_producer);
-                            }
-                        }
-                    }
+                    )));
                 }
             }
         }
 
-        Ok(DocValuesFieldsReader { fields })
+        Ok(DocValuesFieldsReader { fields, formats })
     }
 }
 
@@ -169,9 +164,9 @@ impl DocValuesProducer for DocValuesFieldsReader {
     }
 
     fn check_integrity(&self) -> Result<()> {
-        // for format in self.formats.values() {
-        // format.lock()?.check_integrity()?;
-        // }
+        for format in self.formats.values() {
+            format.check_integrity()?;
+        }
         Ok(())
     }
 }

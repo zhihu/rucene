@@ -53,6 +53,7 @@ impl PostingsFormat for PerFieldPostingsFormat {
 
 struct PerFieldFieldsReader {
     fields: BTreeMap<String, FieldsProducerRef>,
+    formats: HashMap<String, FieldsProducerRef>,
     segment: String,
 }
 
@@ -66,16 +67,18 @@ impl PerFieldFieldsReader {
             }
             if let Some(format) = info.attributes.get(PER_FIELD_FORMAT_KEY) {
                 if let Some(suffix) = info.attributes.get(PER_FIELD_SUFFIX_KEY) {
-                    if !formats.contains_key(suffix) {
-                        formats.insert(suffix.clone(), postings_format_for_name(format)?);
-                    }
-                    let postings_format = formats.get(suffix);
-                    let postings_format = postings_format.as_ref().unwrap();
+                    let postings_format = postings_format_for_name(format)?;
                     let suffix = get_suffix(format, suffix);
-                    let state = SegmentReadState::with_suffix(state, &suffix);
+                    if !formats.contains_key(&suffix) {
+                        let state = SegmentReadState::with_suffix(state, &suffix);
+                        formats.insert(
+                            suffix.clone(),
+                            Arc::from(postings_format.fields_producer(&state)?),
+                        );
+                    }
                     fields.insert(
                         name.clone(),
-                        Arc::from(postings_format.fields_producer(&state)?),
+                        Arc::clone(formats.get(&suffix).as_ref().unwrap()),
                     );
                 } else {
                     bail!(
@@ -87,7 +90,11 @@ impl PerFieldFieldsReader {
             }
         }
         let segment = state.segment_info.name.clone();
-        Ok(PerFieldFieldsReader { fields, segment })
+        Ok(PerFieldFieldsReader {
+            fields,
+            formats,
+            segment,
+        })
     }
 
     fn terms_impl(&self, field: &str) -> Result<Option<TermsRef>> {
@@ -110,7 +117,7 @@ impl fmt::Display for PerFieldFieldsReader {
 
 impl FieldsProducer for PerFieldFieldsReader {
     fn check_integrity(&self) -> Result<()> {
-        for producer in self.fields.values() {
+        for producer in self.formats.values() {
             producer.check_integrity()?;
         }
         Ok(())
