@@ -6,7 +6,7 @@ use core::search::spans::span::{term_contexts, ConjunctionSpanBase, ConjunctionS
 use core::search::spans::span::{SpanCollector, SpanQuery, SpanWeight, Spans};
 use core::search::term_query::TermQuery;
 use core::search::{DocIterator, Query, Scorer, SimWeight, Weight, NO_MORE_DOCS};
-use core::util::{DocId, KeyedContext, BM25_SIMILARITY_IDF};
+use core::util::{BM25_SIMILARITY_IDF, DocId, KeyedContext};
 
 use error::{ErrorKind, Result};
 
@@ -98,20 +98,18 @@ impl SpanNearQuery {
         })
     }
 
-    fn merge_idf_ctx(ctx1: Option<KeyedContext>, ctx2: Option<KeyedContext>) -> Option<KeyedContext> {
+    fn merge_idf_ctx(
+        ctx1: Option<KeyedContext>,
+        ctx2: Option<KeyedContext>,
+    ) -> Option<KeyedContext> {
         if ctx1.is_none() {
             ctx2
         } else if ctx2.is_none() {
             ctx1
         } else {
             let mut ctx = KeyedContext::default();
-            let w = ctx1.map_or(
-                0f32,
-                |v| v.get_float(BM25_SIMILARITY_IDF).unwrap_or(0f32))
-                +
-                ctx2.map_or(
-                    0f32,
-                    |v| v.get_float(BM25_SIMILARITY_IDF).unwrap_or(0f32));
+            let w = ctx1.map_or(0f32, |v| v.get_float(BM25_SIMILARITY_IDF).unwrap_or(0f32))
+                + ctx2.map_or(0f32, |v| v.get_float(BM25_SIMILARITY_IDF).unwrap_or(0f32));
             ctx.set_float(BM25_SIMILARITY_IDF, w);
             Some(ctx)
         }

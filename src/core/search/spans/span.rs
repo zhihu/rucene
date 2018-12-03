@@ -360,7 +360,6 @@ pub trait SpanWeight: Weight {
             vec![],
         ))
     }
-
 }
 
 /// a raw pointer to spans as scorer
