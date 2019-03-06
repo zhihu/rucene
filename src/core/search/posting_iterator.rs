@@ -2,6 +2,8 @@ use core::search::{DocIterator, Payload, NO_MORE_DOCS};
 use core::util::DocId;
 use error::Result;
 
+use std::any::Any;
+
 /// Flag to pass to {@link TermsEnum#postings(PostingsEnum, int)} if you don't
 /// require per-document postings in the returned enum.
 pub const POSTING_ITERATOR_FLAG_NONE: i16 = 0;
@@ -61,6 +63,9 @@ pub trait PostingIterator: DocIterator {
     /// (neither members of the returned BytesRef nor bytes
     /// in the byte[]). */
     fn payload(&self) -> Result<Payload>;
+
+    /// use for type cast
+    fn as_any_mut(&mut self) -> &mut Any;
 }
 
 #[derive(Clone)]
@@ -117,5 +122,9 @@ impl PostingIterator for EmptyPostingIterator {
 
     fn payload(&self) -> Result<Payload> {
         Ok(Payload::new())
+    }
+
+    fn as_any_mut(&mut self) -> &mut Any {
+        self
     }
 }

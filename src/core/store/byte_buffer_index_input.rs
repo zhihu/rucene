@@ -84,9 +84,7 @@ impl ByteBufferIndexInput {
 
     pub fn get_slice_clone(&self, pos: i64, len: usize) -> Result<Vec<u8>> {
         let slice = self.get_slice(pos, len)?;
-        let mut vec = Vec::with_capacity(len);
-        vec.extend(slice.iter());
-        Ok(vec)
+        Ok(slice.to_vec())
     }
 
     fn clone_impl(&self) -> ByteBufferIndexInput {
@@ -147,6 +145,10 @@ impl IndexInput for ByteBufferIndexInput {
 
     fn random_access_slice(&self, _offset: i64, _length: i64) -> Result<Box<RandomAccessInput>> {
         Ok(Box::new(self.clone_impl()))
+    }
+
+    fn as_data_input(&mut self) -> &mut DataInput {
+        self
     }
 }
 
@@ -252,6 +254,10 @@ impl<'a> IndexInput for ByteSliceIndexInput<'a> {
 
     fn random_access_slice(&self, _offset: i64, _length: i64) -> Result<Box<RandomAccessInput>> {
         unimplemented!()
+    }
+
+    fn as_data_input(&mut self) -> &mut DataInput {
+        self
     }
 }
 

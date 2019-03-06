@@ -1,7 +1,7 @@
 use std::io;
 use std::io::Read;
 
-use core::codec::lucene50::posting::BLOCK_SIZE;
+use core::codec::lucene50::posting_format::BLOCK_SIZE;
 use core::store::DataInput;
 use core::store::IndexInput;
 use core::store::RandomAccessInput;
@@ -59,6 +59,10 @@ impl IndexInput for SkipBuffer {
 
     fn random_access_slice(&self, _offset: i64, _length: i64) -> Result<Box<RandomAccessInput>> {
         unimplemented!()
+    }
+
+    fn as_data_input(&mut self) -> &mut DataInput {
+        self
     }
 }
 
@@ -207,13 +211,13 @@ impl Lucene50SkipReader {
 
     pub fn new(
         skip_stream: Box<IndexInput>,
-        max_skip_levels: i32,
+        max_skip_levels: usize,
         has_pos: bool,
         has_offsets: bool,
         has_payloads: bool,
     ) -> Lucene50SkipReader {
         // fields for MultiLevelSkipReader part
-        let max_number_of_skip_levels = max_skip_levels as usize;
+        let max_number_of_skip_levels = max_skip_levels;
         let skip_pointer = vec![0 as i64; max_number_of_skip_levels];
         let child_pointer = vec![0 as i64; max_number_of_skip_levels];
         let num_skipped = vec![0 as i64; max_number_of_skip_levels];
@@ -236,7 +240,7 @@ impl Lucene50SkipReader {
         let skip_interval = skip_intervals;
 
         // fields for Lucene50SkipReader part
-        let max_skip_levels = max_skip_levels as usize;
+        let max_skip_levels = max_skip_levels;
         let doc_pointer = vec![0_i64; max_skip_levels];
         let mut pos_pointer = None;
         let mut pos_buffer_upto = None;
@@ -450,7 +454,7 @@ impl Lucene50SkipReader {
             self.number_of_skip_levels = 1 + math::log(
                 i64::from(self.doc_count) / self.skip_interval[0],
                 self.skip_multiplier,
-            )?;
+            );
         }
 
         if self.number_of_skip_levels > self.max_number_of_skip_levels {

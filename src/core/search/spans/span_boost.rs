@@ -73,6 +73,10 @@ impl Query for SpanBoostQuery {
     fn query_type(&self) -> &'static str {
         SPAN_BOOST_QUERY
     }
+
+    fn as_any(&self) -> &::std::any::Any {
+        self
+    }
 }
 
 impl fmt::Display for SpanBoostQuery {

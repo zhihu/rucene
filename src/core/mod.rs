@@ -1,3 +1,4 @@
+pub mod analysis;
 pub mod attribute;
 pub mod codec;
 pub mod doc;

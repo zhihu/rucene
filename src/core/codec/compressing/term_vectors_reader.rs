@@ -1,30 +1,49 @@
 use core::codec::codec_util::index_header_length;
 use core::codec::codec_util::*;
-use core::codec::compressing::stored_fields::CompressingStoredFieldsIndexReader;
+use core::codec::compressing::{CompressingStoredFieldsIndexReader, CompressingTermVectorsWriter};
 use core::codec::compressing::{CompressionMode, Decompress, Decompressor};
 use core::codec::format::TermVectorsFormat;
 use core::codec::reader::TermVectorsReader;
 use core::codec::writer::TermVectorsWriter;
-use core::index::field_info::FieldInfos;
-use core::index::field_info::Fields;
 use core::index::segment_file_name;
-use core::index::term::{SeekStatus, TermIterator, TermState, Terms, TermsRef};
+use core::index::FieldInfos;
+use core::index::Fields;
 use core::index::SegmentInfo;
+use core::index::{SeekStatus, TermIterator, TermState, Terms, TermsRef};
 use core::search::posting_iterator::PostingIterator;
 use core::search::{DocIterator, Payload, NO_MORE_DOCS};
-use core::store::DirectoryRc;
-use core::store::{IOContext, IndexInput};
+use core::store::{DirectoryRc, IOContext, IndexInput};
 use core::util::bit_util::UnsignedShift;
-use core::util::packed_misc::get_mutable_by_ratio;
-use core::util::packed_misc::get_reader_no_header;
-use core::util::packed_misc::ReaderIterator;
-use core::util::packed_misc::{get_reader_iterator_no_header, unsigned_bits_required};
-use core::util::packed_misc::{BlockPackedReaderIterator, Format, Mutable, Reader};
-use core::util::packed_misc::{OffsetAndLength, COMPACT};
+use core::util::packed_misc::{get_mutable_by_ratio, get_reader_iterator_no_header,
+                              get_reader_no_header, unsigned_bits_required};
+use core::util::packed_misc::{BlockPackedReaderIterator, Format, Mutable, OffsetAndLength, Reader,
+                              ReaderIterator, COMPACT};
 use core::util::DocId;
-use error::*;
+
+use error::Result;
+
+use std::any::Any;
 use std::cmp::Ordering;
 use std::sync::Arc;
+
+// hard limit on the maximum number of documents per chunk
+pub const MAX_DOCUMENTS_PER_CHUNK: i32 = 128;
+
+pub const VECTORS_EXTENSION: &str = "tvd";
+pub const VECTORS_INDEX_EXTENSION: &str = "tvx";
+
+pub const CODEC_SFX_IDX: &str = "Index";
+pub const CODEC_SFX_DAT: &str = "Data";
+
+pub const VERSION_START: i32 = 0;
+pub const VERSION_CHUNK_STATS: i32 = 1;
+pub const VERSION_CURRENT: i32 = VERSION_CHUNK_STATS;
+pub const PACKED_BLOCK_SIZE: i32 = 64;
+
+pub const POSITIONS: i32 = 0x01;
+pub const OFFSETS: i32 = 0x02;
+pub const PAYLOADS: i32 = 0x04;
+pub const FLAGS_BITS: i32 = 3; // unsigned_bits_required((POSITIONS | OFFSETS | PAYLOADS) as i64)
 
 #[derive(Clone)]
 pub struct CompressingTermVectorsFormat {
@@ -87,44 +106,37 @@ impl TermVectorsFormat for CompressingTermVectorsFormat {
 
     fn tv_writer(
         &self,
-        _directory: DirectoryRc,
-        _segment_info: &SegmentInfo,
-        _context: &IOContext,
+        directory: DirectoryRc,
+        segment_info: &SegmentInfo,
+        context: &IOContext,
     ) -> Result<Box<TermVectorsWriter>> {
-        unimplemented!()
+        Ok(Box::new(CompressingTermVectorsWriter::new(
+            directory,
+            segment_info,
+            &self.segment_suffix,
+            context,
+            &self.format_name,
+            self.compression_mode,
+            self.chunk_size as usize,
+            self.block_size as usize,
+        )?))
     }
 }
 
-const VECTORS_EXTENSION: &str = "tvd";
-const VECTORS_INDEX_EXTENSION: &str = "tvx";
-
-const CODEC_SFX_IDX: &str = "Index";
-const CODEC_SFX_DAT: &str = "Data";
-
-const VERSION_START: i32 = 0;
-const VERSION_CHUNK_STATS: i32 = 1;
-const VERSION_CURRENT: i32 = VERSION_CHUNK_STATS;
-const PACKED_BLOCK_SIZE: i32 = 64;
-
-const POSITIONS: i32 = 0x01;
-const OFFSETS: i32 = 0x02;
-const PAYLOADS: i32 = 0x04;
-const FLAGS_BITS: i32 = 3; // unsigned_bits_required((POSITIONS | OFFSETS | PAYLOADS) as i64)
-
 pub struct CompressingTermVectorsReader {
     field_infos: Arc<FieldInfos>,
-    index_reader: Arc<CompressingStoredFieldsIndexReader>,
-    vectors_stream: Arc<IndexInput>,
-    version: i32,
-    packed_ints_version: i32,
-    compression_mode: CompressionMode,
+    pub index_reader: Arc<CompressingStoredFieldsIndexReader>,
+    pub vectors_stream: Arc<IndexInput>,
+    pub version: i32,
+    pub packed_ints_version: i32,
+    pub compression_mode: CompressionMode,
     decompressor: Decompressor,
-    chunk_size: i32,
+    pub chunk_size: i32,
     num_docs: i32,
     reader: BlockPackedReaderIterator,
-    num_chunks: i64,
-    num_dirty_chunks: i64,
-    max_pointer: i64,
+    pub num_chunks: i64,
+    pub num_dirty_chunks: i64,
+    pub max_pointer: i64,
 }
 
 impl CompressingTermVectorsReader {
@@ -313,7 +325,7 @@ impl CompressingTermVectorsReader {
         Ok(positions)
     }
 
-    fn clone(&self) -> Result<Self> {
+    pub fn clone(&self) -> Result<Self> {
         Ok(CompressingTermVectorsReader {
             field_infos: self.field_infos.clone(),
             index_reader: self.index_reader.clone(),
@@ -332,7 +344,7 @@ impl CompressingTermVectorsReader {
     }
 
     #[allow(cyclomatic_complexity)]
-    fn get_mut(&mut self, doc: i32) -> Result<Box<Fields>> {
+    fn get_mut(&mut self, doc: i32) -> Result<Option<Box<Fields>>> {
         let mut vectors_stream = self.vectors_stream.as_ref().clone()?;
         let vectors_stream = vectors_stream.as_mut();
 
@@ -382,8 +394,7 @@ impl CompressingTermVectorsReader {
         };
 
         if num_fields == 0usize {
-            // TODO maybe return None instead
-            bail!("doc contains no fields!");
+            return Ok(None);
         }
 
         // read field numbers that have term vectors
@@ -678,7 +689,7 @@ impl CompressingTermVectorsReader {
         }
 
         // payload lengths
-        let payload_index = Vec::with_capacity(num_fields);
+        let mut payload_index = vec![Vec::with_capacity(0); num_fields];
         let mut total_payload_length = 0;
         let mut payload_off = 0;
         let mut payload_len = 0;
@@ -717,6 +728,7 @@ impl CompressingTermVectorsReader {
                         }
                     }
                     debug_assert_eq!(cur_payload_index.len(), cur_payload_index.capacity());
+                    payload_index[i] = cur_payload_index;
                 }
                 term_index += term_count;
             }
@@ -777,7 +789,7 @@ impl CompressingTermVectorsReader {
         }
 
         debug_assert_eq!(field_lengths.iter().sum::<i32>(), doc_len);
-        Ok(Box::new(TVFields::new(
+        Ok(Some(Box::new(TVFields::new(
             self.field_infos.clone(),
             field_nums,
             field_flags,
@@ -795,13 +807,17 @@ impl CompressingTermVectorsReader {
             suffix_bytes,
             suffix_bytes_position,
             payload_bytes_position,
-        )))
+        ))))
     }
 }
 
 impl TermVectorsReader for CompressingTermVectorsReader {
-    fn get(&self, doc: i32) -> Result<Box<Fields>> {
+    fn get(&self, doc: i32) -> Result<Option<Box<Fields>>> {
         self.clone()?.get_mut(doc)
+    }
+
+    fn as_any(&self) -> &Any {
+        self
     }
 }
 
@@ -882,7 +898,7 @@ impl Fields for TVFields {
         let field_names: Vec<_> = self.field_num_offs
             .iter()
             .map(|&k| {
-                self.field_infos.by_number[&self.field_nums[k as usize]]
+                self.field_infos.by_number[&(self.field_nums[k as usize] as u32)]
                     .name
                     .clone()
             })
@@ -898,7 +914,7 @@ impl Fields for TVFields {
         let mut idx = -1;
         let field_info = field_info.unwrap();
         for i in 0..self.field_num_offs.len() {
-            if self.field_nums[self.field_num_offs[i] as usize] == field_info.number {
+            if self.field_nums[self.field_num_offs[i] as usize] == field_info.number as i32 {
                 idx = i as i32;
                 break;
             }
@@ -945,7 +961,7 @@ impl Fields for TVFields {
         let mut idx = -1;
         let field_info = field_info.unwrap();
         for i in 0..self.field_num_offs.len() {
-            if self.field_nums[self.field_num_offs[i] as usize] == field_info.number {
+            if self.field_nums[self.field_num_offs[i] as usize] == field_info.number as i32 {
                 idx = i as i32;
                 break;
             }
@@ -1082,9 +1098,9 @@ impl TVTermsIterator {
     }
 
     // TODO a copy of next() but just return a ref to avoid copy bytes vector
-    fn next_local(&mut self) -> Result<&[u8]> {
+    fn next_local(&mut self) -> Result<Option<&[u8]>> {
         if self.ord == self.num_terms - 1 {
-            return Ok(&self.term[0..0]);
+            return Ok(None);
         } else {
             debug_assert!(self.ord < self.num_terms);
             self.ord += 1;
@@ -1112,13 +1128,13 @@ impl TVTermsIterator {
             self.term_bytes_position.1 -= suffix_len;
         }
 
-        Ok(&self.term)
+        Ok(Some(&self.term))
     }
 }
 
 impl TermIterator for TVTermsIterator {
-    fn next(&mut self) -> Result<Vec<u8>> {
-        Ok(Vec::from(self.next_local()?))
+    fn next(&mut self) -> Result<Option<Vec<u8>>> {
+        Ok(self.next_local()?.map(|s| s.to_vec()))
     }
 
     fn seek_ceil(&mut self, text: &[u8]) -> Result<SeekStatus> {
@@ -1134,15 +1150,15 @@ impl TermIterator for TVTermsIterator {
 
         // linear scan
         loop {
-            let term = self.next_local()?;
-            if term.is_empty() {
+            if let Some(term) = self.next_local()? {
+                let cmp = term.cmp(text);
+                if cmp == Ordering::Greater {
+                    return Ok(SeekStatus::NotFound);
+                } else if cmp == Ordering::Equal {
+                    return Ok(SeekStatus::Found);
+                }
+            } else {
                 return Ok(SeekStatus::End);
-            }
-            let cmp = term.cmp(text);
-            if cmp == Ordering::Greater {
-                return Ok(SeekStatus::NotFound);
-            } else if cmp == Ordering::Equal {
-                return Ok(SeekStatus::Found);
             }
         }
     }
@@ -1156,7 +1172,7 @@ impl TermIterator for TVTermsIterator {
         Ok(&self.term)
     }
 
-    fn ord(&mut self) -> Result<i64> {
+    fn ord(&self) -> Result<i64> {
         // Not Supported Operation
         unimplemented!()
     }
@@ -1183,6 +1199,10 @@ impl TermIterator for TVTermsIterator {
 
     fn term_state(&mut self) -> Result<Box<TermState>> {
         unimplemented!()
+    }
+
+    fn as_any(&self) -> &Any {
+        self
     }
 }
 
@@ -1324,6 +1344,10 @@ impl PostingIterator for TVPostingsIterator {
                     [self.payload_position.0..self.payload_position.0 + self.payload_position.1],
             ))
         }
+    }
+
+    fn as_any_mut(&mut self) -> &mut Any {
+        self
     }
 }
 

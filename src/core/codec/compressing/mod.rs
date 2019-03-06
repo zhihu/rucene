@@ -1,8 +1,20 @@
-mod stored_fields;
-pub use self::stored_fields::*;
+mod term_vectors_reader;
 
-mod term_vectors;
-pub use self::term_vectors::*;
+pub use self::term_vectors_reader::*;
+
+mod term_vectors_writer;
+
+pub use self::term_vectors_writer::*;
+
+mod stored_fields_reader;
+
+pub use self::stored_fields_reader::*;
+
+mod stored_fields_writer;
+
+pub use self::stored_fields_writer::*;
+
+mod matching_reader;
 
 use error::*;
 use std;
@@ -13,7 +25,7 @@ use flate2::read::{DeflateDecoder, DeflateEncoder};
 use flate2::Compression;
 
 use core::store::{DataInput, DataOutput};
-use core::util::packed_misc::{get_mutable_by_ratio, rshift_32, rshift_64, unsigned_bits_required};
+use core::util::packed_misc::{get_mutable_by_ratio, rshift_32, unsigned_bits_required};
 use core::util::packed_misc::{Mutable, OffsetAndLength, DEFAULT as DEFAULT_COMPRESSION_RATIO};
 
 const MEMORY_USAGE: i32 = 14;
@@ -33,7 +45,7 @@ pub struct LZ4;
 
 impl LZ4 {
     fn hash(i: i32, hash_bits: i32) -> i32 {
-        rshift_64(i64::from(i) * -1_640_531_535i64, 32 - hash_bits) as i32
+        rshift_32((i as i64 * -1_640_531_535i64) as i32, 32 - hash_bits) as i32
     }
 
     #[allow(dead_code)]
@@ -196,7 +208,7 @@ impl LZ4 {
         let literal_len = match_off - anchor;
         debug_assert!(match_len >= 4);
         // encode token
-        let token: i32 = 0x0f.min(literal_len as i32) << 4 | 0x0f.min(match_len as i32 - 4);
+        let token: i32 = (0x0f.min(literal_len as i32) << 4) | 0x0f.min(match_len as i32 - 4);
         LZ4::encode_literals(bytes, token, anchor, literal_len, out)?;
 
         // encode match dec
@@ -225,30 +237,31 @@ impl LZ4 {
     ) -> Result<()> {
         let mut off_cur = off;
         let mut anchor = off;
-        off_cur += 1;
         let end = off + len;
+
+        off_cur += 1;
 
         if len > (LAST_LITERALS + MIN_MATCH) as usize {
             let limit = end - LAST_LITERALS as usize;
-            // let match_limit = limit - MIN_MATCH as usize;
+            let match_limit = limit - MIN_MATCH as usize;
             ht.reset(len as i32);
             let hash_log = ht.hash_log;
             let hash_table = ht.hash_table.as_mut().unwrap();
-            'main: loop {
+            'main: while off_cur <= limit {
                 let mut refer: usize;
                 loop {
-                    if off_cur <= limit {
+                    if off_cur >= match_limit {
                         break 'main;
                     }
                     let v = LZ4::read_int(bytes, off_cur);
                     let h = LZ4::hash(v, hash_log) as usize;
-                    refer = off + hash_table.get(h as usize) as usize;
+                    refer = off + hash_table.get(h) as usize;
                     debug_assert!(
                         unsigned_bits_required((off_cur - off) as i64)
                             <= hash_table.get_bits_per_value()
                     );
                     hash_table.set(h, (off_cur - off) as i64);
-                    if off - refer < MAX_DISTANCE as usize && LZ4::read_int(bytes, refer) == v {
+                    if off_cur - refer < MAX_DISTANCE as usize && LZ4::read_int(bytes, refer) == v {
                         break;
                     }
                     off_cur += 1;
@@ -687,7 +700,7 @@ impl Clone for Decompressor {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy, Eq, PartialEq, Debug)]
 pub enum CompressionMode {
     FAST,
     HighCompression,

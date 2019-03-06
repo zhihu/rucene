@@ -1,5 +1,5 @@
 use core::codec::lucene54::{self, ReverseTermsIndexRef};
-use core::index::term::{SeekStatus, TermIterator};
+use core::index::{SeekStatus, TermIterator};
 use core::search::posting_iterator::PostingIterator;
 use core::store::IndexInput;
 use core::util::bit_util::UnsignedShift;
@@ -9,6 +9,7 @@ use core::util::LongValues;
 use error::ErrorKind::UnsupportedOperation;
 use error::Result;
 
+use std::any::Any;
 use std::cmp::Ordering;
 
 pub struct CompressedBinaryTermIterator {
@@ -166,10 +167,10 @@ impl CompressedBinaryTermIterator {
 }
 
 impl TermIterator for CompressedBinaryTermIterator {
-    fn next(&mut self) -> Result<Vec<u8>> {
+    fn next(&mut self) -> Result<Option<Vec<u8>>> {
         self.current_ord += 1;
         if self.current_ord >= self.num_values {
-            Ok(Vec::new()) // better way to represent `return null`?
+            Ok(None)
         } else {
             let offset = self.current_ord as i32 & lucene54::INTERVAL_MASK;
             if offset == 0 {
@@ -179,7 +180,7 @@ impl TermIterator for CompressedBinaryTermIterator {
             } else {
                 self.read_term(offset)?;
             }
-            Ok(self.term[0..self.term_length as usize].to_vec())
+            Ok(Some(self.term[0..self.term_length as usize].to_vec()))
         }
     }
 
@@ -198,7 +199,7 @@ impl TermIterator for CompressedBinaryTermIterator {
         self.input.seek(self.addresses.get64(block)?)?;
         self.current_ord = (block << lucene54::INTERVAL_SHIFT) - 1;
 
-        while !self.next()?.is_empty() {
+        while self.next()?.is_some() {
             let cmp = self.term[0..self.term_length as usize].as_ref().cmp(text);
             if cmp == Ordering::Equal {
                 return Ok(SeekStatus::Found);
@@ -235,7 +236,7 @@ impl TermIterator for CompressedBinaryTermIterator {
         Ok(&self.term[0..self.term_length as usize])
     }
 
-    fn ord(&mut self) -> Result<i64> {
+    fn ord(&self) -> Result<i64> {
         Ok(self.current_ord)
     }
 
@@ -253,5 +254,9 @@ impl TermIterator for CompressedBinaryTermIterator {
         bail!(UnsupportedOperation(
             "postings_with_flags unsupported for CompressedBinaryTermIterator".into()
         ))
+    }
+
+    fn as_any(&self) -> &Any {
+        self
     }
 }

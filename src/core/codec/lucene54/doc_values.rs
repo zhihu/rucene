@@ -1,7 +1,8 @@
 use core::codec::format::DocValuesFormat;
+use core::codec::lucene54::Lucene54DocValuesConsumer;
 use core::codec::lucene54::Lucene54DocValuesProducer;
-use core::codec::DocValuesProducer;
-use core::index::SegmentReadState;
+use core::codec::{DocValuesConsumer, DocValuesProducer};
+use core::index::{SegmentReadState, SegmentWriteState};
 use error::Result;
 
 pub const DATA_CODEC: &str = "Lucene54DocValuesData";
@@ -72,7 +73,7 @@ pub const ALL_MISSING: i32 = -2;
 pub const MONOTONIC_BLOCK_SIZE: i32 = 16384;
 pub const DIRECT_MONOTONIC_BLOCK_SHIFT: i32 = 16;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub enum NumberType {
     // Dense ordinals
     ORDINAL,
@@ -105,5 +106,15 @@ impl DocValuesFormat for Lucene54DocValuesFormat {
             META_EXTENSION,
         )?;
         Ok(Box::new(boxed))
+    }
+
+    fn fields_consumer(&self, state: &SegmentWriteState) -> Result<Box<DocValuesConsumer>> {
+        Ok(Box::new(Lucene54DocValuesConsumer::new(
+            state,
+            DATA_CODEC,
+            DATA_EXTENSION,
+            META_CODEC,
+            META_EXTENSION,
+        )?))
     }
 }

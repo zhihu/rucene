@@ -162,6 +162,10 @@ impl Query for SpanNearQuery {
     fn query_type(&self) -> &'static str {
         SPAN_NEAR_QUERY
     }
+
+    fn as_any(&self) -> &::std::any::Any {
+        self
+    }
 }
 
 impl fmt::Display for SpanNearQuery {
@@ -806,6 +810,10 @@ impl Query for SpanGapQuery {
 
     fn query_type(&self) -> &'static str {
         SPAN_GAP_QUERY
+    }
+
+    fn as_any(&self) -> &::std::any::Any {
+        self
     }
 }
 

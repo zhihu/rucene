@@ -1,14 +1,16 @@
-use error::ErrorKind::*;
-use error::*;
-use std::mem::transmute;
-use std::sync::Arc;
-
 use core::search::posting_iterator::POSTING_ITERATOR_FLAG_FREQS;
 use core::search::posting_iterator::{EmptyPostingIterator, PostingIterator};
 
+use error::ErrorKind::{IllegalArgument, UnsupportedOperation};
+use error::Result;
+
+use std::any::Any;
+use std::mem;
+use std::sync::Arc;
+
 /// Encapsulates all required internal state to position the associated
 /// `TermIterator` without re-seeking
-pub trait TermState {
+pub trait TermState: Send + Sync {
     fn ord(&self) -> i64;
 
     fn serialize(&self) -> Vec<u8>;
@@ -28,7 +30,7 @@ impl TermState for OrdTermState {
     }
 
     fn serialize(&self) -> Vec<u8> {
-        let r: [u8; 8] = unsafe { transmute(self.ord.to_be()) };
+        let r: [u8; 8] = unsafe { mem::transmute(self.ord.to_be()) };
         r.to_vec()
     }
 
@@ -145,29 +147,29 @@ pub trait Terms: Send + Sync {
     /// Note that, just like other term measures, this measure does not
     /// take deleted documents into account.  This returns
     /// null when there are no terms. */
-    fn min(&self) -> Result<Vec<u8>> {
+    fn min(&self) -> Result<Option<Vec<u8>>> {
         self.iterator()?.as_mut().next()
     }
     /// Returns the largest term (in lexicographic order) in the field.
     /// Note that, just like other term measures, this measure does not
     /// take deleted documents into account.  This returns
     /// null when there are no terms. */
-    fn max(&self) -> Result<Vec<u8>> {
+    fn max(&self) -> Result<Option<Vec<u8>>> {
         let size = self.size()?;
         if size == 0 {
             // empty: only possible from a FilteredTermsEnum...
-            return Ok(Vec::with_capacity(0));
+            return Ok(None);
         } else if size > 0 {
             let mut iterator = self.iterator()?;
             iterator.as_mut().seek_exact_ord(size - 1)?;
             let term = iterator.as_mut().term()?;
-            return Ok(term.to_vec());
+            return Ok(Some(term.to_vec()));
         }
 
         // otherwise: binary search
         let mut iterator = self.iterator()?;
         let v = iterator.as_mut().next()?;
-        if v.is_empty() {
+        if v.is_none() {
             // empty: only possible from a FilteredTermsEnum...
             return Ok(v);
         }
@@ -190,7 +192,7 @@ pub trait Terms: Send + Sync {
                     // scratch was to high
                     if mid == 0 {
                         scratch.pop();
-                        return Ok(scratch);
+                        return Ok(Some(scratch));
                     }
                     high = mid;
                 } else {
@@ -272,7 +274,7 @@ impl Terms for EmptyTerms {
 pub type TermsRef = Arc<Terms>;
 
 /// Represents returned result from {@link #seekCeil}.
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 pub enum SeekStatus {
     /// The term was not found, and the end of iteration was hit.
     End,
@@ -293,7 +295,7 @@ pub trait TermIterator {
     /// the end of the iterator is reached.
     /// @throws IOException If there is a low-level I/O error.
     ///
-    fn next(&mut self) -> Result<Vec<u8>>;
+    fn next(&mut self) -> Result<Option<Vec<u8>>>;
 
     /// Attempts to seek to the exact term, returning
     /// true if the term is found.  If this returns false, the
@@ -338,7 +340,7 @@ pub trait TermIterator {
     /// optional method (the codec may throw {@link
     /// UnsupportedOperationException}).  Do not call this
     /// when the enum is unpositioned.
-    fn ord(&mut self) -> Result<i64>;
+    fn ord(&self) -> Result<i64>;
 
     /// Returns the number of documents containing the current
     /// term.  Do not call this when the enum is unpositioned.
@@ -386,6 +388,14 @@ pub trait TermIterator {
             "TermIterator::term_state unsupported".into()
         ))
     }
+
+    // whether this Iterator is EmptyIterator
+    fn is_empty(&self) -> bool {
+        false
+    }
+
+    /// used for type cast
+    fn as_any(&self) -> &Any;
 }
 
 pub struct EmptyTermIterator {
@@ -399,9 +409,8 @@ impl Default for EmptyTermIterator {
 }
 
 impl TermIterator for EmptyTermIterator {
-    fn next(&mut self) -> Result<Vec<u8>> {
-        // TODO fix me
-        bail!("no more terms!")
+    fn next(&mut self) -> Result<Option<Vec<u8>>> {
+        Ok(None)
     }
 
     fn seek_ceil(&mut self, _text: &[u8]) -> Result<SeekStatus> {
@@ -416,7 +425,7 @@ impl TermIterator for EmptyTermIterator {
         Ok(&self.data[0..0])
     }
 
-    fn ord(&mut self) -> Result<i64> {
+    fn ord(&self) -> Result<i64> {
         Ok(-1)
     }
 
@@ -430,5 +439,150 @@ impl TermIterator for EmptyTermIterator {
 
     fn postings_with_flags(&mut self, _flags: i16) -> Result<Box<PostingIterator>> {
         Ok(Box::new(EmptyPostingIterator::default()))
+    }
+
+    fn is_empty(&self) -> bool {
+        true
+    }
+
+    fn as_any(&self) -> &Any {
+        self
+    }
+}
+
+pub struct FilteredTermIterBase {
+    pub initial_seek_term: Option<Vec<u8>>,
+    pub do_seek: bool,
+    pub actual_term: Option<Vec<u8>>,
+    pub terms: Box<TermIterator>,
+}
+
+impl FilteredTermIterBase {
+    pub fn new(terms: Box<TermIterator>, start_with_seek: bool) -> Self {
+        FilteredTermIterBase {
+            initial_seek_term: None,
+            do_seek: start_with_seek,
+            actual_term: None,
+            terms,
+        }
+    }
+}
+
+/// Return value, if term should be accepted or the iteration should
+/// {@code END}. The {@code *_SEEK} values denote, that after handling the current term
+/// the enum should call {@link #nextSeekTerm} and step forward.
+/// @see #accept(BytesRef)
+pub enum AcceptStatus {
+    /// Accept the term and position the enum at the next term.
+    Yes,
+    /// Accept the term and advance `FilteredTermsEnum#nextSeekTerm(BytesRef)` to the next term
+    YesAndSeek,
+    /// Reject the term and position the enum at the next term.
+    No,
+    /// Reject the term and advance `FilteredTermsEnum#nextSeekTerm(BytesRef)` to the next term
+    NoAndSeek,
+    /// Reject the term and stop enumerating.
+    End,
+}
+
+pub trait FilteredTermIterator {
+    fn base(&self) -> &FilteredTermIterBase;
+
+    fn base_mut(&mut self) -> &mut FilteredTermIterBase;
+
+    fn accept(&self, term: &[u8]) -> Result<AcceptStatus>;
+
+    fn set_initial_seek_term(&mut self, term: Vec<u8>) {
+        self.base_mut().initial_seek_term = Some(term);
+    }
+
+    fn next_seek_term(&mut self) -> Option<Vec<u8>> {
+        let t = mem::replace(&mut self.base_mut().initial_seek_term, None);
+        t
+    }
+}
+
+impl<T> TermIterator for T
+where
+    T: FilteredTermIterator + 'static,
+{
+    fn next(&mut self) -> Result<Option<Vec<u8>>> {
+        loop {
+            if self.base().do_seek {
+                self.base_mut().do_seek = false;
+                let t = self.next_seek_term();
+                // Make sure we always seek forward:
+                debug_assert!(
+                    self.base().actual_term.is_none() || t.is_none()
+                        || t.as_ref().unwrap() > self.base().actual_term.as_ref().unwrap()
+                );
+                if t.is_none()
+                    || self.base_mut().terms.seek_ceil(t.as_ref().unwrap())? == SeekStatus::End
+                {
+                    return Ok(None);
+                }
+                self.base_mut().actual_term = Some(self.base().terms.term()?.to_vec());
+            } else {
+                self.base_mut().actual_term = self.base_mut().terms.next()?;
+                if self.base().actual_term.is_none() {
+                    return Ok(None);
+                }
+            }
+
+            debug_assert!(self.base().actual_term.is_some());
+            match self.accept(self.base().actual_term.as_ref().unwrap().as_slice())? {
+                AcceptStatus::YesAndSeek => {
+                    self.base_mut().do_seek = true;
+                }
+                AcceptStatus::Yes => {
+                    return Ok(self.base().actual_term.clone());
+                }
+                AcceptStatus::NoAndSeek => {
+                    self.base_mut().do_seek = true;
+                    break;
+                }
+                AcceptStatus::End => {
+                    return Ok(None);
+                }
+                _ => {}
+            }
+        }
+        unreachable!()
+    }
+
+    fn seek_exact(&mut self, _text: &[u8]) -> Result<bool> {
+        bail!(UnsupportedOperation("".into()))
+    }
+
+    fn seek_ceil(&mut self, _text: &[u8]) -> Result<SeekStatus> {
+        bail!(UnsupportedOperation("".into()))
+    }
+
+    fn seek_exact_ord(&mut self, _ord: i64) -> Result<()> {
+        bail!(UnsupportedOperation("".into()))
+    }
+
+    fn term(&self) -> Result<&[u8]> {
+        self.base().terms.term()
+    }
+
+    fn ord(&self) -> Result<i64> {
+        self.base().terms.ord()
+    }
+
+    fn doc_freq(&mut self) -> Result<i32> {
+        self.base_mut().terms.doc_freq()
+    }
+
+    fn total_term_freq(&mut self) -> Result<i64> {
+        self.base_mut().terms.total_term_freq()
+    }
+
+    fn postings_with_flags(&mut self, flags: i16) -> Result<Box<PostingIterator>> {
+        self.base_mut().terms.postings_with_flags(flags)
+    }
+
+    fn as_any(&self) -> &Any {
+        self
     }
 }

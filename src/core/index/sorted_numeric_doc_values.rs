@@ -26,6 +26,26 @@ pub trait SortedNumericDocValues: Send + Sync {
 
 pub type SortedNumericDocValuesRef = Arc<SortedNumericDocValues>;
 
+pub struct EmptySortedNumericDocValues;
+
+impl SortedNumericDocValues for EmptySortedNumericDocValues {
+    fn set_document(
+        &self,
+        _ctx: Option<SortedNumericDocValuesContext>,
+        _doc: DocId,
+    ) -> Result<SortedNumericDocValuesContext> {
+        Ok((0, 0, None))
+    }
+
+    fn value_at(&self, _ctx: &SortedNumericDocValuesContext, _index: usize) -> Result<i64> {
+        unreachable!()
+    }
+
+    fn count(&self, _ctx: &SortedNumericDocValuesContext) -> usize {
+        0
+    }
+}
+
 pub struct AddressedSortedNumericDocValues {
     values: Box<LongValues>,
     ord_index: Box<LongValues>,

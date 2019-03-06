@@ -11,6 +11,7 @@ pub trait NumericDocValues: Send + Sync {
         ctx: NumericDocValuesContext,
         doc_id: DocId,
     ) -> Result<(i64, NumericDocValuesContext)>;
+
     fn get(&self, doc_id: DocId) -> Result<i64> {
         self.get_with_ctx(None, doc_id).map(|x| x.0)
     }

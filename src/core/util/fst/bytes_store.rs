@@ -1,22 +1,20 @@
-use core::store::{DataInput, DataOutput};
+use core::store::{DataInput, DataOutput, IndexInput, RandomAccessInput};
 use core::util::fst::BytesReader;
 use error::*;
 use std::cmp::min;
 use std::io;
 use std::io::{Read, Write};
 use std::mem;
-use std::sync::Arc;
 use std::vec::Vec;
-
-type BlockRef = Arc<Vec<Vec<u8>>>;
 
 #[derive(Debug)]
 pub struct BytesStore {
     block_size: usize,
-    block_bits: usize,
+    pub block_bits: usize,
     block_mask: usize,
-    blocks: BlockRef,
-    current: Vec<u8>,
+    blocks: Vec<Vec<u8>>,
+    current_index: isize,
+    // the index of current block in blocks, -1 for invalid
 }
 
 impl BytesStore {
@@ -27,8 +25,8 @@ impl BytesStore {
             block_size,
             block_bits,
             block_mask,
-            blocks: BlockRef::new(vec![]),
-            current: vec![0u8; block_size],
+            blocks: vec![],
+            current_index: -1,
         }
     }
 
@@ -65,9 +63,17 @@ impl BytesStore {
             block_size,
             block_bits,
             block_mask: block_size - 1,
-            blocks: Arc::new(blocks),
-            current: vec![0 as u8; block_size],
+            blocks,
+            current_index: -1,
         })
+    }
+
+    pub fn len(&self) -> usize {
+        if self.blocks.len() >= 1 {
+            self.block_size * (self.blocks.len() - 1) + self.blocks[self.blocks.len() - 1].len()
+        } else {
+            0
+        }
     }
 }
 
@@ -77,22 +83,30 @@ impl Write for BytesStore {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let mut len = buf.len();
         let mut offset: usize = 0;
+        if self.current_index < 0 {
+            assert!(self.blocks.is_empty());
+            let new_block = Vec::with_capacity(self.block_size);
+            self.blocks.push(new_block);
+            self.current_index += 1;
+        }
+        assert_eq!(self.current_index, self.blocks.len() as isize - 1);
         while len > 0 {
-            let chunk = self.block_size - self.current.len();
+            let idx = self.current_index as usize;
+            let chunk = self.block_size - self.blocks[idx].len();
             if len <= chunk {
-                self.current.extend(buf[offset..offset + len].iter());
+                self.blocks[idx].extend(buf[offset..offset + len].iter());
                 offset += len;
                 break;
             } else {
                 if chunk > 0 {
-                    self.current.extend(buf[offset..offset + chunk].iter());
+                    self.blocks[idx].extend(buf[offset..offset + chunk].iter());
                     offset += chunk;
                     len -= chunk;
                 }
-                let mut current = vec![];
-                mem::swap(&mut current, &mut self.current);
+                let current = Vec::with_capacity(self.block_size);
                 // we are sure it won't be used in multiple threads during writing
-                Arc::make_mut(&mut self.blocks).push(current);
+                self.blocks.push(current);
+                self.current_index += 1;
             }
         }
 
@@ -100,66 +114,241 @@ impl Write for BytesStore {
     }
 
     fn flush(&mut self) -> io::Result<()> {
+        self.finish();
         Ok(())
     }
 }
 
 impl BytesStore {
-    #[allow(dead_code)]
-    fn get_position(&self) -> Result<usize> {
-        Ok(self.blocks.len() * self.block_size + self.current.len() as usize)
+    pub fn get_position(&self) -> usize {
+        if self.blocks.is_empty() {
+            assert_eq!(self.current_index, -1);
+            0
+        } else {
+            let length = self.blocks.len() - 1;
+            length * self.block_size + self.blocks[length].len()
+        }
+    }
+
+    // unsafe implement, used for when bytes is a slice of self.blocks
+    unsafe fn write_bytes_local_unsafe(
+        &mut self,
+        dest: usize,
+        bytes: *const [u8],
+        offset: usize,
+        len: usize,
+    ) {
+        self.write_bytes_local(dest, &*bytes, offset, len)
     }
 
     /// Absolute writeBytes without changing the current
     /// position.  Note: this cannot "grow" the bytes, so you
     /// must only call it on already written parts.
     #[allow(dead_code)]
-    fn write_bytes_local(&mut self, _dest: usize, _bytes: &[u8], _offset: usize, _len: usize) {
-        unimplemented!()
+    pub fn write_bytes_local(&mut self, dest: usize, bytes: &[u8], offset: usize, len: usize) {
+        assert!(dest + len <= self.get_position());
+
+        let end = dest + len;
+        let mut block_index = end >> self.block_bits;
+        let mut down_to = end & self.block_mask;
+        if down_to == 0 {
+            block_index -= 1;
+            down_to = self.block_size;
+        }
+
+        let mut len = len;
+        while len > 0 {
+            if len <= down_to {
+                self.blocks[block_index][down_to - len..down_to]
+                    .copy_from_slice(&bytes[offset..offset + len]);
+                break;
+            } else {
+                len -= down_to;
+                self.blocks[block_index][..down_to]
+                    .copy_from_slice(&bytes[offset + len..offset + len + down_to]);
+                block_index -= 1;
+                down_to = self.block_size;
+            }
+        }
+    }
+
+    fn grow(&mut self, size: usize) {
+        debug_assert!(size > 0);
+        let mut size = size;
+        while size > 0 {
+            let current_index = self.current_index as usize;
+            if size <= self.block_size - self.blocks[current_index].len() {
+                let new_len = self.blocks[current_index].len() + size;
+                self.blocks[current_index].resize(new_len, 0u8);
+                break;
+            } else {
+                size -= self.block_size - self.blocks[current_index].len();
+                let new_len = self.block_size;
+                self.blocks[current_index].resize(new_len, 0u8);
+                let new_block = Vec::with_capacity(self.block_size);
+                self.blocks.push(new_block);
+                self.current_index += 1;
+            }
+        }
     }
 
     /// Absolute copy bytes self to self, without changing the
     /// position. Note: this cannot "grow" the bytes, so must
     /// only call it on already written parts.
     #[allow(dead_code)]
-    fn copy_bytes_local(&mut self, _src: usize, _dest: usize, _len: usize) {
-        unimplemented!()
+    pub fn copy_bytes_local(&mut self, src: usize, dest: usize, len: usize) {
+        assert!(src < dest);
+
+        if dest + len > self.get_position() {
+            let grow_size = dest + len - self.get_position();
+            self.grow(grow_size);
+        }
+
+        // no overlap, copy directly
+        if src + len <= dest {
+            let end = src + len;
+            let mut block_index = end >> self.block_bits;
+            let mut down_to = end & self.block_mask;
+            if down_to == 0 {
+                block_index -= 1;
+                down_to = self.block_size;
+            }
+            let mut len = len;
+            while len > 0 {
+                unsafe {
+                    let bytes = self.blocks[block_index].as_ref() as *const [u8];
+                    if len <= down_to {
+                        self.write_bytes_local_unsafe(dest, bytes, down_to - len, len);
+                        break;
+                    } else {
+                        len -= down_to;
+                        self.write_bytes_local_unsafe(dest + len, bytes, 0, down_to);
+                        block_index -= 1;
+                        down_to = self.block_size;
+                    }
+                }
+            }
+        } else {
+            // has over lap, copy by byte from end
+            let block_bits = self.block_bits;
+            let block_mask = self.block_mask;
+            for i in 0..len {
+                let cur_dest = dest + len - 1 - i;
+                let cur_src = src + len - 1 - i;
+                let value = self.blocks[cur_src >> block_bits][cur_src & block_mask];
+                self.blocks[cur_dest >> block_bits][cur_dest & block_mask] = value;
+            }
+        }
     }
 
     /// Writes an int at the absolute position without
     /// changing the current pointer.
     ///
     #[allow(dead_code)]
-    fn write_int_local(&mut self, _pos: usize, _value: i32) {
-        unimplemented!()
+    pub fn write_int_local(&mut self, pos: usize, value: i32) {
+        let mut block_index = pos >> self.block_bits;
+        let mut upto = pos & self.block_mask;
+        let mut shift = 24;
+        for _ in 0..4 {
+            self.blocks[block_index][upto] = (value >> shift) as u8;
+            upto += 1;
+            shift -= 8;
+            if upto == self.block_size {
+                upto = 0;
+                block_index += 1;
+            }
+        }
     }
 
     /// Reverse from src_pos, inclusive, to dest_pos, inclusive.
     #[allow(dead_code)]
-    fn reverse(&mut self, _src_pos: usize, _dest_pos: usize) {
-        unimplemented!()
+    pub fn reverse(&mut self, src_pos: usize, dest_pos: usize) {
+        assert!(src_pos < dest_pos);
+        assert!(dest_pos < self.get_position());
+
+        let mut src_block_index = src_pos >> self.block_bits;
+        let mut src = src_pos & self.block_mask;
+        let mut dest_block_index = dest_pos >> self.block_bits;
+        let mut dest = dest_pos & self.block_mask;
+        let limit = (dest_pos - src_pos + 1) / 2;
+
+        for _ in 0..limit {
+            let b = self.blocks[src_block_index][src];
+            self.blocks[src_block_index][src] = self.blocks[dest_block_index][dest];
+            self.blocks[dest_block_index][dest] = b;
+            src += 1;
+            if src == self.block_size {
+                src_block_index += 1;
+                src = 0;
+            }
+
+            if dest == 0 {
+                dest_block_index -= 1;
+                dest = self.block_size - 1;
+            } else {
+                dest -= 1;
+            }
+        }
     }
 
     #[allow(dead_code)]
-    fn skip_bytes(&mut self, _len: usize) {
-        unimplemented!()
+    pub fn skip_bytes(&mut self, len: usize) {
+        let mut len = len;
+        while len > 0 {
+            let current_block_size = (&self.blocks)[self.current_index as usize].len();
+            let chunk = self.block_size - current_block_size;
+            if len <= chunk {
+                self.blocks[self.current_index as usize].resize(current_block_size + len, 0u8);
+                break;
+            } else {
+                len -= chunk;
+                self.blocks[self.current_index as usize].resize(self.block_size, 0u8);
+                let current = Vec::with_capacity(self.block_size);
+                self.blocks.push(current);
+                self.current_index += 1;
+            }
+        }
     }
 
     /// Pos must be less than the max position written so far!
     /// Ie, you cannot "grow" the file with this! */]
     #[allow(dead_code)]
-    fn truncate(&mut self, _new_len: i64) {
-        unimplemented!()
+    pub fn truncate(&mut self, new_len: usize) {
+        assert!(new_len <= self.get_position());
+        let mut block_index = new_len >> self.block_bits;
+        {
+            let length = new_len & self.block_bits;
+            if length == 0 {
+                if block_index > 0 {
+                    block_index -= 1;
+                }
+            } else {
+                self.blocks[block_index].truncate(length);
+            }
+            self.blocks.truncate(block_index);
+        }
+
+        if new_len == 0 {
+            self.current_index = -1;
+        } else {
+            self.current_index = block_index as isize;
+        }
     }
 
-    #[allow(dead_code)]
-    fn finish() {
-        // nothing to do
+    pub fn finish(&mut self) {
+        if self.current_index >= 0 {
+            let idx = self.current_index as usize;
+            debug_assert_eq!(idx, self.blocks.len() - 1);
+            let mut buffer = vec![0u8; self.blocks[idx].len()];
+            buffer.copy_from_slice(&self.blocks[idx]);
+            self.blocks[idx] = buffer;
+            self.current_index = -1;
+        }
     }
 
     /// Writes all of our bytes to the target {@link DataOutput}.
     #[allow(dead_code)]
-    fn write_to(&self, output: &mut DataOutput) -> Result<()> {
+    pub fn write_to<T: DataOutput + ?Sized>(&self, output: &mut T) -> Result<()> {
         let length = self.blocks.len();
         for i in 0..length {
             output.write_bytes(self.blocks[i].as_slice(), 0, self.blocks[i].len())?;
@@ -168,20 +357,56 @@ impl BytesStore {
     }
 }
 
+enum VecStores {
+    Owned(Vec<Vec<u8>>),
+    Borrowed(*const Vec<Vec<u8>>),
+}
+
+impl AsRef<[Vec<u8>]> for VecStores {
+    fn as_ref(&self) -> &[Vec<u8>] {
+        match self {
+            VecStores::Owned(o) => &o,
+            VecStores::Borrowed(v) => unsafe { &**v },
+        }
+    }
+}
+
 pub struct StoreBytesReader {
-    blocks: BlockRef,
-    block_size: usize,
-    block_bits: usize,
-    block_mask: usize,
-    block_index: usize,
-    next_read: usize,
+    blocks: VecStores,
+    pub length: usize,
+    pub block_size: usize,
+    pub block_bits: usize,
+    pub block_mask: usize,
+    pub block_index: usize,
+    pub next_read: usize,
     pub reversed: bool,
 }
 
+unsafe impl Send for StoreBytesReader {}
+
+unsafe impl Sync for StoreBytesReader {}
+
 impl StoreBytesReader {
     fn new(bytes_store: &BytesStore, reversed: bool) -> StoreBytesReader {
+        let length = bytes_store.len();
         StoreBytesReader {
-            blocks: bytes_store.blocks.clone(),
+            blocks: VecStores::Borrowed(&bytes_store.blocks),
+            length,
+            block_size: bytes_store.block_size,
+            block_bits: bytes_store.block_bits,
+            block_mask: bytes_store.block_mask,
+            block_index: 0,
+            next_read: 0,
+            reversed,
+        }
+    }
+
+    pub fn from_bytes_store(mut bytes_store: BytesStore, reversed: bool) -> Self {
+        let length = bytes_store.len();
+        let blocks = mem::replace(&mut bytes_store.blocks, Vec::with_capacity(0));
+        StoreBytesReader {
+            blocks: VecStores::Owned(blocks),
+            length,
             block_size: bytes_store.block_size,
             block_bits: bytes_store.block_bits,
             block_mask: bytes_store.block_mask,
@@ -209,22 +434,11 @@ impl BytesReader for StoreBytesReader {
 }
 
 impl DataInput for StoreBytesReader {
-    fn skip_bytes(&mut self, count: usize) -> Result<()> {
-        let pos = self.position();
-
-        if self.reversed {
-            debug_assert!(pos > count);
-            self.set_position(pos - count);
-        } else {
-            self.set_position(pos + count);
-        }
-
-        Ok(())
-    }
-
     fn read_byte(&mut self) -> Result<u8> {
         let b = unsafe {
-            *(*self.blocks.as_ptr().offset(self.block_index as isize))
+            *(*((*self.blocks.as_ref())
+                .as_ptr()
+                .offset(self.block_index as isize)))
                 .as_ptr()
                 .offset(self.next_read as isize)
         };
@@ -259,6 +473,53 @@ impl DataInput for StoreBytesReader {
         }
 
         Ok(())
+    }
+
+    fn skip_bytes(&mut self, count: usize) -> Result<()> {
+        let pos = self.position();
+
+        if self.reversed {
+            debug_assert!(pos > count);
+            self.set_position(pos - count);
+        } else {
+            self.set_position(pos + count);
+        }
+
+        Ok(())
+    }
+}
+
+impl IndexInput for StoreBytesReader {
+    fn clone(&self) -> Result<Box<IndexInput>> {
+        unreachable!()
+    }
+
+    fn file_pointer(&self) -> i64 {
+        self.position() as i64
+    }
+
+    fn seek(&mut self, pos: i64) -> Result<()> {
+        if pos < 0 || pos > self.length as i64 {
+            bail!(ErrorKind::IllegalArgument("pos out of range!".into()));
+        }
+        self.set_position(pos as usize);
+        Ok(())
+    }
+
+    fn len(&self) -> u64 {
+        self.length as u64
+    }
+
+    fn name(&self) -> &str {
+        "IndexInput(BytesStore)"
+    }
+
+    fn random_access_slice(&self, _offset: i64, _length: i64) -> Result<Box<RandomAccessInput>> {
+        unreachable!()
+    }
+
+    fn as_data_input(&mut self) -> &mut DataInput {
+        self
     }
 }
 

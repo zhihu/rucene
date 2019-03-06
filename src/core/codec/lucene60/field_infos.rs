@@ -2,8 +2,8 @@ use core::codec::codec_util;
 use core::codec::format::FieldInfosFormat;
 use core::index::{segment_file_name, DocValuesType, IndexOptions, SegmentInfo};
 use core::index::{FieldInfo, FieldInfos};
+use core::store::Directory;
 use core::store::{BufferedChecksumIndexInput, ChecksumIndexInput, IOContext, IndexInput};
-use core::store::{Directory, DirectoryRc};
 use error::Result;
 
 /// Extension of field infos
@@ -62,7 +62,7 @@ fn read_field_infos_from_index<T: IndexInput + ?Sized>(
 
         let info = FieldInfo::new(
             name,
-            field_number,
+            field_number as u32,
             store_term_vector,
             omit_norms,
             store_payloads,
@@ -70,8 +70,8 @@ fn read_field_infos_from_index<T: IndexInput + ?Sized>(
             doc_values_type,
             dv_gen,
             attributes,
-            point_dimension_count,
-            point_num_bytes,
+            point_dimension_count as u32,
+            point_num_bytes as u32,
         )?;
         infos.push(info);
     }
@@ -106,6 +106,17 @@ fn read_index_options<T: IndexInput + ?Sized>(input: &mut T) -> Result<IndexOpti
     })
 }
 
+fn index_options_byte(index_options: IndexOptions) -> u8 {
+    use core::index::IndexOptions::*;
+    match index_options {
+        Null => 0,
+        Docs => 1,
+        DocsAndFreqs => 2,
+        DocsAndFreqsAndPositions => 3,
+        DocsAndFreqsAndPositionsAndOffsets => 4,
+    }
+}
+
 fn read_doc_values_type<T: IndexInput + ?Sized>(input: &mut T) -> Result<DocValuesType> {
     let byte = input.read_byte()?;
     Ok(match byte {
@@ -119,6 +130,18 @@ fn read_doc_values_type<T: IndexInput + ?Sized>(input: &mut T) -> Result<DocValu
     })
 }
 
+fn doc_values_byte(dv_type: DocValuesType) -> u8 {
+    use core::index::DocValuesType::*;
+    match dv_type {
+        Null => 0,
+        Numeric => 1,
+        Binary => 2,
+        Sorted => 3,
+        SortedSet => 4,
+        SortedNumeric => 5,
+    }
+}
+
 pub struct Lucene60FieldInfosFormat;
 
 impl Default for Lucene60FieldInfosFormat {
@@ -130,7 +153,7 @@ impl Default for Lucene60FieldInfosFormat {
 impl FieldInfosFormat for Lucene60FieldInfosFormat {
     fn read(
         &self,
-        directory: DirectoryRc,
+        directory: &Directory,
         segment_info: &SegmentInfo,
         segment_suffix: &str,
         ctx: &IOContext,
@@ -152,12 +175,55 @@ impl FieldInfosFormat for Lucene60FieldInfosFormat {
 
     fn write(
         &self,
-        _directory: DirectoryRc,
-        _segment_info: &SegmentInfo,
-        _segment_suffix: &str,
-        _infos: &FieldInfos,
-        _context: &IOContext,
+        directory: &Directory,
+        segment_info: &SegmentInfo,
+        segment_suffix: &str,
+        infos: &FieldInfos,
+        context: &IOContext,
     ) -> Result<()> {
-        unimplemented!()
+        let file_name = segment_file_name(&segment_info.name, segment_suffix, EXTENSION);
+        let mut output = directory.create_output(&file_name, context)?;
+        codec_util::write_index_header(
+            output.as_mut(),
+            CODEC_NAME,
+            FORMAT_CURRENT,
+            segment_info.get_id(),
+            segment_suffix,
+        )?;
+        output.write_vint(infos.len() as i32)?;
+
+        for (_, fi) in &infos.by_number {
+            fi.check_consistency()?;
+
+            output.write_string(&fi.name)?;
+            output.write_vint(fi.number as i32)?;
+
+            let mut bits = 0u8;
+            if fi.has_store_term_vector {
+                bits |= STORE_TERM_VECTOR;
+            }
+            if fi.omit_norms {
+                bits |= OMIT_NORMS;
+            }
+            if fi.has_store_payloads {
+                bits |= STORE_PAYLOADS;
+            }
+
+            output.write_byte(bits)?;
+
+            output.write_byte(index_options_byte(fi.index_options))?;
+
+            // pack the DV type and has_norms in one byte
+            output.write_byte(doc_values_byte(fi.doc_values_type))?;
+            output.write_long(fi.dv_gen)?;
+            output.write_map_of_strings(&fi.attributes.read().unwrap())?;
+            let point_dimension_count = fi.point_dimension_count;
+            output.write_vint(point_dimension_count as i32)?;
+            if point_dimension_count > 0 {
+                output.write_vint(fi.point_num_bytes as i32)?;
+            }
+        }
+
+        codec_util::write_footer(output.as_mut())
     }
 }

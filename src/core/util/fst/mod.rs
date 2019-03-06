@@ -1,3 +1,5 @@
+use std::fmt::Debug;
+use std::hash::Hash;
 use std::io;
 
 use core::store::{DataInput, DataOutput};
@@ -5,10 +7,14 @@ use error::*;
 
 // pub mod builder;
 pub mod bytes_output;
+pub use self::bytes_output::{ByteSequenceOutput, ByteSequenceOutputFactory};
 pub mod bytes_store;
+pub mod fst_builder;
+pub mod fst_iteartor;
 pub mod fst_reader;
+pub use self::fst_reader::*;
 
-pub trait Output: Clone {
+pub trait Output: Clone + Eq + Hash + Debug {
     type Value;
 
     fn prefix(&self, other: &Self) -> Self;
@@ -24,12 +30,22 @@ pub trait Output: Clone {
     fn value(&self) -> Self::Value;
 }
 
-pub trait OutputFactory {
+pub trait OutputFactory: Clone {
     type Value: Output;
 
     /// Return an empty Output
     ///
     fn empty(&self) -> Self::Value;
+
+    fn common(&self, o1: &Self::Value, o2: &Self::Value) -> Self::Value;
+
+    fn subtract(&self, o1: &Self::Value, o2: &Self::Value) -> Self::Value;
+
+    fn add(&self, prefix: &Self::Value, output: &Self::Value) -> Self::Value;
+
+    fn merge(&self, _o1: &Self::Value, _o2: &Self::Value) -> Self::Value {
+        panic!("UnsupportedOperation");
+    }
 
     /// Decode an output value previously written with `write`
     ///
@@ -84,23 +100,27 @@ pub trait BytesReader: DataInput {
     fn reversed(&self) -> bool;
 }
 
-pub struct DirectionalBytesReader<'a> {
-    bytes: &'a [u8],
+pub struct DirectionalBytesReader {
+    bytes: *const [u8],
     pos: usize,
     pub reversed: bool,
 }
 
-impl<'a> DirectionalBytesReader<'a> {
-    pub fn new(bytes: &'a [u8], reversed: bool) -> DirectionalBytesReader {
+impl<'a> DirectionalBytesReader {
+    pub fn new(bytes: &[u8], reversed: bool) -> DirectionalBytesReader {
         DirectionalBytesReader {
-            bytes,
+            bytes: bytes as *const [u8],
             pos: 0,
             reversed,
         }
     }
+
+    fn bytes_slice(&self) -> &[u8] {
+        unsafe { &(*self.bytes) }
+    }
 }
 
-impl<'a> BytesReader for DirectionalBytesReader<'a> {
+impl BytesReader for DirectionalBytesReader {
     fn position(&self) -> usize {
         self.pos
     }
@@ -114,7 +134,7 @@ impl<'a> BytesReader for DirectionalBytesReader<'a> {
     }
 }
 
-impl<'a> io::Read for DirectionalBytesReader<'a> {
+impl io::Read for DirectionalBytesReader {
     fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
         let mut len = b.len();
         if self.reversed {
@@ -122,15 +142,15 @@ impl<'a> io::Read for DirectionalBytesReader<'a> {
                 len = self.pos
             }
             for v in b.iter_mut().take(len) {
-                *v = self.bytes[self.pos];
+                *v = self.bytes_slice()[self.pos];
                 self.pos -= 1;
             }
         } else {
-            let available = self.bytes.len() - self.pos;
+            let available = self.bytes_slice().len() - self.pos;
             if available < len {
                 len = available;
             }
-            b[..len].clone_from_slice(&self.bytes[self.pos..len]);
+            b[..len].clone_from_slice(&self.bytes_slice()[self.pos..len]);
 
             self.pos += len;
         }
@@ -139,7 +159,7 @@ impl<'a> io::Read for DirectionalBytesReader<'a> {
     }
 }
 
-impl<'a> DataInput for DirectionalBytesReader<'a> {
+impl DataInput for DirectionalBytesReader {
     fn skip_bytes(&mut self, count: usize) -> Result<()> {
         if self.reversed {
             self.pos -= count;
@@ -221,6 +241,3 @@ pub mod tests {
         }
     }
 }
-
-pub use self::bytes_output::{ByteSequenceOutput, ByteSequenceOutputFactory};
-pub use self::fst_reader::{Arc, FST};

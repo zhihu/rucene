@@ -39,6 +39,28 @@ impl NumericDocValues for EmptyLongValues {
     }
 }
 
+pub struct IdentityLongValues;
+
+impl LongValues for IdentityLongValues {
+    fn get64_with_ctx(
+        &self,
+        ctx: LongValuesContext,
+        index: i64,
+    ) -> Result<(i64, LongValuesContext)> {
+        Ok((index, ctx))
+    }
+}
+
+impl NumericDocValues for IdentityLongValues {
+    fn get_with_ctx(
+        &self,
+        ctx: NumericDocValuesContext,
+        doc_id: DocId,
+    ) -> Result<(i64, NumericDocValuesContext)> {
+        Ok((doc_id as i64, ctx))
+    }
+}
+
 pub struct LiveLongValues {
     live: BitsRef,
     constant: i64,

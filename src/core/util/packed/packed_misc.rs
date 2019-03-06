@@ -1,8 +1,8 @@
 use core::codec::codec_util;
 use core::store::IndexInput;
 use core::store::{DataInput, DataOutput};
-use core::util::bit_util::ZigZagEncoding;
-use error::*;
+use core::util::bit_util::{UnsignedShift, ZigZagEncoding};
+use error::Result;
 use std::cmp::min;
 
 /// Simplistic compression for array of unsigned long values.
@@ -27,7 +27,7 @@ pub const COMPACT: f32 = 0.0;
 
 /// Default amount of memory to use for bulk operations.
 ///
-pub const DEFAULT_BUFFER_SIZE: i32 = 1024; // 1K
+pub const DEFAULT_BUFFER_SIZE: usize = 1024; // 1K
 
 pub const CODEC_NAME: &str = "PackedInts";
 pub const VERSION_MONOTONIC_WITHOUT_ZIGZAG: i32 = 2;
@@ -56,7 +56,7 @@ pub fn get_writer_no_header(
     format: Format,
     value_count: usize,
     bits_per_value: i32,
-    mem: i32,
+    mem: usize,
 ) -> Box<Writer> {
     Box::new(PackedWriter::new(
         format,
@@ -133,7 +133,7 @@ pub fn get_reader_iterator_no_header(
     version: i32,
     value_count: usize,
     bits_per_value: i32,
-    mem: i32,
+    mem: usize,
 ) -> Result<PackedReaderIterator> {
     check_version(version)?;
     Ok(PackedReaderIterator::new(
@@ -213,7 +213,7 @@ pub fn max_value(bits_per_value: i32) -> i64 {
     if bits_per_value == 64 {
         i64::max_value()
     } else {
-        (1i64 << (bits_per_value + 1)) - 1
+        !(-1i64 << bits_per_value)
     }
 }
 
@@ -223,12 +223,12 @@ pub fn packed_ints_copy(
     dest: &mut Mutable,
     dest_pos: usize,
     len: usize,
-    mem: i32,
+    mem: usize,
 ) {
     debug_assert!(src_pos + len <= src.size());
     debug_assert!(dest_pos + len <= dest.size());
 
-    let capacity = rshift_32(mem, 3) as usize;
+    let capacity = mem >> 3;
     if capacity == 0 {
         let mut cur_dest_pos = dest_pos;
         let mut cur_src_pos = src_pos;
@@ -243,19 +243,17 @@ pub fn packed_ints_copy(
     }
 }
 
-fn copy_by_buf(
-    src: &Reader,
-    src_pos: usize,
+pub fn copy_by_buf<T: Reader + ?Sized>(
+    src: &T,
+    mut src_pos: usize,
     dest: &mut Mutable,
-    dest_pos: usize,
+    mut dest_pos: usize,
     len: usize,
     buf: &mut [i64],
 ) {
     debug_assert!(!buf.is_empty());
     let mut remain = 0usize;
     let mut cur_len = len;
-    let mut src_pos = src_pos;
-    let mut dest_pos = dest_pos;
     while cur_len > 0 {
         let get_len = cur_len.min(buf.len() - remain);
         let read = src.bulk_get(src_pos, &mut buf[remain..], get_len);
@@ -390,6 +388,7 @@ impl Format {
     }
 }
 
+#[derive(Debug)]
 pub struct FormatAndBits {
     pub format: Format,
     pub bits_per_value: i32,
@@ -442,7 +441,7 @@ impl FormatAndBits {
         {
             actual_bits_per_value = 48;
         } else {
-            for bpv in bits_per_value..max_bits_per_value {
+            for bpv in bits_per_value..max_bits_per_value + 1 {
                 if Format::PackedSingleBlock.is_supported(bpv) {
                     let overhead = Format::PackedSingleBlock.overhead_per_value(bpv);
                     let acceptable_overhead =
@@ -525,7 +524,7 @@ pub trait PackedIntDecoder: Send + Sync {
 }
 
 /// An encoder for packed integers.
-pub trait PackedIntEncoder {
+pub trait PackedIntEncoder: Send + Sync {
     /// The minimum number of long blocks to encode in a single iteration, when
     /// using long encoding.
     fn long_block_count(&self) -> usize;
@@ -578,6 +577,14 @@ pub trait PackedIntEncoder {
     fn encode_int_to_byte(&self, values: &[i32], blocks: &mut [u8], iterations: usize);
 }
 
+fn reader_bulk_get(reader: &Reader, index: usize, output: &mut [i64], len: usize) -> usize {
+    let gets = min(reader.size() - index, len);
+    for i in index..index + gets {
+        output[i - index] = reader.get(i);
+    }
+    gets
+}
+
 /// A read-only random access array of positive integers.
 /// @lucene.internal
 /// A per-document numeric value.
@@ -590,16 +597,39 @@ pub trait Reader: Send + Sync {
     /// Bulk get: read at least one and at most <code>len</code> longs starting
     /// from <code>index</code> into <code>arr[off:off+len]</code> and return
     /// the actual number of values that have been read.
-    fn bulk_get(&self, index: usize, output: &mut [i64], len: usize) -> usize {
-        let gets = min(self.size() - index, len);
-        for i in index..index + gets {
-            output[i - index] = self.get(i);
-        }
-        gets
-    }
+    fn bulk_get(&self, index: usize, output: &mut [i64], len: usize) -> usize;
 
     /// @return the number of values.
     fn size(&self) -> usize;
+}
+
+fn mutable_bulk_set(
+    mutable: &mut Mutable,
+    index: usize,
+    arr: &[i64],
+    off: usize,
+    len: usize,
+) -> usize {
+    debug_assert!(len > 0);
+    debug_assert!(index as i64 >= 0 && index < mutable.size());
+    let len = min(len, mutable.size() - index);
+    debug_assert!(off + len <= arr.len());
+    let mut i = index;
+    let mut o = off;
+    while i < index + len {
+        mutable.set(i, arr[o]);
+        i += 1;
+        o += 1;
+    }
+    len
+}
+
+fn mutable_fill(mutable: &mut Mutable, from: usize, to: usize, val: i64) {
+    debug_assert!(val <= max_value(mutable.get_bits_per_value()));
+    debug_assert!(from <= to);
+    for i in from..to {
+        mutable.set(i, val);
+    }
 }
 
 pub trait Mutable: Reader {
@@ -621,20 +651,7 @@ pub trait Mutable: Reader {
     /// <code>index</code>. Returns the actual number of values that have been
     /// set.
     ///
-    fn bulk_set(&mut self, index: usize, arr: &[i64], off: usize, len: usize) -> usize {
-        debug_assert!(len > 0);
-        debug_assert!(index as i64 >= 0 && index < self.size());
-        let len = min(len, self.size() - index);
-        debug_assert!(off + len < arr.len());
-        let mut i = index;
-        let mut o = off;
-        while i < index + len {
-            self.set(i, arr[o]);
-            i += 1;
-            o += 1;
-        }
-        len
-    }
+    fn bulk_set(&mut self, index: usize, arr: &[i64], off: usize, len: usize) -> usize;
 
     /// Fill the mutable from <code>fromIndex</code> (inclusive) to
     /// <code>toIndex</code> (exclusive) with <code>val</code>.
@@ -670,6 +687,54 @@ pub trait Mutable: Reader {
     }
 
     fn as_reader(&self) -> &Reader;
+}
+
+pub struct PackedIntsNullMutable {
+    value_count: usize,
+}
+
+impl PackedIntsNullMutable {
+    pub fn new(value_count: usize) -> Self {
+        PackedIntsNullMutable { value_count }
+    }
+}
+
+impl Reader for PackedIntsNullMutable {
+    fn get(&self, _doc_id: usize) -> i64 {
+        0
+    }
+
+    // FIXME: usize -> docId
+    fn bulk_get(&self, index: usize, output: &mut [i64], len: usize) -> usize {
+        assert!(index < self.value_count);
+        let len = ::std::cmp::min(len, self.value_count - index);
+        unsafe {
+            let slice = output.as_mut_ptr();
+            ::std::ptr::write_bytes(slice, 0, len);
+        }
+        len
+    }
+    fn size(&self) -> usize {
+        self.value_count
+    }
+}
+
+impl Mutable for PackedIntsNullMutable {
+    fn get_bits_per_value(&self) -> i32 {
+        0
+    }
+
+    fn set(&mut self, _index: usize, _value: i64) {
+        unreachable!()
+    }
+
+    fn bulk_set(&mut self, _index: usize, _arr: &[i64], _off: usize, _len: usize) -> usize {
+        unreachable!()
+    }
+
+    fn as_reader(&self) -> &Reader {
+        self
+    }
 }
 
 pub struct Direct8 {
@@ -744,7 +809,7 @@ impl Mutable for Direct8 {
     fn bulk_set(&mut self, index: usize, arr: &[i64], off: usize, len: usize) -> usize {
         debug_assert!(len > 0);
         debug_assert!(index < self.value_count);
-        debug_assert!(off + len < arr.len());
+        debug_assert!(off + len <= arr.len());
 
         let sets = len.min(self.value_count - index);
         let mut i = index;
@@ -836,7 +901,7 @@ impl Mutable for Direct16 {
     fn bulk_set(&mut self, index: usize, arr: &[i64], off: usize, len: usize) -> usize {
         debug_assert!(len > 0);
         debug_assert!(index as i64 >= 0 && index < self.value_count);
-        debug_assert!(off + len < arr.len());
+        debug_assert!(off + len <= arr.len());
 
         let sets = len.min(self.value_count - index);
         let mut i = index;
@@ -933,7 +998,7 @@ impl Mutable for Direct32 {
     fn bulk_set(&mut self, index: usize, arr: &[i64], off: usize, len: usize) -> usize {
         debug_assert!(len > 0);
         debug_assert!(index as i64 >= 0 && index < self.value_count);
-        debug_assert!(off + len < arr.len());
+        debug_assert!(off + len <= arr.len());
 
         let sets = len.min(self.value_count - index);
         let mut i = index;
@@ -1025,7 +1090,7 @@ impl Mutable for Direct64 {
     fn bulk_set(&mut self, index: usize, arr: &[i64], off: usize, len: usize) -> usize {
         debug_assert!(len > 0);
         debug_assert!(index as i64 >= 0 && index < self.value_count);
-        debug_assert!(off + len < arr.len());
+        debug_assert!(off + len <= arr.len());
 
         let sets = len.min(self.value_count - index);
         let mut i = index;
@@ -1122,7 +1187,7 @@ impl Mutable for Packed8ThreeBlocks {
     fn bulk_set(&mut self, index: usize, arr: &[i64], off: usize, len: usize) -> usize {
         debug_assert!(len > 0);
         debug_assert!(index as i64 >= 0 && index < self.value_count);
-        debug_assert!(off + len < arr.len());
+        debug_assert!(off + len <= arr.len());
 
         let sets = len.min(self.value_count - index);
         for i in 0..sets {
@@ -1221,7 +1286,7 @@ impl Mutable for Packed16ThreeBlocks {
     fn bulk_set(&mut self, index: usize, arr: &[i64], off: usize, len: usize) -> usize {
         debug_assert!(len > 0);
         debug_assert!(index as i64 >= 0 && index < self.value_count);
-        debug_assert!(off + len < arr.len());
+        debug_assert!(off + len <= arr.len());
 
         let sets = len.min(self.value_count - index);
         for i in 0..sets {
@@ -1362,11 +1427,11 @@ impl Reader for Packed64 {
         debug_assert!(index < self.value_count);
 
         let mut len = len.min(self.value_count - index);
-        debug_assert!(len < output.len());
+        debug_assert!(len <= output.len());
 
         let original_index = index;
         let mut index = index;
-        let decoder = bulk_operation_of(&Format::Packed, self.bits_per_value);
+        let decoder = bulk_operation_of(Format::Packed, self.bits_per_value);
 
         let offset_in_blocks = index % PackedIntDecoder::long_value_count(decoder.as_ref());
         let mut off = 0usize;
@@ -1410,7 +1475,7 @@ impl Reader for Packed64 {
         } else {
             // no progress so far => already at a block boundary but no full block to get
             debug_assert_eq!(index, original_index);
-            <Packed64 as Reader>::bulk_get(self, index, &mut output[off..], len)
+            reader_bulk_get(self, index, &mut output[off..], len)
         }
     }
 
@@ -1454,11 +1519,11 @@ impl Mutable for Packed64 {
         debug_assert!(index as i64 >= 0 && index < self.value_count);
 
         let mut len = len.min(self.value_count - index);
-        debug_assert!(off + len < arr.len());
+        debug_assert!(off + len <= arr.len());
 
         let original_index = index;
         let mut index = index;
-        let encoder = bulk_operation_of(&Format::Packed, self.bits_per_value);
+        let encoder = bulk_operation_of(Format::Packed, self.bits_per_value);
 
         let offset_in_blocks = index % PackedIntEncoder::long_value_count(encoder.as_ref());
         let mut off = off;
@@ -1502,7 +1567,7 @@ impl Mutable for Packed64 {
         } else {
             // no progress so far => already at a block boundary but no full block to get
             debug_assert_eq!(index, original_index);
-            <Packed64 as Mutable>::bulk_set(self, index, arr, off, len)
+            mutable_bulk_set(self, index, arr, off, len)
         }
     }
 
@@ -1513,7 +1578,7 @@ impl Mutable for Packed64 {
         let n_aligned_values = 64usize / Self::gcd(64, self.bits_per_value) as usize;
         let span = to - from;
         if span <= 3 * n_aligned_values {
-            <Packed64 as Mutable>::fill(self, from, to, val);
+            mutable_fill(self, from, to, val);
             return;
         }
 
@@ -1656,7 +1721,7 @@ impl Reader for Packed64SingleBlock {
 
         // bulk get
         debug_assert_eq!(value_index % self.value_per_block, 0);
-        let decoder = bulk_operation_of(&Format::PackedSingleBlock, self.bits_per_value);
+        let decoder = bulk_operation_of(Format::PackedSingleBlock, self.bits_per_value);
         debug_assert_eq!(PackedIntDecoder::long_block_count(decoder.as_ref()), 1);
         debug_assert_eq!(
             PackedIntDecoder::long_value_count(decoder.as_ref()),
@@ -1678,7 +1743,7 @@ impl Reader for Packed64SingleBlock {
             value_index - index
         } else {
             debug_assert_eq!(value_index, index);
-            <Packed64SingleBlock as Reader>::bulk_get(self, value_index, &mut output[off..], len)
+            reader_bulk_get(self, value_index, &mut output[off..], len)
         }
     }
 
@@ -1695,9 +1760,9 @@ impl Mutable for Packed64SingleBlock {
     fn set(&mut self, index: usize, value: i64) {
         let o = index / self.value_per_block;
         let b = index % self.value_per_block;
-        let shift = (b * self.value_per_block) as i64;
-        self.blocks[o] =
-            self.blocks[o] & (((1i64 << self.bits_per_value) - 1i64) << shift) | (value << shift);
+        let shift = ((b * self.bits_per_value as usize) & 0x3f) as i64;
+        self.blocks[o] = (self.blocks[o] & !(((1i64 << self.bits_per_value) - 1i64) << shift))
+            | (value << shift);
     }
 
     fn bulk_set(&mut self, index: usize, arr: &[i64], off: usize, len: usize) -> usize {
@@ -1724,7 +1789,7 @@ impl Mutable for Packed64SingleBlock {
 
         // bulk get
         debug_assert_eq!(value_index % self.value_per_block, 0);
-        let op = bulk_operation_of(&Format::PackedSingleBlock, self.bits_per_value);
+        let op = bulk_operation_of(Format::PackedSingleBlock, self.bits_per_value);
         debug_assert_eq!(PackedIntEncoder::long_block_count(op.as_ref()), 1);
         debug_assert_eq!(
             PackedIntEncoder::long_value_count(op.as_ref()),
@@ -1741,7 +1806,7 @@ impl Mutable for Packed64SingleBlock {
             value_index - index
         } else {
             debug_assert_eq!(value_index, index);
-            <Packed64SingleBlock as Mutable>::bulk_set(self, value_index, arr, off, len)
+            mutable_bulk_set(self, value_index, arr, off, len)
         }
     }
 
@@ -1752,7 +1817,7 @@ impl Mutable for Packed64SingleBlock {
         if to - from < self.value_per_block << 1 {
             // there needs to be at least one full block to set for the block
             // approach to be worth trying
-            <Packed64SingleBlock as Mutable>::fill(self, from, to, val);
+            mutable_fill(self, from, to, val);
             return;
         }
 
@@ -1964,9 +2029,9 @@ impl PackedReaderIterator {
         packed_ints_version: i32,
         value_count: usize,
         bits_per_value: i32,
-        mem: i32,
+        mem: usize,
     ) -> PackedReaderIterator {
-        let bulk_operation = bulk_operation_of(&format, bits_per_value);
+        let bulk_operation = bulk_operation_of(format, bits_per_value);
         let iterations = bulk_operation.compute_iterations(value_count as i32, mem) as usize;
         debug_assert!(value_count == 0 || iterations > 0);
         let next_blocks =
@@ -2054,15 +2119,16 @@ impl ReaderIterator for PackedReaderIterator {
 }
 
 pub fn get_encoder(
-    _format: Format,
-    _version: i32,
-    _bits_per_value: i32,
+    format: Format,
+    version: i32,
+    bits_per_value: i32,
 ) -> Result<Box<PackedIntEncoder>> {
-    unimplemented!();
+    check_version(version)?;
+    Ok(bulk_operation_of(format, bits_per_value).as_encoder())
 }
 
 pub fn get_decoder(
-    format: &Format,
+    format: Format,
     version: i32,
     bits_per_value: i32,
 ) -> Result<Box<PackedIntDecoder>> {
@@ -2100,10 +2166,10 @@ pub struct PackedWriter {
 }
 
 impl PackedWriter {
-    pub fn new(format: Format, value_count: i32, bits_per_value: i32, mem: i32) -> PackedWriter {
+    pub fn new(format: Format, value_count: i32, bits_per_value: i32, mem: usize) -> PackedWriter {
         debug_assert!(bits_per_value <= 64);
         debug_assert!(value_count >= 0 || value_count == -1);
-        let encoder = bulk_operation_of(&format, bits_per_value);
+        let encoder = bulk_operation_of(format, bits_per_value);
         let iterations = encoder.as_ref().compute_iterations(value_count, mem) as usize;
         let next_blocks =
             vec![0u8; iterations * PackedIntEncoder::byte_block_count(encoder.as_ref())];
@@ -2193,8 +2259,8 @@ impl Writer for PackedWriter {
     }
 }
 
-pub fn bulk_operation_of(format: &Format, bits_per_value: i32) -> Box<BulkOperation> {
-    match *format {
+pub fn bulk_operation_of(format: Format, bits_per_value: i32) -> Box<BulkOperation> {
+    match format {
         // TODO 部分 bits 的bulk operation 实际在 lucene 中实现了优化的方式
         Format::Packed => Box::new(BulkOperationPacked::new(bits_per_value)),
         Format::PackedSingleBlock => Box::new(BulkOperationPackedSingleBlock::new(bits_per_value)),
@@ -2202,10 +2268,10 @@ pub fn bulk_operation_of(format: &Format, bits_per_value: i32) -> Box<BulkOperat
 }
 
 pub trait BulkOperation: PackedIntDecoder + PackedIntEncoder {
-    fn compute_iterations(&self, value_count: i32, ram_budget: i32) -> i32 {
+    fn compute_iterations(&self, value_count: i32, ram_budget: usize) -> i32 {
         let byte_value_count = PackedIntDecoder::byte_value_count(self);
         let byte_block_count = PackedIntDecoder::byte_block_count(self);
-        let iterations = ram_budget as usize / (byte_block_count + 8 * byte_value_count);
+        let iterations = ram_budget / (byte_block_count + 8 * byte_value_count);
         if iterations == 0 {
             1
         } else if (iterations - 1) * byte_value_count >= value_count as usize {
@@ -2216,6 +2282,8 @@ pub trait BulkOperation: PackedIntDecoder + PackedIntEncoder {
     }
 
     fn as_decoder(&self) -> Box<PackedIntDecoder>;
+
+    fn as_encoder(&self) -> Box<PackedIntEncoder>;
 }
 
 #[derive(Clone)]
@@ -2245,9 +2313,9 @@ impl BulkOperationPacked {
             byte_value_count >>= 1;
         }
         let mask = if bits_per_value == 64 {
-            i64::max_value()
+            -1
         } else {
-            (1i64 << bits_per_value) - 1
+            (1i64 << bits_per_value).wrapping_sub(1)
         };
         debug_assert_eq!(
             long_value_count * bits_per_value as usize,
@@ -2267,6 +2335,10 @@ impl BulkOperationPacked {
 
 impl BulkOperation for BulkOperationPacked {
     fn as_decoder(&self) -> Box<PackedIntDecoder> {
+        Box::new(self.clone())
+    }
+
+    fn as_encoder(&self) -> Box<PackedIntEncoder> {
         Box::new(self.clone())
     }
 }
@@ -2295,8 +2367,8 @@ impl PackedIntEncoder for BulkOperationPacked {
         let mut blocks_offset = 0;
         for _i in 0..self.long_value_count * iterations {
             bits_left -= self.bits_per_value;
-            if bits_left < 0 {
-                next_block |= values[values_offset];
+            if bits_left > 0 {
+                next_block |= values[values_offset] << bits_left;
                 values_offset += 1;
             } else if bits_left == 0 {
                 next_block |= values[values_offset];
@@ -2306,7 +2378,7 @@ impl PackedIntEncoder for BulkOperationPacked {
                 next_block = 0;
                 bits_left = 64;
             } else {
-                next_block |= values[values_offset] >> -bits_left;
+                next_block |= (values[values_offset] as u64 >> -bits_left) as i64;
                 blocks[blocks_offset] = next_block;
                 blocks_offset += 1;
                 next_block =
@@ -2330,11 +2402,12 @@ impl PackedIntEncoder for BulkOperationPacked {
                 bits_left -= self.bits_per_value;
             } else {
                 let mut bits = self.bits_per_value - bits_left;
-                blocks[blocks_offset] = (next_block | (v >> bits) as i32) as u8;
+                blocks[blocks_offset] =
+                    (next_block | (v.unsigned_shift(bits as usize)) as i32) as u8;
                 blocks_offset += 1;
                 while bits >= 8 {
                     bits -= 8;
-                    blocks[blocks_offset] = (v >> bits) as u8;
+                    blocks[blocks_offset] = (v.unsigned_shift(bits as usize)) as u8;
                     blocks_offset += 1;
                 }
                 bits_left = 8 - bits;
@@ -2347,24 +2420,29 @@ impl PackedIntEncoder for BulkOperationPacked {
     fn encode_int_to_long(&self, values: &[i32], blocks: &mut [i64], iterations: usize) {
         let mut next_block = 0i64;
         let mut bits_left = 64;
-        let values_offset = 0;
+        let mut values_offset = 0;
         let mut blocks_offset = 0;
         for _i in 0..self.long_value_count * iterations {
+            bits_left -= self.bits_per_value;
             if bits_left > 0 {
                 next_block |= (i64::from(values[values_offset]) & 0xffff_ffffi64) << bits_left;
+                values_offset += 1;
             } else if bits_left == 0 {
                 next_block |= i64::from(values[values_offset]) & 0xffff_ffffi64;
                 blocks[blocks_offset] = next_block;
                 blocks_offset += 1;
+                values_offset += 1;
                 next_block = 0;
                 bits_left = 64;
             } else {
-                next_block |= (i64::from(values[values_offset]) & 0xffff_ffffi64) >> -bits_left;
+                next_block |= (i64::from(values[values_offset]) & 0xffff_ffffi64)
+                    .unsigned_shift(-bits_left as usize);
                 blocks[blocks_offset] = next_block;
                 blocks_offset += 1;
                 next_block = (i64::from(values[values_offset]) & ((1i64 << -bits_left) - 1))
                     << (64 + bits_left);
                 bits_left += 64;
+                values_offset += 1;
             }
         }
     }
@@ -2377,16 +2455,17 @@ impl PackedIntEncoder for BulkOperationPacked {
         for _i in 0..self.byte_value_count * iterations {
             let v = values[values_offset];
             values_offset += 1;
+            debug_assert!(unsigned_bits_required(v as i64) <= self.bits_per_value);
             if self.bits_per_value < bits_left {
                 next_block |= v << (bits_left - self.bits_per_value);
                 bits_left -= self.bits_per_value;
             } else {
                 let mut bits = self.bits_per_value - bits_left;
-                blocks[blocks_offset] = (next_block | (v >> bits)) as u8;
+                blocks[blocks_offset] = (next_block | (v.unsigned_shift(bits as usize))) as u8;
                 blocks_offset += 1;
                 while bits >= 8 {
                     bits -= 8;
-                    blocks[blocks_offset] = (v >> bits) as u8;
+                    blocks[blocks_offset] = v.unsigned_shift(bits as usize) as u8;
                     blocks_offset += 1;
                 }
                 bits_left = 8 - bits;
@@ -2424,6 +2503,7 @@ impl PackedIntDecoder for BulkOperationPacked {
                     << -bits_left)
                     | rshift_64(blocks[block_offset + 1], 64 + bits_left);
                 block_offset += 1;
+                bits_left += 64;
             } else {
                 *v = (blocks[block_offset] >> bits_left) & self.mask;
             }
@@ -2537,8 +2617,8 @@ impl BulkOperationPackedSingleBlock {
 
     fn write_long(&self, block: i64, blocks: &mut [u8], blocks_offset: usize) -> usize {
         let mut offset = blocks_offset;
-        for i in 0..8 {
-            blocks[offset] = (block >> (64 - (i << 3))) as u8;
+        for i in 1..9 {
+            blocks[offset] = block.unsigned_shift(64 - (i << 3)) as u8;
             offset += 1;
         }
         offset
@@ -2557,6 +2637,7 @@ impl BulkOperationPackedSingleBlock {
         for _i in 1..self.value_count {
             block = rshift_64(block, self.bits_per_value);
             values[values_offset] = block & self.mask;
+            values_offset += 1;
         }
         values_offset
     }
@@ -2604,6 +2685,10 @@ impl BulkOperationPackedSingleBlock {
 
 impl BulkOperation for BulkOperationPackedSingleBlock {
     fn as_decoder(&self) -> Box<PackedIntDecoder> {
+        Box::new(self.clone())
+    }
+
+    fn as_encoder(&self) -> Box<PackedIntEncoder> {
         Box::new(self.clone())
     }
 }
@@ -2742,20 +2827,20 @@ pub struct BlockPackedReaderIterator {
 
 pub const MIN_BLOCK_SIZE: usize = 64;
 pub const MAX_BLOCK_SIZE: usize = 1 << (30 - 3);
-const MIN_VALUE_EQUALS_0: i32 = 1;
-const BPV_SHIFT: i32 = 1;
+pub const MIN_VALUE_EQUALS_0: i32 = 1;
+pub const BPV_SHIFT: i32 = 1;
 
 /// Return the number of blocks required to store `size` values on `block_size`
-pub fn num_blocks(size: u64, block_size: usize) -> usize {
-    let block_size = block_size as u64;
+pub fn num_blocks(size: usize, block_size: usize) -> usize {
+    let block_size = block_size;
     let padding = if (size % block_size) == 0 { 0 } else { 1 };
-    (size / block_size + padding) as usize
+    size / block_size + padding
 }
 
-pub fn check_block_size(block_size: usize, min_block_size: usize, max_block_size: usize) -> u32 {
+pub fn check_block_size(block_size: usize, min_block_size: usize, max_block_size: usize) -> usize {
     debug_assert!(block_size >= min_block_size && block_size <= max_block_size);
     debug_assert_eq!(block_size & (block_size - 1), 0);
-    block_size.trailing_zeros()
+    block_size.trailing_zeros() as usize
 }
 
 impl BlockPackedReaderIterator {
@@ -2868,7 +2953,7 @@ impl BlockPackedReaderIterator {
         if bits_per_value == 0 {
             self.values.iter_mut().map(|x| *x = min_value).count();
         } else {
-            let decoder = get_decoder(&Format::Packed, self.packed_ints_version, bits_per_value)?;
+            let decoder = get_decoder(Format::Packed, self.packed_ints_version, bits_per_value)?;
             let iterations = self.block_size / PackedIntDecoder::byte_value_count(decoder.as_ref());
             let blocks_size = iterations * PackedIntDecoder::byte_block_count(decoder.as_ref());
 

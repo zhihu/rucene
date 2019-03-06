@@ -5,7 +5,7 @@ pub struct PackedIntsNullReader {
 }
 
 impl PackedIntsNullReader {
-    pub fn new(value_count: usize) -> Self {
+    pub fn new(value_count: usize) -> PackedIntsNullReader {
         PackedIntsNullReader { value_count }
     }
 }

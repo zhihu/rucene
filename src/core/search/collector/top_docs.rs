@@ -9,7 +9,7 @@ use core::search::Scorer;
 use core::util::DocId;
 use error::*;
 
-use crossbeam_channel::{unbounded, Receiver, Sender};
+use crossbeam::channel::{unbounded, Receiver, Sender};
 use std::mem;
 
 type ScoreDocPriorityQueue = BinaryHeap<ScoreDoc>;
@@ -115,7 +115,7 @@ impl SearchCollector for TopDocsCollector {
         let channel = mem::replace(&mut self.channel, None);
         let (sender, receiver) = channel.unwrap();
         drop(sender);
-        while let Ok(doc) = receiver.recv() {
+        while let Some(doc) = receiver.recv() {
             self.add_doc(doc.doc, doc.score)
         }
         Ok(())
@@ -165,9 +165,7 @@ impl Collector for TopDocsLeafCollector {
 
     fn collect(&mut self, doc: i32, scorer: &mut Scorer) -> Result<()> {
         let score_doc = ScoreDoc::new(doc + self.doc_base, scorer.score()?);
-        if self.channel.send(score_doc).is_err() {
-            bail!("collect score doc failed for channel send!");
-        }
+        self.channel.send(score_doc);
         Ok(())
     }
 }

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, RwLock};
 
-use core::index::multi_fields::MultiFields;
+use core::index::MultiFields;
 use core::index::Term;
 use core::index::TermContext;
 use core::index::{IndexReader, LeafReader};
@@ -10,10 +10,12 @@ use core::search::bm25_similarity::BM25Similarity;
 use core::search::bulk_scorer::BulkScorer;
 use core::search::cache_policy::{QueryCachingPolicy, UsageTrackingQueryCachingPolicy};
 use core::search::collector;
-use core::search::collector::{Collector, SearchCollector};
+use core::search::collector::{Collector, LeafCollector, SearchCollector};
 use core::search::explanation::Explanation;
-use core::search::lru_query_cache::{LRUQueryCache, QueryCache};
+use core::search::match_all::{ConstantScoreQuery, MatchAllDocsQuery};
+use core::search::query_cache::{LRUQueryCache, QueryCache};
 use core::search::statistics::{CollectionStatistics, TermStatistics};
+use core::search::term_query::TermQuery;
 use core::search::{Query, Scorer, Weight, NO_MORE_DOCS};
 use core::search::{SimScorer, SimWeight, Similarity, SimilarityProducer};
 use core::util::bits::BitsRef;
@@ -45,7 +47,7 @@ use error::*;
 ///
 ///
 
-struct DefaultSimilarityProducer;
+pub struct DefaultSimilarityProducer;
 
 impl SimilarityProducer for DefaultSimilarityProducer {
     fn create(&self, _field: &str) -> Box<Similarity> {
@@ -99,10 +101,41 @@ impl SimScorer for NonScoringSimScorer {
     }
 }
 
-pub struct IndexSearcher {
-    pub reader: Arc<IndexReader>,
-    sim_producer: Box<SimilarityProducer>,
-    query_cache: Box<QueryCache>,
+pub trait IndexSearcher {
+    fn reader(&self) -> &IndexReader;
+
+    fn search(&self, query: &Query, collector: &mut SearchCollector) -> Result<()>;
+
+    fn search_parallel(&self, query: &Query, collector: &mut SearchCollector) -> Result<()>;
+
+    fn count(&self, query: &Query) -> Result<i32>;
+
+    /// Creates a {@link Weight} for the given query, potentially adding caching
+    /// if possible and configured.
+    fn create_weight(&self, query: &Query, needs_scores: bool) -> Result<Box<Weight>>;
+
+    /// Creates a normalized weight for a top-level `Query`.
+    /// The query is rewritten by this method and `Query#createWeight` called,
+    /// afterwards the `Weight` is normalized. The returned `Weight`
+    /// can then directly be used to get a `Scorer`.
+    ///
+    fn create_normalized_weight(&self, query: &Query, needs_scores: bool) -> Result<Box<Weight>>;
+
+    fn similarity(&self, field: &str, needs_scores: bool) -> Box<Similarity>;
+
+    fn term_state(&self, term: &Term) -> Result<Arc<TermContext>>;
+
+    fn term_statistics(&self, term: Term, context: &TermContext) -> TermStatistics;
+
+    fn collections_statistics(&self, field: &str) -> Result<CollectionStatistics>;
+
+    fn explain(&self, query: &Query, doc: DocId) -> Result<Explanation>;
+}
+
+pub struct DefaultIndexSearcher<IR: AsRef<IndexReader>, SP: SimilarityProducer> {
+    pub reader: IR,
+    sim_producer: SP,
+    query_cache: Arc<QueryCache>,
     #[allow(dead_code)]
     cache_policy: Arc<QueryCachingPolicy>,
     collection_statistics: RwLock<HashMap<String, CollectionStatistics>>,
@@ -110,7 +143,20 @@ pub struct IndexSearcher {
     thread_pool: Option<ThreadPool<DefaultContext>>,
 }
 
-impl Drop for IndexSearcher {
+unsafe impl<IR: AsRef<IndexReader> + Send, SP: SimilarityProducer> Send
+    for DefaultIndexSearcher<IR, SP>
+{
+}
+unsafe impl<IR: AsRef<IndexReader> + Sync, SP: SimilarityProducer> Sync
+    for DefaultIndexSearcher<IR, SP>
+{
+}
+
+impl<IR, SP> Drop for DefaultIndexSearcher<IR, SP>
+where
+    IR: AsRef<IndexReader>,
+    SP: SimilarityProducer,
+{
     fn drop(&mut self) {
         if let Some(ref mut pool) = self.thread_pool {
             let _ = pool.stop();
@@ -118,24 +164,23 @@ impl Drop for IndexSearcher {
     }
 }
 
-unsafe impl Send for IndexSearcher {}
-
-unsafe impl Sync for IndexSearcher {}
-
-impl IndexSearcher {
-    pub fn new(reader: Arc<IndexReader>) -> IndexSearcher {
-        Self::with_similarity(reader, Box::new(DefaultSimilarityProducer {}))
+impl<IR: AsRef<IndexReader>> DefaultIndexSearcher<IR, DefaultSimilarityProducer> {
+    pub fn new(reader: IR) -> DefaultIndexSearcher<IR, DefaultSimilarityProducer> {
+        Self::with_similarity(reader, DefaultSimilarityProducer {})
     }
+}
 
-    pub fn with_similarity(
-        reader: Arc<IndexReader>,
-        sim_producer: Box<SimilarityProducer>,
-    ) -> IndexSearcher {
-        let max_doc = reader.max_doc();
-        IndexSearcher {
+impl<IR, SP> DefaultIndexSearcher<IR, SP>
+where
+    IR: AsRef<IndexReader>,
+    SP: SimilarityProducer,
+{
+    pub fn with_similarity(reader: IR, sim_producer: SP) -> DefaultIndexSearcher<IR, SP> {
+        let max_doc = reader.as_ref().max_doc();
+        DefaultIndexSearcher {
             reader,
             sim_producer,
-            query_cache: Box::new(LRUQueryCache::new(1000, max_doc)),
+            query_cache: Arc::new(LRUQueryCache::new(1000, max_doc)),
             cache_policy: Arc::new(UsageTrackingQueryCachingPolicy::default()),
             collection_statistics: RwLock::new(HashMap::new()),
             term_contexts: RwLock::new(HashMap::new()),
@@ -153,28 +198,12 @@ impl IndexSearcher {
         }
     }
 
-    /// Lower-level search API.
-    pub fn search(&self, query: &Query, collector: &mut SearchCollector) -> Result<()> {
-        let weight = self.create_weight(query, collector.needs_scores())?;
+    pub fn set_query_cache(&mut self, cache: Arc<QueryCache>) {
+        self.query_cache = cache;
+    }
 
-        for (ord, reader) in self.reader.leaves().iter().enumerate() {
-            let mut scorer = weight.create_scorer(*reader)?;
-            // some in running segment maybe wrong, just skip it!
-            // TODO maybe we should matching more specific error type
-            if let Err(e) = collector.set_next_reader(ord, *reader) {
-                error!(
-                    "set next reader for leaf {} failed!, {:?}",
-                    reader.name(),
-                    e
-                );
-                continue;
-            }
-            let live_docs = reader.live_docs();
-
-            Self::do_search(scorer, collector, &live_docs)?;
-        }
-
-        Ok(())
+    pub fn set_query_cache_policy(&mut self, cache_policy: Arc<QueryCachingPolicy>) {
+        self.cache_policy = cache_policy;
     }
 
     fn do_search<T: Collector + ?Sized>(
@@ -205,13 +234,48 @@ impl IndexSearcher {
         }
         Ok(())
     }
+}
 
-    pub fn search_parallel(&self, query: &Query, collector: &mut SearchCollector) -> Result<()> {
-        if self.reader.leaves().len() > 1 {
+impl<IR, SP> IndexSearcher for DefaultIndexSearcher<IR, SP>
+where
+    IR: AsRef<IndexReader>,
+    SP: SimilarityProducer,
+{
+    #[inline]
+    fn reader(&self) -> &IndexReader {
+        self.reader.as_ref()
+    }
+
+    /// Lower-level search API.
+    fn search(&self, query: &Query, collector: &mut SearchCollector) -> Result<()> {
+        let weight = self.create_weight(query, collector.needs_scores())?;
+
+        for (ord, reader) in self.reader.as_ref().leaves().iter().enumerate() {
+            let mut scorer = weight.create_scorer(*reader)?;
+            // some in running segment maybe wrong, just skip it!
+            // TODO maybe we should matching more specific error type
+            if let Err(e) = collector.set_next_reader(ord, *reader) {
+                error!(
+                    "set next reader for leaf {} failed!, {:?}",
+                    reader.name(),
+                    e
+                );
+                continue;
+            }
+            let live_docs = reader.live_docs();
+
+            Self::do_search(scorer, collector, &live_docs)?;
+        }
+
+        Ok(())
+    }
+
+    fn search_parallel(&self, query: &Query, collector: &mut SearchCollector) -> Result<()> {
+        if self.reader.as_ref().leaves().len() > 1 {
             if let Some(ref thread_pool) = self.thread_pool {
                 let weight = self.create_weight(query, collector.needs_scores())?;
 
-                for (_ord, reader) in self.reader.leaves().iter().enumerate() {
+                for (_ord, reader) in self.reader.as_ref().leaves().iter().enumerate() {
                     let scorer = weight.create_scorer(*reader)?;
                     match collector.leaf_collector(*reader) {
                         Ok(leaf_collector) => {
@@ -251,9 +315,37 @@ impl IndexSearcher {
         self.search(query, collector)
     }
 
+    fn count(&self, query: &Query) -> Result<i32> {
+        let mut query = query;
+        loop {
+            if let Some(constant_query) = query.as_any().downcast_ref::<ConstantScoreQuery>() {
+                query = constant_query.get_raw_query();
+            } else {
+                break;
+            }
+        }
+
+        if let Some(match_all) = query.as_any().downcast_ref::<MatchAllDocsQuery>() {
+            return Ok(self.reader().num_docs());
+        } else if let Some(term_query) = query.as_any().downcast_ref::<TermQuery>() {
+            if !self.reader().has_deletions() {
+                let term = &term_query.term;
+                let mut count = 0;
+                for leaf in self.reader().leaves() {
+                    count += leaf.doc_freq(term)?;
+                }
+                return Ok(count);
+            }
+        }
+
+        let mut collector = TotalHitCountCollector::new();
+        self.search(query, &mut collector)?;
+        Ok(collector.total_hits())
+    }
+
     /// Creates a {@link Weight} for the given query, potentially adding caching
     /// if possible and configured.
-    pub fn create_weight(&self, query: &Query, needs_scores: bool) -> Result<Box<Weight>> {
+    fn create_weight(&self, query: &Query, needs_scores: bool) -> Result<Box<Weight>> {
         let mut weight = query.create_weight(self, needs_scores)?;
         if !needs_scores {
             weight = self.query_cache
@@ -267,11 +359,7 @@ impl IndexSearcher {
     /// afterwards the `Weight` is normalized. The returned `Weight`
     /// can then directly be used to get a `Scorer`.
     ///
-    pub fn create_normalized_weight(
-        &self,
-        query: &Query,
-        needs_scores: bool,
-    ) -> Result<Box<Weight>> {
+    fn create_normalized_weight(&self, query: &Query, needs_scores: bool) -> Result<Box<Weight>> {
         let weight = self.create_weight(query, needs_scores)?;
         //        let v = weight.value_for_normalization();
         //        let mut norm: f32 = self.similarity("", needs_scores).query_norm(v, None);
@@ -282,7 +370,7 @@ impl IndexSearcher {
         Ok(weight)
     }
 
-    pub fn similarity(&self, field: &str, needs_scores: bool) -> Box<Similarity> {
+    fn similarity(&self, field: &str, needs_scores: bool) -> Box<Similarity> {
         if needs_scores {
             self.sim_producer.create(field)
         } else {
@@ -290,7 +378,7 @@ impl IndexSearcher {
         }
     }
 
-    pub fn term_statistics(&self, term: Term, context: &TermContext) -> TermStatistics {
+    fn term_statistics(&self, term: Term, context: &TermContext) -> TermStatistics {
         TermStatistics::new(
             term.bytes,
             i64::from(context.doc_freq),
@@ -298,7 +386,7 @@ impl IndexSearcher {
         )
     }
 
-    pub fn term_state(&self, term: &Term) -> Result<Arc<TermContext>> {
+    fn term_state(&self, term: &Term) -> Result<Arc<TermContext>> {
         let term_context: Arc<TermContext>;
         let mut builded = false;
         let term_key = format!("{}_{}", term.field, term.text()?);
@@ -321,7 +409,7 @@ impl IndexSearcher {
         Ok(term_context)
     }
 
-    pub fn collections_statistics(&self, field: &str) -> Result<CollectionStatistics> {
+    fn collections_statistics(&self, field: &str) -> Result<CollectionStatistics> {
         {
             let statistics = self.collection_statistics.read().unwrap();
             if let Some(stat) = statistics.get(field) {
@@ -352,8 +440,8 @@ impl IndexSearcher {
         Ok(statistics[field].clone())
     }
 
-    pub fn explain(&self, query: &Query, doc: DocId) -> Result<Explanation> {
-        let reader = self.reader.leaf_reader_for_doc(doc);
+    fn explain(&self, query: &Query, doc: DocId) -> Result<Explanation> {
+        let reader = self.reader.as_ref().leaf_reader_for_doc(doc);
         let live_docs = reader.live_docs();
         if !live_docs.get((doc - reader.doc_base()) as usize)? {
             Ok(Explanation::new(
@@ -366,6 +454,50 @@ impl IndexSearcher {
             self.create_normalized_weight(query, true)?
                 .explain(reader, doc - reader.doc_base())
         }
+    }
+}
+
+struct TotalHitCountCollector {
+    total_hits: i32,
+}
+
+impl TotalHitCountCollector {
+    pub fn new() -> Self {
+        TotalHitCountCollector { total_hits: 0 }
+    }
+
+    pub fn total_hits(&self) -> i32 {
+        self.total_hits
+    }
+}
+
+impl SearchCollector for TotalHitCountCollector {
+    fn set_next_reader(&mut self, _reader_ord: usize, _reader: &LeafReader) -> Result<()> {
+        Ok(())
+    }
+
+    fn support_parallel(&self) -> bool {
+        // TODO currently not support this?
+        false
+    }
+
+    fn leaf_collector(&mut self, reader: &LeafReader) -> Result<Box<LeafCollector>> {
+        unreachable!()
+    }
+
+    fn finish(&mut self) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl Collector for TotalHitCountCollector {
+    fn needs_scores(&self) -> bool {
+        false
+    }
+
+    fn collect(&mut self, _doc: i32, _scorer: &mut Scorer) -> Result<()> {
+        self.total_hits += 1;
+        Ok(())
     }
 }
 
@@ -409,6 +541,10 @@ mod tests {
         fn query_type(&self) -> &'static str {
             MOCK_QUERY
         }
+
+        fn as_any(&self) -> &Any {
+            unreachable!()
+        }
     }
 
     impl fmt::Display for MockQuery {
@@ -422,7 +558,7 @@ mod tests {
         let leaf_reader1 = MockLeafReader::new(0);
         let leaf_reader2 = MockLeafReader::new(10);
         let leaf_reader3 = MockLeafReader::new(20);
-        let index_reader = Arc::new(MockIndexReader::new(vec![
+        let index_reader: Arc<IndexReader> = Arc::new(MockIndexReader::new(vec![
             leaf_reader1,
             leaf_reader2,
             leaf_reader3,
@@ -437,7 +573,7 @@ mod tests {
                 let mut chained_collector = ChainedCollector::new(collectors);
                 let query = MockQuery::new(vec![1, 5, 3, 4, 2]);
                 {
-                    let searcher = IndexSearcher::new(index_reader);
+                    let searcher = DefaultIndexSearcher::new(index_reader);
                     searcher.search(&query, &mut chained_collector).unwrap();
                 }
             }
@@ -445,7 +581,7 @@ mod tests {
             assert_eq!(
                 early_terminating_collector
                     .early_terminated
-                    .load(Ordering::Relaxed),
+                    .load(Ordering::Acquire),
                 true
             );
         }

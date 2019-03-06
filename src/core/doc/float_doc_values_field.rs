@@ -1,7 +1,7 @@
 use std::ops::Deref;
 
 use core::doc::{Field, NUMERIC_DOC_VALUES_FIELD_TYPE};
-use core::index::fieldable::Fieldable;
+use core::index::Fieldable;
 use core::util::VariantValue;
 
 pub struct FloatDocValuesField {
@@ -12,19 +12,16 @@ impl FloatDocValuesField {
     pub fn new(name: &str, value: f32) -> FloatDocValuesField {
         FloatDocValuesField {
             field: Field::new(
-                name,
+                String::from(name),
                 NUMERIC_DOC_VALUES_FIELD_TYPE,
-                VariantValue::Float(value),
+                Some(VariantValue::Float(value)),
+                None,
             ),
         }
     }
 
     pub fn float_value(&self) -> f32 {
-        let data = self.field.fields_data();
-        match *data {
-            VariantValue::Float(val) => val,
-            _ => unreachable!(),
-        }
+        self.field.fields_data().unwrap().get_float().unwrap()
     }
 }
 

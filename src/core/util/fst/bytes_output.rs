@@ -5,7 +5,7 @@ use std::vec::Vec;
 
 use core::util::fst::{Output, OutputFactory};
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq, Hash)]
 pub struct ByteSequenceOutput {
     bytes: Vec<u8>,
 }
@@ -22,45 +22,45 @@ impl ByteSequenceOutput {
     }
 
     pub fn empty() -> ByteSequenceOutput {
-        ByteSequenceOutput { bytes: vec![] }
+        ByteSequenceOutput {
+            bytes: Vec::with_capacity(0),
+        }
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.bytes.len()
     }
 
     fn starts_with(&self, other: &ByteSequenceOutput) -> bool {
-        for (i, b) in other.bytes.iter().enumerate() {
-            if self.bytes[i] != *b {
-                return false;
-            }
-        }
-        true
+        self.bytes.starts_with(&other.bytes)
+    }
+
+    #[inline]
+    pub fn inner(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.bytes.len() == 0
     }
 }
 
 impl Clone for ByteSequenceOutput {
     fn clone(&self) -> Self {
-        ByteSequenceOutput::new(self.bytes.clone())
+        if self.bytes.is_empty() {
+            ByteSequenceOutput {
+                bytes: Vec::with_capacity(1),
+            }
+        } else {
+            ByteSequenceOutput::new(self.bytes.clone())
+        }
     }
 }
 
 impl Output for ByteSequenceOutput {
     type Value = Vec<u8>;
-
-    fn cat(&self, other: &ByteSequenceOutput) -> ByteSequenceOutput {
-        if self.is_empty() {
-            other.clone()
-        } else if other.is_empty() {
-            self.clone()
-        } else {
-            let total_length = self.bytes.len() + other.bytes.len();
-            let mut result: Vec<u8> = Vec::with_capacity(total_length);
-            result.extend(&self.bytes);
-            result.extend(&other.bytes);
-            ByteSequenceOutput::new(result)
-        }
-    }
-
-    fn concat(&mut self, other: &ByteSequenceOutput) {
-        self.bytes.extend(&other.bytes);
-    }
 
     fn prefix(&self, other: &ByteSequenceOutput) -> ByteSequenceOutput {
         let mut pos1 = 0;
@@ -90,6 +90,24 @@ impl Output for ByteSequenceOutput {
         }
     }
 
+    fn cat(&self, other: &ByteSequenceOutput) -> ByteSequenceOutput {
+        if self.is_empty() {
+            other.clone()
+        } else if other.is_empty() {
+            self.clone()
+        } else {
+            let total_length = self.bytes.len() + other.bytes.len();
+            let mut result: Vec<u8> = Vec::with_capacity(total_length);
+            result.extend(&self.bytes);
+            result.extend(&other.bytes);
+            ByteSequenceOutput::new(result)
+        }
+    }
+
+    fn concat(&mut self, other: &ByteSequenceOutput) {
+        self.bytes.extend(&other.bytes);
+    }
+
     fn subtract(&self, other: &ByteSequenceOutput) -> ByteSequenceOutput {
         if other.is_empty() {
             return self.clone();
@@ -116,11 +134,12 @@ impl Output for ByteSequenceOutput {
     }
 }
 
+#[derive(Copy, Clone)]
 pub struct ByteSequenceOutputFactory {}
 
 #[allow(dead_code)]
 impl ByteSequenceOutputFactory {
-    fn new() -> ByteSequenceOutputFactory {
+    pub fn new() -> ByteSequenceOutputFactory {
         ByteSequenceOutputFactory {}
     }
 }
@@ -130,6 +149,60 @@ impl OutputFactory for ByteSequenceOutputFactory {
 
     fn empty(&self) -> Self::Value {
         ByteSequenceOutput::empty()
+    }
+
+    fn common(
+        &self,
+        o1: &<Self as OutputFactory>::Value,
+        o2: &<Self as OutputFactory>::Value,
+    ) -> <Self as OutputFactory>::Value {
+        let mut res = Vec::new();
+        for i in 0..min(o1.len(), o2.len()) {
+            if o1.bytes[i] == o2.bytes[i] {
+                res.push(o1.bytes[i]);
+            } else {
+                break;
+            }
+        }
+        if res.is_empty() {
+            self.empty()
+        } else {
+            ByteSequenceOutput::new(res)
+        }
+    }
+
+    fn subtract(
+        &self,
+        o1: &<Self as OutputFactory>::Value,
+        o2: &<Self as OutputFactory>::Value,
+    ) -> <Self as OutputFactory>::Value {
+        if o2.is_empty() {
+            o1.clone()
+        } else {
+            debug_assert!(o1.starts_with(o2));
+            if o1.len() == o2.len() {
+                self.empty()
+            } else {
+                ByteSequenceOutput::new((&o1.bytes[o2.len()..]).to_vec())
+            }
+        }
+    }
+
+    fn add(
+        &self,
+        prefix: &<Self as OutputFactory>::Value,
+        output: &<Self as OutputFactory>::Value,
+    ) -> <Self as OutputFactory>::Value {
+        if prefix.is_empty() {
+            output.clone()
+        } else if output.is_empty() {
+            prefix.clone()
+        } else {
+            let mut result = vec![0u8; prefix.len() + output.len()];
+            result[0..prefix.len()].copy_from_slice(&prefix.bytes);
+            result[prefix.len()..].copy_from_slice(&output.bytes);
+            ByteSequenceOutput::new(result)
+        }
     }
 
     fn read<T: DataInput + ?Sized>(&self, data_in: &mut T) -> Result<ByteSequenceOutput> {

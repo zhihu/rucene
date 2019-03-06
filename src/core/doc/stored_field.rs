@@ -4,6 +4,14 @@ use core::util::VariantValue;
 use core::doc::Field;
 use core::doc::FieldType;
 
+lazy_static! {
+    pub static ref STORE_FIELD_TYPE: FieldType = {
+        let mut field_type = FieldType::default();
+        field_type.stored = true;
+        field_type
+    };
+}
+
 #[derive(Clone, Debug)]
 pub struct StoredField {
     pub field: Field,
@@ -17,12 +25,12 @@ impl StoredField {
     ) -> StoredField {
         if let Some(f) = field_type {
             StoredField {
-                field: Field::new(name, f, fields_data),
+                field: Field::new(name.to_string(), f, Some(fields_data), None),
             }
         } else {
             StoredField {
                 field: Field::new(
-                    name,
+                    name.to_string(),
                     FieldType::new(
                         true,
                         false,
@@ -33,8 +41,11 @@ impl StoredField {
                         false,
                         IndexOptions::Null,
                         DocValuesType::Null,
+                        0,
+                        0,
                     ),
-                    fields_data,
+                    Some(fields_data),
+                    None,
                 ),
             }
         }

@@ -1,5 +1,5 @@
 use core::index::POSTINGS_POSITIONS;
-use core::index::{Fields, IndexReader, LeafReader, Term};
+use core::index::{IndexReader, LeafReader, Term};
 use core::search::term_query::TermQuery;
 use core::search::Query;
 use core::util::DocId;
@@ -681,99 +681,99 @@ impl FieldTermStack {
             }
         };
 
-        let vectors: Box<Fields> = reader.term_vector(doc_id)?;
-        if let Some(vector) = vectors.terms(field_name)? {
-            // true null snippet
-            if vectors.fields().is_empty() || !vector.has_positions()? {
-                return Ok(FieldTermStack {
-                    field_name: field_name.to_string(),
-                    term_list: vec![],
-                });
-            }
-
-            let mut terms_iter = vector.iterator()?;
-            let max_docs = reader.max_doc();
-            let mut term_list: Vec<TermInfo> = vec![];
-
-            let mut text = terms_iter.as_mut().next()?;
-            while !text.is_empty() {
-                let term = String::from_utf8(text)?;
-                if !term_set.contains(&term) {
-                    text = terms_iter.as_mut().next()?;
-                    continue;
+        if let Some(vectors) = reader.term_vector(doc_id)? {
+            if let Some(vector) = vectors.terms(field_name)? {
+                // true null snippet
+                if vectors.fields().is_empty() || !vector.has_positions()? {
+                    return Ok(FieldTermStack {
+                        field_name: field_name.to_string(),
+                        term_list: vec![],
+                    });
                 }
 
-                let mut postings = terms_iter.postings_with_flags(POSTINGS_POSITIONS)?;
-                postings.next()?;
+                let mut terms_iter = vector.iterator()?;
+                let max_docs = reader.max_doc();
+                let mut term_list: Vec<TermInfo> = vec![];
 
-                // For weight look here: http://lucene.apache.org/core/3_6_0/api/core/org/apache/lucene/search/DefaultSimilarity.html
-                let weight = (f64::from(max_docs)
-                    / (terms_iter.as_mut().total_term_freq()? + 1) as f64
-                    + 1.0)
-                    .log(10.0f64) as f32;
-                let freq = postings.freq()?;
+                loop {
+                    if let Some(text) = terms_iter.next()? {
+                        let term = String::from_utf8(text)?;
+                        if !term_set.contains(&term) {
+                            continue;
+                        }
 
-                for _ in 0..freq {
-                    let pos = postings.next_position()?;
+                        let mut postings = terms_iter.postings_with_flags(POSTINGS_POSITIONS)?;
+                        postings.next()?;
 
-                    if postings.start_offset()? < 0 {
-                        // no offsets, null snippet
-                        return Ok(FieldTermStack {
-                            field_name: field_name.to_string(),
-                            term_list: vec![],
-                        });
-                    }
+                        // For weight look here: http://lucene.apache.org/core/3_6_0/api/core/org/apache/lucene/search/DefaultSimilarity.html
+                        let weight = (f64::from(max_docs)
+                            / (terms_iter.as_mut().total_term_freq()? + 1) as f64
+                            + 1.0)
+                            .log(10.0f64) as f32;
+                        let freq = postings.freq()?;
 
-                    term_list.push(TermInfo::new(
-                        term.clone(),
-                        postings.start_offset()?,
-                        postings.end_offset()?,
-                        pos,
-                        weight,
-                    ));
-                }
+                        for _ in 0..freq {
+                            let pos = postings.next_position()?;
 
-                text = terms_iter.as_mut().next()?;
-            }
+                            if postings.start_offset()? < 0 {
+                                // no offsets, null snippet
+                                return Ok(FieldTermStack {
+                                    field_name: field_name.to_string(),
+                                    term_list: vec![],
+                                });
+                            }
 
-            // now look for dups at the same position, linking them together
-            term_list.sort_by(|o1, o2| o2.position.cmp(&o1.position));
-
-            let num_terms = term_list.len();
-            let mut i = 0usize;
-            while i < num_terms {
-                for j in (i + 1)..num_terms {
-                    if term_list[j].position == term_list[i].position {
-                        let term_info = term_list[j].clone();
-                        term_list[i].next.push(term_info);
-                        term_list[j].position = -1;
+                            term_list.push(TermInfo::new(
+                                term.clone(),
+                                postings.start_offset()?,
+                                postings.end_offset()?,
+                                pos,
+                                weight,
+                            ));
+                        }
                     } else {
                         break;
                     }
                 }
 
-                i += term_list[i].next.len() + 1;
-            }
+                // now look for dups at the same position, linking them together
+                term_list.sort_by(|o1, o2| o2.position.cmp(&o1.position));
 
-            i = term_list.len();
-            while i > 0 {
-                if term_list[i - 1].position == -1 {
-                    term_list.remove(i - 1);
+                let num_terms = term_list.len();
+                let mut i = 0usize;
+                while i < num_terms {
+                    for j in (i + 1)..num_terms {
+                        if term_list[j].position == term_list[i].position {
+                            let term_info = term_list[j].clone();
+                            term_list[i].next.push(term_info);
+                            term_list[j].position = -1;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    i += term_list[i].next.len() + 1;
                 }
 
-                i -= 1;
-            }
+                i = term_list.len();
+                while i > 0 {
+                    if term_list[i - 1].position == -1 {
+                        term_list.remove(i - 1);
+                    }
 
-            Ok(FieldTermStack {
-                field_name: field_name.to_string(),
-                term_list,
-            })
-        } else {
-            Ok(FieldTermStack {
-                field_name: field_name.to_string(),
-                term_list: vec![],
-            })
+                    i -= 1;
+                }
+
+                return Ok(FieldTermStack {
+                    field_name: field_name.to_string(),
+                    term_list,
+                });
+            }
         }
+        Ok(FieldTermStack {
+            field_name: field_name.to_string(),
+            term_list: vec![],
+        })
     }
 
     pub fn pop(&mut self) -> Option<TermInfo> {

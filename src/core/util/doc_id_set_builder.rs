@@ -1,5 +1,5 @@
-use core::index::point_values::PointValues;
-use core::index::term::Terms;
+use core::index::PointValues;
+use core::index::Terms;
 use core::search::{DocIdSet, DocIterator, NO_MORE_DOCS};
 use core::util::bit_set::{BitSet, FixedBitSet};
 use core::util::bit_util::UnsignedShift;

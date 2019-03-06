@@ -3,13 +3,17 @@ use core::codec::lucene54::Lucene54DocValuesFormat;
 
 use core::codec::reader::*;
 use core::codec::writer::*;
-use core::codec::{DocValuesProducer, FieldsProducer, NormsProducer};
-use core::index::point_values::PointValues;
+use core::codec::{DocValuesConsumer, DocValuesProducer};
+use core::codec::{FieldsConsumer, FieldsProducer, NormsConsumer, NormsProducer};
 use core::index::FieldInfos;
+use core::index::PointValues;
 use core::index::{SegmentCommitInfo, SegmentInfo, SegmentReadState, SegmentWriteState};
-use core::store::{DirectoryRc, IOContext};
+use core::store::{Directory, DirectoryRc, IOContext};
+use core::util::string_util::ID_LENGTH;
 use core::util::{Bits, BitsRef};
 use error::Result;
+
+use std::collections::HashSet;
 use std::sync::Arc;
 
 /// Encodes/decodes compound files
@@ -26,7 +30,7 @@ pub trait CompoundFormat {
     /// Packs the provided segment's files into a compound format.  All files referenced
     /// by the provided {@link SegmentInfo} must have {@link CodecUtil#writeIndexHeader}
     /// and {@link CodecUtil#writeFooter}.
-    fn write(&self, dir: DirectoryRc, si: &SegmentInfo, ioctx: &IOContext) -> Result<()>;
+    fn write(&self, dir: &Directory, si: &SegmentInfo, ioctx: &IOContext) -> Result<()>;
 }
 
 /// Encodes/decodes terms, postings, and proximity data.
@@ -51,6 +55,12 @@ pub trait PostingsFormat {
     /// IOExceptions are expected and will automatically cause a retry of the
     /// segment opening logic with the newly revised segments.
     fn fields_producer(&self, state: &SegmentReadState) -> Result<Box<FieldsProducer>>;
+
+    /// Writes a new segment
+    fn fields_consumer(&self, state: &SegmentWriteState) -> Result<Box<FieldsConsumer>>;
+
+    /// Returns this posting format's name
+    fn name(&self) -> &str;
 }
 
 pub fn postings_format_for_name(name: &str) -> Result<Box<PostingsFormat>> {
@@ -77,7 +87,7 @@ pub trait StoredFieldsFormat {
     fn fields_writer(
         &self,
         directory: DirectoryRc,
-        si: &SegmentInfo,
+        si: &mut SegmentInfo,
         ioctx: &IOContext,
     ) -> Result<Box<StoredFieldsWriter>>;
 }
@@ -120,7 +130,7 @@ pub trait FieldInfosFormat {
     /// Read the {@link FieldInfos} previously written with {@link #write}. */
     fn read(
         &self,
-        directory: DirectoryRc,
+        directory: &Directory,
         segment_info: &SegmentInfo,
         segment_suffix: &str,
         iocontext: &IOContext,
@@ -130,7 +140,7 @@ pub trait FieldInfosFormat {
     /// directory. */
     fn write(
         &self,
-        directory: DirectoryRc,
+        directory: &Directory,
         segment_info: &SegmentInfo,
         segment_suffix: &str,
         infos: &FieldInfos,
@@ -151,21 +161,29 @@ pub trait SegmentInfoFormat {
     /// @throws IOException If an I/O error occurs
     fn read(
         &self,
-        directory: DirectoryRc,
+        directory: &DirectoryRc,
         segment_name: &str,
-        segment_id: &[u8],
+        segment_id: [u8; ID_LENGTH],
         context: &IOContext,
     ) -> Result<SegmentInfo>;
 
     /// Write {@link SegmentInfo} data.
     /// The codec must add its SegmentInfo filename(s) to {@code info} before doing i/o.
     /// @throws IOException If an I/O error occurs
-    fn write(&self, dir: DirectoryRc, info: &SegmentInfo, io_context: &IOContext) -> Result<()>;
+    fn write(
+        &self,
+        dir: &Directory,
+        info: &mut SegmentInfo,
+        created_files: &mut Vec<String>,
+        io_context: &IOContext,
+    ) -> Result<()>;
 }
 
 pub trait DocValuesFormat {
     fn name(&self) -> &str;
     fn fields_producer(&self, _state: &SegmentReadState) -> Result<Box<DocValuesProducer>>;
+
+    fn fields_consumer(&self, _state: &SegmentWriteState) -> Result<Box<DocValuesConsumer>>;
 }
 
 pub fn doc_values_format_for_name(format: &str) -> Result<Box<DocValuesFormat>> {
@@ -186,13 +204,15 @@ pub trait NormsFormat {
     /// the implementation. IOExceptions are expected and will automatically cause
     /// a retry of the segment opening logic with the newly revised segments.
     fn norms_producer(&self, state: &SegmentReadState) -> Result<Box<NormsProducer>>;
+
+    fn norms_consumer(&self, state: &SegmentWriteState) -> Result<Box<NormsConsumer>>;
 }
 
 /// Format for live/deleted documents
 /// @lucene.experimental */
 pub trait LiveDocsFormat {
     /// Creates a new Bits, with all bits set, for the specified size.
-    fn new_live_docs(&self, size: i32) -> Result<BitsRef>;
+    fn new_live_docs(&self, size: usize) -> Result<Box<Bits>>;
     /// Creates a new mutablebits of the same bits set and size of existing.
     fn new_live_docs_from_existing(&self, existing: &Bits) -> Result<BitsRef>;
     /// Read live docs bits.
@@ -209,14 +229,14 @@ pub trait LiveDocsFormat {
     fn write_live_docs(
         &self,
         bits: &Bits,
-        dir: DirectoryRc,
+        dir: &Directory,
         info: &SegmentCommitInfo,
         new_del_count: i32,
         context: &IOContext,
     ) -> Result<()>;
 
     /// Records all files in use by this {@link SegmentCommitInfo} into the files argument. */
-    fn files(&self, info: &SegmentCommitInfo, files: &[String]) -> Result<()>;
+    fn files(&self, info: &SegmentCommitInfo, files: &mut HashSet<String>);
 }
 
 /// Encodes/decodes indexed points.

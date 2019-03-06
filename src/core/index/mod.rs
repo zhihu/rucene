@@ -6,11 +6,17 @@ mod doc_values_type;
 
 pub use self::doc_values_type::*;
 
+mod index_writer;
+
+pub use self::index_writer::*;
+
+mod norm_values_writer;
+
+pub use self::norm_values_writer::*;
+
 mod numeric_doc_values;
 
 pub use self::numeric_doc_values::*;
-
-pub use self::fieldable::Fieldable;
 
 mod binary_doc_values;
 
@@ -19,8 +25,6 @@ pub use self::binary_doc_values::*;
 mod sorted_numeric_doc_values;
 
 pub use self::sorted_numeric_doc_values::*;
-
-pub mod index_file_names;
 
 mod sorted_doc_values_term_iterator;
 
@@ -33,6 +37,10 @@ pub use self::sorted_set_doc_values_term_iterator::*;
 mod doc_values;
 
 pub use self::doc_values::*;
+
+mod doc_values_writer;
+
+pub use self::doc_values_writer::*;
 
 mod sorted_doc_values;
 
@@ -66,23 +74,9 @@ mod segment;
 
 pub use self::segment::*;
 
-pub mod mapper_field_type;
-pub mod point_values;
+mod point_values;
 
-use serde::ser::SerializeStruct;
-use serde::{Serialize, Serializer};
-use std::collections::{HashMap, HashSet};
-use std::fmt;
-use std::result;
-use std::sync::Arc;
-
-use core::codec::Codec;
-use core::doc::Document;
-use core::index::stored_field_visitor::StoredFieldVisitor;
-use core::index::term::TermState;
-use core::store::{DirectoryRc, IOContext};
-use core::util::{to_base36, Bits, DocId, Version};
-use error::*;
+pub use self::point_values::*;
 
 pub mod field_info;
 
@@ -92,14 +86,93 @@ mod leaf_reader;
 
 pub use self::leaf_reader::*;
 
-pub mod term;
+mod term;
 
-pub mod fieldable;
-pub mod index_lookup;
-pub mod multi_fields;
-pub mod multi_terms;
-pub mod reader_slice;
-pub mod stored_field_visitor;
+pub use self::term::TermState;
+pub use self::term::*;
+
+mod fieldable;
+
+pub use self::fieldable::*;
+
+mod index_lookup;
+
+pub use self::index_lookup::*;
+
+mod multi_fields;
+
+pub use self::multi_fields::*;
+
+mod multi_terms;
+
+pub use self::multi_terms::*;
+
+mod reader_slice;
+
+pub use self::reader_slice::*;
+
+mod stored_field_visitor;
+
+pub use self::stored_field_visitor::*;
+
+mod merge_state;
+
+pub use self::merge_state::*;
+
+mod point_values_writer;
+
+pub use self::point_values_writer::*;
+
+pub mod doc_id_merger;
+
+mod bufferd_updates;
+mod byte_slice_reader;
+mod delete_policy;
+mod doc_consumer;
+mod doc_writer;
+mod doc_writer_delete_queue;
+mod doc_writer_flush_queue;
+mod flush_control;
+mod flush_policy;
+mod index_commit;
+mod index_file_deleter;
+pub mod index_writer_config;
+mod leaf_reader_wrapper;
+pub mod merge_policy;
+mod merge_rate_limiter;
+pub mod merge_scheduler;
+mod postings_array;
+mod prefix_code_terms;
+mod segment_merger;
+mod sorter;
+mod term_vector;
+mod terms_hash;
+mod terms_hash_per_field;
+mod thread_doc_writer;
+
+use serde::ser::SerializeStruct;
+use serde::{Serialize, Serializer};
+use std::any::Any;
+use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
+use std::fmt;
+use std::hash::{Hash, Hasher};
+use std::result;
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, Ordering as AtomicOrdering};
+use std::sync::Arc;
+
+use regex::Regex;
+
+use core::codec::Codec;
+use core::doc::Document;
+use core::index::bufferd_updates::BufferedUpdates;
+use core::search::sort::Sort;
+use core::store::{DirectoryRc, IOContext};
+use core::util::bit_set::FixedBitSet;
+use core::util::string_util::ID_LENGTH;
+use core::util::{to_base36, Bits, DocId, Version};
+
+use error::{ErrorKind, Result};
 
 // postings flags for postings enum
 /// don't need per doc postings
@@ -120,23 +193,28 @@ pub const INDEX_FILE_SEGMENTS: &str = "segments";
 pub const INDEX_FILE_PENDING_SEGMENTS: &str = "pending_segments";
 pub const INDEX_FILE_OLD_SEGMENT_GEN: &str = "segments.gen";
 
-fn index_of_segment_name(filename: &str) -> i32 {
+const CODEC_FILE_PATTERN: &str = r"_[a-z0-9]+(_.*)?\..*";
+
+pub fn matches_extension(filename: &str, ext: &str) -> bool {
+    filename.ends_with(ext)
+}
+
+// locates the boundary of the segment name, or None
+fn index_of_segment_name(filename: &str) -> Option<usize> {
     // If it is a .del file, there's an '_' after the first character
     let filename = &filename[1..];
     if let Some(i) = filename.find('_') {
-        return i as i32 + 1;
+        return Some(i + 1);
     }
-    // let it panic when input is invalid
-    filename.find('.').unwrap() as i32 + 1
+    filename.find('.').map(|i| i + 1)
 }
 
-pub fn strip_segment_name(name: &str) -> String {
-    let mut name = name;
-    let idx = index_of_segment_name(name);
-    if idx != -1 {
-        name = &name[idx as usize..]
+pub fn strip_segment_name(name: &str) -> &str {
+    if let Some(idx) = index_of_segment_name(name) {
+        &name[idx..]
+    } else {
+        name
     }
-    name.into()
 }
 
 pub fn segment_file_name(name: &str, suffix: &str, ext: &str) -> String {
@@ -158,8 +236,7 @@ pub fn segment_file_name(name: &str, suffix: &str, ext: &str) -> String {
     }
 }
 
-pub fn file_name_from_generation(base: &str, ext: &str, gen: i64) -> String {
-    assert!(gen >= 0);
+pub fn file_name_from_generation(base: &str, ext: &str, gen: u64) -> String {
     if gen == 0 {
         segment_file_name(base, "", ext)
     } else {
@@ -175,12 +252,56 @@ pub fn file_name_from_generation(base: &str, ext: &str, gen: i64) -> String {
     }
 }
 
+/// Returns the generation from this file name,
+/// or 0 if there is no generation
+pub fn parse_generation(filename: &str) -> Result<i64> {
+    debug_assert!(filename.starts_with("_"));
+    let parts: Vec<&str> = strip_extension(filename)[1..].split("_").collect();
+    // 4 cases:
+    // segment.ext
+    // segment_gen.ext
+    // segment_codec_suffix.ext
+    // segment_gen_codec_suffix.ext
+    if parts.len() == 2 || parts.len() == 4 {
+        Ok(parts[1].parse()?)
+    } else {
+        Ok(0)
+    }
+}
+
+/// Parses the segment name out of the given file name.
+/// @return the segment name only, or filename if it
+/// does not contain a '.' and '_'.
+pub fn parse_segment_name(filename: &str) -> &str {
+    if let Some(idx) = index_of_segment_name(filename) {
+        &filename[..idx]
+    } else {
+        filename
+    }
+}
+
+/// Removes the extension (anything after the first '.'),
+/// otherwise returns the original filename.
+fn strip_extension(filename: &str) -> &str {
+    if let Some(idx) = filename.find('.') {
+        &filename[..idx]
+    } else {
+        filename
+    }
+}
+
 pub trait IndexReader: Send + Sync {
     fn leaves(&self) -> Vec<&LeafReader>;
-    fn term_vector(&self, doc_id: DocId) -> Result<Box<Fields>>;
+    fn term_vector(&self, doc_id: DocId) -> Result<Option<Box<Fields>>>;
     fn document(&self, doc_id: DocId, fields: &[String]) -> Result<Document>;
     fn max_doc(&self) -> i32;
     fn num_docs(&self) -> i32;
+    fn num_deleted_docs(&self) -> i32 {
+        self.max_doc() - self.num_docs()
+    }
+    fn has_deletions(&self) -> bool {
+        self.num_deleted_docs() > 0
+    }
     fn leaf_reader_for_doc(&self, doc: DocId) -> &LeafReader {
         let leaves = self.leaves();
         let size = leaves.len();
@@ -202,6 +323,8 @@ pub trait IndexReader: Send + Sync {
         }
         leaves[hi]
     }
+
+    fn as_any(&self) -> &Any;
 }
 
 pub type IndexReaderRef = Arc<IndexReader>;
@@ -213,13 +336,14 @@ pub struct SegmentInfo {
     pub name: String,
     pub max_doc: i32,
     pub directory: DirectoryRc,
-    pub is_compound_file: bool,
-    pub id: Vec<u8>,
+    pub is_compound_file: AtomicBool,
+    pub id: [u8; ID_LENGTH],
     pub codec: Option<Arc<Codec>>,
     pub diagnostics: HashMap<String, String>,
     pub attributes: HashMap<String, String>,
-    // index_sort: Sort,
+    pub index_sort: Option<Sort>,
     pub version: Version,
+    pub set_files: HashSet<String>,
 }
 
 impl SegmentInfo {
@@ -230,20 +354,24 @@ impl SegmentInfo {
         max_doc: i32,
         directory: DirectoryRc,
         is_compound_file: bool,
+        codec: Option<Arc<Codec>>,
         diagnostics: HashMap<String, String>,
-        id: &[u8],
+        id: [u8; ID_LENGTH],
         attributes: HashMap<String, String>,
+        index_sort: Option<Sort>,
     ) -> Result<SegmentInfo> {
         Ok(SegmentInfo {
             name: String::from(name),
             max_doc,
             directory,
-            is_compound_file,
-            id: Vec::from(id),
+            is_compound_file: AtomicBool::new(is_compound_file),
+            id,
             version,
-            codec: None,
+            codec,
             diagnostics,
             attributes,
+            set_files: HashSet::new(),
+            index_sort,
         })
     }
 
@@ -251,9 +379,9 @@ impl SegmentInfo {
         self.codec = Some(codec);
     }
 
-    pub fn codec(&self) -> Arc<Codec> {
+    pub fn codec(&self) -> &Arc<Codec> {
         assert!(self.codec.is_some());
-        Arc::clone(self.codec.as_ref().unwrap())
+        &self.codec.as_ref().unwrap()
     }
 
     pub fn max_doc(&self) -> i32 {
@@ -261,11 +389,79 @@ impl SegmentInfo {
     }
 
     pub fn is_compound_file(&self) -> bool {
-        self.is_compound_file
+        self.is_compound_file.load(AtomicOrdering::Acquire)
+    }
+
+    pub fn set_use_compound_file(&self) {
+        self.is_compound_file.store(true, AtomicOrdering::Release)
     }
 
     pub fn get_id(&self) -> &[u8] {
-        &self.id[..]
+        &self.id
+    }
+
+    /// Return all files referenced by this SegmentInfo.
+    pub fn files(&self) -> &HashSet<String> {
+        // debug_assert!(!self.set_files.is_empty());
+        &self.set_files
+    }
+
+    pub fn set_files(&mut self, files: &HashSet<String>) -> Result<()> {
+        self.set_files = HashSet::with_capacity(files.len());
+        self.add_files(files)
+    }
+
+    pub fn add_file(&mut self, file: &str) -> Result<()> {
+        self.check_file_name(file)?;
+        let file = self.named_for_this_segment(file);
+        self.set_files.insert(file);
+        Ok(())
+    }
+
+    pub fn add_files(&mut self, files: &HashSet<String>) -> Result<()> {
+        for f in files {
+            self.check_file_name(f)?;
+        }
+        for f in files {
+            let file = self.named_for_this_segment(&f);
+            self.set_files.insert(file);
+        }
+        Ok(())
+    }
+
+    fn check_file_name(&self, file: &str) -> Result<()> {
+        let pattern = Regex::new(CODEC_FILE_PATTERN).unwrap();
+        if !pattern.is_match(file) {
+            bail!(ErrorKind::IllegalArgument("invalid code file_name.".into()));
+        }
+        if file.to_lowercase().ends_with(".tmp") {
+            bail!(ErrorKind::IllegalArgument(
+                "invalid code file_name, can't end with .tmp extension".into()
+            ));
+        }
+        Ok(())
+    }
+
+    fn named_for_this_segment(&self, file: &str) -> String {
+        let mut name = self.name.clone();
+        name.push_str(strip_segment_name(file));
+        name
+    }
+
+    pub fn index_sort(&self) -> Option<&Sort> {
+        self.index_sort.as_ref()
+    }
+
+    pub fn set_diagnostics(&mut self, diags: HashMap<String, String>) {
+        self.diagnostics = diags;
+    }
+
+    pub fn set_max_doc(&mut self, max_doc: i32) -> Result<()> {
+        if self.max_doc != -1 {
+            bail!(ErrorKind::IllegalState("max_doc was already set".into()));
+        }
+        self.max_doc = max_doc;
+        Ok(())
     }
 }
 
@@ -274,14 +470,22 @@ impl Clone for SegmentInfo {
         SegmentInfo {
             name: self.name.clone(),
             max_doc: self.max_doc,
-            is_compound_file: self.is_compound_file,
+            is_compound_file: AtomicBool::new(self.is_compound_file()),
             directory: Arc::clone(&self.directory),
             id: self.id.clone(),
             codec: self.codec.as_ref().map(|c| Arc::clone(c)),
             diagnostics: self.diagnostics.clone(),
             attributes: self.attributes.clone(),
             version: self.version.clone(),
+            set_files: self.set_files.clone(),
+            index_sort: self.index_sort.clone(),
         }
+    }
+}
+
+impl Hash for SegmentInfo {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write(self.name.as_bytes());
     }
 }
 
@@ -293,7 +497,7 @@ impl Serialize for SegmentInfo {
         let mut s = serializer.serialize_struct("SegmentInfo", 8)?;
         s.serialize_field("name", &self.name)?;
         s.serialize_field("max_doc", &self.max_doc)?;
-        s.serialize_field("is_compound_file", &self.is_compound_file)?;
+        s.serialize_field("is_compound_file", &self.is_compound_file())?;
         s.serialize_field("id", &self.id)?;
         // TODO: directory?
         if self.codec.is_some() {
@@ -309,47 +513,14 @@ impl Serialize for SegmentInfo {
     }
 }
 
-/// Holds buffered deletes and updates, by docID, term or query for a
-/// single segment. This is used to hold buffered pending
-/// deletes and updates against the to-be-flushed segment.  Once the
-/// deletes and updates are pushed (on flush in DocumentsWriter), they
-/// are converted to a FrozenBufferedUpdates instance. */
-///
-/// NOTE: instances of this class are accessed either via a private
-/// instance on DocumentWriterPerThread, or via sync'd code by
-/// DocumentsWriterDeleteQueue
-pub struct BufferedUpdates {
-    // num_term_deletes: AtomicIsize,
-    // num_numeric_updates: AtomicIsize,
-    // num_binary_updates: AtomicIsize,
-    //
-    // TODO: rename thes three: put "deleted" prefix in front:
-    // terms: HashMap<Term, i32>,
-    // queries: HashMap<Query, i32>,
-    // doc_ids: Vec<i32>,
-    //
-    // Map<dvField,Map<updateTerm,NumericUpdate>>
-    // For each field we keep an ordered list of NumericUpdates, key'd by the
-    // update Term. LinkedHashMap guarantees we will later traverse the map in
-    // insertion order (so that if two terms affect the same document, the last
-    // one that came in wins), and helps us detect faster if the same Term is
-    // used to update the same field multiple times (so we later traverse it
-    // only once).
-    // numeric_updates: HashMap<String, HashMap<Term, NumericDocValuesUpdate>>,
-    //
-    // Map<dvField,Map<updateTerm,BinaryUpdate>>
-    // For each field we keep an ordered list of BinaryUpdates, key'd by the
-    // update Term. LinkedHashMap guarantees we will later traverse the map in
-    // insertion order (so that if two terms affect the same document, the last
-    // one that came in wins), and helps us detect faster if the same Term is
-    // used to update the same field multiple times (so we later traverse it
-    // only once).
-    // binary_update: HashMap<String, HashMap<Term, BinaryDocValuesUpdate>>,
-    //
-    // bytes_used: AtomicI64,
-    // gen: i64,
-    // segmentName: String,
-    //
+impl fmt::Debug for SegmentInfo {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        if let Ok(s) = ::serde_json::to_string_pretty(self) {
+            write!(f, "{}", s)?;
+        }
+
+        Ok(())
+    }
 }
 
 /// A Term represents a word from text.  This is the unit of search.  It is
@@ -358,7 +529,7 @@ pub struct BufferedUpdates {
 ///
 /// Note that terms may represent more than words from text fields, but also
 /// things like dates, email addresses, urls, etc.
-#[derive(Debug, PartialEq, Hash, Eq)]
+#[derive(Clone, Debug, PartialEq, Hash, Eq)]
 pub struct Term {
     pub field: String,
     pub bytes: Vec<u8>,
@@ -386,11 +557,33 @@ impl Term {
     pub fn text(&self) -> Result<String> {
         Ok(String::from_utf8(self.bytes.clone())?)
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.field.is_empty() && self.bytes.is_empty()
+    }
+
+    pub fn copy_bytes(&mut self, bytes: &[u8]) {
+        if self.bytes.len() != bytes.len() {
+            self.bytes.resize(bytes.len(), 0);
+        }
+        self.bytes.copy_from_slice(bytes);
+    }
 }
 
-impl Clone for Term {
-    fn clone(&self) -> Self {
-        Self::new(self.field.clone(), self.bytes.clone())
+impl PartialOrd for Term {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Term {
+    fn cmp(&self, other: &Self) -> Ordering {
+        let res = self.field.cmp(&other.field);
+        if res == Ordering::Equal {
+            self.bytes.cmp(&other.bytes)
+        } else {
+            res
+        }
     }
 }
 
@@ -465,23 +658,23 @@ pub struct SegmentCommitInfo {
     /// The {@link SegmentInfo} that we wrap.
     pub info: SegmentInfo,
     /// How many deleted docs in the segment:
-    pub del_count: i32,
+    pub del_count: AtomicI32,
     /// Generation number of the live docs file (-1 if there
     /// are no deletes yet):
-    pub del_gen: i64,
+    pub del_gen: AtomicI64,
     /// Normally 1+delGen, unless an exception was hit on last
     /// attempt to write:
-    pub next_write_del_gen: i64,
+    pub next_write_del_gen: AtomicI64,
     /// Generation number of the FieldInfos (-1 if there are no updates)
-    field_infos_gen: i64,
+    field_infos_gen: AtomicI64,
     /// Normally 1+fieldInfosGen, unless an exception was hit on last attempt to
     /// write
-    pub next_write_field_infos_gen: i64,
+    pub next_write_field_infos_gen: AtomicI64,
     /// Generation number of the DocValues (-1 if there are no updates)
     pub doc_values_gen: i64,
     /// Normally 1+dvGen, unless an exception was hit on last attempt to
     /// write
-    pub next_write_doc_values_gen: i64,
+    pub next_write_doc_values_gen: AtomicI64,
     /// Track the per-field DocValues update files
     pub dv_updates_files: HashMap<i32, HashSet<String>>,
     /// TODO should we add .files() to FieldInfosFormat, like we have on
@@ -489,7 +682,226 @@ pub struct SegmentCommitInfo {
     /// track the fieldInfos update files
     pub field_infos_files: HashSet<String>,
 
-    pub size_in_bytes: i64,
+    pub size_in_bytes: AtomicI64,
+    // NOTE: only used in-RAM by IW to track buffered deletes;
+    // this is never written to/read from the Directory
+    pub buffered_deletes_gen: AtomicI64,
+}
+
+impl Hash for SegmentCommitInfo {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.info.hash(state);
+    }
+}
+
+impl SegmentCommitInfo {
+    pub fn new(
+        info: SegmentInfo,
+        del_count: i32,
+        del_gen: i64,
+        field_infos_gen: i64,
+        doc_values_gen: i64,
+        dv_updates_files: HashMap<i32, HashSet<String>>,
+        field_infos_files: HashSet<String>,
+    ) -> SegmentCommitInfo {
+        let field_info_gen = if field_infos_gen == -1 {
+            1
+        } else {
+            field_infos_gen + 1
+        };
+        SegmentCommitInfo {
+            info,
+            del_count: AtomicI32::new(del_count),
+            del_gen: AtomicI64::new(del_gen),
+            next_write_del_gen: AtomicI64::new(if del_gen == -1 { 1i64 } else { del_gen + 1 }),
+            field_infos_gen: AtomicI64::new(field_infos_gen),
+            next_write_field_infos_gen: AtomicI64::new(field_info_gen),
+            doc_values_gen,
+            next_write_doc_values_gen: AtomicI64::new(if doc_values_gen == -1 {
+                1
+            } else {
+                doc_values_gen + 1
+            }),
+            dv_updates_files,
+            field_infos_files,
+            size_in_bytes: AtomicI64::new(-1),
+            buffered_deletes_gen: AtomicI64::new(0),
+        }
+    }
+
+    pub fn files(&self) -> HashSet<String> {
+        let mut files = HashSet::new();
+        // Start from the wrapped info's files:
+        for f in self.info.files() {
+            files.insert(f.clone());
+        }
+        // TODO we could rely on TrackingDir.getCreatedFiles() (like we do for
+        // updates) and then maybe even be able to remove LiveDocsFormat.files().
+
+        // Must separately add any live docs files:
+        self.info.codec().live_docs_format().files(self, &mut files);
+
+        // must separately add any field updates files
+        for (_, fs) in &self.dv_updates_files {
+            for f in fs {
+                files.insert(f.clone());
+            }
+        }
+
+        // must separately add field_infos files
+        for f in &self.field_infos_files {
+            files.insert(f.clone());
+        }
+
+        files
+    }
+
+    pub fn has_deletions(&self) -> bool {
+        self.del_gen() != -1
+    }
+
+    pub fn del_count(&self) -> i32 {
+        self.del_count.load(AtomicOrdering::Acquire)
+    }
+
+    pub fn set_del_count(&self, del_count: i32) -> Result<()> {
+        if del_count < 0 || del_count > self.info.max_doc() {
+            bail!(ErrorKind::IllegalArgument("invalid del_count".into()));
+        }
+        self.del_count.store(del_count, AtomicOrdering::Release);
+        Ok(())
+    }
+
+    pub fn has_field_updates(&self) -> bool {
+        self.field_infos_gen() != -1
+    }
+
+    pub fn field_infos_gen(&self) -> i64 {
+        self.field_infos_gen.load(AtomicOrdering::Acquire)
+    }
+
+    pub fn next_write_field_infos_gen(&self) -> i64 {
+        self.next_write_field_infos_gen
+            .load(AtomicOrdering::Acquire)
+    }
+
+    pub fn set_next_write_field_infos_gen(&self, gen: i64) {
+        self.next_write_field_infos_gen
+            .store(gen, AtomicOrdering::Release)
+    }
+
+    pub fn next_write_doc_values_gen(&self) -> i64 {
+        self.next_write_doc_values_gen.load(AtomicOrdering::Acquire)
+    }
+
+    pub fn set_next_write_doc_values_gen(&self, gen: i64) {
+        self.next_write_doc_values_gen
+            .store(gen, AtomicOrdering::Release);
+    }
+
+    pub fn advance_field_infos_gen(&self) {
+        self.field_infos_gen
+            .store(self.next_field_infos_gen(), AtomicOrdering::Release);
+        self.next_write_field_infos_gen
+            .store(self.field_infos_gen() + 1, AtomicOrdering::Release);
+        self.size_in_bytes.store(-1, AtomicOrdering::Release);
+    }
+
+    pub fn next_write_del_gen(&self) -> i64 {
+        self.next_write_del_gen.load(AtomicOrdering::Acquire)
+    }
+
+    pub fn set_next_write_del_gen(&self, gen: i64) {
+        self.next_write_del_gen.store(gen, AtomicOrdering::Release)
+    }
+
+    pub fn next_field_infos_gen(&self) -> i64 {
+        self.next_write_field_infos_gen
+            .load(AtomicOrdering::Acquire)
+    }
+
+    pub fn advance_next_write_del_gen(&self) {
+        self.next_write_del_gen
+            .fetch_add(1, AtomicOrdering::Acquire);
+    }
+
+    pub fn del_gen(&self) -> i64 {
+        self.del_gen.load(AtomicOrdering::Acquire)
+    }
+
+    pub fn advance_del_gen(&self) {
+        self.del_gen.store(
+            self.next_write_del_gen.load(AtomicOrdering::Acquire),
+            AtomicOrdering::Release,
+        );
+        self.next_write_del_gen
+            .store(self.del_gen() + 1, AtomicOrdering::Release);
+        self.size_in_bytes.store(-1, AtomicOrdering::Release);
+    }
+
+    pub fn size_in_bytes(&self) -> i64 {
+        let mut size = self.size_in_bytes.load(AtomicOrdering::Acquire);
+        if size == -1 {
+            let mut sum = 0;
+            for name in self.files() {
+                match self.info.directory.file_length(&name) {
+                    Ok(l) => {
+                        sum += l;
+                    }
+                    Err(e) => {
+                        warn!("get file '{}' length failed by '{:?}'", name, e);
+                    }
+                }
+            }
+            size = sum;
+            self.size_in_bytes.store(size, AtomicOrdering::Release);
+        }
+        size
+    }
+
+    pub fn buffered_deletes_gen(&self) -> i64 {
+        self.buffered_deletes_gen.load(AtomicOrdering::Acquire)
+    }
+
+    pub fn set_buffered_deletes_gen(&self, v: i64) {
+        self.buffered_deletes_gen.store(v, AtomicOrdering::Release);
+        self.size_in_bytes.store(-1, AtomicOrdering::Release);
+    }
+}
+
+impl Clone for SegmentCommitInfo {
+    fn clone(&self) -> Self {
+        let infos = SegmentCommitInfo::new(
+            self.info.clone(),
+            self.del_count(),
+            self.del_gen(),
+            self.field_infos_gen(),
+            self.doc_values_gen,
+            self.dv_updates_files.clone(),
+            self.field_infos_files.clone(),
+        );
+        // Not clear that we need to carry over nextWriteDelGen
+        // (i.e. do we ever clone after a failed write and
+        // before the next successful write?), but just do it to
+        // be safe:
+        infos
+            .next_write_del_gen
+            .store(self.next_write_del_gen(), AtomicOrdering::Release);
+        infos
+            .next_write_field_infos_gen
+            .store(self.next_write_field_infos_gen(), AtomicOrdering::Release);
+        infos.set_next_write_doc_values_gen(self.next_write_doc_values_gen());
+        infos
+    }
+}
+
+impl Eq for SegmentCommitInfo {}
+
+// TODO, only compare the segment name, maybe we should compare the raw pointer or the full struct?
+impl PartialEq for SegmentCommitInfo {
+    fn eq(&self, other: &SegmentCommitInfo) -> bool {
+        self.info.name.eq(&other.info.name)
+    }
 }
 
 impl Serialize for SegmentCommitInfo {
@@ -499,19 +911,23 @@ impl Serialize for SegmentCommitInfo {
     {
         let mut s = serializer.serialize_struct("SegmentCommitInfo", 11)?;
         s.serialize_field("info", &self.info)?;
-        s.serialize_field("del_count", &self.del_count)?;
-        s.serialize_field("del_gen", &self.del_gen)?;
-        s.serialize_field("next_write_del_gen", &self.next_write_del_gen)?;
-        s.serialize_field("field_infos_gen", &self.field_infos_gen)?;
+        s.serialize_field("del_count", &self.del_count())?;
+        s.serialize_field("del_gen", &self.del_gen())?;
+        s.serialize_field("next_write_del_gen", &self.next_write_del_gen())?;
+        s.serialize_field("field_infos_gen", &self.field_infos_gen())?;
         s.serialize_field(
             "next_write_field_infos_gen",
-            &self.next_write_field_infos_gen,
+            &self.next_write_field_infos_gen
+                .load(AtomicOrdering::Acquire),
         )?;
         s.serialize_field("doc_values_gen", &self.doc_values_gen)?;
-        s.serialize_field("next_write_doc_values_gen", &self.next_write_doc_values_gen)?;
+        s.serialize_field(
+            "next_write_doc_values_gen",
+            &self.next_write_doc_values_gen(),
+        )?;
         s.serialize_field("dv_updates_files", &self.dv_updates_files)?;
         s.serialize_field("field_infos_files", &self.field_infos_files)?;
-        s.serialize_field("size_in_bytes", &self.size_in_bytes)?;
+        s.serialize_field("size_in_bytes", &self.size_in_bytes())?;
         s.end()
     }
 }
@@ -526,57 +942,13 @@ impl fmt::Display for SegmentCommitInfo {
     }
 }
 
-impl SegmentCommitInfo {
-    pub fn new(
-        info: SegmentInfo,
-        del_count: i32,
-        del_gen: i64,
-        field_infos_gen: i64,
-        doc_values_gen: i64,
-        dv_updates_files: HashMap<i32, HashSet<String>>,
-        field_infos_files: HashSet<String>,
-    ) -> SegmentCommitInfo {
-        SegmentCommitInfo {
-            info,
-            del_count,
-            del_gen,
-            next_write_del_gen: if del_gen == -1 { 1i64 } else { del_gen + 1 },
-            field_infos_gen,
-            next_write_field_infos_gen: if field_infos_gen == -1 {
-                1
-            } else {
-                field_infos_gen + 1
-            },
-            doc_values_gen,
-            next_write_doc_values_gen: if doc_values_gen == -1 {
-                1
-            } else {
-                doc_values_gen + 1
-            },
-            dv_updates_files,
-            field_infos_files,
-            size_in_bytes: -1,
+impl fmt::Debug for SegmentCommitInfo {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        if let Ok(s) = ::serde_json::to_string_pretty(self) {
+            write!(f, "{}", s)?;
         }
-    }
 
-    // pub fn info(&self) -> &SegmentInfo {
-    // &self.info
-    // }
-
-    pub fn has_deletions(&self) -> bool {
-        self.del_gen != -1
-    }
-
-    pub fn del_count(&self) -> i32 {
-        self.del_count
-    }
-
-    pub fn has_field_updates(&self) -> bool {
-        self.field_infos_gen != -1
-    }
-
-    pub fn field_infos_gen(&self) -> i64 {
-        self.field_infos_gen
+        Ok(())
     }
 }
 
@@ -598,13 +970,13 @@ pub struct SegmentWriteState {
 
     /// Number of deleted documents set while flushing the
     /// segment. */
-    pub del_count_on_flush: i64,
+    pub del_count_on_flush: u32,
 
     /// Deletes and updates to apply while we are flushing the segment. A Term is
     /// enrolled in here if it was deleted/updated at one point, and it's mapped to
     /// the docIDUpto, meaning any docID &lt; docIDUpto containing this term should
     /// be deleted/updated.
-    pub seg_updates: BufferedUpdates,
+    pub seg_updates: Option<*const BufferedUpdates>,
 
     /// {@link MutableBits} recording live documents; this is
     /// only set if there is one or more deleted documents. */
@@ -626,6 +998,69 @@ pub struct SegmentWriteState {
     pub context: IOContext,
 }
 
+impl SegmentWriteState {
+    pub fn new(
+        directory: DirectoryRc,
+        segment_info: SegmentInfo,
+        field_infos: FieldInfos,
+        seg_updates: Option<*const BufferedUpdates>,
+        context: IOContext,
+        segment_suffix: String,
+    ) -> Self {
+        debug_assert!(Self::assert_segment_suffix(&segment_suffix));
+        SegmentWriteState {
+            directory,
+            segment_info,
+            field_infos,
+            del_count_on_flush: 0,
+            seg_updates,
+            live_docs: Box::new(FixedBitSet::default()),
+            segment_suffix,
+            context,
+        }
+    }
+
+    pub fn seg_updates(&self) -> &BufferedUpdates {
+        unsafe { &*self.seg_updates.unwrap() }
+    }
+
+    // currently only used by assert? clean up and make real check?
+    // either it's a segment suffix (_X_Y) or it's a parseable generation
+    // TODO: this is very confusing how ReadersAndUpdates passes generations via
+    // this mechanism, maybe add 'generation' explicitly to ctor create the 'actual suffix' here?
+    fn assert_segment_suffix(segment_suffix: &str) -> bool {
+        if !segment_suffix.is_empty() {
+            let parts: Vec<&str> = segment_suffix.split("_").collect();
+            if parts.len() == 2 {
+                true
+            } else if parts.len() == 1 {
+                segment_suffix.parse::<i64>().is_ok()
+            } else {
+                false // invalid
+            }
+        } else {
+            true
+        }
+    }
+}
+
+impl Clone for SegmentWriteState {
+    fn clone(&self) -> Self {
+        SegmentWriteState {
+            directory: Arc::clone(&self.directory),
+            segment_info: self.segment_info.clone(),
+            field_infos: self.field_infos.clone(),
+            del_count_on_flush: self.del_count_on_flush,
+            seg_updates: None,
+            // no used
+            live_docs: Box::new(FixedBitSet::default()),
+            // TODO, fake clone
+            segment_suffix: self.segment_suffix.clone(),
+            context: self.context,
+        }
+    }
+}
+
 /// Holder class for common parameters used during read.
 /// @lucene.experimental
 pub struct SegmentReadState<'a> {
@@ -641,7 +1076,7 @@ pub struct SegmentReadState<'a> {
 
     /// {@link IOContext} to pass to {@link
     /// Directory#openInput(String,IOContext)}.
-    pub context: IOContext,
+    pub context: &'a IOContext,
 
     /// Unique suffix for any postings files read for this
     /// segment.  {@link PerFieldPostingsFormat} sets this for
@@ -655,11 +1090,11 @@ pub struct SegmentReadState<'a> {
 impl<'a> SegmentReadState<'a> {
     pub fn new(
         directory: DirectoryRc,
-        segment_info: &SegmentInfo,
+        segment_info: &'a SegmentInfo,
         field_infos: Arc<FieldInfos>,
-        context: IOContext,
+        context: &'a IOContext,
         segment_suffix: String,
-    ) -> SegmentReadState {
+    ) -> SegmentReadState<'a> {
         SegmentReadState {
             directory,
             segment_info,
@@ -669,7 +1104,7 @@ impl<'a> SegmentReadState<'a> {
         }
     }
 
-    pub fn with_suffix<'b>(state: &'b SegmentReadState, suffix: &str) -> SegmentReadState<'b> {
+    pub fn with_suffix(state: &'a SegmentReadState, suffix: &str) -> SegmentReadState<'a> {
         Self::new(
             state.directory.clone(),
             state.segment_info,
@@ -680,10 +1115,6 @@ impl<'a> SegmentReadState<'a> {
     }
 }
 
-pub struct MergeState {}
-
-impl MergeState {}
-
 #[cfg(test)]
 pub mod tests {
     use std::collections::HashMap;
@@ -691,6 +1122,9 @@ pub mod tests {
     use super::*;
     use core::index::point_values::PointValuesRef;
     use core::search::bm25_similarity::BM25Similarity;
+    use core::codec::{DocValuesProducer, FieldsProducer};
+    use core::codec::{NormsProducer, StoredFieldsReader, TermVectorsReader};
+    use core::util::external::deferred::Deferred;
     use core::util::*;
 
     use core::codec::FieldsProducerRef;
@@ -755,7 +1189,7 @@ pub mod tests {
                 HashMap::new(),
                 1,
                 1,
-            );
+            ).unwrap();
             let field_info_two = FieldInfo::new(
                 "test_2".to_string(),
                 2,
@@ -768,9 +1202,9 @@ pub mod tests {
                 HashMap::new(),
                 2,
                 2,
-            );
-            infos.push(field_info_one.unwrap());
-            infos.push(field_info_two.unwrap());
+            ).unwrap();
+            infos.push(field_info_one);
+            infos.push(field_info_two);
 
             MockLeafReader {
                 doc_base,
@@ -781,6 +1215,10 @@ pub mod tests {
     }
 
     impl LeafReader for MockLeafReader {
+        fn add_core_drop_listener(&self, listener: Deferred) {
+            unreachable!()
+        }
+
         fn doc_base(&self) -> DocId {
             self.doc_base
         }
@@ -793,7 +1231,7 @@ pub mod tests {
             unimplemented!()
         }
 
-        fn term_vector(&self, _doc_id: DocId) -> Result<Box<Fields>> {
+        fn term_vector(&self, _doc_id: DocId) -> Result<Option<Box<Fields>>> {
             unimplemented!()
         }
 
@@ -815,6 +1253,10 @@ pub mod tests {
 
         fn field_infos(&self) -> &FieldInfos {
             &self.field_infos
+        }
+
+        fn clone_field_infos(&self) -> Arc<FieldInfos> {
+            unimplemented!()
         }
 
         fn max_doc(&self) -> DocId {
@@ -860,6 +1302,33 @@ pub mod tests {
         fn core_cache_key(&self) -> &str {
             unimplemented!()
         }
+        fn is_codec_reader(&self) -> bool {
+            false
+        }
+
+        fn index_sort(&self) -> Option<&Sort> {
+            None
+        }
+
+        fn store_fields_reader(&self) -> Result<Arc<StoredFieldsReader>> {
+            unreachable!()
+        }
+
+        fn term_vectors_reader(&self) -> Result<Option<Arc<TermVectorsReader>>> {
+            unreachable!()
+        }
+
+        fn norms_reader(&self) -> Result<Option<Arc<NormsProducer>>> {
+            unreachable!()
+        }
+
+        fn doc_values_reader(&self) -> Result<Option<Arc<DocValuesProducer>>> {
+            unreachable!()
+        }
+
+        fn postings_reader(&self) -> Result<Arc<FieldsProducer>> {
+            unreachable!()
+        }
     }
 
     pub struct MockIndexReader {
@@ -881,7 +1350,7 @@ pub mod tests {
             leaves
         }
 
-        fn term_vector(&self, _doc_id: DocId) -> Result<Box<Fields>> {
+        fn term_vector(&self, _doc_id: DocId) -> Result<Option<Box<Fields>>> {
             unimplemented!()
         }
 
@@ -895,6 +1364,10 @@ pub mod tests {
 
         fn num_docs(&self) -> i32 {
             1
+        }
+
+        fn as_any(&self) -> &Any {
+            self
         }
     }
 }

@@ -6,11 +6,10 @@ use std::collections::{HashMap, HashSet};
 use std::f32;
 use std::fmt;
 
-use core::index::term::TermState;
-use core::index::term::{EmptyTermIterator, TermIterator};
 use core::index::LeafReader;
-use core::index::Term;
 use core::index::POSTINGS_POSITIONS;
+use core::index::{EmptyTermIterator, TermIterator};
+use core::index::{Term, TermState};
 use core::search::conjunction::ConjunctionScorer;
 use core::search::explanation::Explanation;
 use core::search::posting_iterator::{EmptyPostingIterator, PostingIterator};
@@ -129,7 +128,7 @@ impl Query for PhraseQuery {
             "PhraseWeight requires that the first position is 0, call rewrite first"
         );
 
-        let reader = searcher.reader.as_ref();
+        let reader = searcher.reader();
         let max_doc = i64::from(reader.max_doc());
 
         let mut term_states: Vec<HashMap<DocId, Box<TermState>>> =
@@ -182,6 +181,10 @@ impl Query for PhraseQuery {
 
     fn query_type(&self) -> &'static str {
         PHRASE
+    }
+
+    fn as_any(&self) -> &::std::any::Any {
+        self
     }
 }
 
@@ -1089,7 +1092,7 @@ impl SloppyPhraseScorer {
                 if pp2.rpt_group >= 0 && pp2.rpt_ind < num_bits as i32 // this bit may not have been set
                     && bits.get(pp2.rpt_ind as usize)?
                 {
-                    bits.clear(pp2.rpt_ind as usize, (pp2.rpt_ind + 1) as usize);
+                    bits.clear_batch(pp2.rpt_ind as usize, (pp2.rpt_ind + 1) as usize);
                 }
             }
         }

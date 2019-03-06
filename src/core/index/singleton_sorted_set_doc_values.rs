@@ -4,12 +4,14 @@ use core::index::{RandomAccessOrds, SortedDocValues, SortedSetDocValues,
 use core::util::DocId;
 use error::Result;
 
+use std::sync::Arc;
+
 pub struct SingletonSortedSetDocValues {
-    dv_in: Box<SortedDocValues>,
+    dv_in: Arc<SortedDocValues>,
 }
 
 impl SingletonSortedSetDocValues {
-    pub fn new(dv_in: Box<SortedDocValues>) -> Self {
+    pub fn new(dv_in: Arc<SortedDocValues>) -> Self {
         SingletonSortedSetDocValues { dv_in }
     }
     pub fn get_sorted_doc_values(&self) -> &SortedDocValues {
@@ -53,7 +55,7 @@ impl SortedSetDocValues for SingletonSortedSetDocValues {
         Ok(i64::from(val))
     }
 
-    fn term_iterator<'a, 'b: 'a>(&'b self) -> Result<Box<TermIterator + 'a>> {
+    fn term_iterator(&self) -> Result<Box<TermIterator>> {
         self.dv_in.term_iterator()
     }
 }

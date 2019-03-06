@@ -118,6 +118,7 @@ impl Default for BinaryEntry {
     }
 }
 
+#[derive(Clone)]
 struct SortedSetEntry {
     format: i32,
     table: Vec<i64>,
@@ -161,7 +162,7 @@ impl Lucene54DocValuesProducer {
         let meta_name =
             segment_file_name(&state.segment_info.name, &state.segment_suffix, meta_ext);
         // read in the entries from the metadata file
-        let input = state.directory.open_input(&meta_name, &state.context)?;
+        let input = state.directory.open_input(&meta_name, state.context)?;
         let mut checksum_input = Box::new(BufferedChecksumIndexInput::new(input));
 
         let version = codec_util::check_index_header(
@@ -195,7 +196,7 @@ impl Lucene54DocValuesProducer {
         codec_util::check_footer(checksum_input.as_mut())?;
         let data_name =
             segment_file_name(&state.segment_info.name, &state.segment_suffix, data_ext);
-        let mut data = state.directory.open_input(&data_name, &state.context)?;
+        let mut data = state.directory.open_input(&data_name, state.context)?;
         let version2 = codec_util::check_index_header(
             data.as_mut(),
             data_codec,
@@ -231,6 +232,25 @@ impl Lucene54DocValuesProducer {
         })
     }
 
+    pub fn copy_from(producer: &Lucene54DocValuesProducer) -> Result<Lucene54DocValuesProducer> {
+        let address_instances = RwLock::new(producer.address_instances.read()?.clone());
+        let reverse_index_instances = RwLock::new(producer.reverse_index_instances.read()?.clone());
+        Ok(Lucene54DocValuesProducer {
+            num_fields: producer.num_fields,
+            max_doc: producer.max_doc,
+            data: producer.data.clone()?,
+            merging: true,
+            numerics: producer.numerics.clone(),
+            binaries: producer.binaries.clone(),
+            sorted_sets: producer.sorted_sets.clone(),
+            sorted_numerics: producer.sorted_numerics.clone(),
+            ords: producer.ords.clone(),
+            ord_indexes: producer.ord_indexes.clone(),
+            address_instances,
+            reverse_index_instances,
+        })
+    }
+
     #[allow(too_many_arguments)]
     fn read_fields(
         meta: &mut IndexInput,
@@ -248,7 +268,7 @@ impl Lucene54DocValuesProducer {
         while field_number != -1 {
             num_fields += 1;
             let info = infos
-                .field_info_by_number(field_number)
+                .field_info_by_number(field_number as u32)
                 .ok_or_else(|| IllegalArgument(format!("invalid field number: {}", field_number)))?;
             let dv_type = meta.read_byte()?;
             match dv_type {
@@ -534,7 +554,7 @@ impl Lucene54DocValuesProducer {
                     }
                 }
                 let field_number = meta.read_vint()?;
-                if field_number != info.number {
+                if field_number != info.number as i32 {
                     bail!(CorruptIndex(format!(
                         "Field number mismatch: {} != {}",
                         field_number, info.number
@@ -649,7 +669,7 @@ impl Lucene54DocValuesProducer {
         ords: &mut HashMap<String, NumericEntryLink>,
     ) -> Result<()> {
         // sorted = binary + numeric
-        if meta.read_vint()? != info.number {
+        if meta.read_vint()? != info.number as i32 {
             bail!(CorruptIndex(format!(
                 "sorted entry for field {} is corrupt",
                 info.name
@@ -665,7 +685,7 @@ impl Lucene54DocValuesProducer {
 
         let b = Lucene54DocValuesProducer::read_binary_entry(info, meta)?;
         binaries.insert(info.name.clone(), b);
-        if meta.read_vint()? != info.number {
+        if meta.read_vint()? != info.number as i32 {
             bail!(CorruptIndex(format!(
                 "sorted entry for field {} is corrupt",
                 info.name
@@ -696,7 +716,7 @@ impl Lucene54DocValuesProducer {
         ord_indexes: &mut HashMap<String, NumericEntryLink>,
     ) -> Result<()> {
         // sorted_set = binary + numeric (addresses) + ord_index
-        if meta.read_vint()? != info.number {
+        if meta.read_vint()? != info.number as i32 {
             bail!(CorruptIndex(format!(
                 "sorted_set entry for field {} is corrupt",
                 info.name
@@ -713,7 +733,7 @@ impl Lucene54DocValuesProducer {
         let b = Lucene54DocValuesProducer::read_binary_entry(info, meta)?;
         binaries.insert(info.name.clone(), b);
 
-        if meta.read_vint()? != info.number {
+        if meta.read_vint()? != info.number as i32 {
             bail!(CorruptIndex(format!(
                 "sorted_set entry for field {} is corrupt",
                 info.name
@@ -733,7 +753,7 @@ impl Lucene54DocValuesProducer {
             unreachable!();
         }
 
-        if meta.read_vint()? != info.number {
+        if meta.read_vint()? != info.number as i32 {
             bail!(CorruptIndex(format!(
                 "sorted_set entry for field {} is corrupt",
                 info.name
@@ -763,7 +783,7 @@ impl Lucene54DocValuesProducer {
         ords: &mut HashMap<String, NumericEntryLink>,
     ) -> Result<()> {
         // sorted_set_table = binary + ord_set table + ordset index
-        if meta.read_vint()? != info.number {
+        if meta.read_vint()? != info.number as i32 {
             bail!(CorruptIndex(format!(
                 "sorted_set entry for field {} is corrupt",
                 info.name
@@ -779,7 +799,7 @@ impl Lucene54DocValuesProducer {
         let b = Lucene54DocValuesProducer::read_binary_entry(info, meta)?;
         binaries.insert(info.name.clone(), b);
 
-        if meta.read_vint()? != info.number {
+        if meta.read_vint()? != info.number as i32 {
             bail!(CorruptIndex(format!(
                 "sorted_set entry for field {} is corrupt",
                 info.name
@@ -996,8 +1016,8 @@ impl Lucene54DocValuesProducer {
         let mut data = self.data.as_ref().clone()?;
         let data: &mut IndexInput = data.borrow_mut();
         data.seek(bytes.addresses_offset)?;
-        let size =
-            ((bytes.count + i64::from(lucene54::INTERVAL_MASK)) >> lucene54::INTERVAL_SHIFT) as u64;
+        let size = ((bytes.count + i64::from(lucene54::INTERVAL_MASK)) >> lucene54::INTERVAL_SHIFT)
+            as usize;
         let addresses = MonotonicBlockPackedReader::new(
             data,
             bytes.packed_ints_version,
@@ -1032,13 +1052,13 @@ impl Lucene54DocValuesProducer {
             data.borrow_mut(),
             bytes.packed_ints_version,
             bytes.block_size as usize,
-            size as u64,
+            size as usize,
             false,
         )?;
         let data_size = data.read_vlong()?;
         let mut paged_bytes = PagedBytes::new(15);
         paged_bytes.copy(data.borrow_mut(), data_size)?;
-        paged_bytes.freeze(true);
+        paged_bytes.freeze(true)?;
         let terms = PagedBytesReader::new(paged_bytes);
         let index = ReverseTermsIndex {
             term_addresses,
@@ -1084,22 +1104,20 @@ impl Lucene54DocValuesProducer {
             .ok_or_else(|| IllegalArgument(format!("No binary field named {}", field.name)))?
             .count as usize;
 
-        let ordinals;
-        {
+        let ordinals = {
             let ord_entry = self.ords
                 .get(&field.name)
                 .ok_or_else(|| IllegalArgument(format!("No ords field named {}", &field.name)))?;
 
-            ordinals = self.get_numeric_by_entry(ord_entry)?;
-        }
+            self.get_numeric_by_entry(ord_entry)?
+        };
 
-        let ord_index;
-        {
+        let ord_index = {
             let ord_index_entry = self.ord_indexes
                 .get(&field.name)
                 .ok_or_else(|| IllegalArgument(format!("No OrdIndex field named {}", field.name)))?;
-            ord_index = self.get_ord_index_instance(ord_index_entry)?;
-        }
+            self.get_ord_index_instance(ord_index_entry)?
+        };
 
         let bytes = self.binaries
             .get(&field.name)
@@ -1212,15 +1230,15 @@ impl Lucene54DocValuesProducer {
 }
 
 impl DocValuesProducer for Lucene54DocValuesProducer {
-    fn get_numeric(&self, field: &FieldInfo) -> Result<Box<NumericDocValues>> {
+    fn get_numeric(&self, field: &FieldInfo) -> Result<Arc<NumericDocValues>> {
         let link = self.numerics.get(&field.name).ok_or_else(|| {
             IllegalArgument(format!("No numeric field named {} found", field.name))
         })?;
         let boxed = self.get_numeric_by_entry_outbound(link)?;
-        Ok(boxed)
+        Ok(Arc::from(boxed))
     }
 
-    fn get_binary(&self, field: &FieldInfo) -> Result<Box<BinaryDocValues>> {
+    fn get_binary(&self, field: &FieldInfo) -> Result<Arc<BinaryDocValues>> {
         let bytes = self.binaries
             .get(&field.name)
             .ok_or_else(|| IllegalArgument(format!("No binary field named {}", field.name)))?
@@ -1230,16 +1248,16 @@ impl DocValuesProducer for Lucene54DocValuesProducer {
         match myformat {
             lucene54::BINARY_FIXED_UNCOMPRESSED => {
                 let boxed = self.get_fixed_binary(field, &bytes)?;
-                Ok(Box::new(boxed))
+                Ok(Arc::new(boxed))
             }
             lucene54::BINARY_VARIABLE_UNCOMPRESSED => {
                 let boxed = self.get_variable_binary(field, &bytes)?;
-                Ok(Box::new(boxed))
+                Ok(Arc::new(boxed))
             }
 
             lucene54::BINARY_PREFIX_COMPRESSED => {
                 let boxed = self.get_compressed_binary(field, &bytes)?;
-                Ok(Box::new(boxed))
+                Ok(Arc::new(boxed))
             }
             _ => bail!(IllegalArgument(format!(
                 "unknown binary_entry format: {}",
@@ -1248,7 +1266,7 @@ impl DocValuesProducer for Lucene54DocValuesProducer {
         }
     }
 
-    fn get_sorted(&self, field: &FieldInfo) -> Result<Box<SortedDocValues>> {
+    fn get_sorted(&self, field: &FieldInfo) -> Result<Arc<SortedDocValues>> {
         let value_count = self.binaries
             .get(&field.name)
             .ok_or_else(|| IllegalArgument(format!("No binary field named {}", &field.name)))?
@@ -1270,18 +1288,18 @@ impl DocValuesProducer for Lucene54DocValuesProducer {
             lucene54::BINARY_FIXED_UNCOMPRESSED => {
                 let binary = Box::new(self.get_fixed_binary(field, &bytes)?);
                 let boxed = TailoredSortedDocValues::new(ordinals, binary, value_count);
-                Ok(Box::new(boxed))
+                Ok(Arc::new(boxed))
             }
             lucene54::BINARY_VARIABLE_UNCOMPRESSED => {
                 let binary = Box::new(self.get_variable_binary(field, &bytes)?);
                 let boxed = TailoredSortedDocValues::new(ordinals, binary, value_count);
-                Ok(Box::new(boxed))
+                Ok(Arc::new(boxed))
             }
             lucene54::BINARY_PREFIX_COMPRESSED => {
                 let binary = Box::new(self.get_compressed_binary(field, &bytes)?);
                 let boxed =
                     TailoredSortedDocValues::with_compression(ordinals, binary, value_count);
-                Ok(Box::new(boxed))
+                Ok(Arc::new(boxed))
             }
             _ => bail!(IllegalArgument(format!(
                 "unknown binary_entry format: {}",
@@ -1290,7 +1308,7 @@ impl DocValuesProducer for Lucene54DocValuesProducer {
         }
     }
 
-    fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Box<SortedNumericDocValues>> {
+    fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Arc<SortedNumericDocValues>> {
         let ss = self.sorted_numerics.get(&field.name).ok_or_else(|| {
             IllegalArgument(format!("No SortedNumeric field named {}", field.name))
         })?;
@@ -1302,7 +1320,7 @@ impl DocValuesProducer for Lucene54DocValuesProducer {
                 if numeric_entry.format == lucene54::SPARSE_COMPRESSED {
                     let values = self.get_numeric_sparse_compressed(numeric_entry)?;
                     let docs_with_field = values.docs_with_field_clone();
-                    Ok(Box::new(DocValues::singleton_sorted_numeric_doc_values(
+                    Ok(Arc::new(DocValues::singleton_sorted_numeric_doc_values(
                         Box::new(values),
                         docs_with_field,
                     )))
@@ -1315,14 +1333,14 @@ impl DocValuesProducer for Lucene54DocValuesProducer {
                     match offset as i32 {
                         lucene54::ALL_MISSING => {
                             let living_room = MatchNoBits::new(count);
-                            Ok(Box::new(DocValues::singleton_sorted_numeric_doc_values(
+                            Ok(Arc::new(DocValues::singleton_sorted_numeric_doc_values(
                                 values,
                                 Arc::new(living_room),
                             )))
                         }
                         lucene54::ALL_LIVE => {
                             let living_room = MatchAllBits::new(count);
-                            Ok(Box::new(DocValues::singleton_sorted_numeric_doc_values(
+                            Ok(Arc::new(DocValues::singleton_sorted_numeric_doc_values(
                                 values,
                                 Arc::new(living_room),
                             )))
@@ -1330,7 +1348,7 @@ impl DocValuesProducer for Lucene54DocValuesProducer {
                         _ => {
                             let mut data = self.data.as_ref().clone()?;
                             let living_room = LiveBits::new(data.borrow_mut(), offset, count)?;
-                            Ok(Box::new(DocValues::singleton_sorted_numeric_doc_values(
+                            Ok(Arc::new(DocValues::singleton_sorted_numeric_doc_values(
                                 values,
                                 Arc::new(living_room),
                             )))
@@ -1347,7 +1365,7 @@ impl DocValuesProducer for Lucene54DocValuesProducer {
                     IllegalArgument(format!("no field named {} in ord_indexes", field.name))
                 })?;
                 let ord_index = self.get_ord_index_instance(ord_entry)?;
-                Ok(Box::new(AddressedSortedNumericDocValues::new(
+                Ok(Arc::new(AddressedSortedNumericDocValues::new(
                     values, ord_index,
                 )))
             }
@@ -1356,7 +1374,7 @@ impl DocValuesProducer for Lucene54DocValuesProducer {
                     .get(&field.name)
                     .ok_or_else(|| IllegalArgument(format!("No Ords field named {}", field.name)))?;
                 let ordinals: Box<LongValues> = self.get_numeric_by_entry(numeric_entry)?;
-                Ok(Box::new(TabledSortedNumericDocValues::new(
+                Ok(Arc::new(TabledSortedNumericDocValues::new(
                     ordinals,
                     &ss.table,
                     &ss.table_offsets,
@@ -1369,7 +1387,7 @@ impl DocValuesProducer for Lucene54DocValuesProducer {
         }
     }
 
-    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Box<SortedSetDocValues>> {
+    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Arc<SortedSetDocValues>> {
         let my_format = self.sorted_sets
             .get(&field.name)
             .ok_or_else(|| IllegalArgument(format!("No SortedSet field named {}", &field.name)))?
@@ -1379,11 +1397,13 @@ impl DocValuesProducer for Lucene54DocValuesProducer {
             lucene54::SORTED_SINGLE_VALUED => {
                 let values = self.get_sorted(field)?;
                 let boxed = DocValues::singleton_sorted_doc_values(values);
-                Ok(Box::new(boxed))
+                Ok(Arc::new(boxed))
             }
 
-            lucene54::SORTED_WITH_ADDRESSES => self.get_sorted_set_with_addresses(field),
-            lucene54::SORTED_SET_TABLE => self.get_sorted_set_table(field),
+            lucene54::SORTED_WITH_ADDRESSES => {
+                Ok(Arc::from(self.get_sorted_set_with_addresses(field)?))
+            }
+            lucene54::SORTED_SET_TABLE => Ok(Arc::from(self.get_sorted_set_table(field)?)),
             _ => bail!(IllegalArgument(format!(
                 "Unknown SortedSetEntry.format {} of field {}",
                 my_format, field.name
@@ -1409,7 +1429,7 @@ impl DocValuesProducer for Lucene54DocValuesProducer {
                 let be = self.binaries.get(&field.name).ok_or_else(|| {
                     IllegalArgument(format!("No binary field named {}", field.name))
                 })?;
-                self.get_live_bits(be.offset, self.max_doc as usize)
+                self.get_live_bits(be.missing_offset, self.max_doc as usize)
             }
             DocValuesType::Numeric => {
                 let ne = self.numerics.get(&field.name).ok_or_else(|| {
@@ -1430,7 +1450,11 @@ impl DocValuesProducer for Lucene54DocValuesProducer {
     fn check_integrity(&self) -> Result<()> {
         let mut input = self.data.as_ref().clone()?;
         let input: &mut IndexInput = input.borrow_mut();
-        codec_util::checksum_entire_file(input)?;
+        // codec_util::checksum_entire_file(input)?;
         Ok(())
+    }
+
+    fn get_merge_instance(&self) -> Result<Box<DocValuesProducer>> {
+        Ok(Box::new(Lucene54DocValuesProducer::copy_from(self)?))
     }
 }

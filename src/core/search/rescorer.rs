@@ -198,17 +198,17 @@ impl QueryRescorer {
         }
         hits.sort_by(ScoreDocHit::order_by_doc);
 
-        let readers = searcher.reader.leaves();
+        let readers = searcher.reader().leaves();
         let mut score_field_index = -1;
         match *top_docs {
             TopDocs::Field(ref f) => for (index, field) in f.fields.iter().enumerate() {
-                if *field.field_type() == SortFieldType::Score {
+                if field.field_type() == SortFieldType::Score {
                     score_field_index = index as i32;
                     break;
                 }
             },
             TopDocs::Collapse(ref c) => for (index, field) in c.fields.iter().enumerate() {
-                if *field.field_type() == SortFieldType::Score {
+                if field.field_type() == SortFieldType::Score {
                     score_field_index = index as i32;
                     break;
                 }
@@ -405,7 +405,7 @@ impl QueryRescorer {
         top_docs: &TopDocs,
     ) -> Result<(Vec<Option<Vec<FeatureResult>>>, Vec<f32>)> {
         let hits = top_docs.score_docs();
-        let readers = searcher.reader.leaves();
+        let readers = searcher.reader().leaves();
         let weight = req.query.create_weight(searcher, true)?;
 
         let mut hit_upto = 0usize;

@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::fmt;
 
 use core::index::LeafReader;
@@ -100,6 +101,10 @@ impl Query for BooleanQuery {
 
     fn query_type(&self) -> &'static str {
         BOOLEAN
+    }
+
+    fn as_any(&self) -> &Any {
+        self
     }
 }
 

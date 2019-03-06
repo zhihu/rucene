@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use core::search::{DocIterator, NO_MORE_DOCS};
 use core::util::bit_util::{self, UnsignedShift};
-use core::util::{Bits, BitsContext};
+use core::util::{Bits, BitsContext, BitsRef};
 
 use error::*;
 
@@ -36,8 +36,17 @@ pub trait ImmutableBitSet: Bits {
 /// Base implementation for a bit set.
 pub trait BitSet: ImmutableBitSet {
     fn set(&mut self, i: usize);
+
+    fn batch_set(&mut self, start: usize, end: usize) {
+        for i in start..end {
+            self.set(i);
+        }
+    }
+
+    fn clear(&mut self, index: usize);
+
     /// Clears a range of bits.
-    fn clear(&mut self, start_index: usize, end_index: usize);
+    fn clear_batch(&mut self, start_index: usize, end_index: usize);
 
     /// Does in-place OR of the bits provided by the iterator. The state of the
     /// iterator after this operation terminates is undefined.
@@ -51,6 +60,10 @@ pub trait BitSet: ImmutableBitSet {
             self.set(doc as usize);
         }
         Ok(())
+    }
+
+    fn as_fixed_bit_set(&self) -> &FixedBitSet {
+        unimplemented!()
     }
 }
 
@@ -68,6 +81,16 @@ pub struct FixedBitSet {
     // The exact number of longs needed to hold numBits (<= bits.length)
 }
 
+impl Default for FixedBitSet {
+    fn default() -> Self {
+        FixedBitSet {
+            bits: Vec::with_capacity(0),
+            num_bits: 0,
+            num_words: 0,
+        }
+    }
+}
+
 impl FixedBitSet {
     /// Creates a new LongBitSet.
     /// The internally allocated long array will be exactly the size needed to accommodate the
@@ -75,7 +98,7 @@ impl FixedBitSet {
     ///
     pub fn new(num_bits: usize) -> FixedBitSet {
         let num_words = bits2words(num_bits);
-        let bits = vec![0i64; num_words];
+        let bits = vec![0; num_words];
         FixedBitSet {
             num_bits,
             bits,
@@ -140,7 +163,7 @@ impl FixedBitSet {
         if self.num_bits.trailing_zeros() >= 6 {
             return true;
         }
-        let mask = -1i64 << self.num_bits;
+        let mask = -1i64 << (self.num_bits & 0x3f);
         (self.bits[self.num_words - 1] & mask) == 0
     }
 
@@ -154,7 +177,7 @@ impl FixedBitSet {
         let end_word = (end_index - 1) >> 6;
 
         let start_mask = !((-1i64) << (start_index & 0x3fusize)) as i64;
-        let end_mask = !((-1i64).unsigned_shift((64usize - end_index) & 0x3fusize));
+        let end_mask = !((-1i64).unsigned_shift((64usize - (end_index & 0x3fusize)) & 0x3fusize));
 
         if start_word == end_word {
             self.bits[start_word] ^= start_mask | end_mask;
@@ -242,7 +265,38 @@ impl BitSet for FixedBitSet {
         }
     }
 
-    fn clear(&mut self, start_index: usize, end_index: usize) {
+    fn batch_set(&mut self, start_index: usize, end_index: usize) {
+        debug_assert!(start_index < self.num_bits && end_index <= self.num_bits);
+        if start_index >= end_index {
+            return;
+        }
+
+        let start_word = start_index >> 6;
+        let end_word = (end_index - 1) >> 6;
+
+        let start_mask = (-1i64) << (start_index & 0x3fusize) as i64;
+        let end_mask = (-1i64).unsigned_shift((64usize - (end_index & 0x3fusize)) & 0x3fusize);
+
+        if start_word == end_word {
+            self.bits[start_word] |= start_mask & end_mask;
+            return;
+        }
+
+        self.bits[start_word] |= start_mask;
+        for i in start_word + 1..end_word {
+            self.bits[i] = -1;
+        }
+        self.bits[end_word] |= end_mask;
+    }
+
+    fn clear(&mut self, index: usize) {
+        debug_assert!(index < self.num_bits);
+        let word = index >> 6;
+        let mask = !(1i64 << (index & 0x3fusize)) as i64;
+        self.bits[word] &= mask;
+    }
+
+    fn clear_batch(&mut self, start_index: usize, end_index: usize) {
         debug_assert!(start_index < self.num_bits);
         debug_assert!(end_index <= self.num_bits);
         if end_index <= start_index {
@@ -252,8 +306,8 @@ impl BitSet for FixedBitSet {
         let end_word = (end_index - 1) >> 6;
 
         // invert mask since we ar clear
-        let start_mask = !((-1i64) << (start_index & 0x3fusize)) as i64;
-        let end_mask = !((-1i64).unsigned_shift((64usize - end_index) & 0x3fusize));
+        let start_mask = !((-1i64) << (start_index & 0x3fusize) as i64);
+        let end_mask = !((-1i64).unsigned_shift((64usize - (end_index & 0x3fusize)) & 0x3fusize));
 
         if start_word == end_word {
             self.bits[start_word] &= start_mask | end_mask;
@@ -265,6 +319,10 @@ impl BitSet for FixedBitSet {
             self.bits[i] = 0i64;
         }
         self.bits[end_word] &= end_mask;
+    }
+
+    fn as_fixed_bit_set(&self) -> &FixedBitSet {
+        self
     }
 }
 
@@ -284,6 +342,18 @@ impl Bits for FixedBitSet {
 
     fn len(&self) -> usize {
         self.num_bits
+    }
+
+    fn as_bit_set(&self) -> &BitSet {
+        self
+    }
+
+    fn as_bit_set_mut(&mut self) -> &mut BitSet {
+        self
+    }
+
+    fn clone(&self) -> BitsRef {
+        Arc::new(Self::copy_from(self.bits.clone(), self.num_bits).unwrap())
     }
 }
 

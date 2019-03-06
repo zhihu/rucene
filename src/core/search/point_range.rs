@@ -2,15 +2,14 @@ use error::*;
 use std::fmt;
 
 use core::doc::{DoublePoint, FloatPoint, IntPoint, LongPoint};
-use core::index::point_values::{IntersectVisitor, PointValues, Relation};
 use core::index::LeafReader;
+use core::index::{IntersectVisitor, PointValues, Relation};
 use core::search::explanation::Explanation;
 use core::search::match_all::{AllDocsIterator, ConstantScoreScorer};
 use core::search::searcher::IndexSearcher;
 use core::search::term_query::TermQuery;
 use core::search::{DocIdSet, Query, Scorer, Weight};
 use core::search::{EmptyDocIterator, MatchNoDocScorer};
-use core::util::string_util::bytes_compare;
 use core::util::{DocId, DocIdSetBuilder};
 
 #[derive(Copy, Clone)]
@@ -123,6 +122,10 @@ impl Query for PointRangeQuery {
     fn query_type(&self) -> &'static str {
         POINT_RANGE
     }
+
+    fn as_any(&self) -> &::std::any::Any {
+        self
+    }
 }
 
 impl fmt::Display for PointRangeQuery {
@@ -194,13 +197,13 @@ impl Weight for PointRangeWeight {
     fn create_scorer(&self, leaf_reader: &LeafReader) -> Result<Box<Scorer>> {
         if let Some(ref values) = leaf_reader.point_values() {
             if let Some(field_info) = leaf_reader.field_info(&self.field) {
-                if field_info.point_dimension_count != self.num_dims as i32 {
+                if field_info.point_dimension_count != self.num_dims as u32 {
                     bail!(ErrorKind::IllegalArgument(format!(
                         "field '{}' was indexed with num_dims={} but this query has num_dims={}",
                         &self.field, field_info.point_dimension_count, self.num_dims
                     )));
                 }
-                if self.bytes_per_dim as i32 != field_info.point_num_bytes {
+                if self.bytes_per_dim as u32 != field_info.point_num_bytes {
                     bail!(ErrorKind::IllegalArgument(format!(
                         "field '{}' was indexed with bytes_per_dim={} but this query has \
                          bytes_per_dim={}",
@@ -216,16 +219,9 @@ impl Weight for PointRangeWeight {
                     all_docs_match = true;
                     for i in 0..self.num_dims {
                         let offset = i * self.bytes_per_dim;
-                        if bytes_compare(
-                            self.bytes_per_dim,
-                            &self.lower_point[offset..],
-                            &field_packed_lower[offset..],
-                        ) > 0
-                            || bytes_compare(
-                                self.bytes_per_dim,
-                                &self.upper_point[offset..],
-                                &field_packed_upper[offset..],
-                            ) < 0
+                        let end = offset + self.bytes_per_dim;
+                        if self.lower_point[offset..end] > field_packed_lower[offset..end]
+                            || self.upper_point[offset..end] < field_packed_upper[offset..end]
                         {
                             all_docs_match = false;
                             break;
@@ -322,20 +318,11 @@ impl<'a> IntersectVisitor for PointRangeIntersectVisitor<'a> {
         let bytes = self.weight.bytes_per_dim;
         for dim in 0..self.weight.num_dims {
             let offset = dim * bytes;
-            if bytes_compare(
-                bytes,
-                &packed_value[offset..],
-                &self.weight.lower_point[offset..],
-            ) < 0
-            {
+            let end = offset + bytes;
+            if packed_value[offset..end] < self.weight.lower_point[offset..end] {
                 return Ok(());
             }
-            if bytes_compare(
-                bytes,
-                &packed_value[offset..],
-                &self.weight.upper_point[offset..],
-            ) > 0
-            {
+            if packed_value[offset..end] > self.weight.upper_point[offset..end] {
                 return Ok(());
             }
         }
@@ -348,30 +335,16 @@ impl<'a> IntersectVisitor for PointRangeIntersectVisitor<'a> {
         let bytes = self.weight.bytes_per_dim;
         for dim in 0..self.weight.num_dims {
             let offset = dim * bytes;
-            if bytes_compare(
-                bytes,
-                &min_packed_value[offset..],
-                &self.weight.upper_point[offset..],
-            ) > 0
-                || bytes_compare(
-                    bytes,
-                    &max_packed_value[offset..],
-                    &self.weight.lower_point[offset..],
-                ) < 0
+            let end = offset + bytes;
+            if min_packed_value[offset..end] > self.weight.upper_point[offset..end]
+                || min_packed_value[offset..end] < self.weight.lower_point[offset..]
             {
                 return Relation::CellOutsideQuery;
             }
 
-            crosses |= bytes_compare(
-                bytes,
-                &min_packed_value[offset..],
-                &self.weight.lower_point[offset..],
-            ) < 0
-                || bytes_compare(
-                    bytes,
-                    &max_packed_value[offset..],
-                    &self.weight.upper_point[offset..],
-                ) > 0;
+            let end = offset + bytes;
+            crosses |= min_packed_value[offset..end] < self.weight.lower_point[offset..end]
+                || max_packed_value[offset..end] > self.weight.upper_point[offset..end];
         }
 
         if crosses {
