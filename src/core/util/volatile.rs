@@ -15,9 +15,6 @@ impl<T: Copy> Volatile<T> {
     /// Construct a new volatile instance wrapping the given value.
     ///
     /// ```rust
-    /// use volatile::Volatile;
-    ///
-    /// let value = Volatile::new(0u32);
     /// ```
     ///
     /// # Panics
@@ -31,9 +28,6 @@ impl<T: Copy> Volatile<T> {
     /// Construct a new volatile instance wrapping the given value.
     ///
     /// ```rust
-    /// use volatile::Volatile;
-    ///
-    /// let value = Volatile::new(0u32);
     /// ```
     ///
     /// # Panics
@@ -50,12 +44,8 @@ impl<T: Copy> Volatile<T> {
     /// guarantees. To also get atomicity, consider looking at the `Atomic` wrapper type.
     ///
     /// ```rust
-    /// use volatile::Volatile;
-    ///
-    /// let value = Volatile::new(42u32);
-    ///
-    /// assert_eq!(value.read(), 42u32);
     /// ```
+    ///
     ///
     /// # Panics
     ///
@@ -71,13 +61,6 @@ impl<T: Copy> Volatile<T> {
     /// wrapper type.
     ///
     /// ```rust
-    /// use volatile::Volatile;
-    ///
-    /// let mut value = Volatile::new(0u32);
-    ///
-    /// value.write(42u32);
-    ///
-    /// assert_eq!(value.read(), 42u32);
     /// ```
     ///
     /// # Panics
@@ -97,13 +80,6 @@ impl<T: Copy> Volatile<T> {
     /// the contained value.
     ///
     /// ```rust
-    /// use volatile::Volatile;
-    ///
-    /// let mut value = Volatile::new(21u32);
-    ///
-    /// value.update(|val_ref| *val_ref *= 2);
-    ///
-    /// assert_eq!(value.read(), 42u32);
     /// ```
     ///
     /// # Panics
