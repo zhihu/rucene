@@ -541,6 +541,10 @@ mod tests {
         fn query_type(&self) -> &'static str {
             MOCK_QUERY
         }
+
+        fn as_any(&self) -> &Any {
+            unreachable!()
+        }
     }
 
     impl fmt::Display for MockQuery {

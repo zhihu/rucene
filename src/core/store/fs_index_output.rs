@@ -79,7 +79,7 @@ mod tests {
 
     #[test]
     fn test_write_byte() {
-        let path = Path::new("hello.txt").into();
+        let path: PathBuf = Path::new("hello.txt").into();
         let mut fsout = FSIndexOutput::new(&path).unwrap();
         fsout.write_byte(b'a').unwrap();
         assert_eq!(fsout.file_pointer(), 1);

@@ -311,11 +311,11 @@ mod tests {
     use core::store::DataOutput;
     use core::store::FSIndexOutput;
     use std::io::Write;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn test_mmap_index_input() {
-        let path = Path::new("test.txt").into();
+        let path: PathBuf = Path::new("test.txt").into();
         let name = "test.txt";
 
         let mut fsout = FSIndexOutput::new(&path).unwrap();
@@ -335,7 +335,7 @@ mod tests {
 
     #[test]
     fn test_mmap_random_access_input() {
-        let path = Path::new("test.txt").into();
+        let path: PathBuf = Path::new("test.txt").into();
         let name = "test.txt";
 
         let mut fsout = FSIndexOutput::new(&path).unwrap();

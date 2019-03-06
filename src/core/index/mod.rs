@@ -1122,6 +1122,9 @@ pub mod tests {
     use super::*;
     use core::index::point_values::PointValuesRef;
     use core::search::bm25_similarity::BM25Similarity;
+    use core::codec::{DocValuesProducer, FieldsProducer};
+    use core::codec::{NormsProducer, StoredFieldsReader, TermVectorsReader};
+    use core::util::external::deferred::Deferred;
     use core::util::*;
 
     use core::codec::FieldsProducerRef;
@@ -1212,6 +1215,10 @@ pub mod tests {
     }
 
     impl LeafReader for MockLeafReader {
+        fn add_core_drop_listener(&self, listener: Deferred) {
+            unreachable!()
+        }
+
         fn doc_base(&self) -> DocId {
             self.doc_base
         }
@@ -1343,7 +1350,7 @@ pub mod tests {
             leaves
         }
 
-        fn term_vector(&self, _doc_id: DocId) -> Result<Box<Fields>> {
+        fn term_vector(&self, _doc_id: DocId) -> Result<Option<Box<Fields>>> {
             unimplemented!()
         }
 

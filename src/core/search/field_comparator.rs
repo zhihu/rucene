@@ -363,9 +363,9 @@ mod tests {
     fn test_relevance_comparator() {
         let mut comparator = RelevanceComparator::new(3);
         {
-            comparator.copy(0, 1, Some(&VariantValue::Float(1f32)));
-            comparator.copy(1, 2, Some(&VariantValue::Float(2f32)));
-            comparator.copy(2, 3, Some(&VariantValue::Float(3f32)));
+            comparator.copy(0, ComparatorValue::Score(1f32));
+            comparator.copy(1,  ComparatorValue::Score(2f32));
+            comparator.copy(2,  ComparatorValue::Score(3f32));
         }
 
         assert_eq!(comparator.compare(0, 1), Ordering::Greater);
@@ -377,7 +377,7 @@ mod tests {
 
         assert_eq!(
             comparator
-                .compare_bottom(4, Some(VariantValue::Float(10f32)))
+                .compare_bottom( ComparatorValue::Score(10f32))
                 .unwrap(),
             Ordering::Greater
         );
@@ -390,9 +390,9 @@ mod tests {
         let leaf_reader = MockLeafReader::new(0);
         {
             comparator.get_information_from_reader(&leaf_reader);
-            comparator.copy(0, 1, None);
-            comparator.copy(1, 2, None);
-            comparator.copy(2, 3, None);
+            comparator.copy(0, ComparatorValue::Doc(1));
+            comparator.copy(1, ComparatorValue::Doc(2));
+            comparator.copy(2, ComparatorValue::Doc(3));
         }
 
         assert_eq!(comparator.compare(0, 1), Ordering::Less);
@@ -404,7 +404,7 @@ mod tests {
 
         assert_eq!(
             comparator
-                .compare_bottom(1, Some(VariantValue::Int(1)))
+                .compare_bottom( ComparatorValue::Doc(2))
                 .unwrap(),
             Ordering::Greater
         );

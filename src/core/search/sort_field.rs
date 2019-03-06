@@ -467,19 +467,19 @@ mod tests {
 
     #[test]
     fn test_sort_field_with_score_type() {
-        let sort_field = SortField::new(String::from("test"), SortFieldType::Score, true);
+        let sort_field = SortField::Simple(SimpleSortField::new(String::from("test"), SortFieldType::Score, true));
 
-        assert_eq!("test", sort_field.field);
-        assert_eq!(SortFieldType::Score, sort_field.field_type);
-        assert_eq!(true, sort_field.is_reverse);
+        assert_eq!("test", sort_field.field());
+        assert_eq!(SortFieldType::Score, sort_field.field_type());
+        assert_eq!(true, sort_field.is_reverse());
     }
 
     #[test]
     fn test_sort_field_with_doc_type() {
-        let sort_field = SortField::new(String::from("test"), SortFieldType::Doc, true);
+        let sort_field = SortField::Simple(SimpleSortField::new(String::from("test"), SortFieldType::Doc, true));
 
-        assert_eq!("test", sort_field.field);
-        assert_eq!(SortFieldType::Doc, sort_field.field_type);
-        assert_eq!(true, sort_field.is_reverse);
+        assert_eq!("test", sort_field.field());
+        assert_eq!(SortFieldType::Doc, sort_field.field_type());
+        assert_eq!(true, sort_field.is_reverse());
     }
 }
