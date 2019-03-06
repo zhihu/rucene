@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::fmt;
@@ -57,8 +58,11 @@ pub mod searcher;
 pub mod cache_policy;
 pub mod explanation;
 pub mod lru_cache;
-pub mod lru_query_cache;
+pub mod query_cache;
 pub mod statistics;
+
+mod search_manager;
+pub use self::search_manager::*;
 
 error_chain! {
     types {
@@ -305,6 +309,8 @@ pub trait Query: Display {
     fn extract_terms(&self) -> Vec<TermQuery>;
 
     fn query_type(&self) -> &'static str;
+
+    fn as_any(&self) -> &Any;
 }
 
 pub trait Weight: Display {

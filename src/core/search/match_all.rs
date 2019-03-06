@@ -24,6 +24,10 @@ impl Query for MatchAllDocsQuery {
     fn query_type(&self) -> &'static str {
         MATCH_ALL
     }
+
+    fn as_any(&self) -> &::std::any::Any {
+        self
+    }
 }
 
 impl fmt::Display for MatchAllDocsQuery {
@@ -188,6 +192,10 @@ impl ConstantScoreQuery {
     pub fn with_boost(query: Box<Query>, boost: f32) -> ConstantScoreQuery {
         ConstantScoreQuery { query, boost }
     }
+
+    pub fn get_raw_query(&self) -> &Query {
+        self.query.as_ref()
+    }
 }
 
 impl fmt::Display for ConstantScoreQuery {
@@ -216,6 +224,10 @@ impl Query for ConstantScoreQuery {
 
     fn query_type(&self) -> &'static str {
         CONSTANT
+    }
+
+    fn as_any(&self) -> &::std::any::Any {
+        self
     }
 }
 

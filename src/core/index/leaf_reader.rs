@@ -1,4 +1,5 @@
-use core::codec::FieldsProducerRef;
+use core::codec::{DocValuesProducerRef, FieldsProducerRef};
+use core::codec::{NormsProducer, StoredFieldsReader, TermVectorsReader};
 use core::index::point_values::PointValuesRef;
 use core::index::term::{TermState, TermsRef};
 use core::index::BinaryDocValuesRef;
@@ -10,18 +11,33 @@ use core::index::Term;
 use core::index::{FieldInfo, FieldInfos, Fields};
 use core::index::{NumericDocValues, NumericDocValuesRef};
 use core::search::posting_iterator::{EmptyPostingIterator, PostingIterator};
+use core::search::sort::Sort;
 use core::search::DocIterator;
+use core::util::external::deferred::Deferred;
 use core::util::{BitsRef, DocId};
 
 use error::Result;
 
-pub trait LeafReader {
+use std::sync::Arc;
+
+pub trait LeafReader: Send + Sync {
     fn fields(&self) -> Result<FieldsProducerRef>;
 
     fn name(&self) -> &str;
 
     fn terms(&self, field: &str) -> Result<Option<TermsRef>> {
         self.fields()?.terms(field)
+    }
+
+    fn doc_freq(&self, term: &Term) -> Result<i32> {
+        if let Some(terms) = self.terms(&term.field)? {
+            let mut terms_iter = terms.iterator()?;
+            if terms_iter.seek_exact(&term.bytes)? {
+                return terms_iter.doc_freq();
+            }
+        }
+
+        Ok(0)
     }
 
     fn doc_base(&self) -> DocId;
@@ -64,7 +80,7 @@ pub trait LeafReader {
         Ok(Box::new(EmptyPostingIterator::default()))
     }
 
-    fn term_vector(&self, doc_id: DocId) -> Result<Box<Fields>>;
+    fn term_vector(&self, doc_id: DocId) -> Result<Option<Box<Fields>>>;
 
     fn document(&self, doc_id: DocId, visitor: &mut StoredFieldVisitor) -> Result<()>;
 
@@ -73,6 +89,8 @@ pub trait LeafReader {
     fn field_info(&self, field: &str) -> Option<&FieldInfo>;
 
     fn field_infos(&self) -> &FieldInfos;
+
+    fn clone_field_infos(&self) -> Arc<FieldInfos>;
 
     fn max_doc(&self) -> DocId;
 
@@ -101,4 +119,26 @@ pub trait LeafReader {
     // This key must not have equals()/hashCode() methods, so &quot;equals&quot; means
     // &quot;identical&quot;.
     fn core_cache_key(&self) -> &str;
+
+    /// Returns null if this leaf is unsorted, or the `Sort` that it was sorted by
+    fn index_sort(&self) -> Option<&Sort>;
+
+    /// Expert: adds a CoreClosedListener to this reader's shared core
+    fn add_core_drop_listener(&self, listener: Deferred);
+
+    // TODO, currently we don't provide remove listener method
+
+    // following methods are from `CodecReader`
+    // if this return false, then the following methods must not be called
+    fn is_codec_reader(&self) -> bool;
+
+    fn store_fields_reader(&self) -> Result<Arc<StoredFieldsReader>>;
+
+    fn term_vectors_reader(&self) -> Result<Option<Arc<TermVectorsReader>>>;
+
+    fn norms_reader(&self) -> Result<Option<Arc<NormsProducer>>>;
+
+    fn doc_values_reader(&self) -> Result<Option<DocValuesProducerRef>>;
+
+    fn postings_reader(&self) -> Result<FieldsProducerRef>;
 }

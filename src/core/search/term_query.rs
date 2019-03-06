@@ -3,9 +3,8 @@ use std::boxed::Box;
 use std::collections::HashMap;
 use std::fmt;
 
-use core::index::term::TermState;
 use core::index::LeafReader;
-use core::index::Term;
+use core::index::{Term, TermState};
 use core::index::{POSTINGS_FREQS, POSTINGS_NONE};
 use core::search::explanation::Explanation;
 use core::search::posting_iterator::{EmptyPostingIterator, PostingIterator};
@@ -33,7 +32,7 @@ impl TermQuery {
 
 impl Query for TermQuery {
     fn create_weight(&self, searcher: &IndexSearcher, needs_scores: bool) -> Result<Box<Weight>> {
-        let reader = searcher.reader.as_ref();
+        let reader = searcher.reader();
         let term_context = searcher.term_state(&self.term)?;
         let max_doc = i64::from(reader.max_doc());
         let (term_stats, collection_stats) = if needs_scores {
@@ -70,6 +69,10 @@ impl Query for TermQuery {
 
     fn query_type(&self) -> &'static str {
         TERM
+    }
+
+    fn as_any(&self) -> &::std::any::Any {
+        self
     }
 }
 

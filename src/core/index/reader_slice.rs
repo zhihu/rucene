@@ -1,15 +1,12 @@
 #[derive(Copy, Clone)]
 pub struct ReaderSlice {
-    #[allow(dead_code)]
-    start: i32,
-    #[allow(dead_code)]
-    length: i32,
-    #[allow(dead_code)]
-    reader_index: i32,
+    pub start: i32,
+    pub length: i32,
+    pub reader_index: usize,
 }
 
 impl ReaderSlice {
-    pub fn new(start: i32, length: i32, reader_index: i32) -> ReaderSlice {
+    pub fn new(start: i32, length: i32, reader_index: usize) -> ReaderSlice {
         ReaderSlice {
             start,
             length,

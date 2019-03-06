@@ -23,16 +23,27 @@ impl ByteSequenceOutput {
 
     pub fn empty() -> ByteSequenceOutput {
         ByteSequenceOutput {
-            bytes: Vec::with_capacity(1),
+            bytes: Vec::with_capacity(0),
         }
     }
 
+    #[inline]
     pub fn len(&self) -> usize {
         self.bytes.len()
     }
 
     fn starts_with(&self, other: &ByteSequenceOutput) -> bool {
         self.bytes.starts_with(&other.bytes)
+    }
+
+    #[inline]
+    pub fn inner(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.bytes.len() == 0
     }
 }
 
@@ -128,7 +139,7 @@ pub struct ByteSequenceOutputFactory {}
 
 #[allow(dead_code)]
 impl ByteSequenceOutputFactory {
-    fn new() -> ByteSequenceOutputFactory {
+    pub fn new() -> ByteSequenceOutputFactory {
         ByteSequenceOutputFactory {}
     }
 }

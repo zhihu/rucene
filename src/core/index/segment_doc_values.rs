@@ -19,13 +19,18 @@ impl SegmentDocValues {
         infos: Arc<FieldInfos>,
     ) -> Result<Box<DocValuesProducer>> {
         let (dv_dir, segment_suffix) = if gen != -1 {
-            (Arc::clone(&si.info.directory), to_base36(gen))
+            (Arc::clone(&si.info.directory), to_base36(gen as u64))
         } else {
             (dir, "".to_owned())
         };
 
-        let srs =
-            SegmentReadState::new(dv_dir, &si.info, infos, IO_CONTEXT_READONCE, segment_suffix);
+        let srs = SegmentReadState::new(
+            dv_dir,
+            &si.info,
+            infos,
+            &IO_CONTEXT_READONCE,
+            segment_suffix,
+        );
 
         match si.info.codec {
             None => bail!(IllegalState("si.info.codec can't be None".to_owned())),

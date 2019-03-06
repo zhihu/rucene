@@ -1,4 +1,4 @@
-use core::index::term::TermIterator;
+use core::index::TermIterator;
 use core::index::{LeafReader, Term, TermContext};
 use core::search::explanation::Explanation;
 use core::search::posting_iterator::PostingIterator;
@@ -53,6 +53,10 @@ impl Query for SpanTermQuery {
 
     fn query_type(&self) -> &'static str {
         SPAN_TERM_QUERY
+    }
+
+    fn as_any(&self) -> &::std::any::Any {
+        self
     }
 }
 

@@ -63,7 +63,7 @@ impl Collector for EarlyTerminatingSortingCollector {
         self.num_docs_collected_per_reader += 1;
 
         if self.num_docs_collected_per_reader > self.num_docs_to_collect_per_reader {
-            self.early_terminated.store(true, Ordering::Relaxed);
+            self.early_terminated.store(true, Ordering::Release);
             bail!(ErrorKind::Collector(
                 collector::ErrorKind::LeafCollectionTerminated,
             ))
@@ -106,7 +106,7 @@ impl Collector for EarlyTerminatingLeafCollector {
         self.num_docs_collected += 1;
 
         if self.num_docs_collected > self.num_docs_to_collect {
-            self.early_terminated.swap(true, Ordering::Relaxed);
+            self.early_terminated.swap(true, Ordering::AcqRel);
             bail!(ErrorKind::Collector(
                 collector::ErrorKind::LeafCollectionTerminated,
             ))

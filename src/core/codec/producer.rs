@@ -15,18 +15,18 @@ pub trait FieldsProducer: Fields {
     /// may involve computing a checksum value against large data files.
     fn check_integrity(&self) -> Result<()>;
 
-    /// Returns an instance optimized for merging.
-    fn get_merge_instance(&self) -> Result<FieldsProducerRef>;
+    // Returns an instance optimized for merging.
+    // fn get_merge_instance(&self) -> Result<FieldsProducerRef>;
 }
 
 pub type FieldsProducerRef = Arc<FieldsProducer>;
 
 pub trait DocValuesProducer: Send + Sync {
-    fn get_numeric(&self, field_info: &FieldInfo) -> Result<Box<NumericDocValues>>;
-    fn get_binary(&self, field_info: &FieldInfo) -> Result<Box<BinaryDocValues>>;
-    fn get_sorted(&self, field: &FieldInfo) -> Result<Box<SortedDocValues>>;
-    fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Box<SortedNumericDocValues>>;
-    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Box<SortedSetDocValues>>;
+    fn get_numeric(&self, field_info: &FieldInfo) -> Result<Arc<NumericDocValues>>;
+    fn get_binary(&self, field_info: &FieldInfo) -> Result<Arc<BinaryDocValues>>;
+    fn get_sorted(&self, field: &FieldInfo) -> Result<Arc<SortedDocValues>>;
+    fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Arc<SortedNumericDocValues>>;
+    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Arc<SortedSetDocValues>>;
     /// Returns a `bits` at the size of `reader.max_doc()`, with turned on bits for each doc_id
     /// that does have a value for this field.
     /// The returned instance need not be thread-safe: it will only be used by a single thread.
@@ -35,8 +35,16 @@ pub trait DocValuesProducer: Send + Sync {
     /// Note that this may be costly in terms of I/O, e.g.
     /// may involve computing a checksum value against large data files.
     fn check_integrity(&self) -> Result<()>;
+
+    fn get_merge_instance(&self) -> Result<Box<DocValuesProducer>>;
 }
+
+pub type DocValuesProducerRef = Arc<DocValuesProducer>;
 
 pub trait NormsProducer: Send + Sync {
     fn norms(&self, field: &FieldInfo) -> Result<Box<NumericDocValues>>;
+    fn check_integrity(&self) -> Result<()> {
+        // codec_util::checksum_entire_file(input)?;
+        Ok(())
+    }
 }

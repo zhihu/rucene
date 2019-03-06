@@ -1,9 +1,9 @@
 use core::store::{BufferedChecksumIndexInput, ChecksumIndexInput};
-use core::store::{DataInput, DataOutput, IndexInput};
+use core::store::{DataInput, DataOutput, IndexInput, IndexOutput};
 
 use core::util::string_util::id2str;
 use core::util::string_util::ID_LENGTH;
-use error::ErrorKind::{CorruptIndex, IllegalArgument};
+use error::ErrorKind::{CorruptIndex, IllegalArgument, IllegalState};
 use error::Result;
 use std::io::Read;
 
@@ -45,6 +45,12 @@ pub fn write_index_header<T: DataOutput + ?Sized>(
     }
     out.write_byte(slen as u8)?;
     out.write_bytes(&suffix.as_bytes(), 0, slen)
+}
+
+pub fn write_footer(output: &mut IndexOutput) -> Result<()> {
+    output.write_int(FOOTER_MAGIC)?;
+    output.write_int(0)?;
+    write_crc(output)
 }
 
 fn header_length(codec: &str) -> usize {
@@ -141,6 +147,52 @@ pub fn check_index_header_suffix<T: DataInput + ?Sized>(
     Ok(())
 }
 
+/// Expert: verifies the incoming `IndexInput` has an index header
+/// and that its segment ID matches the expected one, and then copies
+/// that index header into the provided `DataOutput`.  This is
+/// useful when building compound files.
+pub fn verify_and_copy_index_header<I: IndexInput + ?Sized, O: DataOutput + ?Sized>(
+    input: &mut I,
+    output: &mut O,
+    expected_id: &[u8],
+) -> Result<()> {
+    // make sure it's large enough to have a header and footer
+    if (input.len() as usize) < footer_length() + header_length("") {
+        bail!(CorruptIndex(
+            "compound sub-files must have a valid codec header and footer: file is too small"
+                .into()
+        ));
+    }
+
+    let actual_header = input.read_int()?;
+    if actual_header != CODEC_MAGIC {
+        bail!(CorruptIndex(
+            "compound sub-files must have a valid codec header and footer: codec header mismatch"
+                .into()
+        ));
+    }
+
+    // we can't verify these, so we pass-through
+    let codec = input.read_string()?;
+    let version = input.read_int()?;
+
+    // verify id:
+    check_index_header_id(input, expected_id)?;
+
+    // we can't verify extension either, so we pass-through
+    let suffix_length = input.read_byte()? as usize & 0xff;
+    let mut suffix_bytes = vec![0u8; suffix_length];
+    input.read_bytes(&mut suffix_bytes, 0, suffix_length)?;
+
+    // now write the header we just verified
+    output.write_int(CODEC_MAGIC)?;
+    output.write_string(&codec)?;
+    output.write_int(version)?;
+    output.write_bytes(expected_id, 0, expected_id.len())?;
+    output.write_byte(suffix_length as u8)?;
+    output.write_bytes(&suffix_bytes, 0, suffix_length)
+}
+
 #[inline(always)]
 pub fn footer_length() -> usize {
     16
@@ -198,6 +250,14 @@ fn read_crc<T: IndexInput + ?Sized>(input: &mut T) -> Result<i64> {
         bail!(CorruptIndex(format!("Illegal CRC-32 checksum: {}", val)));
     }
     Ok(val)
+}
+
+fn write_crc<T: IndexOutput + ?Sized>(output: &mut T) -> Result<()> {
+    let value = output.checksum()?;
+    if value as u64 & 0xFFFF_FFFF_0000_0000 != 0 {
+        bail!(IllegalState(format!("Illegal CRC-32 checksum: {}", value)));
+    }
+    output.write_long(value)
 }
 
 pub fn retrieve_checksum<T: IndexInput + ?Sized>(input: &mut T) -> Result<i64> {

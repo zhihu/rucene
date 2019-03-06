@@ -117,12 +117,8 @@ impl LongValues for DirectPackedReader2 {
 
         let shift = (3 - (index as i32 & 0x3)) << 1;
 
-        let byte_dance = match self.random_access_input
-            .read_byte(self.offset + (index >> 2))
-        {
-            Ok(byte_dance) => byte_dance,
-            Err(ref e) => bail!(RuntimeError(format!("{:?}", e))),
-        };
+        let byte_dance = self.random_access_input
+            .read_byte(self.offset + (index >> 2))?;
 
         Ok((i64::from((byte_dance >> shift) & 0x3), ctx))
     }

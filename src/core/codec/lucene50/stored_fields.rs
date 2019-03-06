@@ -90,10 +90,20 @@ impl StoredFieldsFormat for Lucene50StoredFieldsFormat {
 
     fn fields_writer(
         &self,
-        _directory: DirectoryRc,
-        _si: &SegmentInfo,
-        _ioctx: &IOContext,
+        directory: DirectoryRc,
+        si: &mut SegmentInfo,
+        ioctx: &IOContext,
     ) -> Result<Box<StoredFieldsWriter>> {
-        unimplemented!()
+        if si.attributes.contains_key(MODE_KEY) {
+            bail!(
+                "found existing value for {} for segment: {}",
+                MODE_KEY,
+                si.name
+            )
+        }
+
+        si.attributes
+            .insert(MODE_KEY.to_string(), "BEST_SPEED".to_string());
+        self.format(&self.mode)?.fields_writer(directory, si, ioctx)
     }
 }

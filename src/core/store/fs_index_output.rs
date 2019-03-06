@@ -5,23 +5,25 @@ use error::Result;
 use std::fs::{File, OpenOptions};
 use std::io::BufWriter;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use flate2::CrcWriter;
 
 const CHUNK_SIZE: usize = 8192;
 
 pub struct FSIndexOutput {
-    name: String,
+    name: PathBuf,
     writer: CrcWriter<BufWriter<File>>,
     bytes_written: usize,
 }
 
 impl FSIndexOutput {
-    pub fn new(name: &str) -> Result<FSIndexOutput> {
-        let file = OpenOptions::new().write(true).create(true).open(name)?;
+    pub fn new<P: AsRef<Path>>(path: P) -> Result<FSIndexOutput> {
+        let name = PathBuf::from(path.as_ref());
+        let file = OpenOptions::new().write(true).create(true).open(path)?;
 
         Ok(FSIndexOutput {
-            name: String::from(name),
+            name,
             writer: CrcWriter::new(BufWriter::with_capacity(CHUNK_SIZE, file)),
             bytes_written: 0,
         })
@@ -31,17 +33,13 @@ impl FSIndexOutput {
 impl Drop for FSIndexOutput {
     fn drop(&mut self) {
         if let Err(ref desc) = self.writer.flush() {
-            println!("Oops, failed to flush {}, errmsg: {}", self.name, desc);
+            println!("Oops, failed to flush {:?}, errmsg: {}", self.name, desc);
         }
         self.bytes_written = 0;
     }
 }
 
-impl DataOutput for FSIndexOutput {
-    fn as_data_output_mut(&mut self) -> &mut DataOutput {
-        self
-    }
-}
+impl DataOutput for FSIndexOutput {}
 
 impl Write for FSIndexOutput {
     fn write(&mut self, buf: &[u8]) -> ::std::io::Result<usize> {
@@ -57,7 +55,7 @@ impl Write for FSIndexOutput {
 
 impl IndexOutput for FSIndexOutput {
     fn name(&self) -> &str {
-        &self.name
+        self.name.to_str().unwrap()
     }
 
     fn file_pointer(&self) -> i64 {
@@ -68,15 +66,21 @@ impl IndexOutput for FSIndexOutput {
         // self.writer.flush()?;
         Ok((self.writer.crc().sum() as i64) & 0xffff_ffffi64)
     }
+
+    fn as_data_output(&mut self) -> &mut DataOutput {
+        self
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     #[test]
     fn test_write_byte() {
-        let mut fsout = FSIndexOutput::new("hello.txt").unwrap();
+        let path = Path::new("hello.txt").into();
+        let mut fsout = FSIndexOutput::new(&path).unwrap();
         fsout.write_byte(b'a').unwrap();
         assert_eq!(fsout.file_pointer(), 1);
         ::std::fs::remove_file("hello.txt").unwrap();

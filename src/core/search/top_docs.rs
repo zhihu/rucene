@@ -91,6 +91,7 @@ impl FieldDoc {
             doc,
             score,
             shard_index: 0,
+
             fields,
         }
     }

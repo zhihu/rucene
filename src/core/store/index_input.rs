@@ -22,4 +22,6 @@ pub trait IndexInput: DataInput + Send + Sync {
     fn is_buffered(&self) -> bool {
         false
     }
+
+    fn as_data_input(&mut self) -> &mut DataInput;
 }

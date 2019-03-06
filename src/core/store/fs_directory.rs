@@ -1,23 +1,31 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::RwLock;
 
-use core::store::IndexInput;
-use core::store::{Directory, IOContext};
+use core::index::segment_file_name;
+use core::store::LockFactory;
+use core::store::{Directory, IOContext, Lock};
+use core::store::{FSIndexOutput, IndexInput, IndexOutput, MmapIndexInput};
+use core::util::to_base36;
 use error::ErrorKind::IllegalState;
 use error::Result;
 
 pub struct FSDirectory {
-    directory: PathBuf,
-    pending_deletes: BTreeSet<String>,
+    pub directory: PathBuf,
+    pending_deletes: RwLock<BTreeSet<String>>,
     pub ops_since_last_delete: AtomicUsize,
     pub next_temp_file_counter: AtomicUsize,
+    lock_factory: Box<LockFactory>,
 }
 
 impl FSDirectory {
-    pub fn new<T: AsRef<Path>>(directory: &T) -> Result<FSDirectory> {
+    pub fn new<T: AsRef<Path> + ?Sized>(
+        directory: &T,
+        lock_factory: Box<LockFactory>,
+    ) -> Result<FSDirectory> {
         let directory = directory.as_ref();
         if !Path::exists(directory) {
             fs::create_dir_all(directory)?;
@@ -30,14 +38,60 @@ impl FSDirectory {
 
         Ok(FSDirectory {
             directory: From::from(directory),
-            pending_deletes: BTreeSet::new(),
+            pending_deletes: RwLock::new(BTreeSet::new()),
             ops_since_last_delete: AtomicUsize::new(0),
             next_temp_file_counter: AtomicUsize::new(0),
+            lock_factory,
         })
     }
 
-    pub fn resolve(&self, name: &str) -> PathBuf {
-        self.directory.join(name)
+    fn delete_pending_files(pending_deletes: &mut BTreeSet<String>, dir: &PathBuf) -> Result<()> {
+        let mut deleted_set = BTreeSet::new();
+        for name in pending_deletes.iter() {
+            let path = dir.join(name);
+            fs::remove_file(path)?;
+            deleted_set.insert(name.clone());
+        }
+        for name in deleted_set {
+            pending_deletes.remove(&name);
+        }
+        Ok(())
+    }
+
+    fn maybe_delete_pending_files(&self) -> Result<()> {
+        let mut delete_set = self.pending_deletes.write()?;
+        if !delete_set.is_empty() {
+            let count = self.ops_since_last_delete.fetch_add(1, Ordering::AcqRel);
+            if count > delete_set.len() {
+                self.ops_since_last_delete
+                    .fetch_sub(count, Ordering::Release);
+                Self::delete_pending_files(&mut delete_set, &self.directory)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn ensure_can_read(&self, name: &str) -> Result<()> {
+        if self.pending_deletes.read()?.contains(name) {
+            bail!(
+                "file {} is pending delete and cannot be opened for read",
+                name
+            );
+        }
+        Ok(())
+    }
+
+    fn fsync(&self, path: &Path, is_dir: bool) -> Result<()> {
+        // If the file is a directory we have to open read-only, for regular files we must
+        // open r/w for the fsync to have an effect.
+        // See http://blog.httrack.com/blog/2013/11/15/everything-you-always-wanted-to-know-about-fsync/
+        let file = if is_dir {
+            fs::File::open(path)?
+        } else {
+            fs::OpenOptions::new().append(true).open(path)?
+        };
+        file.sync_all()?;
+        Ok(())
     }
 }
 
@@ -58,7 +112,7 @@ impl Directory for FSDirectory {
     }
 
     fn file_length(&self, name: &str) -> Result<i64> {
-        if self.pending_deletes.contains(name) {
+        if self.pending_deletes.read()?.contains(name) {
             bail!(IllegalState(format!("pending delete file {}", name)))
         };
 
@@ -74,10 +128,100 @@ impl Directory for FSDirectory {
         }
     }
 
-    fn open_input(&self, _name: &str, _ctx: &IOContext) -> Result<Box<IndexInput>> {
-        unimplemented!()
+    fn create_output(&self, name: &str, _context: &IOContext) -> Result<Box<IndexOutput>> {
+        // If this file was pending delete, we are now bringing it back to life:
+        self.pending_deletes.write()?.remove(name);
+        self.maybe_delete_pending_files()?;
+        let path = self.resolve(name);
+        Ok(Box::new(FSIndexOutput::new(&path)?))
+    }
+
+    fn open_input(&self, name: &str, _ctx: &IOContext) -> Result<Box<IndexInput>> {
+        self.ensure_can_read(name)?;
+        let path = self.directory.as_path().join(name);
+        // hack logic, we don'e implement FsIndexInput yes, so just us MmapIndexInput instead
+        Ok(Box::new(MmapIndexInput::new(path)?))
+    }
+
+    fn obtain_lock(&self, name: &str) -> Result<Box<Lock>> {
+        self.lock_factory.obtain_lock(self, name)
+    }
+
+    fn create_temp_output(
+        &self,
+        prefix: &str,
+        suffix: &str,
+        ctx: &IOContext,
+    ) -> Result<Box<IndexOutput>> {
+        self.maybe_delete_pending_files()?;
+
+        loop {
+            let name = segment_file_name(
+                prefix,
+                &format!(
+                    "{}_{}",
+                    suffix,
+                    to_base36(self.next_temp_file_counter.fetch_add(1, Ordering::AcqRel) as u64)
+                ),
+                "tmp",
+            );
+
+            if self.pending_deletes.read()?.contains(&name) {
+                continue;
+            }
+
+            let path = self.resolve(&name);
+            return Ok(Box::new(FSIndexOutput::new(&path)?));
+        }
+    }
+
+    fn delete_file(&self, name: &str) -> Result<()> {
+        if self.pending_deletes.read()?.contains(name) {
+            bail!(IllegalState(format!(
+                "file {} is already pending delete",
+                name
+            )))
+        };
+
+        let mut deletes = BTreeSet::new();
+        deletes.insert(name.to_string());
+        FSDirectory::delete_pending_files(&mut deletes, &self.directory)?;
+        self.pending_deletes.write()?.remove(name);
+
+        self.maybe_delete_pending_files()
+    }
+
+    fn sync(&self, names: &HashSet<String>) -> Result<()> {
+        for name in names {
+            let path = self.resolve(name);
+            self.fsync(&path, false)?;
+        }
+        self.maybe_delete_pending_files()
+    }
+
+    fn sync_meta_data(&self) -> Result<()> {
+        self.fsync(&self.directory, true)
+    }
+
+    fn rename(&self, source: &str, dest: &str) -> Result<()> {
+        if self.pending_deletes.read()?.contains(source) {
+            bail!("NoSuchFile: file '{}' is pending delete and cannot be moved");
+        }
+        self.pending_deletes.write()?.remove(dest);
+        let source_path = self.resolve(source);
+        let dest_path = self.resolve(dest);
+        fs::rename(&source_path, &dest_path)?;
+        self.maybe_delete_pending_files()
+    }
+
+    fn resolve(&self, name: &str) -> PathBuf {
+        self.directory.join(name)
     }
 }
+
+unsafe impl Send for FSDirectory {}
+
+unsafe impl Sync for FSDirectory {}
 
 impl Drop for FSDirectory {
     fn drop(&mut self) {}

@@ -1,5 +1,6 @@
 use core::store::IndexInput;
 use core::store::RandomAccessInput;
+use core::util::bit_set::BitSet;
 use error::Result;
 use std::sync::Arc;
 
@@ -16,6 +17,18 @@ pub trait Bits: Send + Sync {
     fn len(&self) -> usize;
     fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    // these two method are currently only implemented for FixedBitSet used
+    // in live docs
+    fn as_bit_set(&self) -> &BitSet {
+        unreachable!()
+    }
+    fn as_bit_set_mut(&mut self) -> &mut BitSet {
+        unreachable!()
+    }
+    fn clone(&self) -> BitsRef {
+        unreachable!()
     }
 }
 

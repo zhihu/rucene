@@ -2,6 +2,7 @@ use error::*;
 use std::cmp::{min, Ord, Ordering, PartialOrd};
 use std::hash::{Hash, Hasher};
 
+use core::util::bit_util::UnsignedShift;
 // const EMPTY_INTS: [i32; 0] = [0i32; 0];
 
 /// represents int[], as a slice (offset + length) into an
@@ -172,6 +173,74 @@ impl IntsRefBuilder {
             ints: self.ints.as_ref() as *const [i32],
             offset: 0,
             length: self.length,
+        }
+    }
+}
+
+pub fn to_ints_ref(input: &[u8], scratch: &mut IntsRefBuilder) -> IntsRef {
+    scratch.clear();
+    for b in input {
+        scratch.append((*b as i32) & 0xff);
+    }
+    scratch.get()
+}
+
+pub struct LongsPtr {
+    pub longs: *mut Vec<i64>,
+    pub offset: usize,
+    pub length: usize,
+}
+
+impl LongsPtr {
+    pub fn new(longs: &mut Vec<i64>, offset: usize, length: usize) -> LongsPtr {
+        LongsPtr {
+            longs: longs as *mut Vec<i64>,
+            offset,
+            length,
+        }
+    }
+
+    pub fn longs(&self) -> &mut Vec<i64> {
+        unsafe { &mut (*self.longs) }
+    }
+
+    pub fn hash_code(&self) -> i32 {
+        let prime = 31;
+        let mut result = 0;
+        let end = self.offset + self.length;
+        for i in self.offset..end {
+            result = prime * result + (self.longs()[i] ^ self.longs()[i].unsigned_shift(32)) as i32;
+        }
+
+        result
+    }
+
+    pub fn cmp_to(&self, other: &LongsPtr) -> Ordering {
+        let mut a_upto = self.offset;
+        let mut b_upto = other.offset;
+        let a_stop = a_upto + self.length.min(other.length);
+
+        while a_upto < a_stop {
+            let a = self.longs()[a_upto];
+            let b = other.longs()[b_upto];
+
+            if a > b {
+                return Ordering::Greater;
+            } else if a < b {
+                return Ordering::Less;
+            }
+
+            a_upto += 1;
+            b_upto += 1;
+        }
+
+        // One is a prefix of the other, or, they are equal:
+        if self.length < other.length {
+            return Ordering::Less;
+        } else if self.length > other.length {
+            return Ordering::Greater;
+        } else {
+            return Ordering::Equal;
         }
     }
 }

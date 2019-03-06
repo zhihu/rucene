@@ -47,6 +47,25 @@ impl<T: AsRef<[u8]>> ByteArrayDataInput<T> {
     pub fn eof(&self) -> bool {
         self.pos == self.length()
     }
+
+    pub fn reset(&mut self, bytes: T) {
+        self.bytes = bytes;
+        self.pos = 0;
+    }
+
+    pub fn get_slice(&self, pos: usize, len: usize) -> Result<&[u8]> {
+        let limit = self.bytes.as_ref().len();
+        if pos < self.pos || pos > limit || pos + len > limit {
+            bail!(
+                "Invalid Argument: slice ({}, {}) is beyond valid range of ({}, {})",
+                pos,
+                pos + len,
+                self.pos,
+                limit
+            )
+        }
+        Ok(&self.bytes.as_ref()[pos..pos + len])
+    }
 }
 
 impl<T: AsRef<[u8]>> DataInput for ByteArrayDataInput<T> {
@@ -122,7 +141,4 @@ impl<T> DataOutput for ByteArrayDataOutput<T>
 where
     T: AsMut<[u8]>,
 {
-    fn as_data_output_mut(&mut self) -> &mut DataOutput {
-        self
-    }
 }

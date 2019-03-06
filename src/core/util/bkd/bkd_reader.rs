@@ -1,18 +1,22 @@
 use core::codec::codec_util;
-use core::index::point_values::{IntersectVisitor, Relation};
+use core::index::{DocMap, IntersectVisitor, LiveDocsDocMap, Relation};
 use core::store::{ByteArrayDataInput, ByteArrayRef, DataInput, IndexInput};
-use core::util::bit_util::UnsignedShift;
+use core::util::bkd::DocIdsWriter;
+use core::util::bkd::{BKD_VERSION_IMPLICIT_SPLIT_DIM_1D, BKD_CODEC_NAME,
+                      BKD_VERSION_COMPRESSED_DOC_IDS, BKD_VERSION_COMPRESSED_VALUES,
+                      BKD_VERSION_CURRENT, BKD_VERSION_PACKED_INDEX, BKD_VERSION_START};
 use core::util::math;
-use core::util::string_util::bytes_compare;
 use core::util::DocId;
+
 use error::*;
+use std::cmp::Ordering;
 use std::sync::Arc;
 
 /// Used to track all state for a single call to {@link #intersect}.
 pub struct IntersectState<'a> {
-    input: Box<IndexInput>,
+    pub input: Box<IndexInput>,
     scratch_doc_ids: Vec<i32>,
-    scratch_packed_value: Vec<u8>,
+    pub scratch_packed_value: Vec<u8>,
     common_prefix_lengths: Vec<i32>,
     visitor: &'a mut IntersectVisitor,
     index_tree: Box<IndexTree>,
@@ -46,18 +50,18 @@ impl<'a> IntersectState<'a> {
 
 pub struct BKDReader {
     /// Packed array of byte[] holding all split values in the full binary tree:
-    leaf_node_offset: i32,
+    pub leaf_node_offset: i32,
     pub num_dims: usize,
     pub bytes_per_dim: usize,
     num_leaves: usize,
-    input: Arc<IndexInput>,
-    max_points_in_leaf_node: usize,
+    pub input: Arc<IndexInput>,
+    pub max_points_in_leaf_node: usize,
     pub min_packed_value: Vec<u8>,
     pub max_packed_value: Vec<u8>,
     pub point_count: i64,
     pub doc_count: i32,
     version: i32,
-    packed_bytes_length: usize,
+    pub packed_bytes_length: usize,
     /// Used for 6.4.0+ index format
     packed_index: Arc<Vec<u8>>,
     /// Used for Legacy (pre-6.4.0) index format, to hold a compact form of the index:
@@ -66,14 +70,6 @@ pub struct BKDReader {
     bytes_per_index_entry: usize,
     leaf_block_fps: Arc<Vec<i64>>,
 }
-
-pub const BKD_CODEC_NAME: &str = "BKD";
-pub const BKD_VERSION_COMPRESSED_DOC_IDS: i32 = 1;
-pub const BKD_VERSION_COMPRESSED_VALUES: i32 = 2;
-pub const BKD_VERSION_IMPLICIT_SPLIT_DIM_1D: i32 = 3;
-pub const BKD_VERSION_PACKED_INDEX: i32 = 4;
-pub const BKD_VERSION_START: i32 = 0;
-pub const BKD_VERSION_CURRENT: i32 = BKD_VERSION_PACKED_INDEX;
 
 impl BKDReader {
     pub fn new(input: Arc<IndexInput>) -> Result<BKDReader> {
@@ -106,11 +102,9 @@ impl BKDReader {
         reader.read_bytes(&mut max_packed_value, 0, packed_bytes_length)?;
 
         for dim in 0..num_dims {
-            if bytes_compare(
-                bytes_per_dim,
-                &min_packed_value[dim * bytes_per_dim..],
-                &max_packed_value[dim * bytes_per_dim..],
-            ) > 0
+            let start = dim * bytes_per_dim;
+            let end = start + bytes_per_dim;
+            if min_packed_value[start..end].cmp(&max_packed_value[start..end]) == Ordering::Greater
             {
                 bail!(ErrorKind::CorruptIndex(format!(
                     "min_packed_value > max_packed_value for dim: {}",
@@ -193,15 +187,14 @@ impl BKDReader {
         })
     }
 
-    #[allow(dead_code)]
-    fn min_leaf_block_fp(&self) -> Result<i64> {
-        if self.packed_index.is_empty() {
+    pub fn min_leaf_block_fp(&self) -> Result<i64> {
+        if !self.packed_index.is_empty() {
             ByteArrayDataInput::new(self.packed_index.as_ref()).read_vlong()
         } else {
-            let mut min_fp = i64::max_value();
-            for fp in self.leaf_block_fps.as_ref() {
-                min_fp = min_fp.min(*fp);
-            }
+            let min_fp = self.leaf_block_fps
+                .iter()
+                .min()
+                .map_or(i64::max_value(), |v| *v);
             Ok(min_fp)
         }
     }
@@ -213,7 +206,7 @@ impl BKDReader {
 
         // Second +1 because MathUtil.log computes floor of the logarithm; e.g.
         // with 5 leaves you need a depth=4 tree:
-        Ok((math::log(self.num_leaves as i64, 2)? + 2) as usize)
+        Ok((math::log(self.num_leaves as i64, 2) + 2) as usize)
     }
 
     pub fn intersect(&self, visitor: &mut IntersectVisitor) -> Result<()> {
@@ -282,18 +275,14 @@ impl BKDReader {
 
             // make sure cellMin <= splitValue <= cellMax:
             debug_assert!(
-                bytes_compare(
-                    self.bytes_per_dim,
-                    &cell_min_packed[split_dim * self.bytes_per_dim..],
-                    split_dim_value.as_slice()
-                ) <= 0
+                cell_min_packed
+                    [split_dim * self.bytes_per_dim..(split_dim + 1) * self.bytes_per_dim]
+                    <= split_dim_value[0..self.bytes_per_dim]
             );
             debug_assert!(
-                bytes_compare(
-                    self.bytes_per_dim,
-                    &cell_max_packed[split_dim * self.bytes_per_dim..],
-                    split_dim_value.as_slice()
-                ) >= 0
+                cell_max_packed
+                    [split_dim * self.bytes_per_dim..(split_dim + 1) * self.bytes_per_dim]
+                    >= split_dim_value[0..self.bytes_per_dim]
             );
 
             // Recurse on left sub-tree:
@@ -1133,141 +1122,238 @@ impl IndexTree for PackedIndexTree {
     }
 }
 
-pub struct DocIdsWriter;
+pub struct MergeReader<'a> {
+    reader: &'a BKDReader,
+    doc_map: Option<&'a LiveDocsDocMap>,
+    pub state: IntersectState<'a>,
+    pub doc_id: DocId,
+    doc_block_upto: usize,
+    docs_in_block: usize,
+    block_id: i32,
+    packed_values: Vec<u8>,
+    bytes_per_dim: usize,
+}
 
-impl DocIdsWriter {
-    /// Read {@code count} integers into {@code docIDs}.
-    fn read_ints(input: &mut IndexInput, count: usize, doc_ids: &mut [DocId]) -> Result<()> {
-        let bpv = input.read_byte()?;
-
-        match bpv {
-            0 => DocIdsWriter::read_delta_vints(input, count, doc_ids),
-            32 => DocIdsWriter::read_ints32(input, count, doc_ids),
-            24 => DocIdsWriter::read_ints24(input, count, doc_ids),
-            _ => bail!("Unsupported number of bits per value: {}", bpv),
-        }
+impl<'a> MergeReader<'a> {
+    pub fn new(
+        reader: &'a BKDReader,
+        doc_map: Option<&'a LiveDocsDocMap>,
+        visitor: &'a mut IntersectVisitor,
+    ) -> Result<Self> {
+        let mut state = IntersectState::new(
+            reader.input.as_ref().clone()?,
+            reader.num_dims,
+            reader.packed_bytes_length,
+            reader.max_points_in_leaf_node,
+            visitor,
+            Box::new(StubIndexTree::default()),
+        );
+        state.input.seek(reader.min_leaf_block_fp()?)?;
+        let packed_values = vec![0u8; reader.max_points_in_leaf_node * reader.packed_bytes_length];
+        Ok(MergeReader {
+            reader,
+            doc_map,
+            state,
+            doc_id: 0,
+            doc_block_upto: 0,
+            docs_in_block: 0,
+            block_id: 0,
+            packed_values,
+            bytes_per_dim: reader.bytes_per_dim,
+        })
     }
 
-    fn read_delta_vints(input: &mut IndexInput, count: usize, doc_ids: &mut [DocId]) -> Result<()> {
-        let mut doc = 0;
-        for id in doc_ids.iter_mut().take(count) {
-            doc += input.read_vint()?;
-            *id = doc;
-        }
+    pub fn next(&mut self) -> Result<bool> {
+        loop {
+            if self.doc_block_upto == self.docs_in_block {
+                if self.block_id == self.reader.leaf_node_offset {
+                    return Ok(false);
+                }
+                let fp = self.state.input.file_pointer();
+                self.docs_in_block = self.reader.read_doc_ids(
+                    self.state.input.as_mut(),
+                    fp,
+                    &mut self.state.scratch_doc_ids,
+                )?;
+                self.doc_block_upto = 0;
+                let mut visitor = MergeIntersectVisitor::new(
+                    &mut self.packed_values,
+                    self.reader.packed_bytes_length,
+                    &self.state,
+                );
+                self.reader.visit_doc_values(
+                    &mut self.state.common_prefix_lengths,
+                    &mut self.state.scratch_packed_value,
+                    self.state.input.as_mut(),
+                    &mut self.state.scratch_doc_ids,
+                    self.docs_in_block,
+                    &mut visitor,
+                )?;
+                self.block_id += 1;
+            }
 
+            let index = self.doc_block_upto;
+            self.doc_block_upto += 1;
+            let old_doc_id = self.state.scratch_doc_ids[index];
+            let mapped_doc_id = if let Some(doc_map) = self.doc_map {
+                doc_map.get(old_doc_id)?
+            } else {
+                old_doc_id
+            };
+
+            if mapped_doc_id != -1 {
+                // not deleted
+                self.doc_id = mapped_doc_id;
+                let len = self.reader.packed_bytes_length;
+                self.state.scratch_packed_value[..len]
+                    .copy_from_slice(&self.packed_values[index * len..(index + 1) * len]);
+                return Ok(true);
+            }
+        }
+    }
+}
+
+impl<'a> Eq for MergeReader<'a> {}
+
+impl<'a> PartialEq for MergeReader<'a> {
+    fn eq(&self, other: &MergeReader) -> bool {
+        self.reader as *const BKDReader == other.reader as *const BKDReader
+    }
+}
+
+impl<'a> Ord for MergeReader<'a> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // reverse order for BinaryHeap
+        let cmp = other.state.scratch_packed_value[..self.bytes_per_dim]
+            .cmp(&self.state.scratch_packed_value[..self.bytes_per_dim]);
+        if cmp != Ordering::Equal {
+            cmp
+        } else {
+            other.doc_id.cmp(&self.doc_id)
+        }
+    }
+}
+
+impl<'a> PartialOrd for MergeReader<'a> {
+    fn partial_cmp(&self, other: &MergeReader<'a>) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+struct MergeIntersectVisitor<'a> {
+    packed_values: *mut Vec<u8>,
+    packed_bytes_length: usize,
+    state: *const IntersectState<'a>,
+    idx: usize,
+}
+
+impl<'a> MergeIntersectVisitor<'a> {
+    fn new(
+        packed_values: &mut Vec<u8>,
+        packed_bytes_length: usize,
+        state: &IntersectState<'a>,
+    ) -> Self {
+        MergeIntersectVisitor {
+            packed_values,
+            packed_bytes_length,
+            state,
+            idx: 0,
+        }
+    }
+}
+
+impl<'a> IntersectVisitor for MergeIntersectVisitor<'a> {
+    fn visit(&mut self, _doc_id: i32) -> Result<()> {
+        unreachable!()
+    }
+
+    fn visit_by_packed_value(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()> {
+        unsafe {
+            debug_assert_eq!(doc_id, (*self.state).scratch_doc_ids[self.idx]);
+            let pos = self.idx * self.packed_bytes_length;
+            (*self.packed_values)[pos..pos + self.packed_bytes_length]
+                .copy_from_slice(&packed_value[..self.packed_bytes_length]);
+            self.idx += 1;
+        }
         Ok(())
     }
 
-    fn read_ints32(input: &mut IndexInput, count: usize, doc_ids: &mut [DocId]) -> Result<()> {
-        for id in doc_ids.iter_mut().take(count) {
-            *id = input.read_int()?;
-        }
+    fn compare(&self, _min_packed_value: &[u8], _max_packed_value: &[u8]) -> Relation {
+        unreachable!()
+    }
+}
 
-        Ok(())
+#[derive(Default, Clone)]
+pub(crate) struct StubIntersectVisitor {}
+
+impl IntersectVisitor for StubIntersectVisitor {
+    fn visit(&mut self, _doc_id: i32) -> Result<()> {
+        unreachable!()
     }
 
-    fn read_ints24(input: &mut IndexInput, count: usize, doc_ids: &mut [DocId]) -> Result<()> {
-        let mut i = 0usize;
-
-        while i + 7 < count {
-            let l1 = input.read_long()?;
-            let l2 = input.read_long()?;
-            let l3 = input.read_long()?;
-
-            doc_ids[i] = l1.unsigned_shift(40) as i32;
-            doc_ids[i + 1] = (l1.unsigned_shift(16) & 0xFF_FFFF) as i32;
-            doc_ids[i + 2] = (((l1 & 0xFFFF) << 8) | l2.unsigned_shift(56)) as i32;
-            doc_ids[i + 3] = (l2.unsigned_shift(32) & 0xFF_FFFF) as i32;
-            doc_ids[i + 4] = (l2.unsigned_shift(8) & 0xFF_FFFF) as i32;
-            doc_ids[i + 5] = (((l2 & 0xFF) << 16) | l3.unsigned_shift(48)) as i32;
-            doc_ids[i + 6] = (l3.unsigned_shift(24) & 0xFF_FFFF) as i32;
-            doc_ids[i + 7] = (l3 & 0xFF_FFFF) as i32;
-
-            i += 8;
-        }
-
-        for id in doc_ids.iter_mut().take(count).skip(i) {
-            let l1 = u32::from(input.read_short()? as u16);
-            let l2 = u32::from(input.read_byte()?);
-            *id = ((l1 << 8) | l2) as i32;
-        }
-
-        Ok(())
+    fn visit_by_packed_value(&mut self, _doc_id: i32, _packed_value: &[u8]) -> Result<()> {
+        unreachable!()
     }
 
-    /// Read {@code count} integers and feed the result directly to {@link
-    /// IntersectVisitor#visit(int)}.
-    fn read_ints_with_visitor(
-        input: &mut IndexInput,
-        count: usize,
-        visitor: &mut IntersectVisitor,
-    ) -> Result<()> {
-        let bpv = input.read_byte()?;
+    fn compare(&self, _min_packed_value: &[u8], _max_packed_value: &[u8]) -> Relation {
+        unreachable!()
+    }
+}
 
-        match bpv {
-            0 => DocIdsWriter::read_delta_vints_with_visitor(input, count, visitor),
-            32 => DocIdsWriter::read_ints32_with_visitor(input, count, visitor),
-            24 => DocIdsWriter::read_ints24_with_visitor(input, count, visitor),
-            _ => panic!("Unsupported number of bits per value: {}", bpv),
-        }
+// stub index tree for Merge reader
+#[derive(Default)]
+struct StubIndexTree {}
+
+impl IndexTree for StubIndexTree {
+    fn push_left(&mut self) -> Result<()> {
+        unreachable!()
     }
 
-    fn read_delta_vints_with_visitor(
-        input: &mut IndexInput,
-        count: usize,
-        visitor: &mut IntersectVisitor,
-    ) -> Result<()> {
-        let mut doc = 0;
-        for _ in 0..count {
-            doc += input.read_vint()?;
-            visitor.visit(doc)?;
-        }
-
-        Ok(())
+    fn push_right(&mut self) -> Result<()> {
+        unreachable!()
     }
 
-    fn read_ints32_with_visitor(
-        input: &mut IndexInput,
-        count: usize,
-        visitor: &mut IntersectVisitor,
-    ) -> Result<()> {
-        for _ in 0..count {
-            visitor.visit(input.read_vint()?)?;
-        }
-
-        Ok(())
+    fn pop(&mut self) {
+        unreachable!()
     }
 
-    fn read_ints24_with_visitor(
-        input: &mut IndexInput,
-        count: usize,
-        visitor: &mut IntersectVisitor,
-    ) -> Result<()> {
-        let mut i = 0;
+    fn is_leaf_node(&self) -> bool {
+        unreachable!()
+    }
 
-        while i + 7 < count {
-            let l1 = input.read_long()?;
-            let l2 = input.read_long()?;
-            let l3 = input.read_long()?;
+    fn node_exists(&self) -> bool {
+        unreachable!()
+    }
 
-            visitor.visit(l1.unsigned_shift(40) as i32)?;
-            visitor.visit((l1.unsigned_shift(16) & 0xFF_FFFF) as i32)?;
-            visitor.visit((((l1 & 0xFFFF) << 8) | l2.unsigned_shift(56)) as i32)?;
-            visitor.visit((l2.unsigned_shift(32) & 0xFF_FFFF) as i32)?;
-            visitor.visit((l2.unsigned_shift(8) & 0xFF_FFFF) as i32)?;
-            visitor.visit((((l2 & 0xFF) << 16) | l3.unsigned_shift(48)) as i32)?;
-            visitor.visit((l3.unsigned_shift(24) & 0xFF_FFFF) as i32)?;
-            visitor.visit((l3 & 0xFF_FFFF) as i32)?;
+    fn node_id(&self) -> i32 {
+        unreachable!()
+    }
 
-            i += 8;
-        }
+    fn split_packed_value(&self) -> Vec<u8> {
+        unreachable!()
+    }
 
-        for _ in i..count {
-            let l1 = u32::from(input.read_short()? as u16);
-            let l2 = u32::from(input.read_byte()?);
-            visitor.visit(((l1 << 8) | l2) as i32)?;
-        }
+    fn split_packed_value_index(&self) -> usize {
+        unreachable!()
+    }
 
-        Ok(())
+    fn set_split_packed_value(&mut self, _index: usize, _offset: usize, _data: &[u8]) {
+        unreachable!()
+    }
+
+    fn split_dim(&self) -> i32 {
+        unreachable!()
+    }
+
+    fn split_dim_value(&mut self) -> Vec<u8> {
+        unreachable!()
+    }
+
+    fn set_split_dim_value(&mut self, data: &[u8]) {
+        unreachable!()
+    }
+
+    fn leaf_block_fp(&self) -> i64 {
+        unreachable!()
     }
 }

@@ -42,6 +42,21 @@ pub trait QueryCache: Send + Sync {
     fn do_cache(&self, weight: Box<Weight>, policy: Arc<QueryCachingPolicy>) -> Box<Weight>;
 }
 
+/// cache nothing
+pub struct NoCacheQueryCache;
+
+impl NoCacheQueryCache {
+    pub fn new() -> Self {
+        NoCacheQueryCache {}
+    }
+}
+
+impl QueryCache for NoCacheQueryCache {
+    fn do_cache(&self, weight: Box<Weight>, _policy: Arc<QueryCachingPolicy>) -> Box<Weight> {
+        weight
+    }
+}
+
 ///
 // A {@link QueryCache} that evicts queries using a LRU (least-recently-used)
 // eviction policy in order to remain under a given maximum size and number of

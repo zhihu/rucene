@@ -51,6 +51,10 @@ impl Query for FilterQuery {
     fn query_type(&self) -> &'static str {
         FILTER_QUERY
     }
+
+    fn as_any(&self) -> &::std::any::Any {
+        self
+    }
 }
 
 impl fmt::Display for FilterQuery {

@@ -1,7 +1,7 @@
 use std::ops::Deref;
 
 use core::doc::{Field, NUMERIC_DOC_VALUES_FIELD_TYPE};
-use core::index::fieldable::Fieldable;
+use core::index::Fieldable;
 use core::util::VariantValue;
 
 pub struct DoubleDocValuesField {
@@ -12,19 +12,16 @@ impl DoubleDocValuesField {
     pub fn new(name: &str, value: f64) -> DoubleDocValuesField {
         DoubleDocValuesField {
             field: Field::new(
-                name,
+                name.to_string(),
                 NUMERIC_DOC_VALUES_FIELD_TYPE,
-                VariantValue::Double(value),
+                Some(VariantValue::Double(value)),
+                None,
             ),
         }
     }
 
     pub fn double_value(&self) -> f64 {
-        let val = self.field.fields_data();
-        match *val {
-            VariantValue::Double(d) => d,
-            _ => unreachable!(),
-        }
+        self.field.fields_data().unwrap().get_double().unwrap()
     }
 }
 

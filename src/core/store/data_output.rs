@@ -82,16 +82,22 @@ pub trait DataOutput: Write {
 
     fn write_map_of_strings(&mut self, map: &HashMap<String, String>) -> Result<()> {
         self.write_vint(map.len() as i32)?;
-        for (k, v) in map.iter() {
+
+        let mut keys: Vec<&String> = map.keys().collect();
+        keys.sort();
+        for k in keys {
             self.write_string(k)?;
-            self.write_string(v)?;
+            self.write_string(map.get(k).unwrap())?;
         }
         Ok(())
     }
 
     fn write_set_of_strings(&mut self, set: &HashSet<String>) -> Result<()> {
         self.write_vint(set.len() as i32)?;
-        for k in set.iter() {
+
+        let mut keys: Vec<&String> = set.iter().collect();
+        keys.sort();
+        for k in keys {
             self.write_string(k)?;
         }
         Ok(())
@@ -113,13 +119,7 @@ pub trait DataOutput: Write {
         }
         Ok(())
     }
-
-    fn as_data_output_mut(&mut self) -> &mut DataOutput;
 }
 
 // a implement that can use Vec<u8> as a data output
-impl DataOutput for Vec<u8> {
-    fn as_data_output_mut(&mut self) -> &mut DataOutput {
-        self
-    }
-}
+impl DataOutput for Vec<u8> {}

@@ -12,10 +12,10 @@ pub struct DirectMonotonicMeta {
     #[allow(dead_code)]
     num_values: i64,
     block_shift: i32,
-    num_blocks: i32,
+    pub num_blocks: i32,
     mins: Vec<i64>,
     avgs: Vec<f32>,
-    bpvs: Vec<u8>,
+    pub bpvs: Vec<u8>,
     offsets: Vec<i64>,
 }
 

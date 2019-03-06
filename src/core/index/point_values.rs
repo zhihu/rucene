@@ -1,9 +1,9 @@
 use error::*;
 
 use core::index::IndexReader;
-use core::util::string_util::bytes_compare;
 use core::util::DocId;
 
+use std::any::Any;
 use std::sync::Arc;
 
 /// Access to indexed numeric values.
@@ -83,6 +83,8 @@ pub trait PointValues: Send + Sync {
     /// Returns the total number of documents that have indexed at least one point for this
     /// field.
     fn doc_count(&self, field_name: &str) -> Result<i32>;
+
+    fn as_any(&self) -> &Any;
 }
 
 pub type PointValuesRef = Arc<PointValues>;
@@ -146,11 +148,8 @@ pub fn point_values_min_packed_value(reader: &IndexReader, field: &str) -> Resul
                     let num_bytes_per_dimension = values.bytes_per_dimension(field)?;
                     for i in 0..num_dimensions {
                         let offset: usize = i * num_bytes_per_dimension;
-                        if bytes_compare(
-                            num_bytes_per_dimension,
-                            &leaf_min_value[offset..],
-                            &min_value[offset..],
-                        ) < 0
+                        if leaf_min_value[offset..offset + num_dimensions]
+                            < min_value[offset..offset + num_dimensions]
                         {
                             min_value[offset..offset + num_bytes_per_dimension].copy_from_slice(
                                 &leaf_min_value[offset..offset + num_bytes_per_dimension],
@@ -188,11 +187,8 @@ pub fn point_values_max_packed_value(reader: &IndexReader, field: &str) -> Resul
                     let num_bytes_per_dimension = values.bytes_per_dimension(field)?;
                     for i in 0..num_dimensions {
                         let offset: usize = i * num_bytes_per_dimension;
-                        if bytes_compare(
-                            num_bytes_per_dimension,
-                            &leaf_max_value[offset..],
-                            &max_value[offset..],
-                        ) > 0
+                        if leaf_max_value[offset..offset + num_bytes_per_dimension]
+                            > max_value[offset..offset + num_bytes_per_dimension]
                         {
                             max_value[offset..offset + num_bytes_per_dimension].copy_from_slice(
                                 &leaf_max_value[offset..offset + num_bytes_per_dimension],

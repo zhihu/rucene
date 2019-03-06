@@ -1,16 +1,12 @@
-use std::cmp::{max, min};
-use std::cmp::{Ord, Ordering, PartialOrd};
-use std::collections::{BinaryHeap, HashMap};
+use std::cmp::max;
 use std::io;
 
 use core::codec::codec_util;
 use core::store::{ByteArrayDataOutput, DataInput, DataOutput};
 use core::util::fst::bytes_store::{BytesStore, StoreBytesReader};
-use core::util::fst::fst_builder::{FstBuilder, Node, UnCompiledNode};
+use core::util::fst::fst_builder::{FstBuilder, Node};
 use core::util::fst::DirectionalBytesReader;
 use core::util::fst::{BytesReader, Output, OutputFactory};
-use core::util::packed_misc::{get_mutable_by_ratio_as_reader, unsigned_bits_required};
-use core::util::packed_misc::{get_reader, GrowableWriter, Mutable, Reader};
 use error::{ErrorKind, Result};
 
 const BIT_FINAL_ARC: u8 = 1;
@@ -26,7 +22,7 @@ const BIT_ARC_HAS_FINAL_OUTPUT: u8 = 1 << 5;
 /// If set, the target node is delta coded vs current
 /// position:
 ///
-const BIT_TARGET_DELTA: u8 = 1 << 6;
+// const BIT_TARGET_DELTA: u8 = 1 << 6;
 
 /// We use this as a marker (because this one flag is
 /// illegal by itself ...):
@@ -40,6 +36,9 @@ const FILE_FORMAT_NAME: &str = "FST";
 const VERSION_PACKED: i32 = 3;
 const VERSION_VINT_TARGET: i32 = 4;
 const VERSION_NO_NODE_ARC_COUNTS: i32 = 5;
+// LUCENE-7531, donot support pack fst anymore
+const VERSION_PACKED_REMOVED: i32 = 6;
+// const VERSION_CURRENT: i32 = VERSION_PACKED_REMOVED;
 const VERSION_CURRENT: i32 = VERSION_NO_NODE_ARC_COUNTS;
 const FINAL_END_NODE: CompiledAddress = -1;
 const NON_FINAL_END_NODE: CompiledAddress = 0;
@@ -63,41 +62,70 @@ pub enum InputType {
     Byte4,
 }
 
-#[derive(Default, Eq, PartialEq, Debug)]
+#[derive(Default, Clone, Eq, PartialEq, Debug)]
 pub struct Arc<T: Output> {
     pub flags: u8,
     pub label: Label,
     pub output: Option<T>,
     pub next_final_output: Option<T>,
     pub next_arc: Option<CompiledAddress>,
-
-    /// From node, currently only used when
-    // building an FST w/ packed=true
-    pub from: Option<CompiledAddress>,
-
     /// To node
-    pub target: Option<CompiledAddress>,
+    pub target: CompiledAddress,
+    /// Where the first arc in the array starts; only valid if bytesPerArc != 0.
+    pub arc_start_position: usize,
+
+    /// Non-zero if this arc is part of an array, which means all
+    /// arcs for the node are encoded with a fixed number of bytes so
+    /// that we can random access by index.  We do when there are enough
+    /// arcs leaving one node.  It wastes some bytes but gives faster lookups.
+    pub bytes_per_arc: usize,
+
+    /// Where we are in the array; only valid if bytesPerArc != 0.
+    pub arc_index: usize,
+
+    /// How many arcs in the array; only valid if bytesPerArc != 0.
+    pub num_arcs: usize,
 }
 
-#[derive(Debug)]
-pub enum ArcLayoutContext {
-    FixedArray {
-        /// Where the first arc in the array starts; only valid if bytesPerArc != 0.
-        arc_start_position: usize,
+impl<T: Output> Arc<T> {
+    pub fn empty() -> Arc<T> {
+        Arc {
+            flags: 0u8,
+            label: 0i32,
+            output: None,
+            next_final_output: None,
+            next_arc: None,
+            target: 0,
+            arc_start_position: 0,
+            bytes_per_arc: 0,
+            arc_index: 0,
+            num_arcs: 0,
+        }
+    }
 
-        /// Non-zero if this arc is part of an array, which means all
-        /// arcs for the node are encoded with a fixed number of bytes so
-        /// that we can random access by index.  We do when there are enough
-        /// arcs leaving one node.  It wastes some bytes but gives faster lookups.
-        bytes_per_arc: usize,
+    pub fn is_last(&self) -> bool {
+        flag(self.flags, BIT_LAST_ARC)
+    }
 
-        /// Where we are in the array; only valid if bytesPerArc != 0.
-        arc_index: usize,
+    pub fn is_final(&self) -> bool {
+        flag(self.flags, BIT_FINAL_ARC)
+    }
 
-        /// How many arcs in the array; only valid if bytesPerArc != 0.
-        num_arcs: usize,
-    },
-    Linear(usize),
+    #[allow(dead_code)]
+    fn copy_from(&mut self, other: &Arc<T>) {
+        self.flags = other.flags;
+        self.label = other.label;
+        self.output = other.output.clone();
+        self.next_final_output = other.next_final_output.clone();
+        self.next_arc = other.next_arc.clone();
+        self.target = other.target;
+        self.bytes_per_arc = other.bytes_per_arc;
+        if self.bytes_per_arc > 0 {
+            self.arc_start_position = other.arc_start_position;
+            self.arc_index = other.arc_index;
+            self.num_arcs = other.num_arcs;
+        }
+    }
 }
 
 struct BytesRefFSTEnum<'a> {
@@ -123,54 +151,7 @@ impl<'a> Iterator for BytesRefFSTEnum<'a> {
         } else {
             let label = self.bytes[self.offset];
             self.offset += 1;
-            Some(Label::from(label as i8))
-        }
-    }
-}
-
-impl<T: Output> Arc<T> {
-    fn empty() -> Arc<T> {
-        Arc {
-            flags: 0u8,
-            label: 0i32,
-            output: None,
-            next_final_output: None,
-            next_arc: None,
-            from: None,
-            target: None,
-        }
-    }
-
-    pub fn is_last(&self) -> bool {
-        flag(self.flags, BIT_LAST_ARC)
-    }
-
-    pub fn is_final(&self) -> bool {
-        flag(self.flags, BIT_FINAL_ARC)
-    }
-
-    #[allow(dead_code)]
-    fn copy_from(mut self, other: &Arc<T>) {
-        self.flags = other.flags;
-        self.label = other.label;
-        self.output = other.output.clone();
-        self.next_final_output = other.next_final_output.clone();
-        self.next_arc = other.next_arc.clone();
-        self.from = other.from.clone();
-        self.target = other.target;
-    }
-}
-
-impl<T: Output> Clone for Arc<T> {
-    fn clone(&self) -> Self {
-        Arc {
-            flags: self.flags,
-            label: self.label,
-            output: self.output.clone(),
-            next_final_output: self.next_final_output.clone(),
-            next_arc: self.next_arc,
-            from: self.from,
-            target: self.target,
+            Some(Label::from(label))
         }
     }
 }
@@ -189,33 +170,15 @@ pub struct FST<F: OutputFactory> {
     // flag of whether use bytes_store or bytes_array
     use_bytes_array: bool,
     start_node: CompiledAddress,
-    packed: bool,
     version: i32,
     output_factory: F,
-    node_ref_to_address: Option<Box<Reader>>,
     cached_root_arcs: Vec<Option<Arc<F::Value>>>,
-    node_address_lookup: Option<GrowableWriter>,
-    in_counts: Option<GrowableWriter>,
 }
 
 impl<F: OutputFactory> FST<F> {
-    pub fn new(
-        input_type: InputType,
-        output_factory: F,
-        will_pack_fst: bool,
-        acceptable_overhead_ratio: f32,
-        bytes_page_bits: usize,
-    ) -> Self {
+    pub fn new(input_type: InputType, output_factory: F, bytes_page_bits: usize) -> Self {
         let mut bytes_store = BytesStore::with_block_bits(bytes_page_bits);
         let _ = bytes_store.write_byte(0);
-        let (node_address_lookup, in_counts) = if will_pack_fst {
-            (
-                Some(GrowableWriter::new(15, 8, acceptable_overhead_ratio)),
-                Some(GrowableWriter::new(1, 8, acceptable_overhead_ratio)),
-            )
-        } else {
-            (None, None)
-        };
         FST {
             input_type,
             empty_output: None,
@@ -223,12 +186,8 @@ impl<F: OutputFactory> FST<F> {
             bytes_array: Vec::with_capacity(0),
             use_bytes_array: false,
             start_node: -1,
-            packed: false,
             version: VERSION_CURRENT,
             output_factory,
-            node_ref_to_address: None,
-            node_address_lookup,
-            in_counts,
             cached_root_arcs: Vec::with_capacity(0),
         }
     }
@@ -239,27 +198,26 @@ impl<F: OutputFactory> FST<F> {
 
         // Only reads most recent format; we don't have
         // back-compat promise for FSTs (they are experimental):
-        let version = codec_util::check_header(
-            data_in,
-            FILE_FORMAT_NAME,
-            VERSION_PACKED,
-            VERSION_NO_NODE_ARC_COUNTS,
-        )?;
-        let packed = data_in.read_byte()? == 1;
+        let version =
+            codec_util::check_header(data_in, FILE_FORMAT_NAME, VERSION_PACKED, VERSION_CURRENT)?;
+
+        if version < VERSION_PACKED_REMOVED {
+            if data_in.read_byte()? == 1 {
+                bail!(ErrorKind::CorruptIndex(
+                    "Cannot read packed FSTs anymore".into()
+                ));
+            }
+        }
+
         let empty_output = if data_in.read_byte()? == 1 {
             // Accepts empty string
             // 1KB blocks:
             let num_bytes = data_in.read_vint()? as usize;
             let bytes_store = BytesStore::new(data_in, num_bytes, 30)?;
-            let mut reader = if packed {
-                bytes_store.get_forward_reader()
-            } else {
-                let mut r = bytes_store.get_reverse_reader();
-                if num_bytes > 0 {
-                    r.set_position(num_bytes - 1);
-                }
-                r
-            };
+            let mut reader = bytes_store.get_reverse_reader();
+            if num_bytes > 0 {
+                reader.set_position(num_bytes - 1);
+            }
 
             Some(output_factory.read_final_output(&mut reader)?)
         } else {
@@ -274,11 +232,6 @@ impl<F: OutputFactory> FST<F> {
                 "Invalid input type: {}",
                 x
             ),)),
-        };
-        let node_ref_to_addr = if packed {
-            Some(get_reader(data_in)?)
-        } else {
-            None
         };
         let start_node = data_in.read_vlong()? as CompiledAddress;
         if version < VERSION_NO_NODE_ARC_COUNTS {
@@ -309,36 +262,14 @@ impl<F: OutputFactory> FST<F> {
         Ok(FST {
             input_type,
             start_node,
-            packed,
             version,
             output_factory,
             bytes_store,
             use_bytes_array,
-            node_ref_to_address: node_ref_to_addr,
-            node_address_lookup: None,
             empty_output,
-            in_counts: None,
             bytes_array,
             cached_root_arcs: Vec::with_capacity(0),
         })
-    }
-
-    pub fn new_packed(input_type: InputType, output_factory: F, bytes_page_bits: usize) -> Self {
-        FST {
-            input_type,
-            empty_output: None,
-            bytes_store: BytesStore::with_block_bits(bytes_page_bits),
-            bytes_array: Vec::with_capacity(0),
-            use_bytes_array: false,
-            start_node: 0,
-            packed: true,
-            version: VERSION_CURRENT,
-            output_factory,
-            node_ref_to_address: None,
-            node_address_lookup: None,
-            in_counts: None,
-            cached_root_arcs: Vec::with_capacity(0),
-        }
     }
 
     pub fn outputs(&self) -> &F {
@@ -393,6 +324,7 @@ impl<F: OutputFactory> FST<F> {
         let mut bytes_reader = self.bytes_reader();
         let mut length = 0usize;
         let mut last_final_length = 0usize;
+
         let bytes_ref = BytesRefFSTEnum::new(bytes);
         if let Some(ref out) = arc.output {
             if !out.is_empty() {
@@ -439,19 +371,11 @@ impl<F: OutputFactory> FST<F> {
         ))
     }
 
-    fn bytes_reader(&self) -> FSTBytesReader {
-        if self.packed {
-            if self.use_bytes_array {
-                FSTBytesReader::Directional(DirectionalBytesReader::new(&self.bytes_array, false))
-            } else {
-                FSTBytesReader::BytesStore(self.bytes_store.get_forward_reader())
-            }
+    pub fn bytes_reader(&self) -> FSTBytesReader {
+        if self.use_bytes_array {
+            FSTBytesReader::Directional(DirectionalBytesReader::new(&self.bytes_array, true))
         } else {
-            if self.use_bytes_array {
-                FSTBytesReader::Directional(DirectionalBytesReader::new(&self.bytes_array, false))
-            } else {
-                FSTBytesReader::BytesStore(self.bytes_store.get_reverse_reader())
-            }
+            FSTBytesReader::BytesStore(self.bytes_store.get_reverse_reader())
         }
     }
 
@@ -472,7 +396,7 @@ impl<F: OutputFactory> FST<F> {
 
         // If there are no nodes, ie, the FST only accepts the
         // empty string, then startNode is 0.
-        arc.target = Some(self.start_node);
+        arc.target = self.start_node;
 
         arc
     }
@@ -502,8 +426,7 @@ impl<F: OutputFactory> FST<F> {
                     // NOTE!!:
                     target_arc.flags = 0u8;
                     // next_arc is a node (not an address!) in this case:
-                    target_arc.next_arc = incoming_arc.target;
-                    target_arc.from = incoming_arc.target;
+                    target_arc.next_arc = Some(incoming_arc.target);
                 }
                 target_arc.output = incoming_arc.next_final_output.clone();
                 target_arc.label = END_LABEL;
@@ -514,7 +437,7 @@ impl<F: OutputFactory> FST<F> {
         }
 
         if use_root_arc_cache && self.cached_root_arcs.len() > 0
-            && incoming_arc.target.unwrap() == self.start_node
+            && incoming_arc.target == self.start_node
             && label < self.cached_root_arcs.len() as i32
         {
             let result = self.cached_root_arcs[label as usize].clone();
@@ -526,28 +449,25 @@ impl<F: OutputFactory> FST<F> {
             return Ok(None);
         }
 
-        if let Some(target) = incoming_arc.target {
-            bytes_reader.set_position(self.real_node_address(target) as usize);
-        } else {
-            debug_assert!(false, "real node address must be an offset");
-        }
+        bytes_reader.set_position(incoming_arc.target as usize);
 
+        let mut arc = Arc::empty();
         if bytes_reader.read_byte()? == ARCS_AS_FIXED_ARRAY {
             // Arcs are full array, do binary search.
 
-            let num_arcs = bytes_reader.read_vint()? as usize;
-            let bytes_per_arc = if self.packed || self.version >= VERSION_VINT_TARGET {
+            arc.num_arcs = bytes_reader.read_vint()? as usize;
+            arc.bytes_per_arc = if self.version >= VERSION_VINT_TARGET {
                 bytes_reader.read_vint()? as usize
             } else {
                 bytes_reader.read_int()? as usize
             };
-            let arc_start_position = bytes_reader.position();
+            arc.arc_start_position = bytes_reader.position();
             let mut low = 0usize;
-            let mut high = num_arcs - 1;
+            let mut high = arc.num_arcs - 1;
             while low <= high {
                 let mid = (low + high) >> 1;
-                bytes_reader.set_position(arc_start_position);
-                bytes_reader.skip_bytes(bytes_per_arc * mid + 1)?;
+                bytes_reader.set_position(arc.arc_start_position);
+                bytes_reader.skip_bytes(arc.bytes_per_arc * mid + 1)?;
                 let current_label = self.read_label(bytes_reader)?;
                 let cmp = current_label - label;
                 if cmp < 0 {
@@ -558,24 +478,16 @@ impl<F: OutputFactory> FST<F> {
                     }
                     high = mid - 1;
                 } else {
-                    let mut arc_context = ArcLayoutContext::FixedArray {
-                        arc_start_position,
-                        bytes_per_arc,
-                        arc_index: mid,
-                        num_arcs,
-                    };
-                    return self.read_next_real_arc(
-                        &mut arc_context,
-                        bytes_reader,
-                        incoming_arc.next_arc.unwrap(),
-                    ).map(Some);
+                    arc.arc_index = mid;
+                    self.read_next_real_arc(&mut arc, bytes_reader)?;
+                    return Ok(Some(arc));
                 }
             }
             return Ok(None);
         }
 
         // Do linear scan
-        let mut arc = self.read_first_real_arc(incoming_arc.target.unwrap(), bytes_reader)?;
+        let mut arc = self.read_first_real_arc(incoming_arc.target, bytes_reader)?;
 
         loop {
             if arc.label == label {
@@ -583,12 +495,7 @@ impl<F: OutputFactory> FST<F> {
             } else if arc.label > label || arc.is_last() {
                 return Ok(None);
             } else {
-                let mut context = ArcLayoutContext::Linear(arc.next_arc.unwrap() as usize);
-                arc = self.read_next_real_arc(
-                    &mut context,
-                    bytes_reader,
-                    incoming_arc.target.unwrap(),
-                )?;
+                self.read_next_real_arc(&mut arc, bytes_reader)?;
             }
         }
     }
@@ -614,16 +521,8 @@ impl<F: OutputFactory> FST<F> {
         Ok(true)
     }
 
-    fn target_has_arc(&self, target: Option<CompiledAddress>) -> bool {
-        target.map(|v| v > 0).unwrap_or(false)
-    }
-
-    fn real_node_address(&self, node: CompiledAddress) -> CompiledAddress {
-        if let Some(ref node_address_lookup) = self.node_address_lookup {
-            node_address_lookup.get(node as usize) as CompiledAddress
-        } else {
-            node
-        }
+    fn target_has_arc(&self, target: CompiledAddress) -> bool {
+        target > 0
     }
 
     fn read_label(&self, reader: &mut BytesReader) -> Result<Label> {
@@ -634,144 +533,119 @@ impl<F: OutputFactory> FST<F> {
         }
     }
 
-    pub fn read_first_real_arc_with_layout(
-        &self,
-        node: CompiledAddress,
-        bytes_reader: &mut BytesReader,
-    ) -> Result<(Arc<F::Value>, ArcLayoutContext)> {
-        let address = self.real_node_address(node);
-        bytes_reader.set_position(address as usize);
-
-        // let mut arc: Arc<T::Value> = Arc::empty();
-        // arc.from = Some(node);
-
-        if bytes_reader.read_byte()? == ARCS_AS_FIXED_ARRAY {
-            let num_arcs = bytes_reader.read_vint()? as usize;
-            let bytes_per_arc = if self.packed || self.version >= VERSION_VINT_TARGET {
-                bytes_reader.read_vint()? as usize
-            } else {
-                bytes_reader.read_int()? as usize
-            };
-            let arc_start_position = bytes_reader.position();
-            let mut layout_context = ArcLayoutContext::FixedArray {
-                arc_start_position,
-                bytes_per_arc,
-                arc_index: 0,
-                num_arcs,
-            };
-            let arc = self.read_next_real_arc(&mut layout_context, bytes_reader, node)?;
-            Ok((arc, layout_context))
-        } else {
-            let mut layout_context = ArcLayoutContext::Linear(address as usize);
-            let arc = self.read_next_real_arc(&mut layout_context, bytes_reader, node)?;
-            Ok((arc, layout_context))
-        }
-    }
-
     pub fn read_first_real_arc(
         &self,
         node: CompiledAddress,
         bytes_reader: &mut BytesReader,
     ) -> Result<Arc<F::Value>> {
-        let (arc, _) = self.read_first_real_arc_with_layout(node, bytes_reader)?;
+        bytes_reader.set_position(node as usize);
+
+        let mut arc = Arc::empty();
+        if bytes_reader.read_byte()? == ARCS_AS_FIXED_ARRAY {
+            arc.num_arcs = bytes_reader.read_vint()? as usize;
+            arc.bytes_per_arc = if self.version >= VERSION_VINT_TARGET {
+                bytes_reader.read_vint()? as usize
+            } else {
+                bytes_reader.read_int()? as usize
+            };
+            arc.arc_start_position = bytes_reader.position();
+            arc.arc_index = 0;
+        } else {
+            arc.next_arc = Some(node);
+        }
+        self.read_next_real_arc(&mut arc, bytes_reader)?;
         Ok(arc)
+    }
+
+    pub fn read_first_target_arc(
+        &self,
+        follow: &Arc<F::Value>,
+        input: &mut BytesReader,
+    ) -> Result<Arc<F::Value>> {
+        if follow.is_final() {
+            let mut arc = Arc::empty();
+            arc.flags = BIT_FINAL_ARC;
+            arc.label = END_LABEL;
+            arc.target = FINAL_END_NODE;
+            arc.output = follow.next_final_output.clone();
+            if !self.target_has_arc(follow.target) {
+                arc.flags |= BIT_LAST_ARC;
+            } else {
+                arc.next_arc = Some(follow.target);
+            };
+            Ok(arc)
+        } else {
+            self.read_first_real_arc(follow.target, input)
+        }
+    }
+
+    pub fn read_next_arc(
+        &self,
+        arc: &mut Arc<F::Value>,
+        bytes_reader: &mut BytesReader,
+    ) -> Result<()> {
+        if arc.label == END_LABEL {
+            // This was a fake inserted "final" arc
+            if arc.next_arc.unwrap() <= 0 {
+                bail!(ErrorKind::IllegalArgument(
+                    "cannot read_next_arc when arc.is_last()".into()
+                ));
+            }
+            let new_arc = self.read_first_real_arc(arc.next_arc.unwrap(), bytes_reader)?;
+            arc.copy_from(&new_arc);
+        } else {
+            self.read_next_real_arc(arc, bytes_reader)?;
+        }
+        Ok(())
     }
 
     pub fn read_next_real_arc(
         &self,
-        layout_context: &mut ArcLayoutContext,
+        arc: &mut Arc<F::Value>,
         bytes_reader: &mut BytesReader,
-        parent_node: CompiledAddress,
-    ) -> Result<Arc<F::Value>> {
-        match *layout_context {
-            ArcLayoutContext::FixedArray {
-                arc_start_position,
-                bytes_per_arc,
-                ref mut arc_index,
-                num_arcs,
-            } => {
-                debug_assert!(*arc_index < num_arcs);
-                bytes_reader.set_position(arc_start_position);
-                bytes_reader.skip_bytes(*arc_index * bytes_per_arc)?;
-                *arc_index += 1;
-            }
-            ArcLayoutContext::Linear(pos) => {
-                bytes_reader.set_position(pos);
-            }
+    ) -> Result<()> {
+        if arc.bytes_per_arc > 0 {
+            debug_assert!(arc.arc_index < arc.num_arcs);
+            bytes_reader.set_position(arc.arc_start_position);
+            bytes_reader.skip_bytes(arc.arc_index * arc.bytes_per_arc)?;
+            arc.arc_index += 1;
+        } else {
+            assert!(arc.next_arc.is_some());
+            bytes_reader.set_position(arc.next_arc.unwrap() as usize);
         }
 
-        let flags = bytes_reader.read_byte()?;
-        let label = self.read_label(bytes_reader)?;
-        let output = if flag(flags, BIT_ARC_HAS_OUTPUT) {
+        arc.flags = bytes_reader.read_byte()?;
+        arc.label = self.read_label(bytes_reader)?;
+        arc.output = if flag(arc.flags, BIT_ARC_HAS_OUTPUT) {
             Some(self.output_factory.read(bytes_reader)?)
         } else {
             None
         };
-        let final_output = if flag(flags, BIT_ARC_HAS_FINAL_OUTPUT) {
+        arc.next_final_output = if flag(arc.flags, BIT_ARC_HAS_FINAL_OUTPUT) {
             Some(self.output_factory.read_final_output(bytes_reader)?)
         } else {
             None
         };
-        let mut arc = Arc::empty();
-        arc.label = label;
-        arc.flags = flags;
-        arc.output = output;
-        arc.next_final_output = final_output;
-        if flag(flags, BIT_STOP_NODE) {
-            arc.target = Some(FINAL_END_NODE);
+        if flag(arc.flags, BIT_STOP_NODE) {
+            arc.target = FINAL_END_NODE;
             arc.next_arc = Some(bytes_reader.position() as i64);
-        } else if flag(flags, BIT_TARGET_NEXT) {
+        } else if flag(arc.flags, BIT_TARGET_NEXT) {
             arc.next_arc = Some(bytes_reader.position() as i64);
-            if self.node_address_lookup.is_some() {
-                debug_assert!(parent_node > 1);
-
-                arc.target = Some(parent_node - 1);
-            } else {
-                if !flag(flags, BIT_LAST_ARC) {
-                    match *layout_context {
-                        ArcLayoutContext::FixedArray {
-                            arc_start_position,
-                            bytes_per_arc,
-                            num_arcs,
-                            ..
-                        } => {
-                            bytes_reader.set_position(arc_start_position);
-                            bytes_reader.skip_bytes(bytes_per_arc * num_arcs)?;
-                        }
-                        ArcLayoutContext::Linear(_) => {
-                            self.seek_to_next_node(bytes_reader)?;
-                        }
-                    }
-                }
-                arc.target = Some(bytes_reader.position() as i64);
-            }
-        } else {
-            arc.target = if self.packed {
-                debug_assert!(self.node_ref_to_address.is_some());
-
-                let pos = bytes_reader.position();
-                let code = bytes_reader.read_vlong()? as usize;
-                if flag(flags, BIT_TARGET_DELTA) {
-                    Some((pos + code) as i64)
-                } else if let Some(ref node_ref) = self.node_ref_to_address {
-                    if code < node_ref.size() {
-                        Some(node_ref.get(code))
-                    } else {
-                        Some(code as i64)
-                    }
+            if !flag(arc.flags, BIT_LAST_ARC) {
+                if arc.bytes_per_arc > 0 {
+                    bytes_reader.set_position(arc.arc_start_position);
+                    bytes_reader.skip_bytes(arc.bytes_per_arc * arc.num_arcs)?;
                 } else {
-                    Some(code as i64)
+                    self.seek_to_next_node(bytes_reader)?;
                 }
-            } else {
-                Some(self.read_unpacked_node(bytes_reader)?)
-            };
+            }
+            arc.target = bytes_reader.position() as CompiledAddress;
+        } else {
+            arc.target = self.read_unpacked_node(bytes_reader)?;
+
             arc.next_arc = Some(bytes_reader.position() as i64);
         }
-        if let ArcLayoutContext::Linear(ref mut v) = layout_context {
-            assert!(arc.next_arc.is_some());
-            *v = arc.next_arc.unwrap() as usize;
-        }
-        Ok(arc)
+        Ok(())
     }
 
     fn seek_to_next_node(&self, bytes_reader: &mut BytesReader) -> Result<()> {
@@ -786,11 +660,7 @@ impl<F: OutputFactory> FST<F> {
                 self.output_factory.skip_final_output(bytes_reader)?;
             }
             if !flag(flags, BIT_STOP_NODE) && !flag(flags, BIT_TARGET_NEXT) {
-                if self.packed {
-                    bytes_reader.read_vlong()?;
-                } else {
-                    self.read_unpacked_node(bytes_reader)?;
-                }
+                self.read_unpacked_node(bytes_reader)?;
             }
 
             if flag(flags, BIT_LAST_ARC) {
@@ -814,31 +684,34 @@ impl<F: OutputFactory> FST<F> {
     pub fn add_node(
         &mut self,
         builder: &mut FstBuilder<F>,
-        node_in: &UnCompiledNode<F>,
+        node_index: usize,
     ) -> Result<CompiledAddress> {
         let no_output = self.output_factory.empty();
 
-        if node_in.num_arcs == 0 {
-            if node_in.is_final {
+        if builder.frontier[node_index].num_arcs == 0 {
+            if builder.frontier[node_index].is_final {
                 return Ok(FINAL_END_NODE as i64);
             } else {
                 return Ok(NON_FINAL_END_NODE as i64);
             }
         }
         let start_address = self.bytes_store.get_position();
-        let do_fixed_array = self.should_expand(builder, &node_in);
+
+        let do_fixed_array = self.should_expand(builder, node_index);
         if do_fixed_array {
-            if builder.reused_bytes_per_arc.len() < node_in.num_arcs {
-                builder.reused_bytes_per_arc.resize(node_in.num_arcs, 0);
+            if builder.reused_bytes_per_arc.len() < builder.frontier[node_index].num_arcs {
+                builder
+                    .reused_bytes_per_arc
+                    .resize(builder.frontier[node_index].num_arcs, 0);
             }
         }
-        builder.arc_count += node_in.num_arcs as u64;
+        builder.arc_count += builder.frontier[node_index].num_arcs as u64;
 
-        let last_arc = node_in.num_arcs - 1;
+        let last_arc = builder.frontier[node_index].num_arcs - 1;
         let mut last_arc_start = self.bytes_store.get_position();
         let mut max_bytes_per_arc = 0;
-        for idx in 0..node_in.arcs.len() {
-            let arc = &node_in.arcs[idx];
+        for idx in 0..builder.frontier[node_index].num_arcs {
+            let arc = &builder.frontier[node_index].arcs[idx];
 
             let target = match arc.target {
                 Node::Compiled(c) => c,
@@ -866,9 +739,6 @@ impl<F: OutputFactory> FST<F> {
             let target_has_arcs = target > 0;
             if !target_has_arcs {
                 flags += BIT_STOP_NODE;
-            } else if let Some(ref mut in_counts) = self.in_counts {
-                let v = in_counts.get(target as usize) + 1;
-                in_counts.set(target as usize, v);
             }
 
             if arc.output != no_output {
@@ -921,7 +791,7 @@ impl<F: OutputFactory> FST<F> {
                 let mut bad = ByteArrayDataOutput::new(&mut header, 0, len);
                 // write a "false" first arc
                 bad.write_byte(ARCS_AS_FIXED_ARRAY)?;
-                bad.write_vint(node_in.num_arcs as i32)?;
+                bad.write_vint(builder.frontier[node_index].num_arcs as i32)?;
                 bad.write_vint(max_bytes_per_arc as i32)?;
                 header_len = bad.pos;
                 fixed_array_start = start_address + header_len;
@@ -929,12 +799,13 @@ impl<F: OutputFactory> FST<F> {
 
             // expand the arcs in place, backwards
             let mut src_pos = self.bytes_store.get_position();
-            let mut dest_pos = fixed_array_start + node_in.num_arcs * max_bytes_per_arc;
+            let mut dest_pos =
+                fixed_array_start + builder.frontier[node_index].num_arcs * max_bytes_per_arc;
             assert!(dest_pos >= src_pos);
             if dest_pos > src_pos {
                 self.bytes_store.skip_bytes(dest_pos - src_pos);
-                for i in 0..node_in.num_arcs {
-                    let arc_idx = node_in.num_arcs - 1 - i;
+                for i in 0..builder.frontier[node_index].num_arcs {
+                    let arc_idx = builder.frontier[node_index].num_arcs - 1 - i;
                     dest_pos -= max_bytes_per_arc;
                     src_pos -= builder.reused_bytes_per_arc[arc_idx];
                     if src_pos != dest_pos {
@@ -956,32 +827,8 @@ impl<F: OutputFactory> FST<F> {
         let this_node_address = self.bytes_store.get_position() - 1;
         self.bytes_store.reverse(start_address, this_node_address);
 
-        // PackedInts uses int as the index, so we cannot handle
-        // > 2.1B nodes when packing
-        if self.node_address_lookup.is_some() && builder.node_count == i32::max_value() as u64 {
-            bail!(ErrorKind::IllegalState(
-                "cannot create a packed FST with more than 2.1 billion nodes".into()
-            ));
-        }
-
         builder.node_count += 1;
-        let node: i64;
-        if let Some(ref mut node_address) = self.node_address_lookup {
-            // nodes are addressed by 1+ord:
-            if builder.node_count == node_address.size() as u64 {
-                node_address.resize(builder.node_count as usize + 1);
-                if let Some(ref mut in_counts) = self.in_counts {
-                    let new_size = in_counts.size() + 1;
-                    in_counts.resize(new_size);
-                }
-            }
-            node_address.set(builder.node_count as usize, this_node_address as i64);
-            node = builder.node_count as i64;
-        } else {
-            node = this_node_address as i64;
-        }
-
-        Ok(node)
+        Ok(this_node_address as CompiledAddress)
     }
 
     #[allow(dead_code)]
@@ -1025,7 +872,8 @@ impl<F: OutputFactory> FST<F> {
     /// @return <code>true</code> if <code>node</code> should be stored in an
     ///         expanded (array) form.
     ///
-    fn should_expand(&self, builder: &FstBuilder<F>, node: &UnCompiledNode<F>) -> bool {
+    fn should_expand(&self, builder: &FstBuilder<F>, idx: usize) -> bool {
+        let node = &builder.frontier[idx];
         builder.allow_array_arcs
             && ((node.depth <= FIXED_ARRAY_SHALLOW_DISTANCE as i32
                 && node.num_arcs >= FIXED_ARRAY_NUM_ARCS_SHALLOW as usize)
@@ -1033,7 +881,7 @@ impl<F: OutputFactory> FST<F> {
     }
 
     pub fn finish(&mut self, new_start_node: CompiledAddress) -> Result<()> {
-        assert!(new_start_node as usize <= self.bytes_store.get_position());
+        assert!(new_start_node <= self.bytes_store.get_position() as i64);
         if self.start_node != -1 {
             bail!(ErrorKind::IllegalState("already finished".into()));
         }
@@ -1055,28 +903,29 @@ impl<F: OutputFactory> FST<F> {
     fn cache_root_arcs(&mut self) -> Result<()> {
         // we should only be called once per fst
         let root = self.root_arc();
-        let parent = root.target.unwrap();
+        let parent = root.target;
         if self.target_has_arc(root.target) {
             let mut count = 0;
             let mut arcs = vec![None; 128];
             {
                 let mut input = self.bytes_reader();
-                let (mut arc, mut layout) =
-                    self.read_first_real_arc_with_layout(parent, &mut input)?;
+                let mut arc = self.read_first_real_arc(parent, &mut input)?;
 
                 loop {
                     assert_ne!(arc.label, END_LABEL);
                     let is_last = arc.is_last();
                     if arc.label < arcs.len() as i32 {
                         let idx = arc.label as usize;
-                        arcs[idx] = Some(arc);
+                        let mut new_arc = Arc::empty();
+                        new_arc.copy_from(&arc);
+                        arcs[idx] = Some(new_arc);
                     } else {
                         break;
                     }
                     if is_last {
                         break;
                     }
-                    arc = self.read_next_real_arc(&mut layout, &mut input, parent)?;
+                    self.read_next_real_arc(&mut arc, &mut input)?;
                     count += 1;
                 }
             }
@@ -1089,23 +938,11 @@ impl<F: OutputFactory> FST<F> {
     }
 
     pub fn save<T: DataOutput + ?Sized>(&self, out: &mut T) -> Result<()> {
-        if self.start_node != -1 {
+        if self.start_node == -1 {
             bail!(ErrorKind::IllegalState("call finish first!".into()));
         }
-        if self.node_address_lookup.is_some() {
-            bail!(ErrorKind::IllegalState(
-                "cannot save an FST pre-packed FST; it must first be packed".into()
-            ));
-        }
-        if self.packed && self.node_ref_to_address.is_none() {
-            bail!(ErrorKind::IllegalState(
-                "cannot save a FST which has been loaded from disk".into()
-            ));
-        }
         codec_util::write_header(out, FILE_FORMAT_NAME, VERSION_CURRENT)?;
-        if self.packed {
-            out.write_byte(1)?;
-        } else {
+        if VERSION_CURRENT < VERSION_PACKED_REMOVED {
             out.write_byte(0)?;
         }
         // TODO: really we should encode this as an arc, arriving
@@ -1119,10 +956,8 @@ impl<F: OutputFactory> FST<F> {
             self.output_factory
                 .write_final_output(empty_output, &mut empty_output_bytes)?;
 
-            if !self.packed {
-                // reverse
-                empty_output_bytes.reverse();
-            }
+            // reverse
+            empty_output_bytes.reverse();
             out.write_vint(empty_output_bytes.len() as i32)?;
             out.write_bytes(&empty_output_bytes, 0, empty_output_bytes.len())?;
         } else {
@@ -1134,402 +969,28 @@ impl<F: OutputFactory> FST<F> {
             InputType::Byte4 => 2,
         };
         out.write_byte(t)?;
-        if self.packed {
-            self.node_ref_to_address
-                .as_ref()
-                .unwrap()
-                .as_mutable()
-                .save(out.as_data_output_mut())?;
-        }
         out.write_vlong(self.start_node)?;
         if self.bytes_store.get_position() > 0 {
+            debug_assert!(!self.use_bytes_array);
             let num_bytes = self.bytes_store.get_position();
             out.write_vlong(num_bytes as i64)?;
             self.bytes_store.write_to(out)?;
+        } else {
+            debug_assert!(self.use_bytes_array);
+            debug_assert!(!self.bytes_array.is_empty());
+            out.write_vlong(self.bytes_array.len() as i64)?;
+            out.write_bytes(&self.bytes_array, 0, self.bytes_array.len())?;
         }
         Ok(())
     }
-
-    /// Expert: creates an FST by packing this one.  This
-    /// process requires substantial additional RAM (currently
-    /// up to ~8 bytes per node depending on
-    /// acceptable_overhead_ratio), but then should
-    /// produce a smaller FST.
-    ///
-    /// The implementation of this method uses ideas from
-    /// <a target="_blank" href="http://www.cs.put.poznan.pl/dweiss/site/publications/download/fsacomp.pdf">Smaller Representation of Finite State Automata</a>,
-    /// which describes techniques to reduce the size of a FST.
-    /// However, this is not a strict implementation of the
-    /// algorithms described in this paper.
-    ///
-    pub fn pack(
-        &mut self,
-        builder: &FstBuilder<F>,
-        min_in_count_deref: usize,
-        max_deref_nodes: usize,
-        acceptable_overhead_ratio: f32,
-    ) -> Result<FST<F>> {
-        // NOTE: maxDerefNodes is intentionally int: we cannot
-        // support > 2.1B deref nodes
-
-        // TODO: other things to try
-        //   - renumber the nodes to get more next / better locality?
-        //   - allow multiple input labels on an arc, so
-        //     singular chain of inputs can take one arc (on
-        //     wikipedia terms this could save another ~6%)
-        //   - in the ord case, the output '1' is presumably
-        //     very common (after NO_OUTPUT)... maybe use a bit
-        //     for it..?
-        //   - use spare bits in flags.... for top few labels /
-        //     outputs / targets
-        if self.node_address_lookup.is_none() {
-            bail!(ErrorKind::IllegalArgument(
-                "this FST was not built with willPackFST=true".into()
-            ));
-        }
-
-        // let no_output = self.outputs().empty();
-
-        let in_counts_count = self.in_counts.as_ref().unwrap().size();
-        let top_n = min(max_deref_nodes, in_counts_count);
-        let mut q = BinaryHeap::with_capacity(top_n);
-
-        // TODO: we could use more RAM efficient selection algo here...
-        for i in 0..in_counts_count {
-            let count = self.in_counts.as_ref().unwrap().get(i);
-            if count >= min_in_count_deref as i64 {
-                if q.len() < top_n {
-                    q.push(NodeAndInCount::new(i, count));
-                } else {
-                    let mut top = q.peek_mut().unwrap();
-                    if top.count > count {
-                        top.count = count;
-                        top.node = i;
-                    }
-                }
-            }
-        }
-
-        // free up ram
-        self.in_counts = None;
-
-        let mut top_node_map = HashMap::new();
-        let len = q.len();
-        for i in 0..len {
-            let n = q.pop().unwrap();
-            top_node_map.insert(n.node, len - 1 - i);
-        }
-
-        // +1 because node ords start at 1 (0 is reserved as stop node):
-        let mut new_node_address = GrowableWriter::new(
-            unsigned_bits_required(self.bytes_store.get_position() as i64),
-            (builder.node_count + 1) as usize,
-            acceptable_overhead_ratio,
-        );
-
-        // Fill initial coarse guess:
-        for i in 1..builder.node_count as usize + 1 {
-            new_node_address.set(
-                i,
-                1 + self.bytes_store.get_position() as i64
-                    - self.node_address_lookup.as_ref().unwrap().get(i),
-            );
-        }
-
-        let mut r = self.bytes_reader();
-
-        let mut fst: FST<F>;
-        let mut next_count = 0;
-        let mut abs_count = 0;
-        let mut top_count = 0;
-        let mut delta_count = 0;
-        loop {
-            let mut changed = true;
-            let mut neg_delta = false;
-
-            fst = FST::new_packed(
-                self.input_type,
-                self.output_factory.clone(),
-                self.bytes_store.block_bits,
-            );
-
-            // Skip 0 byte since 0 is reserved target:
-            fst.bytes_store.write_byte(0)?;
-
-            let mut address_error = 0;
-            let mut changed_count = 0;
-            // Since we re-reverse the bytes, we now write the
-            // nodes backwards, so that BIT_TARGET_NEXT is
-            // unchanged:
-            for i in 0..builder.node_count {
-                let node = (builder.node_count - i) as usize;
-
-                let address = fst.bytes_store.get_position();
-                if address as i64 != new_node_address.get(node) {
-                    address_error = address as i64 - new_node_address.get(node);
-                    changed = true;
-                    new_node_address.set(node, address as i64);
-                    changed_count += 1;
-                }
-
-                let mut node_arc_count = 0;
-                let mut bytes_per_arc = 0;
-
-                let mut retry = false;
-
-                // for assert
-                let mut any_neg_delta = false;
-
-                // Retry loop: possibly iterate more than once, if
-                // this is an array'd node and bytesPerArc changes:
-                loop {
-                    let (mut arc, mut layout) =
-                        self.read_first_real_arc_with_layout(node as i64, &mut r)?;
-                    let target = arc.target.unwrap() as usize;
-
-                    let mut use_arc_array = false;
-                    if let ArcLayoutContext::FixedArray {
-                        bytes_per_arc: per_arc,
-                        num_arcs,
-                        ..
-                    } = layout
-                    {
-                        // Write false first arc:
-                        if bytes_per_arc == 0 {
-                            bytes_per_arc = per_arc;
-                        }
-                        fst.bytes_store.write_byte(ARCS_AS_FIXED_ARRAY)?;
-                        fst.bytes_store.write_vint(num_arcs as i32)?;
-                        fst.bytes_store.write_vint(bytes_per_arc as i32)?;
-
-                        use_arc_array = true;
-                    }
-
-                    let mut max_bytes_per_arc = 0;
-                    loop {
-                        let arc_start_pos = fst.bytes_store.get_position();
-                        node_arc_count += 1;
-
-                        let mut flags = 0;
-
-                        if arc.is_last() {
-                            flags += BIT_LAST_ARC;
-                        }
-
-                        if !use_arc_array && node != 1 && target == node - 1 {
-                            flags += BIT_TARGET_NEXT;
-                            if !retry {
-                                next_count += 1;
-                            }
-                        }
-
-                        if arc.is_final() {
-                            flags += BIT_FINAL_ARC;
-                            if arc.next_final_output.is_some() {
-                                flags += BIT_ARC_HAS_FINAL_OUTPUT;
-                            }
-                        }
-
-                        if !self.target_has_arc(arc.target) {
-                            flags += BIT_STOP_NODE;
-                        }
-
-                        if arc.output.is_some() {
-                            flags += BIT_ARC_HAS_OUTPUT;
-                        }
-
-                        let abs_ptr: i64;
-                        let do_write_target =
-                            self.target_has_arc(arc.target) && (flags & BIT_TARGET_NEXT) == 0;
-                        if do_write_target {
-                            if let Some(ptr) = top_node_map.get(&target) {
-                                abs_ptr = *ptr as i64;
-                            } else {
-                                abs_ptr = top_node_map.len() as i64 + new_node_address.get(target)
-                                    + address_error;
-                            }
-
-                            let mut delta = new_node_address.get(target) + address_error
-                                - fst.bytes_store.get_position() as i64
-                                - 2;
-                            if delta < 0 {
-                                any_neg_delta = true;
-                                delta = 0;
-                            }
-
-                            if delta < abs_ptr {
-                                flags |= BIT_TARGET_DELTA;
-                            }
-                        } else {
-                            abs_ptr = 0;
-                        }
-
-                        assert_ne!(flags, ARCS_AS_FIXED_ARRAY);
-                        fst.bytes_store.write_byte(flags)?;
-
-                        fst.write_label_local(arc.label)?;
-
-                        if let Some(ref output) = arc.output {
-                            self.output_factory.write(output, &mut fst.bytes_store)?;
-                        }
-
-                        if let Some(ref output) = arc.next_final_output {
-                            self.output_factory.write(output, &mut fst.bytes_store)?;
-                        }
-
-                        if do_write_target {
-                            let mut delta = new_node_address.get(target) + address_error
-                                - fst.bytes_store.get_position() as i64;
-                            if delta < 0 {
-                                any_neg_delta = true;
-                                delta = 0;
-                            }
-
-                            if flag(flags, BIT_TARGET_DELTA) {
-                                fst.bytes_store.write_vlong(delta)?;
-                                if !retry {
-                                    delta_count += 1;
-                                }
-                            } else {
-                                fst.bytes_store.write_vlong(abs_ptr)?;
-                                if !retry {
-                                    if abs_ptr >= top_node_map.len() as i64 {
-                                        abs_count += 1;
-                                    } else {
-                                        top_count += 1;
-                                    }
-                                }
-                            }
-                        }
-
-                        if use_arc_array {
-                            let arc_bytes = fst.bytes_store.get_position() - arc_start_pos;
-                            max_bytes_per_arc = max(max_bytes_per_arc, arc_bytes);
-                            // NOTE: this may in fact go "backwards", if
-                            // somehow (rarely, possibly never) we use
-                            // more bytesPerArc in this rewrite than the
-                            // incoming FST did... but in this case we
-                            // will retry (below) so it's OK to ovewrite
-                            // bytes:
-                            // wasted += bytesPerArc - arcBytes;
-                            let pos = fst.bytes_store.get_position();
-                            fst.bytes_store
-                                .skip_bytes(arc_start_pos + bytes_per_arc - pos);
-                        }
-
-                        if arc.is_last() {
-                            break;
-                        }
-
-                        arc = self.read_next_real_arc(&mut layout, &mut r, arc.from.unwrap())?;
-                    }
-
-                    if use_arc_array {
-                        if max_bytes_per_arc == bytes_per_arc
-                            || (retry && max_bytes_per_arc <= bytes_per_arc)
-                        {
-                            // converged
-                            break;
-                        }
-                    } else {
-                        break;
-                    }
-
-                    // Retry:
-                    bytes_per_arc = max_bytes_per_arc;
-                    fst.bytes_store.truncate(address);
-                    node_arc_count = 0;
-                    retry = true;
-                    any_neg_delta = false;
-                }
-
-                debug!("node arc count: {}", node_arc_count);
-
-                neg_delta |= any_neg_delta;
-            }
-
-            debug!("node change count: {}", changed_count);
-
-            if !changed {
-                // We don't renumber the nodes (just reverse their
-                // order) so nodes should only point forward to
-                // other nodes because we only produce acyclic FSTs
-                // w/ nodes only pointing "forwards":
-                assert!(!neg_delta);
-                break;
-            }
-        }
-
-        debug!(
-            "next count: {}, abs count: {}, top count:{}, delta count: {}",
-            next_count, abs_count, top_count, delta_count
-        );
-
-        let mut max_address = 0;
-        for (k, _) in &top_node_map {
-            max_address = max(max_address, new_node_address.get(*k));
-        }
-
-        let mut node_ref_to_address_in = get_mutable_by_ratio_as_reader(
-            top_node_map.len(),
-            unsigned_bits_required(max_address),
-            acceptable_overhead_ratio,
-        );
-        for (k, v) in &top_node_map {
-            node_ref_to_address_in
-                .as_mutable_mut()
-                .set(*v, new_node_address.get(*k));
-        }
-        fst.node_ref_to_address = Some(node_ref_to_address_in);
-        fst.start_node = new_node_address.get(self.start_node as usize);
-
-        if let Some(ref empty) = self.empty_output {
-            fst.set_empty_output(empty.clone());
-        }
-
-        fst.bytes_store.finish();
-        fst.cache_root_arcs()?;
-
-        Ok(fst)
-    }
 }
 
-#[derive(Eq, PartialEq)]
-struct NodeAndInCount {
-    node: usize,
-    count: i64,
-}
-
-impl NodeAndInCount {
-    fn new(node: usize, count: i64) -> Self {
-        NodeAndInCount { node, count }
-    }
-}
-
-impl PartialOrd for NodeAndInCount {
-    fn partial_cmp(&self, other: &NodeAndInCount) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-// reversed order for binary heap
-impl Ord for NodeAndInCount {
-    fn cmp(&self, other: &Self) -> Ordering {
-        let ord = other.count.cmp(&self.count);
-        if ord != Ordering::Equal {
-            ord
-        } else {
-            self.node.cmp(&other.node)
-        }
-    }
-}
-
-enum FSTBytesReader<'a> {
-    Directional(DirectionalBytesReader<'a>),
+pub enum FSTBytesReader {
+    Directional(DirectionalBytesReader),
     BytesStore(StoreBytesReader),
 }
 
-impl<'a> BytesReader for FSTBytesReader<'a> {
+impl BytesReader for FSTBytesReader {
     fn position(&self) -> usize {
         match *self {
             FSTBytesReader::Directional(ref d) => d.position(),
@@ -1552,7 +1013,7 @@ impl<'a> BytesReader for FSTBytesReader<'a> {
     }
 }
 
-impl<'a> io::Read for FSTBytesReader<'a> {
+impl io::Read for FSTBytesReader {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         match *self {
             FSTBytesReader::Directional(ref mut d) => d.read(buf),
@@ -1561,7 +1022,7 @@ impl<'a> io::Read for FSTBytesReader<'a> {
     }
 }
 
-impl<'a> DataInput for FSTBytesReader<'a> {
+impl DataInput for FSTBytesReader {
     fn read_byte(&mut self) -> Result<u8> {
         match *self {
             FSTBytesReader::Directional(ref mut d) => d.read_byte(),
@@ -1588,7 +1049,7 @@ impl<'a> DataInput for FSTBytesReader<'a> {
 mod test {
     use super::*;
     use core::util::fst::bytes_output::*;
-    use core::util::ints_ref::{IntsRef, IntsRefBuilder};
+    use core::util::ints_ref::IntsRefBuilder;
 
     #[test]
     fn test_fst() {

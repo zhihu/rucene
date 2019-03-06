@@ -1,13 +1,14 @@
 use std::collections::hash_map::Entry as HashMapEntry;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 
 use memmap::Mmap;
 
-use core::store::{Directory, FSDirectory, IOContext};
-use core::store::{IndexInput, MmapIndexInput, ReadOnlySource};
+use core::store::lock::LockFactory;
+use core::store::{Directory, FSDirectory, IOContext, Lock};
+use core::store::{IndexInput, IndexOutput, MmapIndexInput, ReadOnlySource};
 use error::Result;
 
 #[derive(Default, Clone, Debug)]
@@ -97,8 +98,12 @@ pub struct MmapDirectory {
 }
 
 impl MmapDirectory {
-    pub fn new<T: AsRef<Path>>(directory: &T, _max_chunk_size: u32) -> Result<MmapDirectory> {
-        let directory = FSDirectory::new(directory)?;
+    pub fn new<T: AsRef<Path>>(
+        directory: &T,
+        lock_factory: Box<LockFactory>,
+        _max_chunk_size: u32,
+    ) -> Result<MmapDirectory> {
+        let directory = FSDirectory::new(directory, lock_factory)?;
         Ok(MmapDirectory {
             directory,
             preload: false,
@@ -116,10 +121,13 @@ impl Directory for MmapDirectory {
         self.directory.file_length(name)
     }
 
+    fn create_output(&self, name: &str, context: &IOContext) -> Result<Box<IndexOutput>> {
+        self.directory.create_output(name, context)
+    }
+
     fn open_input(&self, name: &str, _ctx: &IOContext) -> Result<Box<IndexInput>> {
         let full_path = self.directory.resolve(name);
         let mut mmap_cache = self.mmap_cache.lock()?;
-
         let boxed = mmap_cache
             .get_mmap(&full_path)?
             .map(ReadOnlySource::from)
@@ -127,7 +135,45 @@ impl Directory for MmapDirectory {
             .unwrap();
         Ok(Box::new(boxed))
     }
+
+    fn obtain_lock(&self, name: &str) -> Result<Box<Lock>> {
+        self.directory.obtain_lock(name)
+    }
+
+    fn create_temp_output(
+        &self,
+        prefix: &str,
+        suffix: &str,
+        ctx: &IOContext,
+    ) -> Result<Box<IndexOutput>> {
+        self.directory.create_temp_output(prefix, suffix, ctx)
+    }
+
+    fn delete_file(&self, name: &str) -> Result<()> {
+        self.directory.delete_file(name)
+    }
+
+    fn sync(&self, name: &HashSet<String>) -> Result<()> {
+        self.directory.sync(name)
+    }
+
+    /// Ensure that directory metadata, such as recent file renames, are made durable.
+    fn sync_meta_data(&self) -> Result<()> {
+        self.directory.sync_meta_data()
+    }
+
+    fn rename(&self, source: &str, dest: &str) -> Result<()> {
+        self.directory.rename(source, dest)
+    }
+
+    fn resolve(&self, name: &str) -> PathBuf {
+        self.directory.resolve(name)
+    }
 }
+
+unsafe impl Send for MmapDirectory {}
+
+unsafe impl Sync for MmapDirectory {}
 
 impl Drop for MmapDirectory {
     fn drop(&mut self) {}

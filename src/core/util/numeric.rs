@@ -1,5 +1,7 @@
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub enum Numeric {
+    Null,
+    Byte(i8),
     Short(i16),
     Int(i32),
     Long(i64),
@@ -10,21 +12,80 @@ pub enum Numeric {
 impl Numeric {
     pub fn byte_value(&self) -> i8 {
         match *self {
+            Numeric::Byte(v) => v,
             Numeric::Short(v) => v as i8,
             Numeric::Int(v) => v as i8,
             Numeric::Long(v) => v as i8,
             Numeric::Float(v) => v as i8,
             Numeric::Double(v) => v as i8,
+            Numeric::Null => 0 as i8,
         }
     }
 
     pub fn short_value(&self) -> i16 {
         match *self {
+            Numeric::Byte(v) => v as i16,
             Numeric::Short(v) => v,
             Numeric::Int(v) => v as i16,
             Numeric::Long(v) => v as i16,
             Numeric::Float(v) => v as i16,
             Numeric::Double(v) => v as i16,
+            Numeric::Null => 0 as i16,
+        }
+    }
+
+    pub fn int_value(&self) -> i32 {
+        match *self {
+            Numeric::Byte(v) => v as i32,
+            Numeric::Short(v) => v as i32,
+            Numeric::Int(v) => v,
+            Numeric::Long(v) => v as i32,
+            Numeric::Float(v) => v as i32,
+            Numeric::Double(v) => v as i32,
+            Numeric::Null => 0,
+        }
+    }
+
+    pub fn long_value(&self) -> i64 {
+        match *self {
+            Numeric::Byte(v) => v as i64,
+            Numeric::Short(v) => v as i64,
+            Numeric::Int(v) => v as i64,
+            Numeric::Long(v) => v,
+            Numeric::Float(v) => v as i64,
+            Numeric::Double(v) => v as i64,
+            Numeric::Null => 0,
+        }
+    }
+
+    pub fn float_value(&self) -> f32 {
+        match *self {
+            Numeric::Byte(v) => v as f32,
+            Numeric::Short(v) => v as f32,
+            Numeric::Int(v) => v as f32,
+            Numeric::Long(v) => v as f32,
+            Numeric::Float(v) => v,
+            Numeric::Double(v) => v as f32,
+            Numeric::Null => 0.0,
+        }
+    }
+
+    pub fn double_value(&self) -> f64 {
+        match *self {
+            Numeric::Byte(v) => v as f64,
+            Numeric::Short(v) => v as f64,
+            Numeric::Int(v) => v as f64,
+            Numeric::Long(v) => v as f64,
+            Numeric::Float(v) => v as f64,
+            Numeric::Double(v) => v,
+            Numeric::Null => 0.0,
+        }
+    }
+
+    pub fn is_null(&self) -> bool {
+        match *self {
+            Numeric::Null => true,
+            _ => false,
         }
     }
 }
@@ -71,16 +132,17 @@ impl From<f64> for Numeric {
     }
 }
 
-pub fn to_base36(val: i64) -> String {
-    let base36 = "0123456789abcdefghijklmnopqrstuvwxyz";
-    let mut val = val as usize;
-    let mut result = String::with_capacity(14);
+pub fn to_base36(val: u64) -> String {
+    let base36 = "0123456789abcdefghijklmnopqrstuvwxyz".as_bytes();
+    let mut val = val;
+    let mut result = Vec::with_capacity(14);
     loop {
         let idx = val % 36;
-        result += &base36[idx..idx + 1];
+        result.push(base36[idx as usize]);
         val /= 36;
         if val == 0 {
-            return result.chars().rev().collect();
+            result.reverse();
+            return String::from_utf8(result).unwrap();
         }
     }
 }
@@ -153,6 +215,7 @@ pub fn sortable_bytes2long(encoded: &[u8]) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn numeric_i32_to_i8_test() {
         let v = Numeric::Int(0x1235);

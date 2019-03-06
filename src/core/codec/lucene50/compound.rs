@@ -1,13 +1,14 @@
-use error::*;
-use std::collections::HashMap;
+use error::{ErrorKind, Result};
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
 use core::codec::codec_util;
 use core::codec::format::CompoundFormat;
-use core::store::IndexInput;
-use core::store::{Directory, DirectoryRc};
+use core::store::{Directory, DirectoryRc, Lock};
 use core::store::{IOContext, IO_CONTEXT_READONCE};
+use core::store::{IndexInput, IndexOutput};
 
 use core::index::{segment_file_name, strip_segment_name, SegmentInfo};
 
@@ -30,12 +31,69 @@ impl CompoundFormat for Lucene50CompoundFormat {
         si: &SegmentInfo,
         ioctx: &IOContext,
     ) -> Result<DirectoryRc> {
-        let reader = Lucene50CompoundReader::new(dir.clone(), si, ioctx)?;
+        let reader = Lucene50CompoundReader::new(dir, si, ioctx)?;
         Ok(Arc::new(reader))
     }
 
-    fn write(&self, _dir: DirectoryRc, _si: &SegmentInfo, _ioctx: &IOContext) -> Result<()> {
-        unimplemented!();
+    fn write(&self, dir: &Directory, si: &SegmentInfo, ctx: &IOContext) -> Result<()> {
+        let data_file = segment_file_name(&si.name, "", DATA_EXTENSION);
+        let entries_file = segment_file_name(&si.name, "", ENTRIES_EXTENSION);
+
+        let mut data = dir.create_output(&data_file, ctx)?;
+        let mut entries = dir.create_output(&entries_file, ctx)?;
+
+        codec_util::write_index_header(
+            data.as_mut(),
+            DATA_CODEC,
+            VERSION_CURRENT,
+            si.get_id(),
+            "",
+        )?;
+        codec_util::write_index_header(
+            entries.as_mut(),
+            ENTRY_CODEC,
+            VERSION_CURRENT,
+            si.get_id(),
+            "",
+        )?;
+
+        // write number of files
+        entries.write_vint(si.files().len() as i32)?;
+        for file in si.files() {
+            // write bytes for file
+            let start_offset = data.file_pointer();
+
+            let mut input = dir.open_checksum_input(file, &IOContext::Read(true))?;
+
+            // just copies the index header, verifying that its id matches what we expect
+            codec_util::verify_and_copy_index_header(input.as_mut(), data.as_mut(), si.get_id())?;
+
+            // copy all bytes except the footer
+            let num_bytes_to_copy =
+                input.len() as usize - codec_util::footer_length() - input.file_pointer() as usize;
+            data.copy_bytes(input.as_data_input(), num_bytes_to_copy)?;
+
+            // verify footer (checksum) matches for the incoming file we are copying
+            let checksum = codec_util::check_footer(input.as_mut())?;
+
+            // this is poached from codec_util::write_footer, be we need to use our own checksum
+            // not data.checksum(), but I think adding a public method to codec_util to do that
+            // is somewhat dangerous:
+            data.write_int(codec_util::FOOTER_MAGIC)?;
+            data.write_int(0)?;
+            data.write_long(checksum)?;
+
+            let end_offset = data.file_pointer();
+            let length = end_offset - start_offset;
+
+            // write entry for file
+            entries.write_string(strip_segment_name(file))?;
+            entries.write_long(start_offset)?;
+            entries.write_long(length)?;
+        }
+
+        codec_util::write_footer(data.as_mut())?;
+        codec_util::write_footer(entries.as_mut())
     }
 }
 
@@ -133,21 +191,6 @@ impl Lucene50CompoundReader {
 }
 
 impl Directory for Lucene50CompoundReader {
-    fn open_input(&self, name: &str, _context: &IOContext) -> Result<Box<IndexInput>> {
-        let id = strip_segment_name(name);
-        let entry = self.entries.get(&id).ok_or_else(|| {
-            let file_name = segment_file_name(&self.name, "", DATA_EXTENSION);
-            format!(
-                "No sub-file with id {} found in compound file \"{}\" (fileName={} files: {:?})",
-                id,
-                file_name,
-                name,
-                self.entries.keys()
-            )
-        })?;
-        self.input.slice(name, entry.0, entry.1)
-    }
-
     /// Returns an array of strings, one for each file in the directory.
     fn list_all(&self) -> Result<Vec<String>> {
         Ok(self.entries
@@ -160,9 +203,57 @@ impl Directory for Lucene50CompoundReader {
     /// @throws IOException if the file does not exist */
     fn file_length(&self, name: &str) -> Result<i64> {
         self.entries
-            .get(&strip_segment_name(name))
+            .get(strip_segment_name(name))
             .map(|e| e.1)
             .ok_or_else(|| "File not Found".into())
+    }
+
+    fn obtain_lock(&self, _name: &str) -> Result<Box<Lock>> {
+        bail!(ErrorKind::UnsupportedOperation(Cow::Borrowed("")))
+    }
+
+    fn create_temp_output(
+        &self,
+        _prefix: &str,
+        _suffix: &str,
+        _ctx: &IOContext,
+    ) -> Result<Box<IndexOutput>> {
+        unimplemented!();
+    }
+
+    fn delete_file(&self, _name: &str) -> Result<()> {
+        unimplemented!();
+    }
+
+    fn sync(&self, _name: &HashSet<String>) -> Result<()> {
+        bail!(ErrorKind::UnsupportedOperation(Cow::Borrowed("")))
+    }
+
+    fn sync_meta_data(&self) -> Result<()> {
+        Ok(())
+    }
+
+    fn create_output(&self, _name: &str, _ctx: &IOContext) -> Result<Box<IndexOutput>> {
+        unimplemented!()
+    }
+
+    fn rename(&self, _source: &str, _dest: &str) -> Result<()> {
+        unimplemented!()
+    }
+
+    fn open_input(&self, name: &str, _context: &IOContext) -> Result<Box<IndexInput>> {
+        let id = strip_segment_name(name);
+        let entry = self.entries.get(id).ok_or_else(|| {
+            let file_name = segment_file_name(&self.name, "", DATA_EXTENSION);
+            format!(
+                "No sub-file with id {} found in compound file \"{}\" (fileName={} files: {:?})",
+                id,
+                file_name,
+                name,
+                self.entries.keys()
+            )
+        })?;
+        self.input.slice(name, entry.0, entry.1)
     }
 }
 

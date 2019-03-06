@@ -1,6 +1,7 @@
 use core::index::{NumericDocValues, NumericDocValuesContext};
 use core::util::packed::packed_misc::{check_block_size, copy_by_buf, num_blocks};
-use core::util::packed::packed_misc::{GrowableWriter, Mutable};
+use core::util::packed::packed_misc::{get_mutable_by_format, Format, FormatAndBits,
+                                      GrowableWriter, Mutable};
 use core::util::LongValues;
 use std::cmp::min;
 
@@ -141,6 +142,112 @@ pub trait PagedMutable: LongValues + Sized {
 
     fn grow(&self) -> Self {
         self.grow_by_size(self.paged_mutable_base().size + 1)
+    }
+}
+
+/// A {@link PagedMutable}. This class slices data into fixed-size blocks
+/// which have the same number of bits per value. It can be a useful replacement
+/// for {@link PackedInts.Mutable} to store more than 2B values. @lucene.internal
+///
+pub struct PagedMutableHugeWriter {
+    base: PagedMutableBase,
+    format: Format,
+}
+
+impl PagedMutableHugeWriter {
+    pub fn new(
+        size: usize,
+        page_size: usize,
+        bits_per_value: i32,
+        acceptable_overhead_ratio: f32,
+    ) -> PagedMutableHugeWriter {
+        let fastest_bits =
+            FormatAndBits::fastest(page_size as i32, bits_per_value, acceptable_overhead_ratio);
+
+        PagedMutableHugeWriter::new_with_fillpages(
+            size,
+            page_size,
+            fastest_bits.bits_per_value,
+            &fastest_bits.format,
+            true,
+        )
+    }
+
+    pub fn new_with_fillpages(
+        size: usize,
+        page_size: usize,
+        bits_per_value: i32,
+        format: &Format,
+        fill_pages: bool,
+    ) -> PagedMutableHugeWriter {
+        let base = PagedMutableBase::new(bits_per_value, size, page_size);
+        let mut ret = PagedMutableHugeWriter {
+            base,
+            format: format.clone(),
+        };
+        if fill_pages {
+            ret.fill_pages();
+        }
+        return ret;
+    }
+
+    pub fn size(&self) -> usize {
+        self.base.size
+    }
+}
+
+impl PagedMutable for PagedMutableHugeWriter {
+    fn paged_mutable_base(&self) -> &PagedMutableBase {
+        &self.base
+    }
+
+    fn paged_mutable_base_mut(&mut self) -> &mut PagedMutableBase {
+        &mut self.base
+    }
+
+    fn new_mutable(&self, value_count: usize, bits_per_value: i32) -> Box<Mutable> {
+        debug_assert!(self.base.bits_per_value >= bits_per_value);
+        get_mutable_by_format(
+            value_count,
+            self.paged_mutable_base().bits_per_value,
+            self.format,
+        )
+    }
+
+    fn new_unfilled_copy(&self, new_size: usize) -> Self {
+        PagedMutableHugeWriter::new_with_fillpages(
+            new_size,
+            self.paged_mutable_base().page_size() as usize,
+            self.paged_mutable_base().bits_per_value,
+            &self.format,
+            false,
+        )
+    }
+}
+
+impl LongValues for PagedMutableHugeWriter {
+    fn get64_with_ctx(
+        &self,
+        _ctx: Option<[u8; 64]>,
+        index: i64,
+    ) -> Result<(i64, Option<[u8; 64]>)> {
+        debug_assert!(index >= 0 && index < self.base.size as i64);
+        let page_index = self.base.page_index(index as usize);
+        let index_in_page = self.base.index_in_page(index as usize);
+        Ok((self.base.sub_mutables[page_index].get(index_in_page), None))
+    }
+}
+
+impl NumericDocValues for PagedMutableHugeWriter {
+    fn get_with_ctx(
+        &self,
+        _ctx: NumericDocValuesContext,
+        doc_id: i32,
+    ) -> Result<(i64, NumericDocValuesContext)> {
+        debug_assert!(doc_id >= 0 && (doc_id as usize) < self.base.size);
+        let page_index = self.base.page_index(doc_id as usize);
+        let index_in_page = self.base.index_in_page(doc_id as usize);
+        Ok((self.base.sub_mutables[page_index].get(index_in_page), None))
     }
 }
 

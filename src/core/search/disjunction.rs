@@ -239,6 +239,10 @@ impl Query for DisjunctionMaxQuery {
     fn query_type(&self) -> &'static str {
         DISJUNCTION_MAX
     }
+
+    fn as_any(&self) -> &::std::any::Any {
+        self
+    }
 }
 
 impl fmt::Display for DisjunctionMaxQuery {

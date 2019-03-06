@@ -1,7 +1,7 @@
-use core::codec::lucene54::CompressedBinaryTermIterator;
-use core::codec::lucene54::{BinaryEntry, ReverseTermsIndexRef};
-use core::index::term::SeekStatus;
-use core::index::term::TermIterator;
+use core::codec::CompressedBinaryTermIterator;
+use core::codec::{BinaryEntry, ReverseTermsIndexRef};
+use core::index::SeekStatus;
+use core::index::TermIterator;
 use core::store::IndexInput;
 use core::util::packed::MonotonicBlockPackedReaderRef;
 use core::util::DocId;

@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
 use std::hash::{Hash, Hasher};
 
+use core::search::field_comparator::ComparatorValue;
 use core::search::sort_field::SortFieldType;
 use core::util::DocId;
 use core::util::VariantValue;
@@ -29,14 +30,14 @@ impl WilsonInfo {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct SortInfo {
     pub sort_type: SortFieldType,
-    pub sort_value: VariantValue,
+    pub sort_value: ComparatorValue,
     pub wilson_infos: Vec<WilsonInfo>,
 }
 
 impl SortInfo {
     pub fn new(
         sort_type: SortFieldType,
-        sort_value: VariantValue,
+        sort_value: ComparatorValue,
         wilson_infos: Vec<WilsonInfo>,
     ) -> SortInfo {
         SortInfo {
@@ -154,8 +155,8 @@ mod tests {
         let collected_search_group = CollectedSearchGroup::new(
             VariantValue::Int(1),
             vec![
-                SortInfo::new(SortFieldType::Score, VariantValue::Int(1), vec![]),
-                SortInfo::new(SortFieldType::Doc, VariantValue::Int(2), vec![]),
+                SortInfo::new(SortFieldType::Score, ComparatorValue::Score(1.0), vec![]),
+                SortInfo::new(SortFieldType::Doc, ComparatorValue::Doc(2), vec![]),
             ],
             3,
             0,
@@ -165,8 +166,8 @@ mod tests {
         assert_eq!(
             collected_search_group.sort_info_list,
             vec![
-                SortInfo::new(SortFieldType::Score, VariantValue::Int(1), vec![]),
-                SortInfo::new(SortFieldType::Doc, VariantValue::Int(2), vec![]),
+                SortInfo::new(SortFieldType::Score, ComparatorValue::Score(1.0), vec![]),
+                SortInfo::new(SortFieldType::Doc, ComparatorValue::Doc(2), vec![]),
             ]
         );
         assert_eq!(collected_search_group.comparator_slot, 3);
@@ -178,8 +179,8 @@ mod tests {
         let collected_search_group_one = CollectedSearchGroup::new(
             VariantValue::Int(1),
             vec![
-                SortInfo::new(SortFieldType::Score, VariantValue::Int(1), vec![]),
-                SortInfo::new(SortFieldType::Doc, VariantValue::Int(2), vec![]),
+                SortInfo::new(SortFieldType::Score, ComparatorValue::Score(1.0), vec![]),
+                SortInfo::new(SortFieldType::Doc, ComparatorValue::Doc(2), vec![]),
             ],
             10,
             0,
@@ -190,8 +191,8 @@ mod tests {
             let collected_search_group_two = CollectedSearchGroup::new(
                 VariantValue::Int(1),
                 vec![
-                    SortInfo::new(SortFieldType::Score, VariantValue::Int(1), vec![]),
-                    SortInfo::new(SortFieldType::Doc, VariantValue::Int(2), vec![]),
+                    SortInfo::new(SortFieldType::Score, ComparatorValue::Score(1.0), vec![]),
+                    SortInfo::new(SortFieldType::Doc, ComparatorValue::Doc(2), vec![]),
                 ],
                 10,
                 0,
@@ -205,8 +206,8 @@ mod tests {
             let collected_search_group_two = CollectedSearchGroup::new(
                 VariantValue::Int(2),
                 vec![
-                    SortInfo::new(SortFieldType::Score, VariantValue::Int(1), vec![]),
-                    SortInfo::new(SortFieldType::Doc, VariantValue::Int(2), vec![]),
+                    SortInfo::new(SortFieldType::Score, ComparatorValue::Score(1.0), vec![]),
+                    SortInfo::new(SortFieldType::Doc, ComparatorValue::Doc(2), vec![]),
                 ],
                 10,
                 0,
@@ -220,8 +221,8 @@ mod tests {
             let collected_search_group_two = CollectedSearchGroup::new(
                 VariantValue::Int(1),
                 vec![
-                    SortInfo::new(SortFieldType::Score, VariantValue::Int(1), vec![]),
-                    SortInfo::new(SortFieldType::Doc, VariantValue::Int(3), vec![]),
+                    SortInfo::new(SortFieldType::Score, ComparatorValue::Score(1.0), vec![]),
+                    SortInfo::new(SortFieldType::Doc, ComparatorValue::Doc(3), vec![]),
                 ],
                 10,
                 0,
@@ -242,8 +243,8 @@ mod tests {
             let collected_search_group_two = CollectedSearchGroup::new(
                 VariantValue::Int(1),
                 vec![
-                    SortInfo::new(SortFieldType::Score, VariantValue::Int(2), vec![]),
-                    SortInfo::new(SortFieldType::Doc, VariantValue::Int(2), vec![]),
+                    SortInfo::new(SortFieldType::Score, ComparatorValue::Score(2.0), vec![]),
+                    SortInfo::new(SortFieldType::Doc, ComparatorValue::Doc(2), vec![]),
                 ],
                 10,
                 0,
@@ -264,8 +265,8 @@ mod tests {
             let collected_search_group_two = CollectedSearchGroup::new(
                 VariantValue::Int(1),
                 vec![
-                    SortInfo::new(SortFieldType::Score, VariantValue::Int(1), vec![]),
-                    SortInfo::new(SortFieldType::Doc, VariantValue::Int(2), vec![]),
+                    SortInfo::new(SortFieldType::Score, ComparatorValue::Score(1.0), vec![]),
+                    SortInfo::new(SortFieldType::Doc, ComparatorValue::Doc(2), vec![]),
                 ],
                 10,
                 1,

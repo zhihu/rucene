@@ -1,12 +1,14 @@
-use std::collections::hash_map::HashMap;
-use std::sync::Arc;
-
 use core::codec::FieldsProducerRef;
 use core::index::Term;
 use core::search::posting_iterator::*;
 use core::search::{DocIterator, Payload, NO_MORE_DOCS};
 use core::util::DocId;
-use error::*;
+
+use error::Result;
+
+use std::any::Any;
+use std::collections::hash_map::HashMap;
+use std::sync::Arc;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TermPosition {
@@ -117,6 +119,10 @@ impl PostingIterator for EmptyPostingIterator {
 
     fn payload(&self) -> Result<Payload> {
         Ok(Payload::new())
+    }
+
+    fn as_any_mut(&mut self) -> &mut Any {
+        self
     }
 }
 

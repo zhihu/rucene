@@ -2,6 +2,7 @@ use core::store::{DataInput, IndexInput, RandomAccessInput};
 use error::ErrorKind::{IllegalArgument, IllegalState};
 use error::Result;
 use memmap::{Mmap, MmapOptions};
+use std::fmt::Debug;
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
@@ -150,11 +151,11 @@ impl Clone for MmapIndexInput {
 }
 
 impl MmapIndexInput {
-    pub fn new(name: &str) -> Result<MmapIndexInput> {
-        let mmap = MmapIndexInput::mmap(Path::new(name), 0, 0)?;
+    pub fn new<P: AsRef<Path> + Debug>(name: P) -> Result<MmapIndexInput> {
+        let mmap = MmapIndexInput::mmap(name.as_ref(), 0, 0)?;
         Ok(mmap.map(ReadOnlySource::from)
             .map(MmapIndexInput::from)
-            .ok_or_else(|| IllegalState(format!("Memmap empty file: {}", name)))?)
+            .ok_or_else(|| IllegalState(format!("Memmap empty file: {:?}", name)))?)
     }
 
     pub fn mmap(path: &Path, offset: usize, length: usize) -> Result<Option<Arc<Mmap>>> {
@@ -252,6 +253,10 @@ impl IndexInput for MmapIndexInput {
     fn name(&self) -> &str {
         "MmapIndexInput" // hard-coded
     }
+
+    fn as_data_input(&mut self) -> &mut DataInput {
+        self
+    }
 }
 
 impl DataInput for MmapIndexInput {}
@@ -306,12 +311,14 @@ mod tests {
     use core::store::DataOutput;
     use core::store::FSIndexOutput;
     use std::io::Write;
+    use std::path::Path;
 
     #[test]
     fn test_mmap_index_input() {
+        let path = Path::new("test.txt").into();
         let name = "test.txt";
 
-        let mut fsout = FSIndexOutput::new(name).unwrap();
+        let mut fsout = FSIndexOutput::new(&path).unwrap();
         fsout.write_byte(b'a').unwrap();
         fsout.write_short(0x7F_i16).unwrap();
         fsout.write_long(567_890).unwrap();
@@ -328,9 +335,10 @@ mod tests {
 
     #[test]
     fn test_mmap_random_access_input() {
+        let path = Path::new("test.txt").into();
         let name = "test.txt";
 
-        let mut fsout = FSIndexOutput::new(name).unwrap();
+        let mut fsout = FSIndexOutput::new(&path).unwrap();
         fsout.write_byte(b'a').unwrap();
         fsout.write_short(0x7F_i16).unwrap();
         fsout.write_long(567_890).unwrap();

@@ -1,9 +1,10 @@
-use core::index::field_info::FieldInfo;
-use core::index::stored_field_visitor::{Status, StoredFieldVisitor};
+use core::doc::{Document, FieldType, StoredField};
 use core::index::DocValuesType;
+use core::index::FieldInfo;
+use core::index::{Status, StoredFieldVisitor};
 use core::util::VariantValue;
 
-use core::doc::{Document, FieldType, StoredField};
+use error::Result;
 
 pub struct DocumentStoredFieldVisitor {
     pub fields: Vec<StoredField>,
@@ -24,15 +25,16 @@ impl DocumentStoredFieldVisitor {
 }
 
 impl StoredFieldVisitor for DocumentStoredFieldVisitor {
-    fn binary_field(&mut self, field_info: &FieldInfo, value: Vec<u8>) {
+    fn binary_field(&mut self, field_info: &FieldInfo, value: Vec<u8>) -> Result<()> {
         self.fields.push(StoredField::new(
             &field_info.name,
             None,
             VariantValue::Binary(value),
         ));
+        Ok(())
     }
 
-    fn string_field(&mut self, field_info: &FieldInfo, value: Vec<u8>) {
+    fn string_field(&mut self, field_info: &FieldInfo, value: Vec<u8>) -> Result<()> {
         let field_type = FieldType::new(
             true,
             true,
@@ -43,6 +45,8 @@ impl StoredFieldVisitor for DocumentStoredFieldVisitor {
             field_info.has_norms(),
             field_info.index_options,
             DocValuesType::Null,
+            0,
+            0,
         );
 
         match String::from_utf8(value) {
@@ -57,45 +61,50 @@ impl StoredFieldVisitor for DocumentStoredFieldVisitor {
                 assert!(false, format!("string_field failed: {:?}", e));
             }
         }
+        Ok(())
     }
 
-    fn int_field(&mut self, field_info: &FieldInfo, value: i32) {
+    fn int_field(&mut self, field_info: &FieldInfo, value: i32) -> Result<()> {
         self.fields.push(StoredField::new(
             &field_info.name,
             None,
             VariantValue::Int(value),
-        ))
+        ));
+        Ok(())
     }
 
-    fn long_field(&mut self, field_info: &FieldInfo, value: i64) {
+    fn long_field(&mut self, field_info: &FieldInfo, value: i64) -> Result<()> {
         self.fields.push(StoredField::new(
             &field_info.name,
             None,
             VariantValue::Long(value),
-        ))
+        ));
+        Ok(())
     }
 
-    fn float_field(&mut self, field_info: &FieldInfo, value: f32) {
+    fn float_field(&mut self, field_info: &FieldInfo, value: f32) -> Result<()> {
         self.fields.push(StoredField::new(
             &field_info.name,
             None,
             VariantValue::Float(value),
-        ))
+        ));
+        Ok(())
     }
 
-    fn double_field(&mut self, field_info: &FieldInfo, value: f64) {
+    fn double_field(&mut self, field_info: &FieldInfo, value: f64) -> Result<()> {
         self.fields.push(StoredField::new(
             &field_info.name,
             None,
             VariantValue::Double(value),
-        ))
+        ));
+        Ok(())
     }
 
     fn needs_field(&self, field_info: &FieldInfo) -> Status {
         if self.fields_to_add.is_empty() || self.fields_to_add.contains(&field_info.name) {
-            Status::YES
+            Status::Yes
         } else {
-            Status::NO
+            Status::No
         }
     }
 }

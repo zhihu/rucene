@@ -1,9 +1,10 @@
-use core::store::{DataInput, DataOutput};
+use core::store::{DataInput, DataOutput, IndexInput, RandomAccessInput};
 use core::util::fst::BytesReader;
 use error::*;
 use std::cmp::min;
 use std::io;
 use std::io::{Read, Write};
+use std::mem;
 use std::vec::Vec;
 
 #[derive(Debug)]
@@ -12,7 +13,8 @@ pub struct BytesStore {
     pub block_bits: usize,
     block_mask: usize,
     blocks: Vec<Vec<u8>>,
-    current_index: isize, // the index of current block in blocks, -1 for invalid
+    current_index: isize,
+    // the index of current block in blocks, -1 for invalid
 }
 
 impl BytesStore {
@@ -65,13 +67,17 @@ impl BytesStore {
             current_index: -1,
         })
     }
-}
 
-impl DataOutput for BytesStore {
-    fn as_data_output_mut(&mut self) -> &mut DataOutput {
-        self
+    pub fn len(&self) -> usize {
+        if self.blocks.len() >= 1 {
+            self.block_size * (self.blocks.len() - 1) + self.blocks[self.blocks.len() - 1].len()
+        } else {
+            0
+        }
     }
 }
+
+impl DataOutput for BytesStore {}
 
 impl Write for BytesStore {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
@@ -108,20 +114,19 @@ impl Write for BytesStore {
     }
 
     fn flush(&mut self) -> io::Result<()> {
+        self.finish();
         Ok(())
     }
 }
 
 impl BytesStore {
-    #[allow(dead_code)]
     pub fn get_position(&self) -> usize {
         if self.blocks.is_empty() {
             assert_eq!(self.current_index, -1);
             0
         } else {
-            debug_assert!(self.current_index >= 0);
-            (self.blocks.len() - 1) * self.block_size
-                + self.blocks[self.current_index as usize].len()
+            let length = self.blocks.len() - 1;
+            length * self.block_size + self.blocks[length].len()
         }
     }
 
@@ -159,7 +164,7 @@ impl BytesStore {
                 break;
             } else {
                 len -= down_to;
-                self.blocks[block_index][down_to - len..down_to]
+                self.blocks[block_index][..down_to]
                     .copy_from_slice(&bytes[offset + len..offset + len + down_to]);
                 block_index -= 1;
                 down_to = self.block_size;
@@ -192,7 +197,7 @@ impl BytesStore {
     /// only call it on already written parts.
     #[allow(dead_code)]
     pub fn copy_bytes_local(&mut self, src: usize, dest: usize, len: usize) {
-        assert!(src < dest && dest <= self.get_position());
+        assert!(src < dest);
 
         if dest + len > self.get_position() {
             let grow_size = dest + len - self.get_position();
@@ -293,7 +298,7 @@ impl BytesStore {
             let current_block_size = (&self.blocks)[self.current_index as usize].len();
             let chunk = self.block_size - current_block_size;
             if len <= chunk {
-                self.blocks[self.current_index as usize].resize(current_block_size, 0u8);
+                self.blocks[self.current_index as usize].resize(current_block_size + len, 0u8);
                 break;
             } else {
                 len -= chunk;
@@ -314,7 +319,9 @@ impl BytesStore {
         {
             let length = new_len & self.block_bits;
             if length == 0 {
-                block_index -= 1;
+                if block_index > 0 {
+                    block_index -= 1;
+                }
             } else {
                 self.blocks[block_index].truncate(length);
             }
@@ -331,6 +338,7 @@ impl BytesStore {
     pub fn finish(&mut self) {
         if self.current_index >= 0 {
             let idx = self.current_index as usize;
+            debug_assert_eq!(idx, self.blocks.len() - 1);
             let mut buffer = vec![0u8; self.blocks[idx].len()];
             buffer.copy_from_slice(&self.blocks[idx]);
             self.blocks[idx] = buffer;
@@ -349,20 +357,41 @@ impl BytesStore {
     }
 }
 
+enum VecStores {
+    Owned(Vec<Vec<u8>>),
+    Borrowed(*const Vec<Vec<u8>>),
+}
+
+impl AsRef<[Vec<u8>]> for VecStores {
+    fn as_ref(&self) -> &[Vec<u8>] {
+        match self {
+            VecStores::Owned(o) => &o,
+            VecStores::Borrowed(v) => unsafe { &**v },
+        }
+    }
+}
+
 pub struct StoreBytesReader {
-    blocks: *const Vec<Vec<u8>>,
-    block_size: usize,
-    block_bits: usize,
-    block_mask: usize,
-    block_index: usize,
-    next_read: usize,
+    blocks: VecStores,
+    pub length: usize,
+    pub block_size: usize,
+    pub block_bits: usize,
+    pub block_mask: usize,
+    pub block_index: usize,
+    pub next_read: usize,
     pub reversed: bool,
 }
 
+unsafe impl Send for StoreBytesReader {}
+
+unsafe impl Sync for StoreBytesReader {}
+
 impl StoreBytesReader {
     fn new(bytes_store: &BytesStore, reversed: bool) -> StoreBytesReader {
+        let length = bytes_store.len();
         StoreBytesReader {
-            blocks: &bytes_store.blocks as *const Vec<Vec<u8>>,
+            blocks: VecStores::Borrowed(&bytes_store.blocks),
+            length,
             block_size: bytes_store.block_size,
             block_bits: bytes_store.block_bits,
             block_mask: bytes_store.block_mask,
@@ -372,11 +401,20 @@ impl StoreBytesReader {
         }
     }
 
-    //    fn blocks(&self) -> &Vec<Vec<u8>> {
-    //        unsafe {
-    //            &*self.blocks
-    //        }
-    //    }
+    pub fn from_bytes_store(mut bytes_store: BytesStore, reversed: bool) -> Self {
+        let length = bytes_store.len();
+        let blocks = mem::replace(&mut bytes_store.blocks, Vec::with_capacity(0));
+        StoreBytesReader {
+            blocks: VecStores::Owned(blocks),
+            length,
+            block_size: bytes_store.block_size,
+            block_bits: bytes_store.block_bits,
+            block_mask: bytes_store.block_mask,
+            block_index: 0,
+            next_read: 0,
+            reversed,
+        }
+    }
 }
 
 impl BytesReader for StoreBytesReader {
@@ -398,7 +436,9 @@ impl BytesReader for StoreBytesReader {
 impl DataInput for StoreBytesReader {
     fn read_byte(&mut self) -> Result<u8> {
         let b = unsafe {
-            *(*((*self.blocks).as_ptr().offset(self.block_index as isize)))
+            *(*((*self.blocks.as_ref())
+                .as_ptr()
+                .offset(self.block_index as isize)))
                 .as_ptr()
                 .offset(self.next_read as isize)
         };
@@ -446,6 +486,40 @@ impl DataInput for StoreBytesReader {
         }
 
         Ok(())
+    }
+}
+
+impl IndexInput for StoreBytesReader {
+    fn clone(&self) -> Result<Box<IndexInput>> {
+        unreachable!()
+    }
+
+    fn file_pointer(&self) -> i64 {
+        self.position() as i64
+    }
+
+    fn seek(&mut self, pos: i64) -> Result<()> {
+        if pos < 0 || pos > self.length as i64 {
+            bail!(ErrorKind::IllegalArgument("pos out of range!".into()));
+        }
+        self.set_position(pos as usize);
+        Ok(())
+    }
+
+    fn len(&self) -> u64 {
+        self.length as u64
+    }
+
+    fn name(&self) -> &str {
+        "IndexInput(BytesStore)"
+    }
+
+    fn random_access_slice(&self, _offset: i64, _length: i64) -> Result<Box<RandomAccessInput>> {
+        unreachable!()
+    }
+
+    fn as_data_input(&mut self) -> &mut DataInput {
+        self
     }
 }
 

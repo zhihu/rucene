@@ -5,16 +5,18 @@ use core::search::posting_iterator::PostingIterator;
 use error::ErrorKind::UnsupportedOperation;
 use error::Result;
 
+use std::any::Any;
+
 /// Implements a `TermIterator` wrapping a provided `SortedDocValues`
-pub struct SortedDocValuesTermIterator<'a> {
-    values: &'a SortedDocValues,
+pub struct SortedDocValuesTermIterator<T: SortedDocValues + 'static> {
+    values: T,
     current_ord: i32,
     scratch: Vec<u8>,
 }
 
-impl<'a> SortedDocValuesTermIterator<'a> {
+impl<T: SortedDocValues + 'static> SortedDocValuesTermIterator<T> {
     /// Creates a new TermIterator over the provided values
-    pub fn new<'c, 'b: 'c>(values: &'b SortedDocValues) -> SortedDocValuesTermIterator<'c> {
+    pub fn new(values: T) -> SortedDocValuesTermIterator<T> {
         SortedDocValuesTermIterator {
             values,
             current_ord: -1,
@@ -23,16 +25,16 @@ impl<'a> SortedDocValuesTermIterator<'a> {
     }
 }
 
-impl<'a> TermIterator for SortedDocValuesTermIterator<'a> {
-    fn next(&mut self) -> Result<Vec<u8>> {
+impl<T: SortedDocValues + 'static> TermIterator for SortedDocValuesTermIterator<T> {
+    fn next(&mut self) -> Result<Option<Vec<u8>>> {
         self.current_ord += 1;
         if self.current_ord >= self.values.get_value_count() as i32 {
             // FIXME: return Option<&[u8]> instead
-            Ok(Vec::new())
+            Ok(None)
         } else {
             let bytes = self.values.lookup_ord(self.current_ord)?;
             self.scratch = bytes.to_vec();
-            Ok(self.scratch.clone())
+            Ok(Some(self.scratch.clone()))
         }
     }
 
@@ -82,7 +84,7 @@ impl<'a> TermIterator for SortedDocValuesTermIterator<'a> {
         Ok(&self.scratch)
     }
 
-    fn ord(&mut self) -> Result<i64> {
+    fn ord(&self) -> Result<i64> {
         Ok(i64::from(self.current_ord))
     }
 
@@ -107,5 +109,9 @@ impl<'a> TermIterator for SortedDocValuesTermIterator<'a> {
             ord: i64::from(self.current_ord),
         };
         Ok(Box::new(state))
+    }
+
+    fn as_any(&self) -> &Any {
+        self
     }
 }

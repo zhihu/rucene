@@ -79,4 +79,8 @@ impl IndexInput for BufferedChecksumIndexInput {
     fn random_access_slice(&self, _offset: i64, _length: i64) -> Result<Box<RandomAccessInput>> {
         unimplemented!()
     }
+
+    fn as_data_input(&mut self) -> &mut DataInput {
+        self
+    }
 }

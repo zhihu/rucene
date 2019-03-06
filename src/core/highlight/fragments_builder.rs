@@ -62,7 +62,7 @@ impl BaseFragmentsBuilder {
             let mut field_end = 0i32;
 
             for field in fields {
-                let string_value = format!("{}", field.field.fields_data());
+                let string_value = format!("{}", field.field.fields_data().unwrap());
                 if string_value.is_empty() {
                     field_end += 1;
                     continue;
@@ -285,7 +285,8 @@ impl BaseFragmentsBuilder {
     ) -> Result<String> {
         while (buffer.chars().count() as i32) < end_offset && index[0] < (values.len() as i32) {
             let i = index[0];
-            buffer.push_str(format!("{}", values[i as usize].field.fields_data()).as_str());
+            buffer
+                .push_str(format!("{}", values[i as usize].field.fields_data().unwrap()).as_str());
             index[0] += 1;
             buffer.push(self.multi_valued_separator);
         }

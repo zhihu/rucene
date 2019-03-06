@@ -57,6 +57,7 @@ error_chain! {
         SerdeJsonError(self::serde_json::Error);
         NulError(::std::ffi::NulError);
         TimeError(::std::time::SystemTimeError);
+        CharsError(::std::io::CharsError);
     }
 
     links {

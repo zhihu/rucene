@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
+use core::util::Numeric;
+
 #[derive(Debug, Clone, Deserialize)]
 pub enum VariantValue {
     Bool(bool),
@@ -50,6 +52,16 @@ impl VariantValue {
             _ => None,
         }
     }
+    pub fn get_numeric(&self) -> Option<Numeric> {
+        match *self {
+            VariantValue::Short(s) => Some(Numeric::Short(s)),
+            VariantValue::Int(i) => Some(Numeric::Int(i)),
+            VariantValue::Long(l) => Some(Numeric::Long(l)),
+            VariantValue::Float(f) => Some(Numeric::Float(f)),
+            VariantValue::Double(d) => Some(Numeric::Double(d)),
+            _ => None,
+        }
+    }
     pub fn get_float(&self) -> Option<f32> {
         match self {
             VariantValue::Float(f) => Some(*f),
@@ -72,6 +84,19 @@ impl VariantValue {
         match self {
             VariantValue::Binary(b) => Some(b.as_slice()),
             _ => None,
+        }
+    }
+
+    // used for index sort check
+    pub fn is_zero(&self) -> bool {
+        match self {
+            VariantValue::Int(i) => *i == 0,
+            VariantValue::Long(i) => *i == 0,
+            VariantValue::Float(i) => *i == 0.0,
+            VariantValue::Double(i) => *i == 0.0,
+            _ => {
+                unreachable!();
+            }
         }
     }
 
@@ -295,9 +320,25 @@ impl<'a> From<&'a [u8]> for VariantValue {
     }
 }
 
+impl From<Numeric> for VariantValue {
+    fn from(val: Numeric) -> Self {
+        debug_assert!(!val.is_null());
+        match val {
+            Numeric::Byte(b) => VariantValue::Char(b as u8 as char),
+            Numeric::Short(s) => VariantValue::Short(s),
+            Numeric::Int(i) => VariantValue::Int(i),
+            Numeric::Long(v) => VariantValue::Long(v),
+            Numeric::Float(v) => VariantValue::Float(v),
+            Numeric::Double(v) => VariantValue::Double(v),
+            Numeric::Null => unreachable!(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn variant_bool_test() {
         let b = VariantValue::Bool(true);

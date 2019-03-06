@@ -1,56 +1,59 @@
+use std::any::Any;
+use std::cmp::Ordering;
 use std::collections::btree_map::Keys;
 use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::io::Read;
+use std::mem;
 use std::ops::DerefMut;
 use std::string::ToString;
 use std::sync::Arc;
 
+use core::codec::blocktree::term_iter_frame::SegmentTermsIterFrame;
 use core::codec::codec_util;
-use core::codec::lucene50::{lucene50_decode_term, Lucene50PostingsReader,
-                            Lucene50PostingsReaderRef};
 use core::codec::BlockTermState;
-use core::codec::{FieldsProducer, FieldsProducerRef};
+use core::codec::FieldsProducer;
+use core::codec::{lucene50_decode_term, Lucene50PostingsReader, Lucene50PostingsReaderRef};
 use core::index::segment_file_name;
-use core::index::term::TermState;
-use core::index::term::{SeekStatus, TermIterator, Terms, TermsRef};
 use core::index::{FieldInfo, FieldInfoRef, Fields};
 use core::index::{IndexOptions, SegmentReadState};
+use core::index::{SeekStatus, TermIterator, TermState, Terms, TermsRef};
 use core::search::posting_iterator::PostingIterator;
-use core::store::DataInput;
+use core::store::{ByteArrayDataInput, DataInput};
 use core::store::{ByteBufferIndexInput, IndexInput};
 use core::util::bit_util::UnsignedShift;
-use core::util::fst::{ByteSequenceOutputFactory, FST};
-use error::Result;
+use core::util::fst::{Arc as FSTArc, ByteSequenceOutput, ByteSequenceOutputFactory,
+                      FSTBytesReader, OutputFactory, FST};
+use error::{ErrorKind::IllegalState, Result};
 
 const OUTPUT_FLAGS_NUM_BITS: usize = 2;
 // const OUTPUT_FLAGS_MASK: i32 = 0x3;
-const OUTPUT_FLAGS_IS_FLOOR: i64 = 0x1;
-const OUTPUT_FLAGS_HAS_TERMS: i64 = 0x2;
+pub const OUTPUT_FLAGS_IS_FLOOR: i64 = 0x1;
+pub const OUTPUT_FLAGS_HAS_TERMS: i64 = 0x2;
 
 /// Extension of terms file
-const TERMS_EXTENSION: &str = "tim";
-const TERMS_CODEC_NAME: &str = "BlockTreeTermsDict";
+pub const TERMS_EXTENSION: &str = "tim";
+pub const TERMS_CODEC_NAME: &str = "BlockTreeTermsDict";
 
 /// Initial terms format.
-const VERSION_START: i32 = 0;
+pub const VERSION_START: i32 = 0;
 
 /// Auto-prefix terms.
-const VERSION_AUTO_PREFIX_TERMS: i32 = 1;
+pub const VERSION_AUTO_PREFIX_TERMS: i32 = 1;
 
 /// Conditional auto-prefix terms: we record at write time whether
 /// this field did write any auto-prefix terms.
 /// const VERSION_AUTO_PREFIX_TERMS_COND: i32 = 2;
 
 /// Auto-prefix terms have been superseded by points.
-const VERSION_AUTO_PREFIX_TERMS_REMOVED: i32 = 3;
+pub const VERSION_AUTO_PREFIX_TERMS_REMOVED: i32 = 3;
 
 /// Current terms format.
-const VERSION_CURRENT: i32 = VERSION_AUTO_PREFIX_TERMS_REMOVED;
+pub const VERSION_CURRENT: i32 = VERSION_AUTO_PREFIX_TERMS_REMOVED;
 
 /// Extension of terms index file
-const TERMS_INDEX_EXTENSION: &str = "tip";
-const TERMS_INDEX_CODEC_NAME: &str = "BlockTreeTermsIndex";
+pub const TERMS_INDEX_EXTENSION: &str = "tip";
+pub const TERMS_INDEX_CODEC_NAME: &str = "BlockTreeTermsIndex";
 
 type IndexInputRef = Arc<IndexInput>;
 
@@ -97,7 +100,7 @@ pub struct BlockTreeTermsReader {
 
     // Reads the terms dict entries, to gather state to
     // produce DocsEnum on demand
-    postings_reader: Lucene50PostingsReaderRef,
+    pub postings_reader: Lucene50PostingsReaderRef,
 
     fields: BTreeMap<String, FieldReaderRef>,
 
@@ -121,7 +124,7 @@ impl BlockTreeTermsReader {
     ) -> Result<BlockTreeTermsReader> {
         let segment = Arc::new(state.segment_info.name.clone());
         let terms_name = segment_file_name(&segment, &state.segment_suffix, TERMS_EXTENSION);
-        let mut terms_in = state.directory.open_input(&terms_name, &state.context)?;
+        let mut terms_in = state.directory.open_input(&terms_name, state.context)?;
         let version = codec_util::check_index_header(
             terms_in.as_mut(),
             TERMS_CODEC_NAME,
@@ -151,7 +154,7 @@ impl BlockTreeTermsReader {
         };
 
         let index_name = segment_file_name(&segment, &state.segment_suffix, TERMS_INDEX_EXTENSION);
-        let mut index_in = state.directory.open_input(&index_name, &state.context)?;
+        let mut index_in = state.directory.open_input(&index_name, state.context)?;
         codec_util::check_index_header(
             index_in.as_mut(),
             TERMS_INDEX_CODEC_NAME,
@@ -181,6 +184,18 @@ impl BlockTreeTermsReader {
             bail!("invalid num_fields: {}", num_fields);
         }
 
+        let readers_terms_in = Arc::from(terms_in.clone()?);
+        let mut terms_reader = BlockTreeTermsReader {
+            terms_in: readers_terms_in,
+            postings_reader: postings_reader.clone(),
+            fields: BTreeMap::default(),
+            segment: segment.clone(),
+            version,
+            any_auto_prefix_terms,
+            dir_offset: 0,
+            index_dir_offset: 0,
+        };
+
         let fields = {
             let mut fields = BTreeMap::new();
 
@@ -200,7 +215,7 @@ impl BlockTreeTermsReader {
                 }
                 let mut root_code = vec![0 as u8; num_bytes as usize];
                 terms_in.read_exact(&mut root_code)?;
-                let field_info = state.field_infos.by_number.get(&field);
+                let field_info = state.field_infos.by_number.get(&(field as u32));
                 if field_info.is_none() {
                     bail!("invalid field number: {}", field);
                 }
@@ -251,6 +266,7 @@ impl BlockTreeTermsReader {
                 }
                 let terms_in = Arc::from(terms_in.clone()?);
                 let mut reader = Arc::new(FieldReader::new(
+                    terms_reader.clone_without_fields(),
                     segment.clone(),
                     field_info.clone(),
                     num_terms,
@@ -271,17 +287,21 @@ impl BlockTreeTermsReader {
             fields
         };
 
-        let terms_in = Arc::from(terms_in);
-        Ok(BlockTreeTermsReader {
-            terms_in,
-            postings_reader: postings_reader.clone(),
-            fields,
-            segment,
-            version,
-            any_auto_prefix_terms,
-            dir_offset: 0,
-            index_dir_offset: 0,
-        })
+        terms_reader.fields = fields;
+        Ok(terms_reader)
+    }
+
+    fn clone_without_fields(&self) -> BlockTreeTermsReader {
+        BlockTreeTermsReader {
+            terms_in: Arc::clone(&self.terms_in),
+            postings_reader: Arc::clone(&self.postings_reader),
+            fields: BTreeMap::default(),
+            segment: Arc::clone(&self.segment),
+            version: self.version,
+            any_auto_prefix_terms: self.any_auto_prefix_terms,
+            dir_offset: self.dir_offset,
+            index_dir_offset: self.index_dir_offset,
+        }
     }
 
     fn read_bytes(input: &mut IndexInput) -> Result<Vec<u8>> {
@@ -325,23 +345,15 @@ impl BlockTreeTermsReader {
     }
 
     fn check_integrity(&self) -> Result<()> {
-        let mut input = (*self.terms_in).clone()?;
-        codec_util::checksum_entire_file(input.as_mut())?;
+        let input = (*self.terms_in).clone()?;
+        // codec_util::checksum_entire_file(input.as_mut())?;
         self.postings_reader.check_integrity()
-    }
-
-    fn get_merge_instance(&self) -> Result<FieldsProducerRef> {
-        unimplemented!()
     }
 }
 
 impl FieldsProducer for BlockTreeTermsReader {
     fn check_integrity(&self) -> Result<()> {
         self.check_integrity()
-    }
-
-    fn get_merge_instance(&self) -> Result<FieldsProducerRef> {
-        self.get_merge_instance()
     }
 }
 
@@ -377,10 +389,11 @@ pub struct FieldReader {
     root_code: Vec<u8>,
     min_term: Vec<u8>,
     max_term: Vec<u8>,
-    longs_size: i32,
+    pub longs_size: i32,
     index: Option<FSTRef>,
     terms_in: IndexInputRef,
     postings_reader: Lucene50PostingsReaderRef,
+    pub parent: BlockTreeTermsReader,
 }
 
 type FieldReaderRef = Arc<FieldReader>;
@@ -388,6 +401,7 @@ type FieldReaderRef = Arc<FieldReader>;
 impl FieldReader {
     #[allow(too_many_arguments)]
     pub fn new(
+        parent: BlockTreeTermsReader,
         segment: Arc<String>,
         field_info: FieldInfoRef,
         num_terms: i64,
@@ -432,6 +446,7 @@ impl FieldReader {
             index,
             terms_in,
             postings_reader,
+            parent,
         })
     }
 
@@ -450,19 +465,32 @@ impl FieldReader {
     pub fn field_info(&self) -> &FieldInfo {
         self.field_info.as_ref()
     }
+
+    #[inline]
+    pub fn index(&self) -> &FSTRef {
+        self.index.as_ref().unwrap()
+    }
 }
 
 impl<'a> Terms for FieldReader {
-    fn min(&self) -> Result<Vec<u8>> {
-        Ok(self.min_term.clone())
+    fn min(&self) -> Result<Option<Vec<u8>>> {
+        Ok(Some(self.min_term.clone()))
     }
 
-    fn max(&self) -> Result<Vec<u8>> {
-        Ok(self.max_term.clone())
+    fn max(&self) -> Result<Option<Vec<u8>>> {
+        Ok(Some(self.max_term.clone()))
     }
 
     fn stats(&self) -> Result<String> {
-        unimplemented!()
+        let field_info = self.field_info.clone();
+        debug_assert!(self.index.is_some());
+        let fst = self.index.as_ref().cloned().unwrap();
+        let postings_reader = self.postings_reader.clone();
+        let terms_in = self.terms_in.clone();
+        let mut iter = SegmentTermIterator::new(self, terms_in, postings_reader, fst, field_info);
+        let stats = iter.compute_block_stats()?;
+
+        stats.to_string()
     }
 
     fn has_freqs(&self) -> Result<bool> {
@@ -637,6 +665,45 @@ impl Stats {
             field: String::from(field),
         }
     }
+    pub fn start_block(&mut self, frame: &SegmentTermsIterFrame, is_floor: bool) {
+        self.total_block_count += 1;
+        if is_floor {
+            if frame.fp == frame.fp_orig {
+                self.floor_block_count += 1;
+            }
+            self.floor_sub_block_count += 1;
+        } else {
+            self.non_floor_block_count += 1;
+        }
+        if self.block_count_by_prefix_len.len() <= frame.prefix {
+            self.block_count_by_prefix_len.resize(frame.prefix + 1, 0);
+        }
+        self.block_count_by_prefix_len[frame.prefix] += 1;
+        self.start_block_count += 1;
+        self.total_block_suffix_bytes += frame.suffixes_reader.length() as i64;
+        self.total_block_stats_bytes += frame.stats_reader.length() as i64;
+    }
+
+    pub fn end_block(&mut self, frame: &SegmentTermsIterFrame) -> Result<()> {
+        let term_count = if frame.is_leaf_block {
+            frame.ent_count
+        } else {
+            frame.state.term_block_ord
+        };
+        let sub_block_count = frame.ent_count - term_count;
+        match (term_count, sub_block_count) {
+            (0, x) if x > 0 => self.sub_blocks_only_block_count += 1,
+            (x, 0) if x > 0 => self.terms_only_block_count += 1,
+            (x, y) if x > 0 && y > 0 => self.mixed_block_count += 1,
+            (_, _) => bail!("illegal state term_count sub_block_count"),
+        }
+        self.end_block_count += 1;
+        let other_bytes = frame.fp_end - frame.fp - frame.suffixes_reader.length() as i64
+            - frame.stats_reader.length() as i64;
+        debug_assert!(other_bytes > 0);
+        self.total_block_other_bytes += other_bytes;
+        Ok(())
+    }
 
     pub fn index_num_bytes(&self) -> i64 {
         self.index_num_bytes
@@ -739,7 +806,7 @@ impl Stats {
         );
     }
 
-    fn to_string(&self) -> Result<String> {
+    pub fn to_string(&self) -> Result<String> {
         let mut string = String::with_capacity(1024);
         string.write_fmt(format_args!("  index FST:"))?;
         string.write_fmt(format_args!("    {} bytes", self.index_num_bytes))?;
@@ -823,30 +890,37 @@ pub struct SegmentTermIterator {
     field_info: Arc<FieldInfo>,
     fst: FSTRef,
     postings_reader: Lucene50PostingsReaderRef,
-    input: Option<Box<IndexInput>>,
+    pub input: Option<Box<IndexInput>>,
+    static_frame: SegmentTermsIterFrame,
+    frame_inited: bool,
+    pub stack: Vec<SegmentTermsIterFrame>,
+    pub current_frame_ord: isize,
+    // index in stack, -1 for static_frame
     terms_in: IndexInputRef,
+    fr: *const FieldReader,
     // Lazy init:
-    term_exists: bool,
+    pub term_exists: bool,
 
     #[allow(dead_code)]
     ord: i32,
-    #[allow(dead_code)]
-    target_before_current_length: i32,
-    #[allow(dead_code)]
-    valid_index_prefix: i32,
+    target_before_current_length: isize,
+    valid_index_prefix: usize,
 
     // assert only:
     eof: bool,
+    fst_reader: FSTBytesReader,
+    arcs: Vec<FSTArc<ByteSequenceOutput>>,
 
-    term: Vec<u8>,
+    pub term: Vec<u8>,
+    pub term_len: usize,
 
     // term state
-    scratch_reader: ByteBufferIndexInput,
+    scratch_reader: ByteArrayDataInput<Vec<u8>>,
     suffix_reader: ByteBufferIndexInput,
     stats_reader: ByteBufferIndexInput,
     bytes_reader: ByteBufferIndexInput,
 
-    floor_reader: Option<ByteBufferIndexInput>,
+    floor_reader: Option<ByteArrayDataInput<Vec<u8>>>,
 
     has_terms: bool,
     #[allow(dead_code)]
@@ -913,12 +987,26 @@ impl<'a> SegmentTermIterator {
         let longs = vec![0 as i64; field_reader.longs_size as usize];
         // TODO
         let version_auto_prefix = false;
-        let scratch_reader = ByteBufferIndexInput::with_capacity(0);
+        let scratch_reader = ByteArrayDataInput::new(Vec::with_capacity(0));
         let suffix_reader = ByteBufferIndexInput::with_capacity(128);
         let stats_reader = ByteBufferIndexInput::with_capacity(64);
         let bytes_reader = ByteBufferIndexInput::with_capacity(32);
         let state = BlockTermState::new();
         let segment = field_reader.segment.clone();
+
+        let mut arcs = vec![];
+        if let Some(ref index) = field_reader.index {
+            arcs.push(index.root_arc());
+        } else {
+            arcs.push(FSTArc::empty());
+        }
+        let fst_reader = if let Some(ref index) = field_reader.index {
+            index.bytes_reader()
+        } else {
+            // NOTE: fst reader is always used when self.fr.index is Some,
+            // so this will be safe because it will never be used
+            unsafe { mem::uninitialized() }
+        };
 
         SegmentTermIterator {
             field_info,
@@ -926,12 +1014,20 @@ impl<'a> SegmentTermIterator {
             fst,
             postings_reader,
             input: None,
+            static_frame: SegmentTermsIterFrame::default(),
+            frame_inited: false,
+            stack: vec![],
+            current_frame_ord: -1,
             term: Vec::new(),
+            term_len: 0,
+            fr: field_reader,
             term_exists: false,
             ord: 0,
             target_before_current_length: 0,
             valid_index_prefix: 0,
             eof: false,
+            fst_reader,
+            arcs,
 
             // term state related
             scratch_reader,
@@ -965,19 +1061,31 @@ impl<'a> SegmentTermIterator {
         }
     }
 
+    fn init(&mut self) {
+        let iter = self as *mut SegmentTermIterator;
+        self.static_frame.init(unsafe { &mut *iter }, -1);
+        self.frame_inited = true;
+    }
+
+    #[inline]
+    pub fn field_reader(&self) -> &FieldReader {
+        unsafe { &*self.fr }
+    }
+
     pub fn is_term_exists(&self) -> bool {
         self.term_exists
     }
 
+    #[inline]
     pub fn term(&self) -> &[u8] {
-        &self.term
+        &self.term[..self.term_len]
     }
 
     pub fn term_mut(&mut self) -> &mut [u8] {
-        &mut self.term
+        &mut self.term[..self.term_len]
     }
 
-    fn init_index_input(&mut self) -> Result<()> {
+    pub fn init_index_input(&mut self) -> Result<()> {
         if self.input.is_none() {
             self.input = Some((*self.terms_in).clone()?);
         }
@@ -985,12 +1093,87 @@ impl<'a> SegmentTermIterator {
     }
 
     #[allow(dead_code)]
-    fn compute_block_stats(&self) -> Result<Stats> {
-        // let field_reader = self.field_reader.lock()?;
-        // let parent = field_reader.parent();
-        // let block_reader = parent.lock()?;
-        // Ok(Stats::new(block_reader.segment(), self.field_info.name()))
-        unimplemented!()
+    fn compute_block_stats(&mut self) -> Result<Stats> {
+        let mut stats = Stats::new(
+            &self.field_reader().parent.segment,
+            &self.field_reader().field_info.name,
+        );
+        if self.field_reader().index.is_some() {
+            // stats.index_num_bytes = self.fr.index.unwrap().
+        }
+        self.current_frame_ord = -1;
+
+        let arc = {
+            if let Some(ref fst_reader) = self.field_reader().index {
+                Some(fst_reader.root_arc())
+            } else {
+                None
+            }
+        };
+        let root_code = self.field_reader().root_code().to_vec();
+        self.current_frame_ord = self.push_frame_by_data(arc, &root_code, 0)? as isize;
+        self.current_frame().fp_orig = self.current_frame().fp;
+        self.current_frame().load_block()?;
+        self.valid_index_prefix = 0;
+
+        {
+            let frame = self.current_frame();
+            stats.start_block(frame, !frame.is_last_in_floor);
+        }
+
+        'all_term: loop {
+            let next_ent = self.current_frame().next_ent;
+            let ent_count = self.current_frame().ent_count;
+            while next_ent == ent_count {
+                stats.end_block(self.current_frame())?;
+                if !self.current_frame().is_last_in_floor {
+                    self.current_frame().load_next_floor_block()?;
+                    stats.start_block(self.current_frame(), true);
+                    break;
+                } else {
+                    let ord = self.current_frame().ord;
+                    if ord == 0 {
+                        break 'all_term;
+                    }
+                    let last_fp = self.current_frame().fp_orig;
+                    self.current_frame_ord = ord - 1;
+                    debug_assert!(last_fp == self.current_frame().last_sub_fp);
+                }
+            }
+            loop {
+                if self.current_frame().next()? {
+                    let last_sub_fp = self.current_frame().last_sub_fp;
+                    let term_len = self.term_len;
+                    self.current_frame_ord =
+                        self.push_frame_by_fp(None, last_sub_fp, term_len)? as isize;
+                    self.current_frame().load_block()?;
+                    let frame = self.current_frame();
+                    stats.start_block(frame, !frame.is_last_in_floor);
+                } else {
+                    stats.term(self.term());
+                    break;
+                }
+            }
+        }
+        stats.finish();
+
+        self.current_frame_ord = -1;
+
+        let arc = {
+            if let Some(ref fst_reader) = self.field_reader().index {
+                Some(fst_reader.root_arc())
+            } else {
+                None
+            }
+        };
+        let root_code = self.field_reader().root_code().to_vec();
+        self.current_frame_ord = self.push_frame_by_data(arc, &root_code, 0)? as isize;
+        self.current_frame().rewind();
+        self.current_frame().load_block()?;
+        self.valid_index_prefix = 0;
+        self.term.clear();
+        self.term_len = 0;
+        Ok(stats)
     }
 
     fn clear_eof(&mut self) {
@@ -1049,6 +1232,67 @@ impl<'a> SegmentTermIterator {
         }
         self.state.term_block_ord = self.meta_data_upto;
         Ok(self.state.clone())
+    }
+
+    fn push_frame_by_data(
+        &mut self,
+        arc: Option<FSTArc<ByteSequenceOutput>>,
+        frame_data: &[u8],
+        length: usize,
+    ) -> Result<usize> {
+        self.scratch_reader.reset(frame_data.to_vec());
+        let code = self.scratch_reader.read_vlong()?;
+        let fp_seek = code.unsigned_shift(OUTPUT_FLAGS_NUM_BITS);
+        let idx = (1 + self.current_frame_ord) as usize;
+        let ord = self.get_frame(idx);
+        self.stack[ord].has_terms = (code & OUTPUT_FLAGS_HAS_TERMS) != 0;
+        self.stack[ord].has_terms_orig = self.stack[ord].has_terms;
+        self.stack[ord].is_floor = (code & OUTPUT_FLAGS_IS_FLOOR) != 0;
+        if self.stack[ord].is_floor {
+            self.stack[ord].set_floor_data(&mut self.scratch_reader, frame_data)?;
+        }
+        self.push_frame_by_fp(arc, fp_seek, length)?;
+        Ok(ord)
+    }
+
+    // Pushes next'd frame or seek'd frame; we later
+    // lazy-load the frame only when needed
+    pub fn push_frame_by_fp(
+        &mut self,
+        arc: Option<FSTArc<ByteSequenceOutput>>,
+        fp: i64,
+        length: usize,
+    ) -> Result<usize> {
+        let idx = (1 + self.current_frame_ord) as usize;
+        let ord = self.get_frame(idx);
+        self.stack[ord].arc = arc;
+        if self.stack[ord].fp_orig == fp && self.stack[ord].next_ent != -1 {
+            if self.stack[ord].ord > self.target_before_current_length as isize {
+                self.stack[ord].rewind();
+            }
+            debug_assert_eq!(length, self.stack[ord].prefix);
+        } else {
+            let frame = &mut self.stack[ord];
+            frame.next_ent = -1;
+            frame.prefix = length;
+            frame.state.term_block_ord = 0;
+            frame.fp = fp;
+            frame.fp_orig = fp;
+            frame.last_sub_fp = -1;
+        }
+
+        Ok(ord)
+    }
+
+    fn get_frame(&mut self, ord: usize) -> usize {
+        if ord >= self.stack.len() {
+            for cur in self.stack.len()..ord + 1 {
+                let frame = SegmentTermsIterFrame::new(self, cur as isize);
+                self.stack.push(frame);
+            }
+        }
+        debug_assert_eq!(self.stack[ord].ord, ord as isize);
+        ord as usize
     }
 
     // pub fn set_floor_data(&mut self) -> Result<()> {
@@ -1383,11 +1627,12 @@ impl<'a> SegmentTermIterator {
     fn fill_term(&mut self) -> Result<()> {
         let term_length = (self.prefix + self.suffix) as usize;
         self.term.resize(term_length, 0);
+        self.term_len = term_length;
         let prefix = self.prefix as usize;
         let suffix = self.suffix as usize;
         self.suffix_reader.seek(i64::from(self.start_byte_pos))?;
         self.suffix_reader
-            .read_exact(&mut self.term[prefix..prefix + suffix])?;
+            .read_exact(&mut self.term[prefix..term_length])?;
         Ok(())
     }
 
@@ -1474,87 +1719,514 @@ impl<'a> SegmentTermIterator {
         }
         Ok(())
     }
+
+    pub fn current_frame(&mut self) -> &mut SegmentTermsIterFrame {
+        if self.current_frame_ord >= 0 {
+            &mut self.stack[self.current_frame_ord as usize]
+        } else {
+            &mut self.static_frame
+        }
+    }
+
+    fn add_arc(&mut self, arc: FSTArc<ByteSequenceOutput>, index: usize) {
+        if index < self.arcs.len() {
+            self.arcs[index] = arc;
+        } else {
+            let cnt = index + 1 - self.arcs.len();
+            self.arcs.reserve(cnt);
+            for i in self.arcs.len()..index {
+                self.arcs.push(FSTArc::empty());
+            }
+            self.arcs.push(arc);
+        }
+    }
+
+    pub fn resize_term(&mut self, len: usize) {
+        self.term.resize(len, 0);
+        self.term_len = len;
+    }
 }
 
-impl<'a> TermIterator for SegmentTermIterator {
-    fn next(&mut self) -> Result<Vec<u8>> {
+impl TermIterator for SegmentTermIterator {
+    // Decodes only the term bytes of the next term.  If caller then asks for
+    // metadata, ie docFreq, totalTermFreq or pulls a D/&PEnum, we then (lazily)
+    // decode all metadata up to the current term.
+    fn next(&mut self) -> Result<Option<Vec<u8>>> {
         // fresh iterator, seek to first term
-        //
-        // if self.input.is_none() {
-        // {
-        // let mut field_reader = self.field_reader;
-        // self.arc = if self.fst {
-        // Some(field_reader.index.as_mut().unwrap().root_arc())
-        // } else {
-        // None
-        // };
-        // }
-        // self.frame_ord += 1;
-        // self.load_block()?;
-        // }
-        //
-        // self.target_before_current_length = self.frame_ord;
-        // assert!(!self.eof);
-        //
-        // {
-        // let term = self.term().unwrap();
-        // let result = self.seek_exact(&term).unwrap();
-        //
-        // assert!(result);
-        // }
+        if !self.frame_inited {
+            self.init();
+        }
+        if self.input.is_none() {
+            let arc = {
+                if let Some(ref fst_reader) = self.field_reader().index {
+                    Some(fst_reader.root_arc())
+                } else {
+                    None
+                }
+            };
+            let root_code = self.field_reader().root_code().to_vec();
+            self.current_frame_ord = self.push_frame_by_data(arc, &root_code, 0)? as isize;
+            self.current_frame().load_block()?;
+        }
 
-        unimplemented!()
+        self.target_before_current_length = self.current_frame_ord as isize;
+        assert!(!self.eof);
+
+        if self.current_frame_ord == self.static_frame.ord {
+            // If seek was previously called and the term was
+            // cached, or seek(TermState) was called, usually
+            // caller is just going to pull a D/&PEnum or get
+            // docFreq, etc.  But, if they then call next(),
+            // this method catches up all internal state so next()
+            // works properly:
+            let term = self.term[..self.term_len].to_vec();
+            let result = self.seek_exact(&term)?;
+            debug_assert!(result);
+        }
+
+        // Pop finished blocks:
+        debug_assert!(self.current_frame_ord >= 0);
+        let mut current_idx = self.current_frame_ord as usize;
+        while self.stack[current_idx].next_ent == self.stack[current_idx].ent_count {
+            if !self.stack[current_idx].is_last_in_floor {
+                // Advance to next floor block
+                self.stack[current_idx].load_next_floor_block()?;
+                break;
+            } else {
+                if current_idx == 0 {
+                    self.eof = true;
+                    self.term.clear();
+                    self.term_len = 0;
+                    self.valid_index_prefix = 0;
+                    self.stack[0].rewind();
+                    self.term_exists = false;
+                    return Ok(None);
+                }
+
+                let last_fp = self.stack[current_idx].fp_orig;
+                self.current_frame_ord -= 1;
+                current_idx -= 1;
+
+                if self.stack[current_idx].next_ent == -1
+                    || self.stack[current_idx].last_sub_fp != last_fp
+                {
+                    // We popped into a frame that's not loaded
+                    // yet or not scan'd to the right entry
+                    self.stack[current_idx].scan_to_floor_frame(&self.term[..self.term_len])?;
+                    self.stack[current_idx].load_block()?;
+                    self.stack[current_idx].scan_to_sub_block(last_fp)?;
+                }
+
+                // Note that the seek state (last seek) has been
+                // invalidated beyond this depth
+                self.valid_index_prefix =
+                    self.valid_index_prefix.min(self.stack[current_idx].prefix);
+            }
+        }
+
+        loop {
+            if self.stack[self.current_frame_ord as usize].next()? {
+                // Push to new block:
+                let fp = self.stack[self.current_frame_ord as usize].last_sub_fp;
+                let term_len = self.term_len;
+                self.current_frame_ord = self.push_frame_by_fp(None, fp, term_len)? as isize;
+                // This is a "next" frame -- even if it's
+                // floor'd we must pretend it isn't so we don't
+                // try to scan to the right floor frame:
+                self.stack[self.current_frame_ord as usize].load_block()?;
+            } else {
+                return Ok(Some(self.term().to_vec()));
+            }
+        }
     }
 
     fn seek_exact(&mut self, target: &[u8]) -> Result<bool> {
-        self.term.clear();
-        self.term.extend(target.iter());
+        if self.term.len() < target.len() {
+            self.term.resize(target.len(), 0);
+        }
+        // self.term.copy_from_slice(target);
+        let outputs = ByteSequenceOutputFactory::new();
 
         self.clear_eof();
-        {
-            let (output, prefix) = { self.fst.floor(target)? };
+        let mut arc_idx = 0;
+        // debug_assert!(self.arcs[arc_idx].is_final());
+        let mut output;
+        let mut target_upto;
+        self.target_before_current_length = self.current_frame_ord;
+        if self.current_frame_ord != self.static_frame.ord {
+            // We are already seek'd; find the common
+            // prefix of new seek term vs current term and
+            // re-use the corresponding seek state.  For
+            // example, if app first seeks to foobar, then
+            // seeks to foobaz, we can re-use the seek state
+            // for the first 5 bytes.
+            output = self.arcs[arc_idx]
+                .output
+                .clone()
+                .unwrap_or_else(|| outputs.empty());
+            target_upto = 0;
+            let mut last_frame_idx = 0;
+            debug_assert!(self.valid_index_prefix <= self.term_len);
+            let target_limit = target.len().min(self.valid_index_prefix);
 
-            let output: Vec<u8> = output.into();
-            let output_len = output.len();
-            self.scratch_reader.reset(output);
-            let code = self.scratch_reader.read_vlong()?;
-            self.fp = code.unsigned_shift(OUTPUT_FLAGS_NUM_BITS);
-            self.fp_orig = self.fp;
-            self.has_terms = (code & OUTPUT_FLAGS_HAS_TERMS) != 0;
-            self.is_floor = (code & OUTPUT_FLAGS_IS_FLOOR) != 0;
-            self.floor_reader = if self.is_floor {
-                let position = self.scratch_reader.position();
-                let mut floor_reader = ByteBufferIndexInput::from(self.scratch_reader
-                    .get_slice_clone(position as i64, output_len - position)?);
-                self.num_follow_floor_blocks = floor_reader.read_vint()?;
-                self.next_floor_label = i32::from(floor_reader.read_byte()?);
-                Some(floor_reader)
+            let mut cmp = Ordering::Equal;
+            // TODO: reverse vLong byte order for better FST
+            // prefix output sharing
+
+            // First compare up to valid seek frames:
+            while target_upto < target_limit {
+                cmp = self.term[target_upto].cmp(&target[target_upto]);
+                if cmp != Ordering::Equal {
+                    break;
+                }
+                arc_idx = target_upto + 1;
+                debug_assert_eq!(self.arcs[arc_idx].label, target[target_upto] as u32 as i32);
+                if let Some(ref out) = self.arcs[arc_idx].output {
+                    output = outputs.add(&output, out);
+                }
+                if self.arcs[arc_idx].is_final() {
+                    last_frame_idx = 1 + last_frame_idx;
+                }
+                target_upto += 1;
+            }
+
+            if cmp == Ordering::Equal {
+                let target_upto_mid = target_upto;
+
+                // Second compare the rest of the term, but
+                // don't save arc/output/frame; we only do this
+                // to find out if the target term is before,
+                // equal or after the current term
+                let target_limit2 = target.len().min(self.term_len);
+                while target_upto < target_limit2 {
+                    cmp = self.term[target_upto].cmp(&target[target_upto]);
+                    if cmp != Ordering::Equal {
+                        break;
+                    }
+                    target_upto += 1;
+                }
+
+                if cmp == Ordering::Equal {
+                    cmp = self.term_len.cmp(&target.len());
+                }
+                target_upto = target_upto_mid;
+            }
+
+            match cmp {
+                Ordering::Less => {
+                    // Common case: target term is after current
+                    // term, ie, app is seeking multiple terms
+                    // in sorted order
+                    self.current_frame_ord = last_frame_idx;
+                }
+                Ordering::Greater => {
+                    // Uncommon case: target term
+                    // is before current term; this means we can
+                    // keep the currentFrame but we must rewind it
+                    // (so we scan from the start)
+                    self.target_before_current_length = last_frame_idx;
+                    self.current_frame_ord = last_frame_idx;
+                    self.current_frame().rewind();
+                }
+                Ordering::Equal => {
+                    // Target is exactly the same as current term
+                    debug_assert_eq!(self.term_len, target.len());
+                    if self.term_exists {
+                        return Ok(true);
+                    }
+                }
+            }
+        } else {
+            self.target_before_current_length = -1;
+            let arc = self.field_reader().index.as_ref().unwrap().root_arc();
+            self.arcs[0] = arc;
+            arc_idx = 0;
+
+            // Empty string prefix must have an output (block) in the index!
+            debug_assert!(self.arcs[0].is_final());
+            debug_assert!(self.arcs[0].output.is_some());
+
+            output = self.arcs[0].output.clone().unwrap();
+            self.current_frame_ord = self.static_frame.ord;
+            target_upto = 0;
+            let cur_output = if let Some(ref out) = self.arcs[0].next_final_output {
+                outputs.add(&output, out)
             } else {
-                None
+                output.clone()
             };
-            self.next_ent = -1;
-            self.prefix = prefix as i32;
-            self.state.term_block_ord = 0;
-            self.last_sub_fp = -1;
+            let arc = Some(self.arcs[0].clone());
+            let idx = self.push_frame_by_data(arc, cur_output.inner(), 0)?;
+            self.current_frame_ord = idx as isize;
         }
-        self.scan_to_floor_frame(target)?;
-        self.load_block()?;
-        Ok(match self.scan_to_term(target, true)? {
-            SeekStatus::Found => true,
-            _ => false,
-        })
+
+        // We are done sharing the common prefix with the incoming target and where we are
+        // currently seek'd; now continue walking the index:
+        while target_upto < target.len() {
+            let target_label = target[target_upto] as u32 as i32;
+            if let Some(next_arc) = unsafe {
+                (*self.fr).index().find_target_arc(
+                    target_label,
+                    &self.arcs[arc_idx],
+                    &mut self.fst_reader,
+                )?
+            } {
+                self.term[target_upto] = target_label as u8;
+                if let Some(ref out) = next_arc.output {
+                    if !out.is_empty() {
+                        output = outputs.add(&output, out);
+                    }
+                }
+                target_upto += 1;
+                if next_arc.is_final() {
+                    let cur_output = if let Some(ref out) = next_arc.next_final_output {
+                        outputs.add(&output, out)
+                    } else {
+                        output.clone()
+                    };
+                    let idx = self.push_frame_by_data(
+                        Some(next_arc.clone()),
+                        cur_output.inner(),
+                        target_upto,
+                    )?;
+                    self.current_frame_ord = idx as isize;
+                }
+                self.add_arc(next_arc, target_upto);
+                arc_idx = target_upto;
+            } else {
+                // Index is exhausted
+                debug_assert!(self.current_frame_ord >= 0);
+                self.valid_index_prefix = self.stack[self.current_frame_ord as usize].prefix;
+                self.stack[self.current_frame_ord as usize].scan_to_floor_frame(target)?;
+                if !self.stack[self.current_frame_ord as usize].has_terms {
+                    self.term_exists = false;
+                    self.term[target_upto] = target_label as u8;
+                    self.term.truncate(target_upto + 1);
+                    self.term_len = target_upto + 1;
+                    return Ok(false);
+                }
+                self.stack[self.current_frame_ord as usize].load_block()?;
+
+                let result =
+                    self.stack[self.current_frame_ord as usize].scan_to_term(target, true)?;
+                return Ok(result == SeekStatus::Found);
+            }
+        }
+
+        self.valid_index_prefix = self.current_frame().prefix;
+
+        self.current_frame().scan_to_floor_frame(target)?;
+
+        // Target term is entirely contained in the index:
+        if !self.current_frame().has_terms {
+            self.term_exists = false;
+            self.term.truncate(target_upto);
+            self.term_len = target_upto;
+            return Ok(false);
+        }
+
+        self.current_frame().load_block()?;
+        let result = self.current_frame().scan_to_term(target, true)?;
+        Ok(result == SeekStatus::Found)
     }
 
     fn seek_ceil(&mut self, target: &[u8]) -> Result<SeekStatus> {
-        self.term.clear();
-        self.term.extend(target.iter());
+        if self.field_reader().index.is_none() {
+            bail!(IllegalState("terms index was not loaded".into()));
+        }
+
+        if target.len() > self.term.len() {
+            self.term.resize(target.len(), 0);
+        }
+
+        let outputs = ByteSequenceOutputFactory::new();
 
         self.clear_eof();
-        // FST.Arc<BytesRef> arc;
-        // let mut target_upto: usize;
-        // let mut output: Vec<u8> = vec![];
+        let mut arc_idx = 0;
+        // debug_assert!(self.arcs[arc_idx].is_final());
+        let mut output;
+        let mut target_upto;
+        self.target_before_current_length = self.current_frame_ord;
+        if self.current_frame_ord != self.static_frame.ord {
+            // We are already seek'd; find the common
+            // prefix of new seek term vs current term and
+            // re-use the corresponding seek state.  For
+            // example, if app first seeks to foobar, then
+            // seeks to foobaz, we can re-use the seek state
+            // for the first 5 bytes.
+            output = self.arcs[arc_idx]
+                .output
+                .clone()
+                .unwrap_or_else(|| outputs.empty());
+            target_upto = 0;
+            let mut last_frame_idx = 0;
+            debug_assert!(self.valid_index_prefix <= self.term_len);
+            let target_limit = target.len().min(self.valid_index_prefix);
 
-        unimplemented!()
+            let mut cmp = Ordering::Equal;
+            // TODO: reverse vLong byte order for better FST
+            // prefix output sharing
+
+            // First compare up to valid seek frames:
+            while target_upto < target_limit {
+                cmp = self.term[target_upto].cmp(&target[target_upto]);
+                if cmp != Ordering::Equal {
+                    break;
+                }
+                arc_idx = target_upto + 1;
+                debug_assert_eq!(self.arcs[arc_idx].label, target[target_upto] as u32 as i32);
+                if let Some(ref out) = self.arcs[arc_idx].output {
+                    output = outputs.add(&output, out);
+                }
+                if self.arcs[arc_idx].is_final() {
+                    last_frame_idx = 1 + last_frame_idx;
+                }
+                target_upto += 1;
+            }
+
+            if cmp == Ordering::Equal {
+                let target_upto_mid = target_upto;
+
+                // Second compare the rest of the term, but
+                // don't save arc/output/frame:
+                let target_limit2 = target.len().min(self.term_len);
+                while target_upto < target_limit2 {
+                    cmp = self.term[target_upto].cmp(&target[target_upto]);
+                    if cmp != Ordering::Equal {
+                        break;
+                    }
+                    target_upto += 1;
+                }
+
+                if cmp == Ordering::Equal {
+                    cmp = self.term_len.cmp(&target.len());
+                }
+                target_upto = target_upto_mid;
+            }
+
+            match cmp {
+                Ordering::Less => {
+                    // Common case: target term is after current
+                    // term, ie, app is seeking multiple terms
+                    // in sorted order
+                    self.current_frame_ord = last_frame_idx;
+                }
+                Ordering::Greater => {
+                    // Uncommon case: target term
+                    // is before current term; this means we can
+                    // keep the currentFrame but we must rewind it
+                    // (so we scan from the start)
+                    self.target_before_current_length = 0;
+                    self.current_frame_ord = last_frame_idx;
+                    self.current_frame().rewind();
+                }
+                Ordering::Equal => {
+                    // Target is exactly the same as current term
+                    debug_assert_eq!(self.term_len, target.len());
+                    if self.term_exists {
+                        return Ok(SeekStatus::Found);
+                    }
+                }
+            }
+        } else {
+            self.target_before_current_length = -1;
+            let arc = self.field_reader().index.as_ref().unwrap().root_arc();
+            self.arcs[0] = arc;
+            arc_idx = 0;
+
+            // Empty string prefix must have an output (block) in the index!
+            debug_assert!(self.arcs[0].is_final());
+            debug_assert!(self.arcs[0].output.is_some());
+
+            output = self.arcs[0].output.clone().unwrap();
+            self.current_frame_ord = self.static_frame.ord;
+            target_upto = 0;
+            let cur_output = if let Some(ref out) = self.arcs[0].next_final_output {
+                outputs.add(&output, out)
+            } else {
+                output.clone()
+            };
+            let arc = Some(self.arcs[0].clone());
+            let idx = self.push_frame_by_data(arc, cur_output.inner(), 0)?;
+            self.current_frame_ord = idx as isize;
+        }
+
+        // We are done sharing the common prefix with the incoming target and where we are
+        // currently seek'd; now continue walking the index:
+        while target_upto < target.len() {
+            let target_label = target[target_upto] as u32 as i32;
+            if let Some(next_arc) = unsafe {
+                (*self.fr).index().find_target_arc(
+                    target_label,
+                    &self.arcs[arc_idx],
+                    &mut self.fst_reader,
+                )?
+            } {
+                self.term[target_upto] = target_label as u8;
+                if let Some(ref out) = next_arc.output {
+                    if !out.is_empty() {
+                        output = outputs.add(&output, out);
+                    }
+                }
+                target_upto += 1;
+                if next_arc.is_final() {
+                    let cur_output = if let Some(ref out) = next_arc.next_final_output {
+                        outputs.add(&output, out)
+                    } else {
+                        output.clone()
+                    };
+                    let idx = self.push_frame_by_data(
+                        Some(next_arc.clone()),
+                        cur_output.inner(),
+                        target_upto,
+                    )?;
+                    self.current_frame_ord = idx as isize;
+                }
+                self.add_arc(next_arc, target_upto);
+                arc_idx = target_upto;
+            } else {
+                // Index is exhausted
+                debug_assert!(self.current_frame_ord >= 0);
+                self.valid_index_prefix = self.stack[self.current_frame_ord as usize].prefix;
+                self.stack[self.current_frame_ord as usize].scan_to_floor_frame(target)?;
+                self.stack[self.current_frame_ord as usize].load_block()?;
+                let result =
+                    self.stack[self.current_frame_ord as usize].scan_to_term(target, false)?;
+                if result == SeekStatus::End {
+                    self.term.resize(target.len(), 0);
+                    self.term.copy_from_slice(target);
+                    self.term_len = target.len();
+                    self.term_exists = false;
+                    if self.next()?.is_some() {
+                        return Ok(SeekStatus::NotFound);
+                    } else {
+                        return Ok(SeekStatus::End);
+                    }
+                } else {
+                    return Ok(result);
+                }
+            }
+        }
+
+        self.valid_index_prefix = self.current_frame().prefix;
+
+        self.current_frame().scan_to_floor_frame(target)?;
+
+        self.current_frame().load_block()?;
+        let result = self.current_frame().scan_to_term(target, false)?;
+
+        if result == SeekStatus::End {
+            self.term.resize(target.len(), 0);
+            self.term.copy_from_slice(target);
+            self.term_len = target.len();
+            self.term_exists = false;
+            if self.next()?.is_some() {
+                Ok(SeekStatus::NotFound)
+            } else {
+                Ok(SeekStatus::End)
+            }
+        } else {
+            Ok(result)
+        }
     }
 
     fn seek_exact_ord(&mut self, _ord: i64) -> Result<()> {
@@ -1562,8 +2234,9 @@ impl<'a> TermIterator for SegmentTermIterator {
     }
 
     fn seek_exact_state(&mut self, text: &[u8], state: &TermState) -> Result<()> {
-        self.term.clear();
-        self.term.extend(text.iter());
+        self.term.resize(text.len(), 0);
+        self.term.copy_from_slice(text);
+        self.term_len = text.len();
         self.state = BlockTermState::deserialize(&state.serialize())?;
         self.is_leaf_block = false;
         self.meta_data_upto = self.state.term_block_ord;
@@ -1571,10 +2244,10 @@ impl<'a> TermIterator for SegmentTermIterator {
     }
 
     fn term(&self) -> Result<&[u8]> {
-        Ok(&self.term[..])
+        Ok(&self.term[..self.term_len])
     }
 
-    fn ord(&mut self) -> Result<i64> {
+    fn ord(&self) -> Result<i64> {
         bail!("Unsupported")
     }
 
@@ -1596,17 +2269,32 @@ impl<'a> TermIterator for SegmentTermIterator {
 
     fn postings_with_flags(&mut self, flags: i16) -> Result<Box<PostingIterator>> {
         debug_assert!(!self.eof);
-        let state = self.decode_meta_data()?;
-        self.postings_reader.postings(
-            self.field_info.as_ref(),
-            &state,
-            flags,
-            self.segment.clone(),
-            &self.term,
-        )
+        self.current_frame().decode_metadata()?;
+        let segment = Arc::clone(&self.segment);
+        if self.current_frame_ord < 0 {
+            self.postings_reader.postings(
+                self.field_info.as_ref(),
+                &self.static_frame.state,
+                flags,
+                segment,
+                self.term(),
+            )
+        } else {
+            self.postings_reader.postings(
+                self.field_info.as_ref(),
+                &self.stack[self.current_frame_ord as usize].state,
+                flags,
+                segment,
+                self.term(),
+            )
+        }
     }
 
     fn term_state(&mut self) -> Result<Box<TermState>> {
         Ok(Box::new(self.decode_meta_data()?))
+    }
+
+    fn as_any(&self) -> &Any {
+        self
     }
 }

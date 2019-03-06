@@ -1,4 +1,4 @@
-use error::*;
+use std::any::Any;
 use std::f32;
 use std::fmt;
 
@@ -8,6 +8,8 @@ use core::search::searcher::IndexSearcher;
 use core::search::term_query::TermQuery;
 use core::search::{Query, Scorer, Weight};
 use core::util::DocId;
+
+use error::Result;
 
 const BOOST_QUERY: &str = "boost";
 
@@ -39,6 +41,10 @@ impl Query for BoostQuery {
 
     fn query_type(&self) -> &'static str {
         BOOST_QUERY
+    }
+
+    fn as_any(&self) -> &Any {
+        self
     }
 }
 

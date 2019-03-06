@@ -2,37 +2,68 @@ mod per_field;
 
 pub use self::per_field::*;
 
-pub mod blocktree;
+mod blocktree;
+
+pub use self::blocktree::*;
+
 pub mod codec_util;
-pub mod compressing;
-pub mod format;
-pub mod lucene50;
-pub mod lucene53;
-pub mod lucene54;
-pub mod lucene60;
-pub mod lucene62;
-pub mod reader;
-pub mod writer;
+
+pub use self::codec_util::*;
+
+mod compressing;
+
+pub use self::compressing::*;
+
+mod format;
+
+pub use self::format::*;
+
+mod lucene50;
+
+pub use self::lucene50::*;
+
+mod lucene53;
+
+pub use self::lucene53::*;
+
+mod lucene54;
+
+pub use self::lucene54::*;
+
+mod lucene60;
+
+pub use self::lucene60::*;
+
+mod lucene62;
+
+pub use self::lucene62::*;
+
+mod reader;
+
+pub use self::reader::*;
+
+mod writer;
+
+pub use self::writer::*;
+
+mod consumer;
+pub use self::consumer::*;
 
 mod producer;
 
 pub use self::producer::*;
 
-use std::sync::Arc;
-
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-pub type DocValuesProducerRef = Arc<DocValuesProducer>;
-
-use core::codec::format::PointsFormat;
-use core::codec::format::{CompoundFormat, LiveDocsFormat, NormsFormat};
-use core::codec::format::{DocValuesFormat, PostingsFormat, StoredFieldsFormat};
-use core::codec::format::{FieldInfosFormat, SegmentInfoFormat, TermVectorsFormat};
-use core::index::term::TermState;
+use core::index::TermState;
 use error::ErrorKind::*;
 use error::*;
 
 const BLOCK_TERM_STATE_SERIALIZED_SIZE: usize = 76;
+
+pub const CHAR_BYTES: i32 = 2;
+pub const INT_BYTES: i32 = 4;
+pub const LONG_BYTES: i32 = 8;
 
 #[derive(Clone)]
 pub struct BlockTermState {

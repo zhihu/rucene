@@ -54,7 +54,7 @@ impl Collector for TimeoutCollector {
     fn collect(&mut self, _doc: DocId, _scorer: &mut Scorer) -> Result<()> {
         let now = SystemTime::now();
         if self.start_time < now && now.duration_since(self.start_time)? >= self.timeout_duration {
-            self.timeout.store(true, Ordering::Relaxed);
+            self.timeout.store(true, Ordering::Release);
             bail!(ErrorKind::Collector(
                 collector::ErrorKind::CollectionTerminated,
             ))
@@ -91,7 +91,7 @@ impl Collector for TimeoutLeafCollector {
     fn collect(&mut self, _doc: i32, _scorer: &mut Scorer) -> Result<()> {
         let now = SystemTime::now();
         if self.start_time < now && now.duration_since(self.start_time)? >= self.timeout_duration {
-            self.timeout.store(true, Ordering::Relaxed);
+            self.timeout.store(true, Ordering::Release);
             bail!(ErrorKind::Collector(
                 collector::ErrorKind::CollectionTerminated,
             ))

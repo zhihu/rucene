@@ -71,8 +71,9 @@ impl BM25Similarity {
         }
     }
 
-    pub fn compute_norm(state: &FieldInvertState) -> u8 {
-        BM25Similarity::encode_norm_value(state.boost, state.length)
+    pub fn compute_norm(state: &FieldInvertState) -> i64 {
+        let num_terms = state.length - state.num_overlap;
+        BM25Similarity::encode_norm_value(state.boost, num_terms) as i64
     }
 
     pub fn encode_norm_value(boost: f32, field_length: i32) -> u8 {

@@ -1,4 +1,4 @@
-use std::cmp::Eq;
+use std::cmp::Ordering;
 use std::str::FromStr;
 use std::string::ToString;
 
@@ -11,7 +11,7 @@ use error::*;
 /// change the version at search-time, but instead also adjust
 /// your indexing code to match, and re-index.
 ///
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, Serialize, Hash)]
 pub struct Version {
     /// Major version, the difference between stable and trunk */
     pub major: i32,
@@ -23,12 +23,14 @@ pub struct Version {
     pub prerelease: i32,
 }
 
-const LATEST: Version = Version {
+pub const RUCENE_VERSION_6_4_18: Version = Version {
     major: 6,
-    minor: 6,
-    bugfix: 1,
+    minor: 4,
+    bugfix: 18,
     prerelease: 0,
 };
+
+pub const VERSION_LATEST: Version = RUCENE_VERSION_6_4_18;
 
 impl Version {
     /// Parse a version number of the form {@code "major.minor.bugfix.prerelease"}.
@@ -64,8 +66,8 @@ impl Version {
 
     pub fn with_string_leniently(version: &str) -> Result<Version> {
         match version {
-            "LATEST" => Ok(LATEST),
-            "LUCENE_CURRENT" => Ok(LATEST),
+            "LATEST" => Ok(VERSION_LATEST),
+            "LUCENE_CURRENT" => Ok(VERSION_LATEST),
             _ => {
                 if !version.starts_with("LUCENE_") {
                     bail!(
@@ -185,6 +187,18 @@ impl PartialEq for Version {
 
 impl Eq for Version {}
 
+impl Ord for Version {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.encode().cmp(&other.encode())
+    }
+}
+
+impl PartialOrd for Version {
+    fn partial_cmp(&self, other: &Version) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 #[test]
 fn test_with_string_leniently() {
     let version = "LUCENE_CURRENT";
@@ -193,8 +207,8 @@ fn test_with_string_leniently() {
         v,
         Version {
             major: 6,
-            minor: 6,
-            bugfix: 1,
+            minor: 4,
+            bugfix: 18,
             prerelease: 0,
         }
     );

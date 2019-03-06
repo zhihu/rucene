@@ -1,23 +1,25 @@
-use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::mem;
 use std::sync::Arc;
 
 use core::codec::format::{postings_format_for_name, PostingsFormat};
-use core::codec::{FieldsProducer, FieldsProducerRef};
-use core::index::term::TermsRef;
+use core::codec::lucene50::Lucene50PostingsFormat;
+use core::codec::{FieldsConsumer, FieldsProducer, FieldsProducerRef};
 use core::index::Fields;
-use core::index::{IndexOptions, SegmentReadState};
+use core::index::TermsRef;
+use core::index::{IndexOptions, SegmentReadState, SegmentWriteState};
 use error::*;
 
 /// Name of this {@link PostingsFormat}. */
 // const PER_FIELD_NAME: &str = "PerField40";
 /// {@link FieldInfo} attribute name used to store the
 /// format name for each field. */
-const PER_FIELD_FORMAT_KEY: &str = "PerFieldPostingsFormat.format";
+pub const PER_FIELD_POSTING_FORMAT_KEY: &str = "PerFieldPostingsFormat.format";
 
 /// segment suffix name for each field. */
-const PER_FIELD_SUFFIX_KEY: &str = "PerFieldPostingsFormat.suffix";
+pub const PER_FIELD_POSTING_SUFFIX_KEY: &str = "PerFieldPostingsFormat.suffix";
 
 fn get_suffix(format: &str, suffix: &str) -> String {
     format!("{}_{}", format, suffix)
@@ -37,6 +39,7 @@ fn get_suffix(format: &str, suffix: &str) -> String {
 /// @see ServiceLoader
 /// @lucene.experimental
 ///
+#[derive(Hash, Ord, PartialOrd, Eq, PartialEq)]
 pub struct PerFieldPostingsFormat {}
 
 impl Default for PerFieldPostingsFormat {
@@ -49,11 +52,18 @@ impl PostingsFormat for PerFieldPostingsFormat {
     fn fields_producer(&self, state: &SegmentReadState) -> Result<Box<FieldsProducer>> {
         Ok(Box::new(PerFieldFieldsReader::new(state)?))
     }
+
+    fn fields_consumer(&self, state: &SegmentWriteState) -> Result<Box<FieldsConsumer>> {
+        Ok(Box::new(PerFieldFieldsWriter::new(state)))
+    }
+
+    fn name(&self) -> &str {
+        "PerField40"
+    }
 }
 
 struct PerFieldFieldsReader {
     fields: BTreeMap<String, FieldsProducerRef>,
-    formats: HashMap<String, FieldsProducerRef>,
     segment: String,
 }
 
@@ -65,36 +75,38 @@ impl PerFieldFieldsReader {
             if let IndexOptions::Null = info.index_options {
                 continue;
             }
-            if let Some(format) = info.attributes.get(PER_FIELD_FORMAT_KEY) {
-                if let Some(suffix) = info.attributes.get(PER_FIELD_SUFFIX_KEY) {
-                    let postings_format = postings_format_for_name(format)?;
-                    let suffix = get_suffix(format, suffix);
-                    if !formats.contains_key(&suffix) {
-                        let state = SegmentReadState::with_suffix(state, &suffix);
-                        formats.insert(
-                            suffix.clone(),
-                            Arc::from(postings_format.fields_producer(&state)?),
-                        );
+            if let Some(format) = info.attributes
+                .read()
+                .unwrap()
+                .get(PER_FIELD_POSTING_FORMAT_KEY)
+            {
+                if let Some(suffix) = info.attributes
+                    .read()
+                    .unwrap()
+                    .get(PER_FIELD_POSTING_SUFFIX_KEY)
+                {
+                    if !formats.contains_key(suffix) {
+                        formats.insert(suffix.clone(), postings_format_for_name(format)?);
                     }
+                    let postings_format = formats.get(suffix);
+                    let postings_format = postings_format.as_ref().unwrap();
+                    let suffix = get_suffix(format, suffix);
+                    let state = SegmentReadState::with_suffix(state, &suffix);
                     fields.insert(
                         name.clone(),
-                        Arc::clone(formats.get(&suffix).as_ref().unwrap()),
+                        Arc::from(postings_format.fields_producer(&state)?),
                     );
                 } else {
                     bail!(
                         "Illegal State: missing attribute: {} for field {}",
-                        PER_FIELD_SUFFIX_KEY,
+                        PER_FIELD_POSTING_SUFFIX_KEY,
                         name
                     );
                 }
             }
         }
         let segment = state.segment_info.name.clone();
-        Ok(PerFieldFieldsReader {
-            fields,
-            formats,
-            segment,
-        })
+        Ok(PerFieldFieldsReader { fields, segment })
     }
 
     fn terms_impl(&self, field: &str) -> Result<Option<TermsRef>> {
@@ -117,13 +129,10 @@ impl fmt::Display for PerFieldFieldsReader {
 
 impl FieldsProducer for PerFieldFieldsReader {
     fn check_integrity(&self) -> Result<()> {
-        for producer in self.formats.values() {
+        for producer in self.fields.values() {
             producer.check_integrity()?;
         }
         Ok(())
-    }
-    fn get_merge_instance(&self) -> Result<FieldsProducerRef> {
-        unimplemented!()
     }
 }
 
@@ -136,5 +145,52 @@ impl Fields for PerFieldFieldsReader {
     }
     fn size(&self) -> usize {
         self.size_impl()
+    }
+}
+
+#[allow(dead_code)]
+struct FieldsGroup {
+    fields: BTreeSet<String>,
+    suffix: usize,
+    state: SegmentWriteState,
+}
+
+struct PerFieldFieldsWriter {
+    write_state: SegmentWriteState,
+}
+
+impl PerFieldFieldsWriter {
+    pub fn new(write_state: &SegmentWriteState) -> Self {
+        PerFieldFieldsWriter {
+            write_state: write_state.clone(),
+        }
+    }
+
+    fn get_full_segment_suffix(&self, outer_segment_suffix: &str, suffix: String) -> String {
+        debug_assert!(outer_segment_suffix.is_empty());
+        suffix
+    }
+}
+
+impl FieldsConsumer for PerFieldFieldsWriter {
+    // TODO this is only one postings format currently (lucene50).
+    // And we assume that we always use one format all the time.
+    // so we won't implement this like lucene
+    // when the format changes, it's easy to change the hard code then.
+    fn write(&mut self, fields: &Fields) -> Result<()> {
+        // this is only one format, so suffix is always "0"
+        let segment_suffix =
+            self.get_full_segment_suffix(&self.write_state.segment_suffix, "Lucene50_0".into());
+        // always use lucene50, so just hard code it.
+        let format = Lucene50PostingsFormat::default();
+
+        let old_suffix = mem::replace(&mut self.write_state.segment_suffix, segment_suffix);
+
+        let mut consumer = format.fields_consumer(&self.write_state)?;
+        consumer.write(fields)?;
+
+        self.write_state.segment_suffix = old_suffix;
+
+        Ok(())
     }
 }

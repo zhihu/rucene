@@ -1,5 +1,6 @@
 use core::search::sort_field::*;
 
+#[derive(Clone, Eq, PartialEq)]
 pub struct Sort {
     fields: Vec<SortField>,
 }
@@ -9,17 +10,12 @@ impl Sort {
         Sort { fields }
     }
 
-    pub fn get_sort(&self) -> &Vec<SortField> {
+    pub fn get_sort(&self) -> &[SortField] {
         &self.fields
     }
 
     pub fn needs_scores(&self) -> bool {
-        for field in &self.fields {
-            if field.needs_scores() {
-                return true;
-            }
-        }
-        false
+        self.fields.iter().any(|f| f.needs_scores())
     }
 }
 

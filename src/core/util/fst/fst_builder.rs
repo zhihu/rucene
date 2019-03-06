@@ -3,11 +3,10 @@ use std::collections::hash_map::DefaultHasher;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::mem;
-use std::ptr;
 
 use core::util::fst::bytes_store::StoreBytesReader;
-use core::util::fst::fst_reader::{ArcLayoutContext, CompiledAddress, InputType};
-use core::util::fst::{BytesReader, OutputFactory, FST};
+use core::util::fst::fst_reader::{CompiledAddress, InputType};
+use core::util::fst::{BytesReader, Output, OutputFactory, FST};
 use core::util::ints_ref::{IntsRef, IntsRefBuilder};
 use core::util::packed::{PagedGrowableWriter, PagedMutable};
 use core::util::packed_misc::{unsigned_bits_required, COMPACT};
@@ -46,14 +45,11 @@ pub struct FstBuilder<F: OutputFactory> {
     do_share_non_singleton_nodes: bool,
     share_max_tail_length: u32,
     last_input: IntsRefBuilder,
-    // for packing
-    do_pack_fst: bool,
-    acceptable_overhead_ratio: f32,
     // NOTE: cutting this over to ArrayList instead loses ~6%
     // in build performance on 9.8M Wikipedia terms; so we
     // left this as an array:
     // current "frontier"
-    frontier: Vec<UnCompiledNode<F>>,
+    pub frontier: Vec<UnCompiledNode<F>>,
     // Used for the BIT_TARGET_NEXT optimization (whereby
     // instead of storing the address of the target node for
     // a given arc, we mark a single bit noting that the next
@@ -65,6 +61,7 @@ pub struct FstBuilder<F: OutputFactory> {
     pub node_count: u64,
     pub allow_array_arcs: bool,
     do_share_suffix: bool,
+    inited: bool,
     // bytes: BytesStore,    // this is fst.bytes_store
 }
 
@@ -78,8 +75,6 @@ impl<F: OutputFactory> FstBuilder<F> {
             true,
             i32::max_value() as u32,
             outputs,
-            false,
-            COMPACT,
             true,
             15,
         )
@@ -93,19 +88,11 @@ impl<F: OutputFactory> FstBuilder<F> {
         do_share_non_singleton_nodes: bool,
         share_max_tail_length: u32,
         outputs: F,
-        do_pack_fst: bool,
-        acceptable_overhead_ratio: f32,
         allow_array_arcs: bool,
         bytes_page_bits: u32,
     ) -> Self {
         let no_output = outputs.empty();
-        let fst = FST::new(
-            input_type,
-            outputs,
-            do_pack_fst,
-            acceptable_overhead_ratio,
-            bytes_page_bits as usize,
-        );
+        let fst = FST::new(input_type, outputs, bytes_page_bits as usize);
 
         FstBuilder {
             dedup_hash: None,
@@ -116,8 +103,6 @@ impl<F: OutputFactory> FstBuilder<F> {
             do_share_non_singleton_nodes,
             share_max_tail_length,
             last_input: IntsRefBuilder::new(),
-            do_pack_fst,
-            acceptable_overhead_ratio,
             frontier: Vec::with_capacity(10),
             last_frozen_node: 0,
             reused_bytes_per_arc: Vec::with_capacity(4),
@@ -125,6 +110,7 @@ impl<F: OutputFactory> FstBuilder<F> {
             node_count: 0,
             allow_array_arcs,
             do_share_suffix,
+            inited: false,
         }
     }
 
@@ -139,41 +125,35 @@ impl<F: OutputFactory> FstBuilder<F> {
             let node = UnCompiledNode::new(self, i);
             self.frontier.push(node);
         }
+        self.inited = true;
     }
 
     pub fn term_count(&self) -> i64 {
         self.frontier[0].input_count
     }
 
-    fn node_count(&self) -> u64 {
-        self.node_count + 1
-    }
-
-    fn compile_node(
-        &mut self,
-        node_in: &mut UnCompiledNode<F>,
-        tail_length: u32,
-    ) -> Result<CompiledAddress> {
+    fn compile_node(&mut self, node_index: usize, tail_length: u32) -> Result<CompiledAddress> {
+        debug_assert!(self.inited);
         let node: i64;
         let bytes_pos_start = self.fst.bytes_store.get_position();
 
         let builder = self as *mut FstBuilder<F>;
         unsafe {
             if let Some(ref mut dedup_hash) = self.dedup_hash {
-                if (self.do_share_non_singleton_nodes || node_in.num_arcs <= 1)
+                if (self.do_share_non_singleton_nodes || self.frontier[node_index].num_arcs <= 1)
                     && tail_length <= self.share_max_tail_length
                 {
-                    if node_in.num_arcs == 0 {
-                        node = self.fst.add_node(&mut *builder, node_in)?;
+                    if self.frontier[node_index].num_arcs == 0 {
+                        node = self.fst.add_node(&mut *builder, node_index)?;
                         self.last_frozen_node = node;
                     } else {
-                        node = dedup_hash.add(&mut *builder, node_in)? as i64;
+                        node = dedup_hash.add(&mut *builder, node_index)? as i64;
                     }
                 } else {
-                    node = self.fst.add_node(&mut *builder, node_in)?;
+                    node = self.fst.add_node(&mut *builder, node_index)?;
                 }
             } else {
-                node = self.fst.add_node(&mut *builder, node_in)?;
+                node = self.fst.add_node(&mut *builder, node_index)?;
             }
         }
         assert_ne!(node, -2);
@@ -185,12 +165,14 @@ impl<F: OutputFactory> FstBuilder<F> {
             self.last_frozen_node = node;
         }
 
-        node_in.clear();
+        self.frontier[node_index].clear();
 
         Ok(node)
     }
 
+    #[allow(unused_assignments)]
     fn freeze_tail(&mut self, prefix_len_plus1: usize) -> Result<()> {
+        debug_assert!(self.inited);
         let down_to = max(1, prefix_len_plus1);
         if self.last_input.length < down_to {
             return Ok(());
@@ -200,12 +182,10 @@ impl<F: OutputFactory> FstBuilder<F> {
             let mut do_prune = false;
             let mut do_compile = false;
 
-            let mut tmp1 = UnCompiledNode::new(self, 0);
-            let mut tmp2 = UnCompiledNode::new(self, 0);
-            let mut node = mem::replace(&mut self.frontier[idx], tmp1);
-            let mut parent = mem::replace(&mut self.frontier[idx - 1], tmp2);
+            let mut tmp = UnCompiledNode::new(self, 0);
+            let mut parent = mem::replace(&mut self.frontier[idx - 1], tmp);
 
-            if node.input_count < self.min_suffix_count1 as i64 {
+            if self.frontier[idx].input_count < self.min_suffix_count1 as i64 {
                 do_prune = true;
                 do_compile = true;
             } else if idx > prefix_len_plus1 {
@@ -236,47 +216,42 @@ impl<F: OutputFactory> FstBuilder<F> {
                 do_compile = self.min_suffix_count2 == 0;
             }
 
-            if node.input_count < self.min_suffix_count2 as i64
-                || (self.min_suffix_count2 == 1 && node.input_count == 1 && idx > 1)
+            if self.frontier[idx].input_count < self.min_suffix_count2 as i64
+                || (self.min_suffix_count2 == 1 && self.frontier[idx].input_count == 1 && idx > 1)
             {
                 // drop all arcs
-                for arc_idx in 0..node.num_arcs {
-                    if let Node::UnCompiled(target) = node.arcs[arc_idx].target {
-                        unsafe {
-                            (*target).clear();
-                        }
+                for arc_idx in 0..self.frontier[idx].num_arcs {
+                    if let Node::UnCompiled(target) = self.frontier[idx].arcs[arc_idx].target {
+                        self.frontier[target].clear();
                     }
                 }
-                node.num_arcs = 0;
+                self.frontier[idx].num_arcs = 0;
             }
 
             if do_prune {
                 // this node doesn't make it -- deref it
-                node.clear();
-                parent.delete_last(
-                    self.last_input.int_at(idx - 1),
-                    &Node::UnCompiled(&mut node as *mut UnCompiledNode<F>),
-                );
+                self.frontier[idx].clear();
+                parent.delete_last(self.last_input.int_at(idx - 1), &Node::UnCompiled(idx));
             } else {
                 if self.min_suffix_count2 != 0 {
                     let tail_len = self.last_input.length - idx;
-                    self.compile_all_targets(&mut node, tail_len)?;
+                    self.compile_all_targets(idx, tail_len)?;
                 }
 
-                let next_final_output = node.output.clone();
+                let next_final_output = self.frontier[idx].output.clone();
                 // We "fake" the node as being final if it has no
                 // outgoing arcs; in theory we could leave it
                 // as non-final (the FST can represent this), but
                 // FSTEnum, Util, etc., have trouble w/ non-final
                 // dead-end states:
-                let is_final = node.is_final || node.num_arcs == 0;
+                let is_final = self.frontier[idx].is_final || self.frontier[idx].num_arcs == 0;
 
                 if do_compile {
                     // this node makes it and we now compile it.  first,
                     // compile any targets that were previously
                     // undecided:
                     let tail_len = (1 + self.last_input.length - idx) as u32;
-                    let n = self.compile_node(&mut node, tail_len)?;
+                    let n = self.compile_node(idx, tail_len)?;
                     parent.replace_last(
                         self.last_input.int_at(idx - 1),
                         Node::Compiled(n),
@@ -288,7 +263,7 @@ impl<F: OutputFactory> FstBuilder<F> {
                     // next_final_output/is_final onto the arc
                     parent.replace_last(
                         self.last_input.int_at(idx - 1),
-                        Node::UnCompiled(ptr::null_mut()), // node
+                        Node::UnCompiled(0), // a stub node,
                         next_final_output,
                         is_final,
                     );
@@ -296,10 +271,9 @@ impl<F: OutputFactory> FstBuilder<F> {
                     // undecided on whether to prune it.  later, it
                     // will be either compiled or pruned, so we must
                     // allocate a new node:
-                    node = UnCompiledNode::new(self, idx as i32);
+                    self.frontier[idx] = UnCompiledNode::new(self, idx as i32);
                 }
             }
-            self.frontier[idx] = node;
             self.frontier[idx - 1] = parent;
         }
 
@@ -317,6 +291,7 @@ impl<F: OutputFactory> FstBuilder<F> {
     /// `ByteSequenceOutputs`) then you cannot reuse across
     /// calls.
     pub fn add(&mut self, input: IntsRef, output: F::Value) -> Result<()> {
+        debug_assert!(self.inited);
         assert!(self.last_input.length == 0 || input > self.last_input.get());
         let mut output = output;
 
@@ -359,7 +334,7 @@ impl<F: OutputFactory> FstBuilder<F> {
 
         // init tail states for current input
         for i in prefix_len_plus1..input.length + 1 {
-            let node = Node::UnCompiled(&mut self.frontier[i] as *mut UnCompiledNode<F>);
+            let node = Node::UnCompiled(i);
             self.frontier[i - 1].add_arc(input.ints()[input.offset + i - 1], node);
             self.frontier[i].input_count += 1;
         }
@@ -414,10 +389,9 @@ impl<F: OutputFactory> FstBuilder<F> {
 
     // Returns final FST. NOTE: this will return None if nothing is accepted by the fst
     pub fn finish(&mut self) -> Result<Option<FST<F>>> {
+        debug_assert!(self.inited);
         // minimize nodes in the last word's suffix
         self.freeze_tail(0)?;
-
-        let first_node = &mut self.frontier[0] as *mut UnCompiledNode<F>;
 
         if self.frontier[0].input_count < self.min_suffix_count1 as i64
             || self.frontier[0].input_count < self.min_suffix_count2 as i64
@@ -431,46 +405,33 @@ impl<F: OutputFactory> FstBuilder<F> {
             }
         } else {
             if self.min_suffix_count2 != 0 {
-                unsafe {
-                    let tail_len = self.last_input.length;
-                    self.compile_all_targets(&mut *first_node, tail_len)?;
-                }
+                let tail_len = self.last_input.length;
+                self.compile_all_targets(0, tail_len)?;
             }
         }
 
-        let node = unsafe {
+        let node = {
             let tail_len = self.last_input.length as u32;
-            self.compile_node(&mut *first_node, tail_len)?
+            self.compile_node(0, tail_len)?
         };
         self.fst.finish(node)?;
 
-        let fst = if self.do_pack_fst {
-            let builder = self as *mut FstBuilder<F>;
-            let cnt = self.node_count() as usize / 4;
-            let ratio = self.acceptable_overhead_ratio;
-            unsafe { self.fst.pack(&*builder, 3, max(10, cnt), ratio)? }
-        } else {
-            // create a tmp for mem replace
-            let tmp_fst = FST::new_packed(self.fst.input_type, self.fst.outputs().clone(), 1);
-            mem::replace(&mut self.fst, tmp_fst)
-        };
+        // create a tmp for mem replace
+        let tmp_fst = FST::new(self.fst.input_type, self.fst.outputs().clone(), 1);
+        let fst = mem::replace(&mut self.fst, tmp_fst);
         Ok(Some(fst))
     }
 
-    fn compile_all_targets(
-        &mut self,
-        node: &mut UnCompiledNode<F>,
-        tail_length: usize,
-    ) -> Result<()> {
-        for arc in &mut node.arcs[0..node.num_arcs] {
-            if let Node::UnCompiled(node_ref) = arc.target {
-                let n = unsafe { &mut (*node_ref) };
+    fn compile_all_targets(&mut self, node_idx: usize, tail_length: usize) -> Result<()> {
+        for i in 0..self.frontier[node_idx].num_arcs {
+            if let Node::UnCompiled(index) = self.frontier[node_idx].arcs[i].target {
                 // not yet compiled
-                if n.num_arcs == 0 {
-                    arc.is_final = true;
-                    n.is_final = true;
+                if self.frontier[index].num_arcs == 0 {
+                    self.frontier[node_idx].arcs[i].is_final = true;
+                    self.frontier[index].is_final = true;
                 }
-                arc.target = Node::Compiled(self.compile_node(n, tail_length as u32 - 1)? as i64);
+                self.frontier[node_idx].arcs[i].target =
+                    Node::Compiled(self.compile_node(index, tail_length as u32 - 1)? as i64);
             }
         }
 
@@ -480,7 +441,7 @@ impl<F: OutputFactory> FstBuilder<F> {
 
 pub struct BuilderArc<F: OutputFactory> {
     pub label: i32,
-    pub target: Node<F>,
+    pub target: Node,
     pub is_final: bool,
     pub output: F::Value,
     pub next_final_output: F::Value,
@@ -544,24 +505,14 @@ impl<F: OutputFactory> NodeHash<F> {
 
     fn nodes_equal(&mut self, node: &UnCompiledNode<F>, address: CompiledAddress) -> Result<bool> {
         let reader = &mut self.input as *mut StoreBytesReader;
-        let (arc, mut layout) = unsafe {
-            self.fst()
-                .read_first_real_arc_with_layout(address, &mut *reader)?
-        };
-        if let ArcLayoutContext::FixedArray {
-            bytes_per_arc,
-            num_arcs,
-            ..
-        } = layout
-        {
-            debug_assert!(bytes_per_arc > 0);
-            if node.num_arcs != num_arcs {
+        let mut scratch_arc = unsafe { self.fst().read_first_real_arc(address, &mut *reader)? };
+        if scratch_arc.bytes_per_arc > 0 {
+            if node.num_arcs != scratch_arc.num_arcs {
                 return Ok(false);
             }
         }
 
-        let mut scratch_arc = arc;
-        for idx in 0..node.arcs.len() {
+        for idx in 0..node.num_arcs {
             let arc = &node.arcs[idx];
             if arc.label != scratch_arc.label || arc.is_final != scratch_arc.is_final() {
                 return Ok(false);
@@ -572,7 +523,9 @@ impl<F: OutputFactory> NodeHash<F> {
                     return Ok(false);
                 }
             } else {
-                return Ok(false);
+                if !arc.output.is_empty() {
+                    return Ok(false);
+                }
             }
 
             if let Some(ref output) = scratch_arc.next_final_output {
@@ -580,11 +533,13 @@ impl<F: OutputFactory> NodeHash<F> {
                     return Ok(false);
                 }
             } else {
-                return Ok(false);
+                if !arc.next_final_output.is_empty() {
+                    return Ok(false);
+                }
             }
 
             if let Node::Compiled(ref node) = arc.target {
-                if *node != scratch_arc.target.unwrap() {
+                if *node != scratch_arc.target {
                     return Ok(false);
                 }
             }
@@ -592,9 +547,9 @@ impl<F: OutputFactory> NodeHash<F> {
             if scratch_arc.is_last() {
                 return Ok(idx == node.num_arcs - 1);
             }
-            scratch_arc = unsafe {
+            unsafe {
                 self.fst()
-                    .read_next_real_arc(&mut layout, &mut *reader, address)?
+                    .read_next_real_arc(&mut scratch_arc, &mut *reader)?
             };
         }
         Ok(false)
@@ -611,8 +566,8 @@ impl<F: OutputFactory> NodeHash<F> {
         let mut h = 0u64;
         // TODO maybe if number of arcs is high we can safely subsample?
         let no_output = self.fst().outputs().empty();
-        for arc in &node.arcs {
-            h = prime.wrapping_mul(h) + arc.label as i64 as u64;
+        for arc in &node.arcs[0..node.num_arcs] {
+            h = prime.wrapping_mul(h).wrapping_add(arc.label as u64);
             if let Node::Compiled(n) = arc.target {
                 if n != 0 {
                     h = prime.wrapping_mul(h).wrapping_add((n ^ (n >> 32)) as u64);
@@ -638,11 +593,13 @@ impl<F: OutputFactory> NodeHash<F> {
     fn node_hash_compiled(&self, n: CompiledAddress, input: &mut BytesReader) -> Result<u64> {
         let prime = 31u64;
         let mut h = 0u64;
-        let (mut arc, mut layout) = self.fst().read_first_real_arc_with_layout(n, input)?;
+        let mut arc = self.fst().read_first_real_arc(n, input)?;
         loop {
-            h = prime.wrapping_mul(h) + arc.label as u32 as u64;
-            if let Some(n) = arc.target {
-                h = prime.wrapping_mul(h).wrapping_add((n ^ (n >> 32)) as u64);;
+            h = prime.wrapping_mul(h).wrapping_add(arc.label as u64);
+            if arc.target != 0 {
+                h = prime
+                    .wrapping_mul(h)
+                    .wrapping_add((arc.target ^ (arc.target >> 32)) as u64);;
             }
             if let Some(ref output) = arc.output {
                 h = prime.wrapping_mul(h).wrapping_add(self.hash_code(output));
@@ -656,21 +613,13 @@ impl<F: OutputFactory> NodeHash<F> {
             if arc.is_last() {
                 break;
             }
-            arc = self.fst().read_next_real_arc(&mut layout, input, n)?;
+            self.fst().read_next_real_arc(&mut arc, input)?;
         }
         Ok(h)
     }
 
-    pub fn add(
-        &mut self,
-        builder: &mut FstBuilder<F>,
-        node_in: &UnCompiledNode<F>,
-    ) -> Result<(u64)> {
-        let h = self.node_hash_uncompiled(node_in);
-        let mut labels = Vec::new();
-        for l in &node_in.arcs {
-            labels.push(l.label);
-        }
+    pub fn add(&mut self, builder: &mut FstBuilder<F>, node_index: usize) -> Result<(u64)> {
+        let h = self.node_hash_uncompiled(&builder.frontier[node_index]);
         let mut pos = h & self.mask as u64;
         let mut c = 0;
         let reader = &mut self.input as *mut StoreBytesReader;
@@ -679,17 +628,19 @@ impl<F: OutputFactory> NodeHash<F> {
             if v == 0 {
                 unsafe {
                     // freeze & add
-                    let node = self.fst().add_node(builder, node_in)?;
-                    assert_eq!(self.node_hash_compiled(node, &mut *reader)?, h);
+                    let node = self.fst().add_node(builder, node_index)?;
+                    let compiled_hash = self.node_hash_compiled(node, &mut *reader)?;
+                    assert_eq!(compiled_hash, h);
                     self.count += 1;
                     self.table.set(pos as usize, node);
+                    assert_eq!(self.table.get64(pos as i64).unwrap(), node);
                     // rehash at 2/3 occupancy:
                     if self.count > 2 * self.table.paged_mutable_base().size / 3 {
                         self.rehash(&mut *reader)?;
                     }
                     return Ok(node as u64);
                 }
-            } else if self.nodes_equal(node_in, v)? {
+            } else if self.nodes_equal(&builder.frontier[node_index], v)? {
                 // same node is already here
                 return Ok(v as u64);
             }
@@ -722,7 +673,8 @@ impl<F: OutputFactory> NodeHash<F> {
 
     // called only by rehash
     fn add_new(&mut self, address: i64, input: &mut BytesReader) -> Result<()> {
-        let mut pos = self.node_hash_compiled(address, input)? as usize & self.mask;
+        let hash = self.node_hash_compiled(address, input)? as usize;
+        let mut pos = hash & self.mask;
         let mut c = 0;
         loop {
             if self.table.get64(pos as i64)? == 0 {
@@ -742,9 +694,9 @@ impl<F: OutputFactory> NodeHash<F> {
 // memory while the FST is being built; it's only the
 // current "frontier":
 #[derive(Clone)]
-pub enum Node<F: OutputFactory> {
+pub enum Node {
     Compiled(CompiledAddress),
-    UnCompiled(*mut UnCompiledNode<F>),
+    UnCompiled(usize), // index in builder.frontier
 }
 
 /// Expert: holds a pending (seen but not yet serialized) Node.
@@ -803,7 +755,7 @@ impl<F: OutputFactory> UnCompiledNode<F> {
         self.arcs[self.num_arcs - 1].output = new_output;
     }
 
-    fn add_arc(&mut self, label: i32, target: Node<F>) {
+    fn add_arc(&mut self, label: i32, target: Node) {
         assert!(label > 0);
         assert!(self.num_arcs == 0 || label > self.arcs[self.num_arcs - 1].label);
         debug!("add arc, label: {}", label);
@@ -825,7 +777,7 @@ impl<F: OutputFactory> UnCompiledNode<F> {
     fn replace_last(
         &mut self,
         label_to_match: i32,
-        target: Node<F>,
+        target: Node,
         next_final_output: F::Value,
         is_final: bool,
     ) {
@@ -837,7 +789,7 @@ impl<F: OutputFactory> UnCompiledNode<F> {
         arc.is_final = is_final;
     }
 
-    fn delete_last(&mut self, label: i32, _target: &Node<F>) {
+    fn delete_last(&mut self, label: i32, _target: &Node) {
         assert!(self.num_arcs > 0);
         assert_eq!(self.arcs[self.num_arcs - 1].label, label);
 
