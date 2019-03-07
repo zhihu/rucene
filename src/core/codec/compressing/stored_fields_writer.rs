@@ -567,6 +567,7 @@ impl StoredFieldsWriter for CompressingStoredFieldsWriter {
         let bits = if let Some(v) = field.numeric_value() {
             match v {
                 Numeric::Byte(_) | Numeric::Short(_) | Numeric::Int(_) => NUMERIC_INT,
+                Numeric::Long(_) => NUMERIC_LONG,
                 Numeric::Float(_) => NUMERIC_FLOAT,
                 Numeric::Double(_) => NUMERIC_DOUBLE,
                 _ => unreachable!(),
