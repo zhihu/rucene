@@ -385,12 +385,10 @@ impl DeleteSlice {
             let mut current = &self.slice_head;
             loop {
                 current = current.get_next();
-                if (current as *const Arc<DeleteListNode>).is_null()
-                    || same_node(current, &self.slice_tail)
-                {
+                current.as_ref().data.apply(buffered_deletes, doc_id_upto);
+                if same_node(current, &self.slice_tail) {
                     break;
                 }
-                current.as_ref().data.apply(buffered_deletes, doc_id_upto);
             }
         }
         self.reset();

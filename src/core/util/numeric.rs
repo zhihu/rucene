@@ -40,8 +40,8 @@ impl Numeric {
             Numeric::Short(v) => v as i32,
             Numeric::Int(v) => v,
             Numeric::Long(v) => v as i32,
-            Numeric::Float(v) => v as i32,
-            Numeric::Double(v) => v as i32,
+            Numeric::Float(v) => v.to_bits() as i32,
+            Numeric::Double(v) => v.to_bits() as i32,
             Numeric::Null => 0,
         }
     }
@@ -52,8 +52,8 @@ impl Numeric {
             Numeric::Short(v) => v as i64,
             Numeric::Int(v) => v as i64,
             Numeric::Long(v) => v,
-            Numeric::Float(v) => v as i64,
-            Numeric::Double(v) => v as i64,
+            Numeric::Float(v) => v.to_bits() as i64,
+            Numeric::Double(v) => v.to_bits() as i64,
             Numeric::Null => 0,
         }
     }
