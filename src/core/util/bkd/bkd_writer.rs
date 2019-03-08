@@ -746,14 +746,14 @@ impl BKDWriter {
         &mut self,
         out: &mut IndexOutput,
         field_name: &str,
-        reader: Box<MutablePointsReader>,
+        mut reader: Box<MutablePointsReader>,
     ) -> Result<i64> {
         let size = reader.size(field_name)? as i32;
 
         MutablePointsReaderUtils::sort(
             self.max_doc,
             self.packed_bytes_length as i32,
-            reader.clone(),
+            reader.as_mut(),
             0,
             size,
         );
@@ -1250,7 +1250,7 @@ impl BKDWriter {
         &self,
         ord: i64,
         sorted_dim: usize,
-        last_packed_value: &Vec<u8>,
+        last_packed_value: &[u8],
         packed_value: &[u8],
         doc: DocId,
         last_doc: DocId,
@@ -1260,11 +1260,14 @@ impl BKDWriter {
             let cmp = last_packed_value[dim_offset..dim_offset + self.bytes_per_dim]
                 .cmp(&packed_value[dim_offset..dim_offset + self.bytes_per_dim]);
             if cmp == Ordering::Greater {
-                bail!("values out of order");
+                bail!("values out of order. offset: {}, bytes_per_dim: {},  value: {:?}, last: {:?}",
+                    dim_offset, self.bytes_per_dim, packed_value, last_packed_value);
             }
 
             if cmp == Ordering::Equal && doc < last_doc {
-                bail!("docs out of order");
+                bail!("docs out of order. offset: {}, bytes_per_dim: {},  value: {:?}, last: {:?}, doc: {}, last: {}",
+                    dim_offset, self.bytes_per_dim, packed_value, last_packed_value,
+                    doc, last_doc);
             }
         }
 

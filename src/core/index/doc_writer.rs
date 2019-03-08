@@ -542,6 +542,7 @@ impl DocumentsWriter {
                         ticket.set_segment(seg);
                     }
                     Err(e) => {
+                        error!("dwpt flush failed by {:?}", e);
                         ticket.set_failed();
                     }
                 };
@@ -636,6 +637,13 @@ impl DocumentsWriter {
     }
 
     pub fn close(&mut self) {
+        self.closed = true;
+        self.flush_control.set_closed();
+    }
+}
+
+impl Drop for DocumentsWriter {
+    fn drop(&mut self) {
         self.closed = true;
         self.flush_control.set_closed();
     }

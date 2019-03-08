@@ -146,7 +146,7 @@ pub trait Sorter {
             // len11 = first_cut + from;
         }
 
-        self.rorate(first_cut, mid, second_cut);
+        self.rotate(first_cut, mid, second_cut);
         let new_mid = first_cut + len22;
         self.merge_in_place(from, first_cut, new_mid);
         self.merge_in_place(new_mid, second_cut, to);
@@ -227,7 +227,7 @@ pub trait Sorter {
         }
     }
 
-    fn rorate(&mut self, low: i32, mid: i32, high: i32) {
+    fn rotate(&mut self, low: i32, mid: i32, high: i32) {
         debug_assert!(low < mid && mid < high);
         if low == mid || mid == high {
             return;
@@ -296,9 +296,8 @@ pub trait Sorter {
         }
     }
 
-    fn sift_down(&mut self, i: i32, from: i32, to: i32) {
-        let left_child = heap_child(from, i);
-        let mut i = i;
+    fn sift_down(&mut self, mut i: i32, from: i32, to: i32) {
+        let mut left_child = heap_child(from, i);
         while left_child < to {
             let right_child = left_child + 1;
             if self.compare(i, left_child) == Ordering::Less {
@@ -315,6 +314,7 @@ pub trait Sorter {
             } else {
                 break;
             }
+            left_child = heap_child(from, i);
         }
     }
 

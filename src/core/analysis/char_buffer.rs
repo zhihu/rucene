@@ -1,6 +1,8 @@
 use error::Result;
 use std::io::Read;
 
+use unicode_reader::CodePoints;
+
 /// a simple IO buffer to use
 #[derive(Debug)]
 pub struct CharacterBuffer {
@@ -33,15 +35,16 @@ impl CharacterBuffer {
     }
 
     pub fn fill<T: Read + ?Sized>(&mut self, reader: &mut T) -> Result<bool> {
-        let mut chars = reader.chars();
+        let mut unicode_reader = CodePoints::from(reader);
         self.offset = 0;
+        let mut offset = 0;
         let mut offset = 0;
 
         loop {
             if offset >= self.buffer.len() {
                 break;
             }
-            if let Some(res) = chars.next() {
+            if let Some(res) = unicode_reader.next() {
                 let cur_char = res?;
                 self.buffer[offset] = cur_char;
                 offset += 1;

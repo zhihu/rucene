@@ -557,6 +557,8 @@ impl DefaultIndexingChain {
                     point_dimension_count,
                     dimension_num_bytes,
                 )?;
+            self.field_infos.get_or_add(&per_field.field_info().name)?.set_dimensions(
+                point_dimension_count, dimension_num_bytes)?;
         }
 
         if per_field.point_values_writer.is_none() {

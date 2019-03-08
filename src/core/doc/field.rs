@@ -120,6 +120,7 @@ impl Fieldable for Field {
 
 impl Clone for Field {
     fn clone(&self) -> Self {
+        assert!(self.token_stream.is_none());
         Field {
             name: self.name.clone(),
             field_type: self.field_type.clone(),

@@ -275,10 +275,12 @@ impl ByteBlockPool {
                 break;
             } else {
                 let bytes_copy = BYTE_BLOCK_SIZE - self.byte_upto;
-                self.current_buffer()[start..start + bytes_copy].copy_from_slice(bytes.bytes());
-                debug_assert!(bytes_copy > 0);
-                offset += bytes_copy;
-                length -= bytes_copy;
+                if bytes_copy > 0 {
+                    self.current_buffer()[start..start + bytes_copy].copy_from_slice(bytes.bytes());
+                    debug_assert!(bytes_copy > 0);
+                    offset += bytes_copy;
+                    length -= bytes_copy;
+                }
                 self.next_buffer();
             }
         }

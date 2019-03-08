@@ -198,6 +198,26 @@ impl FieldInfo {
         }
     }
 
+    pub fn set_dimensions(
+        &mut self,
+        dimension_count: u32,
+        dimension_num_bytes: u32,
+    ) -> Result<()> {
+        if self.point_dimension_count == 0 && dimension_count > 0 {
+            self.point_dimension_count = dimension_count;
+            self.point_num_bytes = dimension_num_bytes;
+        } else if dimension_count != 0
+            && (self.point_dimension_count != dimension_count
+            || self.point_num_bytes != dimension_num_bytes)
+        {
+            bail!(IllegalArgument(format!(
+                "cannot change field '{}' dimension count or dimension_num_bytes",
+                self.name
+            )));
+        }
+        Ok(())
+    }
+
     pub fn has_norms(&self) -> bool {
         match self.index_options {
             IndexOptions::Null => false,
@@ -225,18 +245,7 @@ impl FieldInfo {
             }
         }
 
-        if self.point_dimension_count == 0 && dimension_count > 0 {
-            self.point_dimension_count = dimension_count;
-            self.point_num_bytes = dimension_num_bytes;
-        } else if dimension_count != 0
-            && (self.point_dimension_count != dimension_count
-                || self.point_num_bytes != dimension_num_bytes)
-        {
-            bail!(IllegalArgument(format!(
-                "cannot change field '{}' dimension count or dimension_num_bytes",
-                self.name
-            )));
-        }
+        self.set_dimensions(dimension_count, dimension_num_bytes)?;
 
         // if updated field data is not for indexing, leave the updates out
         // once vector, always vector
