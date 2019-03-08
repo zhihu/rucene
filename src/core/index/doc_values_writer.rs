@@ -362,6 +362,8 @@ impl DocValuesWriter for SortedNumericDocValuesWriter {
             self.pending_counts.size() as i32,
             state.segment_info.max_doc
         );
+        self.pending_counts.build();
+        self.pending.build();
         let mut values_iter = SNValuesIterator::new(&self.pending);
         let mut counts_iter = SNCountIterator::new(&self.pending_counts);
 

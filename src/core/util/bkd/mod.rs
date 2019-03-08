@@ -26,6 +26,7 @@ use core::codec::MutablePointsReader;
 use core::store::IndexOutput;
 
 use core::util::bit_util::{pop_array, UnsignedShift};
+use core::util::math;
 use core::util::packed::packed_misc::unsigned_bits_required;
 use core::util::selector::{DefaultIntroSelector, RadixSelector};
 use core::util::sorter::{check_range, MSBRadixSorter, MSBSorter, Sorter};
@@ -189,7 +190,9 @@ pub struct UtilMSBIntroSorter {
     pivot_doc: i32,
     pivot: Vec<u8>,
     scratch: Vec<u8>,
-    reader: Box<MutablePointsReader>,
+    // TODO: we use raw pointer because the `fallback_sorter` method need to return a copy of this
+    // reader, thus there will be 2 mut ref for reader in conflict with the borrow-checker rule
+    reader: *mut MutablePointsReader,
     bits_per_doc_id: i32,
 }
 
@@ -197,17 +200,24 @@ impl UtilMSBIntroSorter {
     pub fn new(
         k: i32,
         packed_bytes_length: i32,
-        reader: Box<MutablePointsReader>,
+        reader: *mut MutablePointsReader,
         bits_per_doc_id: i32,
     ) -> UtilMSBIntroSorter {
         UtilMSBIntroSorter {
             k,
             packed_bytes_length,
-            pivot_doc: -1,
+            pivot_doc: 0,
             pivot: vec![0u8; packed_bytes_length as usize + 1],
             scratch: vec![0u8; packed_bytes_length as usize + 1],
             reader,
             bits_per_doc_id,
+        }
+    }
+
+    #[inline]
+    fn reader(&self) -> &mut MutablePointsReader {
+        unsafe {
+            &mut *self.reader
         }
     }
 }
@@ -216,23 +226,23 @@ impl MSBSorter for UtilMSBIntroSorter {
     type Fallback = UtilMSBIntroSorter;
     fn byte_at(&self, i: i32, k: i32) -> Option<u8> {
         let v = if k < self.packed_bytes_length {
-            self.reader.byte_at(i, k)
+            self.reader().byte_at(i, k)
         } else {
             let shift = self.bits_per_doc_id - ((k - self.packed_bytes_length + 1) << 3);
-            (self.reader.doc_id(i).unsigned_shift(0.max(shift) as usize) & 0xff) as u8
+            (self.reader().doc_id(i).unsigned_shift(0.max(shift) as usize) & 0xff) as u8
         };
         Some(v)
     }
 
     fn msb_swap(&mut self, i: i32, j: i32) {
-        self.reader.swap(i, j);
+        self.reader().swap(i, j);
     }
 
     fn fallback_sorter(&mut self, k: i32) -> UtilMSBIntroSorter {
         UtilMSBIntroSorter::new(
             k,
             self.packed_bytes_length,
-            self.reader.clone(),
+            self.reader,
             self.bits_per_doc_id,
         )
     }
@@ -240,12 +250,13 @@ impl MSBSorter for UtilMSBIntroSorter {
 
 impl Sorter for UtilMSBIntroSorter {
     fn swap(&mut self, i: i32, j: i32) {
-        self.reader.swap(i, j)
+        self.reader().swap(i, j)
     }
 
     fn sort(&mut self, from: i32, to: i32) {
         check_range(from, to);
-        self.quick_sort(from, to, 2 * ((((to - from) as f64).log2()) as i32));
+
+        self.quick_sort(from, to, 2 * math::log((to - from) as i64, 2));
     }
 
     fn compare(&mut self, i: i32, j: i32) -> Ordering {
@@ -254,13 +265,15 @@ impl Sorter for UtilMSBIntroSorter {
     }
 
     fn set_pivot(&mut self, i: i32) {
-        self.reader.value(i, &mut self.pivot);
-        self.pivot_doc = self.reader.doc_id(i);
+        unsafe {
+            (*self.reader).value(i, &mut self.pivot);
+            self.pivot_doc = (*self.reader).doc_id(i);
+        }
     }
 
     fn compare_pivot(&mut self, j: i32) -> Ordering {
         if self.k < self.packed_bytes_length {
-            self.reader.value(j, &mut self.scratch);
+            unsafe {(*self.reader).value(j, &mut self.scratch);}
 
             let count = (self.packed_bytes_length - self.k) as usize;
             let offset = self.k as usize;
@@ -270,7 +283,7 @@ impl Sorter for UtilMSBIntroSorter {
             }
         }
 
-        self.pivot_doc.cmp(&self.reader.doc_id(j))
+        self.pivot_doc.cmp(&self.reader().doc_id(j))
     }
 }
 
@@ -342,7 +355,7 @@ impl MutablePointsReaderUtils {
     pub fn sort(
         max_doc: i32,
         packed_bytes_length: i32,
-        reader: Box<MutablePointsReader>,
+        reader: &mut (MutablePointsReader + 'static),
         from: i32,
         to: i32,
     ) {

@@ -27,6 +27,7 @@ pub struct PackedLongValues {
 
 impl PackedLongValues {
     pub fn new(builder: &PackedLongValuesBuilder) -> PackedLongValues {
+        debug_assert!(builder.finished());
         match builder.builder_type {
             PackedLongValuesBuilderType::Delta => {
                 debug_assert!(builder.values.len() == builder.mins.len())
@@ -476,6 +477,7 @@ pub struct PackedLongValuesIter<'a> {
 
 impl<'a> PackedLongValuesIter<'a> {
     pub fn new(builder: &'a PackedLongValuesBuilder) -> Self {
+        debug_assert!(builder.finished());
         let mut iter = PackedLongValuesIter {
             builder,
             current_values: vec![0; builder.page_mask + 1],

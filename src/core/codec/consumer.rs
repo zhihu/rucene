@@ -416,7 +416,7 @@ pub fn singleton_view<'a>(
     missing_value: Numeric,
 ) -> SingletonViewIter<'a> {
     debug_assert!(is_single_valued(doc_to_value_count).unwrap());
-    doc_to_value_count.reset();
+    //doc_to_value_count.reset();
     // debug_assert!(doc_to_value_count.len() == values.len());
 
     SingletonViewIter::new(doc_to_value_count, values, missing_value)

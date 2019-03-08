@@ -144,7 +144,7 @@ pub const DEFAULT_RAM_PER_THREAD_HARD_LIMIT_MB: u32 = 1945;
 /// ram buffers use <code>false</code>
 pub const DEFAULT_USE_COMPOUND_FILE_SYSTEM: bool = true;
 
-#[derive(Copy, Clone, Eq, PartialEq)]
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum OpenMode {
     Create,
     Append,

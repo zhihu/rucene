@@ -411,7 +411,8 @@ impl FreqProxTermsWriterPerField {
             stream_count,
             terms_hash,
             field_info,
-            FreqProxPostingsArray::default(),
+            FreqProxPostingsArray::new(2, index_options.has_freqs(),
+                index_options.has_positions(), index_options.has_offsets()),
         );
 
         FreqProxTermsWriterPerField {
@@ -691,16 +692,16 @@ impl Default for FreqProxPostingsArray {
 }
 
 impl FreqProxPostingsArray {
-    fn new(size: usize, write_freqs: bool, write_prox: bool, write_offsets: bool) -> Self {
+    fn new(size: usize, write_freqs: bool, write_pos: bool, write_offsets: bool) -> Self {
         let base = ParallelPostingsArray::new(size);
         let term_freqs = if write_freqs {
             vec![0u32; size]
         } else {
-            vec![0u32; size]
+            Vec::with_capacity(0)
         };
-        let mut last_positions = vec![0u32; size];
-        let mut last_offsets = vec![0u32; size];
-        if write_prox {
+        let mut last_positions = Vec::with_capacity(0);
+        let mut last_offsets = Vec::with_capacity(0);
+        if write_pos {
             last_positions = vec![0u32; size];
             if write_offsets {
                 last_offsets = vec![0u32; size];

@@ -151,6 +151,7 @@ impl Lucene54DocValuesConsumer {
             },
         }
 
+        debug_assert!(count > 0);
         let delta = max_value.wrapping_sub(min_value);
         let delta_bits_required = DirectWriter::unsigned_bits_required(delta);
         let table_bits_required = if let Some(ref unique_values) = unique_values {

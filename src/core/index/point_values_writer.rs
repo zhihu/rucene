@@ -91,6 +91,7 @@ impl TempMutablePointsReader {
         }
     }
 
+    #[inline]
     pub fn point_values_writer(&self) -> &PointValuesWriter {
         unsafe { &(*self.point_values_writer) }
     }
@@ -100,8 +101,9 @@ impl PointValues for TempMutablePointsReader {
     fn intersect(&self, field_name: &str, visitor: &mut IntersectVisitor) -> Result<()> {
         let point_values_writer = self.point_values_writer();
 
-        if field_name == &point_values_writer.field_info.name {
-            bail!("fieldName must be the same");
+        if field_name != &point_values_writer.field_info.name {
+            bail!("fieldName must be the same, got: {}, expected: {}",
+                field_name, point_values_writer.field_info.name);
         }
 
         let mut packed_value = vec![0u8; point_values_writer.packed_bytes_length];
@@ -130,16 +132,18 @@ impl PointValues for TempMutablePointsReader {
     }
 
     fn size(&self, field_name: &str) -> Result<i64> {
-        if field_name == &self.point_values_writer().field_info.name {
-            bail!("fieldName must be the same");
+        if field_name != &self.point_values_writer().field_info.name {
+            bail!("fieldName must be the same, got: {}, expected: {}",
+                field_name, self.point_values_writer().field_info.name);
         }
 
         Ok(self.point_values_writer().num_points as i64)
     }
 
     fn doc_count(&self, field_name: &str) -> Result<i32> {
-        if field_name == &self.point_values_writer().field_info.name {
-            bail!("fieldName must be the same");
+        if field_name != &self.point_values_writer().field_info.name {
+            bail!("fieldName must be the same, got: {}, expected: {}",
+                field_name, self.point_values_writer().field_info.name);
         }
 
         Ok(self.point_values_writer().num_docs as i32)
@@ -183,9 +187,7 @@ impl MutablePointsReader for TempMutablePointsReader {
     }
 
     fn swap(&mut self, i: i32, j: i32) {
-        let tmp = self.ords[i as usize];
-        self.ords[j as usize] = self.ords[i as usize];
-        self.ords[i as usize] = tmp;
+        self.ords.swap(i as usize, j as usize);
     }
 
     fn clone(&self) -> Box<MutablePointsReader> {

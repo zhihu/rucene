@@ -1,5 +1,7 @@
-use std::{mem,
-          sync::{Arc, Mutex}};
+use std::{
+    mem,
+    sync::{Arc, Mutex, MutexGuard},
+};
 
 use error::Result;
 
@@ -33,11 +35,10 @@ impl<T: ?Sized> ReferenceManagerBase<T> {
 pub trait ReferenceManager<T: ?Sized> {
     fn base(&self) -> &ReferenceManagerBase<T>;
 
-    fn _swap_reference(&self, new_reference: Option<Arc<T>>) -> Result<()> {
-        let base = self.base();
-        base.lock.lock().unwrap();
+    fn _swap_reference(&self, new_reference: Option<Arc<T>>, _l: &MutexGuard<()>) -> Result<()> {
+        //let _l = base.lock.lock().unwrap();
         // we use base.lock to make sure this operation is safe
-        let base_ptr = base as *const ReferenceManagerBase<T> as *mut ReferenceManagerBase<T>;
+        let base_ptr = self.base() as *const ReferenceManagerBase<T> as *mut ReferenceManagerBase<T>;
         unsafe {
             if let Some(old_ref) = mem::replace(&mut (*base_ptr).current, new_reference) {
                 self.release(old_ref.as_ref())?;
@@ -66,7 +67,7 @@ pub trait ReferenceManager<T: ?Sized> {
                 if self.try_inc_ref(cur)? {
                     return Ok(Arc::clone(cur));
                 }
-            // TODO double check for ref count
+                // TODO double check for ref count
             } else {
                 bail!("this ReferenceManager is closed");
             }
@@ -92,7 +93,7 @@ pub trait ReferenceManager<T: ?Sized> {
             // make sure we can call this more than once
             // closeable javadoc says:
             // if this is already closed then invoking this method has no effect.
-            self._swap_reference(None)?;
+            self._swap_reference(None, &_l)?;
             self.after_close()?;
         }
         Ok(())
@@ -106,11 +107,11 @@ pub trait ReferenceManager<T: ?Sized> {
         Ok(())
     }
 
-    fn _do_maybe_refresh(&self) -> Result<()> {
-        self.base().refresh_lock.lock()?;
+    fn _do_maybe_refresh(&self, l: &MutexGuard<()>) -> Result<()> {
+        //let _l = self.base().refresh_lock.lock()?;
 
         let reference = self.acquire()?;
-        let res = self._exec_maybe_refresh(&reference);
+        let res = self._exec_maybe_refresh(&reference, l);
         let _ = self.release(reference.as_ref());
         if res.is_ok() {
             self.after_maybe_refresh()?;
@@ -118,19 +119,16 @@ pub trait ReferenceManager<T: ?Sized> {
         res
     }
 
-    fn _exec_maybe_refresh(&self, reference: &Arc<T>) -> Result<()> {
+    fn _exec_maybe_refresh(&self, reference: &Arc<T>, l: &MutexGuard<()>) -> Result<()> {
         if let Some(new_reference) = self.refresh_if_needed(reference)? {
-            debug_assert_ne!(
-                new_reference.as_ref() as *const T,
-                reference.as_ref() as *const T
-            );
-            self._do_swap(new_reference)?;
+            debug_assert_ne!(new_reference.as_ref() as *const T, reference.as_ref() as *const T);
+            self._do_swap(new_reference, l)?;
         }
         Ok(())
     }
 
-    fn _do_swap(&self, reference: Arc<T>) -> Result<()> {
-        let res = self._swap_reference(Some(Arc::clone(&reference)));
+    fn _do_swap(&self, reference: Arc<T>, l: &MutexGuard<()>) -> Result<()> {
+        let res = self._swap_reference(Some(Arc::clone(&reference)), l);
         if res.is_err() {
             let _ = self.release(reference.as_ref());
         }
@@ -153,8 +151,8 @@ pub trait ReferenceManager<T: ?Sized> {
     fn maybe_refresh(&self) -> Result<bool> {
         self.base().ensure_open()?;
         // Ensure only 1 thread does refresh at once; other threads just return immediately:
-        if let Ok(_guard) = self.base().refresh_lock.try_lock() {
-            self._do_maybe_refresh()?;
+        if let Ok(guard) = self.base().refresh_lock.try_lock() {
+            self._do_maybe_refresh(&guard)?;
             Ok(true)
         } else {
             Ok(false)
@@ -162,8 +160,8 @@ pub trait ReferenceManager<T: ?Sized> {
     }
 
     fn maybe_refresh_blocking(&self) -> Result<()> {
-        let _l = self.base().refresh_lock.lock().unwrap();
-        self._do_maybe_refresh()
+        let l = self.base().refresh_lock.lock().unwrap();
+        self._do_maybe_refresh(&l)
     }
 
     fn after_maybe_refresh(&self) -> Result<()> {

@@ -185,6 +185,7 @@ impl DocumentsWriterPerThread {
         self.doc_state.clear();
         if !res.is_ok() {
             // mark document as deleted
+            error!(" process document failed, res: {:?}", res);
             let doc = self.doc_state.doc_id;
             self.delete_doc_id(doc);
             self.num_docs_in_ram += 1;

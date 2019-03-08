@@ -2859,6 +2859,20 @@ impl IndexWriter {
     }
 }
 
+impl Drop for IndexWriter {
+    fn drop(&mut self) {
+        if self.config.commit_on_close {
+            if let Err(e) = self.shutdown() {
+                error!("IndexWriter: shutdown on close failed by: {:?}", e);
+            }
+        } else {
+            if let Err(e) = self.rollback() {
+                error!("IndexWriter: rollback on close failed by: {:?}", e);
+            }
+        }
+    }
+}
+
 /// Holds shared SegmentReader instances. IndexWriter uses SegmentReaders for:
 /// 1) applying deletes, 2) doing merges, 3) handing out a real-time reader.
 /// This pool reuses instances of the SegmentReaders in all these places if it
@@ -3083,6 +3097,14 @@ impl ReaderPool {
         let rld = Arc::clone(self.reader_map.lock()?.get_mut(&info.info.name).unwrap());
         rld.inc_ref();
         Ok(rld)
+    }
+}
+
+impl Drop for ReaderPool {
+    fn drop(&mut self) {
+        if let Err(e) = self.drop_all(false) {
+            error!("ReaderPool: drop_all on close failed by: {:?}", e);
+        }
     }
 }
 
