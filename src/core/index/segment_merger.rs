@@ -90,7 +90,8 @@ impl SegmentMerger {
         //            after_terms.duration_since(after_fields).unwrap()
         //        );
 
-        if self.merge_state
+        if self
+            .merge_state
             .merge_field_infos
             .as_ref()
             .unwrap()
@@ -105,7 +106,8 @@ impl SegmentMerger {
         //            self.merge_state.segment_info().max_doc(),
         //            after_dvs.duration_since(after_terms).unwrap()
         //        );
-        if self.merge_state
+        if self
+            .merge_state
             .merge_field_infos
             .as_ref()
             .unwrap()
@@ -115,7 +117,8 @@ impl SegmentMerger {
         }
         let after_points = SystemTime::now();
 
-        if self.merge_state
+        if self
+            .merge_state
             .merge_field_infos
             .as_ref()
             .unwrap()
@@ -123,7 +126,8 @@ impl SegmentMerger {
         {
             self.merge_norms(&segment_write_state)?;
         }
-        if self.merge_state
+        if self
+            .merge_state
             .merge_field_infos
             .as_ref()
             .unwrap()
@@ -160,21 +164,24 @@ impl SegmentMerger {
     }
 
     fn merge_doc_values(&mut self, segment_write_state: &SegmentWriteState) -> Result<()> {
-        let mut consumer = self.codec
+        let mut consumer = self
+            .codec
             .doc_values_format()
             .fields_consumer(segment_write_state)?;
         consumer.merge(&mut self.merge_state)
     }
 
     fn merge_points(&mut self, segment_write_state: &SegmentWriteState) -> Result<()> {
-        let mut writer = self.codec
+        let mut writer = self
+            .codec
             .points_format()
             .fields_writer(segment_write_state)?;
         writer.merge(&mut self.merge_state)
     }
 
     fn merge_norms(&mut self, segment_write_state: &SegmentWriteState) -> Result<()> {
-        let mut consumer = self.codec
+        let mut consumer = self
+            .codec
             .norms_format()
             .norms_consumer(segment_write_state)?;
         consumer.merge(&mut self.merge_state)
@@ -222,7 +229,8 @@ impl SegmentMerger {
     }
 
     fn merge_terms(&mut self, segment_write_state: &SegmentWriteState) -> Result<()> {
-        let mut consumer = self.codec
+        let mut consumer = self
+            .codec
             .postings_format()
             .fields_consumer(segment_write_state)?;
         consumer.merge(&mut self.merge_state)

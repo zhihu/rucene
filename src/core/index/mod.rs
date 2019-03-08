@@ -917,7 +917,8 @@ impl Serialize for SegmentCommitInfo {
         s.serialize_field("field_infos_gen", &self.field_infos_gen())?;
         s.serialize_field(
             "next_write_field_infos_gen",
-            &self.next_write_field_infos_gen
+            &self
+                .next_write_field_infos_gen
                 .load(AtomicOrdering::Acquire),
         )?;
         s.serialize_field("doc_values_gen", &self.doc_values_gen)?;
@@ -1120,10 +1121,10 @@ pub mod tests {
     use std::collections::HashMap;
 
     use super::*;
-    use core::index::point_values::PointValuesRef;
-    use core::search::bm25_similarity::BM25Similarity;
     use core::codec::{DocValuesProducer, FieldsProducer};
     use core::codec::{NormsProducer, StoredFieldsReader, TermVectorsReader};
+    use core::index::point_values::PointValuesRef;
+    use core::search::bm25_similarity::BM25Similarity;
     use core::util::external::deferred::Deferred;
     use core::util::*;
 
@@ -1189,7 +1190,8 @@ pub mod tests {
                 HashMap::new(),
                 1,
                 1,
-            ).unwrap();
+            )
+            .unwrap();
             let field_info_two = FieldInfo::new(
                 "test_2".to_string(),
                 2,
@@ -1202,7 +1204,8 @@ pub mod tests {
                 HashMap::new(),
                 2,
                 2,
-            ).unwrap();
+            )
+            .unwrap();
             infos.push(field_info_one);
             infos.push(field_info_two);
 

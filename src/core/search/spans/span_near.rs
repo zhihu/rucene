@@ -6,7 +6,7 @@ use core::search::spans::span::{term_contexts, ConjunctionSpanBase, ConjunctionS
 use core::search::spans::span::{SpanCollector, SpanQuery, SpanWeight, Spans};
 use core::search::term_query::TermQuery;
 use core::search::{DocIterator, Query, Scorer, SimWeight, Weight, NO_MORE_DOCS};
-use core::util::{BM25_SIMILARITY_IDF, DocId, KeyedContext};
+use core::util::{DocId, KeyedContext, BM25_SIMILARITY_IDF};
 
 use error::{ErrorKind, Result};
 
@@ -408,11 +408,13 @@ impl Spans for NearSpansUnordered {
 
         debug_assert_ne!(self.min_cell().start_position(), NO_MORE_POSITIONS);
         loop {
-            if self.span_position_queue
+            if self
+                .span_position_queue
                 .peek_mut()
                 .unwrap()
                 .spans_mut()
-                .next_start_position()? == NO_MORE_POSITIONS
+                .next_start_position()?
+                == NO_MORE_POSITIONS
             {
                 self.conjunction_span.one_exhausted_in_current_doc = true;
                 return Ok(NO_MORE_POSITIONS);
@@ -648,7 +650,6 @@ impl PartialOrd for SpansCellElement {
 ///
 /// Expert:
 /// Only public for subclassing.  Most implementations should not need this class
-///
 pub struct NearSpansOrdered {
     conjunction_span: ConjunctionSpanBase,
     sub_spans: Vec<Box<Spans>>,

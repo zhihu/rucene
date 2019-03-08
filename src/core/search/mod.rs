@@ -80,7 +80,6 @@ pub type Payload = Vec<u8>;
 
 /// When returned by `next()`, `advance(DocId)` and
 /// `doc_id()` it means there are no more docs in the iterator.
-///
 pub const NO_MORE_DOCS: DocId = i32::MAX;
 
 /// This trait defines methods to iterate over a set of non-decreasing
@@ -88,7 +87,6 @@ pub const NO_MORE_DOCS: DocId = i32::MAX;
 /// `NO_MORE_DOCS` is set to `NO_MORE_DOCS` in order to be used as
 /// a sentinel object. Implementations of this class are expected to consider
 /// `std:i32:MAX` as an invalid value.
-///
 pub trait DocIterator: Send + Sync {
     /// Creates a `TermIterator` over current doc.
     ///
@@ -101,7 +99,6 @@ pub trait DocIterator: Send + Sync {
     /// * `-1` if `next()` or `advance(DocId)` were not called yet.
     /// * `NO_MORE_DOCS` if the iterator has exhausted.
     /// * Otherwise it should return the doc ID it is currently on.
-    ///
     fn doc_id(&self) -> DocId;
 
     /// Advances to the next document in the set and returns the doc it is
@@ -110,7 +107,6 @@ pub trait DocIterator: Send + Sync {
     ///
     /// *NOTE:* after the iterator has exhausted you should not call this
     /// method, as it may result in unpredicted behavior.
-    ///
     fn next(&mut self) -> Result<DocId>;
 
     /// Advances to the first beyond the current whose document number is greater
@@ -128,12 +124,10 @@ pub trait DocIterator: Send + Sync {
     /// efficiency by some Scorers. If your implementation cannot efficiently
     /// determine that it should exhaust, it is recommended that you check for that
     /// value in each call to this method.
-    ///
     fn advance(&mut self, target: DocId) -> Result<DocId>;
 
     /// Slow (linear) implementation of {@link #advance} relying on
     /// `next()` to advance beyond the target position.
-    ///
     fn slow_advance(&mut self, target: DocId) -> Result<DocId> {
         debug_assert!(self.doc_id() < target);
         let mut doc = self.doc_id();
@@ -148,7 +142,6 @@ pub trait DocIterator: Send + Sync {
     /// This is generally an upper bound of the number of documents this iterator
     /// might match, but may be a rough heuristic, hardcoded value, or otherwise
     /// completely inaccurate.
-    ///
     fn cost(&self) -> usize;
 
     /// Return whether the current doc ID that `approximation()` is on matches. This
@@ -224,11 +217,9 @@ pub trait Scorer: DocIterator + Send + Sync {
     /// Initially invalid, until `DocIterator::next()` or
     /// `DocIterator::advance(DocId)` is called on the `iterator()`
     /// the first time, or when called from within `LeafCollector::collect`.
-    ///
     fn score(&mut self) -> Result<f32>;
 
     /// whether this scorer support *two phase iterator*, default to false
-    ///
     fn support_two_phase(&self) -> bool {
         false
     }
@@ -415,8 +406,6 @@ pub trait BatchScorer: Send + Sync {
 /// When {@link IndexSearcher#explain(org.apache.lucene.search.Query, int)} is called, queries
 /// consult the Similarity's DocScorer for an explanation of how it computed its score. The query
 /// passes in a the document id and an explanation of how the frequency was computed.
-///
-///
 
 pub trait Similarity: Display {
     /// Compute any collection-level weight (e.g. IDF, average document length, etc)
@@ -441,7 +430,6 @@ pub trait Similarity: Display {
     ///
     /// @param valueForNormalization the sum of the term normalization values
     /// @return a normalization factor for query weights
-    ///
     fn query_norm(&self, _value_for_normalization: f32, _context: Option<&KeyedContext>) -> f32 {
         1.0f32
     }
@@ -467,7 +455,6 @@ pub trait SimWeight {
     /// NOTE: a Similarity implementation might not use any query normalization at all,
     /// it's not required. However, if it wants to participate in query normalization,
     /// it can return a value here.
-    ///
     fn get_value_for_normalization(&self) -> f32;
 
     fn normalize(&mut self, query_norm: f32, boost: f32);
@@ -491,11 +478,9 @@ pub trait SimilarityProducer: Send + Sync {
 
 /// A query rescorer interface used to re-rank the Top-K results of a previously
 /// executed search.
-///
 pub trait Rescorer {
     /// Modifies the result of the previously executed search `TopDocs`
     /// in place based on the given `RescorerContext`
-    ///
     fn rescore(
         &self,
         searcher: &IndexSearcher,
@@ -614,7 +599,6 @@ pub trait DocIdSet: Send + Sync {
     /// IOError. This is generally true for bit sets
     /// like `FixedBitSet`, which return
     /// itself if they are used as `DocIdSet`.
-    ///
     fn bits(&self) -> Result<Option<ImmutableBitSetRef>>;
 }
 
@@ -807,7 +791,8 @@ pub mod tests {
         }
 
         fn matches(&mut self) -> Result<bool> {
-            Ok(self.offset >= 0 && self.current_doc_id != NO_MORE_DOCS
+            Ok(self.offset >= 0
+                && self.current_doc_id != NO_MORE_DOCS
                 && !self.invalid_doc_ids.contains(&self.current_doc_id))
         }
 

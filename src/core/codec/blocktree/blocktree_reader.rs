@@ -93,7 +93,6 @@ type IndexInputRef = Arc<IndexInput>;
 /// See {@link BlockTreeTermsWriter}.
 ///
 /// @lucene.experimental
-///
 pub struct BlockTreeTermsReader {
     // Open input to the main terms dict file (_X.tib)
     terms_in: IndexInputRef,
@@ -698,7 +697,9 @@ impl Stats {
             (_, _) => bail!("illegal state term_count sub_block_count"),
         }
         self.end_block_count += 1;
-        let other_bytes = frame.fp_end - frame.fp - frame.suffixes_reader.length() as i64
+        let other_bytes = frame.fp_end
+            - frame.fp
+            - frame.suffixes_reader.length() as i64
             - frame.stats_reader.length() as i64;
         debug_assert!(other_bytes > 0);
         self.total_block_other_bytes += other_bytes;
@@ -795,7 +796,8 @@ impl Stats {
         );
         debug_assert!(
             self.total_block_count
-                == self.mixed_block_count + self.terms_only_block_count
+                == self.mixed_block_count
+                    + self.terms_only_block_count
                     + self.sub_blocks_only_block_count,
             "self.total_block_count={} self.mixed_block_count={} \
              self.sub_blocks_only_block_count={} self.terms_only_block_count={}",

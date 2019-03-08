@@ -10,7 +10,6 @@ use error::*;
 /// that you supply to components in Lucene, do not simply
 /// change the version at search-time, but instead also adjust
 /// your indexing code to match, and re-index.
-///
 #[derive(Clone, Copy, Debug, Serialize, Hash)]
 pub struct Version {
     /// Major version, the difference between stable and trunk */
@@ -160,7 +159,6 @@ impl Version {
     }
 
     /// Returns true if this version is the same or after the version from the argument.
-    ///
     pub fn on_or_after(&self, other: &Version) -> bool {
         self.encode() >= other.encode()
     }

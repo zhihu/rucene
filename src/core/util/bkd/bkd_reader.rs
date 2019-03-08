@@ -2,9 +2,10 @@ use core::codec::codec_util;
 use core::index::{DocMap, IntersectVisitor, LiveDocsDocMap, Relation};
 use core::store::{ByteArrayDataInput, ByteArrayRef, DataInput, IndexInput};
 use core::util::bkd::DocIdsWriter;
-use core::util::bkd::{BKD_VERSION_IMPLICIT_SPLIT_DIM_1D, BKD_CODEC_NAME,
-                      BKD_VERSION_COMPRESSED_DOC_IDS, BKD_VERSION_COMPRESSED_VALUES,
-                      BKD_VERSION_CURRENT, BKD_VERSION_PACKED_INDEX, BKD_VERSION_START};
+use core::util::bkd::{BKD_CODEC_NAME, BKD_VERSION_COMPRESSED_DOC_IDS,
+                      BKD_VERSION_COMPRESSED_VALUES, BKD_VERSION_CURRENT,
+                      BKD_VERSION_IMPLICIT_SPLIT_DIM_1D, BKD_VERSION_PACKED_INDEX,
+                      BKD_VERSION_START};
 use core::util::math;
 use core::util::DocId;
 
@@ -191,7 +192,8 @@ impl BKDReader {
         if !self.packed_index.is_empty() {
             ByteArrayDataInput::new(self.packed_index.as_ref()).read_vlong()
         } else {
-            let min_fp = self.leaf_block_fps
+            let min_fp = self
+                .leaf_block_fps
                 .iter()
                 .min()
                 .map_or(i64::max_value(), |v| *v);
@@ -305,14 +307,14 @@ impl BKDReader {
             // Restore the split dim value since it may have been overwritten while recursing:
             split_dim_value[0..self.bytes_per_dim].copy_from_slice(
                 &split_packed_value[split_dim * self.bytes_per_dim
-                                        ..split_dim * self.bytes_per_dim + self.bytes_per_dim],
+                    ..split_dim * self.bytes_per_dim + self.bytes_per_dim],
             );
 
             // Recurse on right sub-tree:
             split_packed_value[0..self.packed_bytes_length]
                 .copy_from_slice(&cell_min_packed[0..self.packed_bytes_length]);
             split_packed_value[split_dim * self.bytes_per_dim
-                                   ..split_dim * self.bytes_per_dim + self.bytes_per_dim]
+                ..split_dim * self.bytes_per_dim + self.bytes_per_dim]
                 .copy_from_slice(&split_dim_value[0..self.bytes_per_dim]);
             state
                 .index_tree
@@ -1027,11 +1029,11 @@ impl IndexTree for PackedIndexTree {
 
         let to_copy: Vec<bool> = Vec::from(
             &self.negative_deltas[(self.index_tree.level - 1) * self.num_dims
-                                      ..self.index_tree.level * self.num_dims],
+                ..self.index_tree.level * self.num_dims],
         );
 
         self.negative_deltas[self.index_tree.level * self.num_dims
-                                 ..self.index_tree.level * self.num_dims + self.num_dims]
+            ..self.index_tree.level * self.num_dims + self.num_dims]
             .copy_from_slice(to_copy.as_slice());
 
         debug_assert_ne!(self.index_tree.split_dim as i32, -1);
@@ -1049,11 +1051,11 @@ impl IndexTree for PackedIndexTree {
 
         let to_copy: Vec<bool> = Vec::from(
             &self.negative_deltas[(self.index_tree.level - 1) * self.num_dims
-                                      ..self.index_tree.level * self.num_dims],
+                ..self.index_tree.level * self.num_dims],
         );
 
         self.negative_deltas[self.index_tree.level * self.num_dims
-                                 ..self.index_tree.level * self.num_dims + self.num_dims]
+            ..self.index_tree.level * self.num_dims + self.num_dims]
             .copy_from_slice(to_copy.as_slice());
 
         debug_assert_ne!(self.index_tree.split_dim as i32, -1);

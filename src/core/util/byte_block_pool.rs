@@ -36,7 +36,6 @@ pub const FIRST_LEVEL_SIZE: usize = LEVEL_SIZE_ARRAY[0];
 /// that are writing into the slice don't need to record
 /// its length and instead allocate a new slice once they
 /// hit a non-zero byte.
-///
 pub struct ByteBlockPool {
     /// array of buffers currently used in the pool. Buffers are allocated if
     /// needed don't modify this outside of this class.
@@ -130,7 +129,6 @@ impl ByteBlockPool {
     /// after the constructor to initialize the pool. In contrast to the
     /// constructor a {@link ByteBlockPool#reset()} call will advance the pool to
     /// its first buffer immediately.
-    ///
     pub fn next_buffer(&mut self) {
         let idx = (self.buffer_upto + 1) as usize;
         if idx == self.buffers.len() {
@@ -292,7 +290,6 @@ impl ByteBlockPool {
     /// value crosses a boundary, a fresh copy will be returned.
     /// On the contrary to {@link #setBytesRef(BytesRef, int)}, this does not
     /// expect the length to be encoded with the data.
-    ///
     pub fn set_raw_bytes_ref(&self, bytes: &mut [u8], offset: usize) {
         let length = bytes.len();
         self.read_bytes(offset, bytes, 0, length);

@@ -25,8 +25,6 @@ const SKIP_MULTIPLIER: u32 = 8;
 /// 2. its related file points(position, payload),
 /// 3. related numbers or uptos(position, payload).
 /// 4. start offset.
-///
-///
 pub struct Lucene50SkipWriter {
     last_skip_doc: Vec<i32>,
     last_skip_doc_pointer: Vec<i64>,

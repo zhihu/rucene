@@ -232,7 +232,8 @@ impl Weight for PointRangeWeight {
                 let iterator = if all_docs_match {
                     Box::new(AllDocsIterator::new(leaf_reader.max_doc()))
                 } else {
-                    let iterator = self.build_matching_doc_set(leaf_reader, values.as_ref())?
+                    let iterator = self
+                        .build_matching_doc_set(leaf_reader, values.as_ref())?
                         .iterator()?;
                     if iterator.is_some() {
                         iterator.unwrap()

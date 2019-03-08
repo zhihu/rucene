@@ -68,7 +68,6 @@ pub const INDEX_WRITE_LOCK_NAME: &str = "write.lock";
 /// (files that were created since the last commit, but are no longer
 /// referenced by the "front" of the index). For this, IndexFileDeleter
 /// keeps track of the last non commit checkpoint.
-///
 pub struct IndexWriter {
     pub lock: Arc<Mutex<()>>,
     cond: Condvar,
@@ -411,10 +410,9 @@ impl IndexWriter {
     /// hit an {@link AlreadyClosedException}.
     ///
     /// @return:
-    /// - Ok(IndexReader) that covers entire index plus all
-    ///   changes made so far by this IndexWriter instance
+    /// - Ok(IndexReader) that covers entire index plus all changes made so far by this IndexWriter
+    ///   instance
     /// - Err: If there is a low-level I/O error
-    ///
     pub fn get_reader(
         &self,
         apply_all_deletes: bool,
@@ -628,7 +626,8 @@ impl IndexWriter {
                     // Another thread is presently trying to close;
                     // wait until it finishes one way (closes
                     // successfully) or another (fails to close)
-                    let (loc, _) = self.cond
+                    let (loc, _) = self
+                        .cond
                         .wait_timeout(l, Duration::from_millis(1000))
                         .unwrap();
                     l = loc;
@@ -763,7 +762,8 @@ impl IndexWriter {
                         .as_mut()
                         .unwrap()
                         .rollback_commit(self.directory.as_ref());
-                    if let Err(e) = self.deleter
+                    if let Err(e) = self
+                        .deleter
                         .dec_ref_by_segment(self.pending_commit.as_ref().unwrap())
                     {
                         warn!(
@@ -815,7 +815,8 @@ impl IndexWriter {
                     .as_mut()
                     .unwrap()
                     .rollback_commit(self.directory.as_ref());
-                let res = self.deleter
+                let res = self
+                    .deleter
                     .dec_ref_by_segment(self.pending_commit.as_ref().unwrap());
                 self.pending_commit = None;
                 self.cond.notify_all();
@@ -877,7 +878,6 @@ impl IndexWriter {
     ///
     /// @return The <a href="#sequence_number">sequence number</a>
     /// for this operation
-    ///
     pub fn delete_all(&mut self) -> Result<u64> {
         self.ensure_open(true)?;
         let seq_no: u64;
@@ -1177,7 +1177,8 @@ impl IndexWriter {
                 }
             }
         } else {
-            spec = self.config
+            spec = self
+                .config
                 .merge_policy()
                 .find_merges(trigger, &self.segment_infos, self)?;
         }
@@ -1216,7 +1217,8 @@ impl IndexWriter {
     /// after you had just called {@link #commit}.
     pub fn has_uncommitted_changes(&self) -> bool {
         self.change_count() != self.last_commit_change_count.load(Ordering::Acquire)
-            || self.doc_writer.any_changes() || self.buffered_updates_stream.any()
+            || self.doc_writer.any_changes()
+            || self.buffered_updates_stream.any()
     }
 
     pub fn commit(&mut self) -> Result<i64> {
@@ -1537,7 +1539,8 @@ impl IndexWriter {
     fn do_finish_commit(&mut self, commit_completed: &mut bool) -> Result<()> {
         debug!("IW - commit: pending_commit is not none");
 
-        let committed_segments_file = self.pending_commit
+        let committed_segments_file = self
+            .pending_commit
             .as_mut()
             .unwrap()
             .finish_commit(self.directory.as_ref())?;
@@ -1565,7 +1568,8 @@ impl IndexWriter {
             self.pending_commit_change_count.load(Ordering::Acquire),
             Ordering::Release,
         );
-        self.rollback_segments = self.pending_commit
+        self.rollback_segments = self
+            .pending_commit
             .as_ref()
             .unwrap()
             .create_backup_segment_infos();
@@ -1668,7 +1672,8 @@ impl IndexWriter {
             self.doc_writer.num_docs() + self.segment_infos.total_max_doc() as u32
         );
 
-        let result: ApplyDeletesResult = self.buffered_updates_stream
+        let result: ApplyDeletesResult = self
+            .buffered_updates_stream
             .apply_deletes_and_updates(&self.reader_pool, &mut self.segment_infos.segments)?;
         if result.any_deletes {
             self.check_point(l)?;
@@ -1784,7 +1789,6 @@ impl IndexWriter {
     /// @throws IOException if there is a low-level IO error
     ///
     /// @lucene.experimental
-    ///
     pub fn add_documents(&mut self, docs: Vec<Vec<Box<Fieldable>>>) -> Result<u64> {
         self.update_documents(docs, None)
     }
@@ -1936,7 +1940,8 @@ impl IndexWriter {
 
         debug!("IW: create compound file for segment: {}", &info.name);
 
-        let res = info.codec()
+        let res = info
+            .codec()
             .compound_format()
             .write(directory, info, context);
         if let Err(err) = res {
@@ -1957,7 +1962,8 @@ impl IndexWriter {
 
     pub fn nrt_is_current(&self, infos: &SegmentInfos) -> bool {
         let _l = self.lock.lock().unwrap();
-        infos.version == self.segment_infos.version && !self.doc_writer.any_changes()
+        infos.version == self.segment_infos.version
+            && !self.doc_writer.any_changes()
             && !self.buffered_updates_stream.any()
     }
 
@@ -2115,7 +2121,8 @@ impl IndexWriter {
         self.pending_merges
             .iter()
             .any(|m| m.max_num_segments.get().is_some())
-            || self.running_merges
+            || self
+                .running_merges
                 .values()
                 .any(|m| m.max_num_segments.get().is_some())
     }
@@ -2288,7 +2295,8 @@ impl IndexWriter {
         );
 
         // Lock order: IW - BD
-        let result: ApplyDeletesResult = self.buffered_updates_stream
+        let result: ApplyDeletesResult = self
+            .buffered_updates_stream
             .apply_deletes_and_updates(&self.reader_pool, &merge.segments)?;
 
         if result.any_deletes {
@@ -2690,7 +2698,8 @@ impl IndexWriter {
         // is in now compound format (but wasn't when we
         // started), then we will switch to the compound
         // format as well:
-        debug_assert!(!self.segment_infos
+        debug_assert!(!self
+            .segment_infos
             .segments
             .contains(merge.info.as_ref().unwrap()));
 
@@ -2704,7 +2713,8 @@ impl IndexWriter {
         // If we merged no segments then we better be dropping the new segment:
         debug_assert!(merge.segments.len() > 0 || drop_segment);
         debug_assert!(
-            merge.info.as_ref().unwrap().info.max_doc > 0 || self.keep_fully_deleted_segments
+            merge.info.as_ref().unwrap().info.max_doc > 0
+                || self.keep_fully_deleted_segments
                 || drop_segment
         );
 
@@ -2762,7 +2772,8 @@ impl IndexWriter {
 
         if merge.max_num_segments.get().is_some() && !drop_segment {
             // cascade the force_merge:
-            if !self.segments_to_merge
+            if !self
+                .segments_to_merge
                 .contains_key(merge.info.as_ref().unwrap())
             {
                 self.segments_to_merge

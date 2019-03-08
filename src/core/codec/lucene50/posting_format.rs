@@ -16,7 +16,6 @@ pub struct Lucene50PostingsFormat {
 
 /// Fixed packed block size, number of integers encoded in
 /// a single packed block.
-///
 // NOTE: must be multiple of 64 because of PackedInts long-aligned encoding/decoding
 pub const BLOCK_SIZE: i32 = 128;
 

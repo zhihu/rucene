@@ -272,7 +272,6 @@ pub trait PostingsWriterBase {
     /// for others, if it is designed to inline  some postings data in term dictionary.
     /// In this case, the postings writer should always use the last value, so that each
     /// element in metadata long[] remains monotonic.
-    ///
     fn encode_term(
         &mut self,
         longs: &mut [i64],
@@ -304,8 +303,6 @@ pub trait PostingsWriterBase {
 /// After all documents have been written, {@link #finish(FieldInfos, int)}
 /// is called for verification/sanity-checks.
 /// Finally the writer is closed ({@link #close()})
-///
-///
 pub trait TermVectorsWriter {
     /// Called before writing the term vectors of the document.
     ///  {@link #startField(FieldInfo, int, boolean, boolean, boolean)} will
@@ -336,7 +333,6 @@ pub trait TermVectorsWriter {
     /// If this field has positions and/or offsets enabled, then
     /// {@link #addPosition(int, int, int, BytesRef)} will be called
     /// <code>freq</code> times respectively.
-    ///
     fn start_term(&mut self, term: &BytesRef, freq: i32) -> Result<()>;
 
     /// Called after a term and all its positions have been added.
@@ -359,7 +355,6 @@ pub trait TermVectorsWriter {
     ///  calls to {@link #startDocument(int)}, but a Codec should
     ///  check that this is the case to detect the JRE bug described
     ///  in LUCENE-1282.
-    ///
     fn finish(&mut self, fis: &FieldInfos, num_docs: usize) -> Result<()>;
 
     /// Called by IndexWriter when writing new segments.
@@ -376,7 +371,6 @@ pub trait TermVectorsWriter {
     ///
     /// TODO: we should probably nuke this and make a more efficient 4.x format
     /// PreFlex-RW could then be slow and buffer (it's only used in tests...)
-    ///
     fn add_prox(
         &mut self,
         num_prox: usize,
@@ -618,7 +612,6 @@ impl DocIdMergerSub for TermVectorsMergeSub {
 /// </ol>
 ///
 /// @lucene.experimental
-///
 pub trait StoredFieldsWriter {
     /// Called before writing the stored fields of the document.
     /// {@link #writeField(FieldInfo, IndexableField)} will be called
@@ -674,7 +667,8 @@ pub fn merge_store_fields(
         if let Some(sub) = doc_id_merger.next()? {
             debug_assert_eq!(sub.base().mapped_doc_id, doc_count);
             writer.start_document()?;
-            sub.reader.visit_document_mut(sub.doc_id, &mut sub.visitor)?;
+            sub.reader
+                .visit_document_mut(sub.doc_id, &mut sub.visitor)?;
             writer.finish_document()?;
             doc_count += 1;
         } else {

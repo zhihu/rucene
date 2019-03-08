@@ -19,7 +19,6 @@ use std::mem;
 /// `BulkAdder`.
 ///
 /// @lucene.internal
-///
 pub struct DocIdSetBuilder {
     max_doc: DocId,
     threshold: usize,

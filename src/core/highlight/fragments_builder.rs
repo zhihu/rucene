@@ -72,7 +72,8 @@ impl BaseFragmentsBuilder {
                 // + 1 for going to next field with same name.
                 field_end += string_value.chars().count() as i32 + 1;
 
-                if frag_info.start_offset >= field_start && frag_info.end_offset >= field_start
+                if frag_info.start_offset >= field_start
+                    && frag_info.end_offset >= field_start
                     && frag_info.start_offset <= field_end
                     && frag_info.end_offset <= field_end
                 {
@@ -243,9 +244,7 @@ impl BaseFragmentsBuilder {
                 }
 
                 original = src_chars[src_index as usize
-                                         ..(to.start_offset - offset_delta
-                                             - modified_start_offset[0])
-                                             as usize]
+                    ..(to.start_offset - offset_delta - modified_start_offset[0]) as usize]
                     .iter()
                     .collect();
                 fragment.push_str(encoder.encode_text(original.as_str()).borrow());
@@ -253,9 +252,8 @@ impl BaseFragmentsBuilder {
                 fragment.push_str(Self::tag(pre_tags, sub_info.seqnum));
 
                 original = src_chars[(to.start_offset - offset_delta - modified_start_offset[0])
-                                         as usize
-                                         ..(to.end_offset - offset_delta - modified_start_offset[0])
-                                             as usize]
+                    as usize
+                    ..(to.end_offset - offset_delta - modified_start_offset[0]) as usize]
                     .iter()
                     .collect();
                 fragment.push_str(encoder.encode_text(original.as_str()).borrow());
@@ -303,7 +301,8 @@ impl BaseFragmentsBuilder {
             self.boundary_scanner.find_end_offset(buffer, end_offset)
         };
 
-        modified_start_offset[0] = self.boundary_scanner
+        modified_start_offset[0] = self
+            .boundary_scanner
             .find_start_offset(buffer, start_offset);
 
         let buffer_chars: Vec<char> = buffer.chars().collect();

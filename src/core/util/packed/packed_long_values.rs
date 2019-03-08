@@ -493,7 +493,8 @@ impl<'a> PackedLongValuesIter<'a> {
         if self.v_off == self.builder.values_off {
             self.current_count = 0;
         } else {
-            let cnt = self.builder
+            let cnt = self
+                .builder
                 .decode_block(self.v_off, &mut self.current_values);
             debug_assert!(cnt > 0);
             self.current_count = cnt as usize;

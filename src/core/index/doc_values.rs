@@ -204,7 +204,8 @@ struct SortedNumericDocValuesBits {
 
 impl Bits for SortedNumericDocValuesBits {
     fn get_with_ctx(&self, ctx: BitsContext, index: usize) -> Result<(bool, BitsContext)> {
-        let dv_ctx = self.dv
+        let dv_ctx = self
+            .dv
             .set_document(ctx.map(|c| (0, 0, Some(c))), index as DocId)?;
         Ok((self.dv.count(&dv_ctx) != 0, ctx))
     }

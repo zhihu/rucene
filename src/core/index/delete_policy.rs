@@ -31,7 +31,6 @@ use error::Result;
 /// Implementers of sub-classes should make sure that `#clone()`
 /// returns an independent instance able to work with any other `IndexWriter`
 /// or `Directory` instance.
-///
 pub trait IndexDeletionPolicy {
     /// This is called once when a writer is first
     /// instantiated to give the policy a chance to remove old

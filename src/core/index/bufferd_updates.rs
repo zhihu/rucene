@@ -73,7 +73,6 @@ pub struct BufferedUpdates {
     // used to update the same field multiple times (so we later traverse it
     // only once).
     // binary_update: HashMap<String, HashMap<Term, BinaryDocValuesUpdate>>,
-    //
     pub bytes_used: AtomicUsize,
     // gen: i64,
     pub segment_name: String,
@@ -104,7 +103,8 @@ impl BufferedUpdates {
     pub fn add_query(&mut self, query: Arc<Query>, doc_id_upto: DocId) {
         let query_str = format!("{}", &query);
         let query_str_cost = query_str.capacity();
-        if self.deleted_queries
+        if self
+            .deleted_queries
             .insert(query_str, (query, doc_id_upto))
             .is_none()
         {
@@ -147,7 +147,8 @@ impl BufferedUpdates {
     }
 
     pub fn any(&self) -> bool {
-        !self.deleted_terms.is_empty() || !self.deleted_doc_ids.is_empty()
+        !self.deleted_terms.is_empty()
+            || !self.deleted_doc_ids.is_empty()
             || !self.deleted_queries.is_empty()
     }
 }
@@ -159,7 +160,6 @@ const BYTES_PER_DEL_QUERY: usize = 24 + mem::size_of::<i32>();
 /// deletes/updates are write-once, so we shift to more memory efficient data
 /// structure to hold them. We don't hold docIDs because these are applied on
 /// flush.
-///
 pub struct FrozenBufferUpdates {
     terms: Arc<PrefixCodedTerms>,
     // Parallel array of deleted query, and the doc_id_upto for each

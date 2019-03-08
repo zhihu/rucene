@@ -116,7 +116,6 @@ impl SegmentInfos {
     /// @param segmentFileName -- segment file to load
     /// @throws CorruptIndexException if the index is corrupt
     /// @throws IOException if there is a low-level IO error
-    ///
     pub fn read_commit(directory: &DirectoryRc, segment_file_name: &str) -> Result<SegmentInfos> {
         let generation = SegmentInfos::generation_from_segments_file_name(segment_file_name)?;
         let input = directory.open_input(segment_file_name, &IOContext::Read(false))?;
@@ -203,7 +202,8 @@ impl SegmentInfos {
                     "invalid deletion count: {} vs maxDoc={}",
                     del_count,
                     info.max_doc()
-                ).into());
+                )
+                .into());
             }
             let field_infos_gen = input.read_long()?;
             let dv_gen = input.read_long()?;
@@ -276,7 +276,6 @@ impl SegmentInfos {
     /// list of index files (N in the segments_N file).
     ///
     /// @param files -- array of file names to check
-    ///
     pub fn get_last_commit_generation(files: &[String]) -> Result<i64> {
         let mut max = -1;
         for file_ref in files {
@@ -317,7 +316,6 @@ impl SegmentInfos {
     }
 
     /// Parse the generation off the segments file name and return it.
-    ///
     pub fn generation_from_segments_file_name(file_name: &str) -> Result<i64> {
         if file_name.eq(INDEX_FILE_SEGMENTS) {
             Ok(0)
@@ -399,7 +397,8 @@ impl SegmentInfos {
 
     fn do_write_dir(&mut self, directory: &Directory, segment_file_name: String) -> Result<()> {
         {
-            let mut segn_output = directory.create_output(&segment_file_name, &IOContext::Default)?;
+            let mut segn_output =
+                directory.create_output(&segment_file_name, &IOContext::Default)?;
             self.write_output(directory, segn_output.as_mut())?;
         }
 
@@ -609,7 +608,6 @@ impl SegmentInfos {
 /// by the app the call this.
 ///
 /// there won't be a trait like `FindSegmentsFile` because of useless for rust
-///
 pub fn get_segment_file_name(directory: &Directory) -> Result<String> {
     // TODO 暂未实现处理 IndexCommit 的相关逻辑
 
@@ -711,7 +709,6 @@ where
 
 /// Holds core readers that are shared (unchanged) when
 /// SegmentReader is cloned or reopened
-///
 pub struct SegmentCoreReaders {
     pub fields: FieldsProducerRef,
     pub norms_producer: Option<Arc<NormsProducer>>,
@@ -746,10 +743,12 @@ impl SegmentCoreReaders {
         };
 
         let segment = si.name.clone();
-        let core_field_infos =
-            Arc::new(codec
-                .field_infos_format()
-                .read(cfs_dir.as_ref(), si, "", &ctx)?);
+        let core_field_infos = Arc::new(codec.field_infos_format().read(
+            cfs_dir.as_ref(),
+            si,
+            "",
+            &ctx,
+        )?);
         // TODO cfs_dir is not a Box<Directory>
         let segment_read_state = SegmentReadState::new(
             cfs_dir.clone(),
@@ -785,9 +784,9 @@ impl SegmentCoreReaders {
             None
         };
         let points_reader = if core_field_infos.has_point_values {
-            Some(Arc::from(codec
-                .points_format()
-                .fields_reader(&segment_read_state)?))
+            Some(Arc::from(
+                codec.points_format().fields_reader(&segment_read_state)?,
+            ))
         } else {
             None
         };

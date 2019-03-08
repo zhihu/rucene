@@ -68,7 +68,6 @@ impl Eq for ScoreDoc {}
 ///
 /// @see ScoreDoc
 /// @see TopFieldDocs
-///
 #[derive(Debug, Clone)]
 pub struct FieldDoc {
     pub doc: DocId,
@@ -81,7 +80,6 @@ pub struct FieldDoc {
     /// FieldComparator used to sort this field.
     /// @see Sort
     /// @see IndexSearcher#search(Query,int,Sort)
-    ///
     pub fields: Vec<VariantValue>,
 }
 
@@ -174,7 +172,8 @@ impl Ord for ScoreDocHit {
 
 impl PartialOrd for ScoreDocHit {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        if let Some(ord) = self.score()
+        if let Some(ord) = self
+            .score()
             .partial_cmp(&other.score())
             .map(|ord| ord.reverse())
         {

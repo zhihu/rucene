@@ -48,7 +48,6 @@ unsafe impl Sync for SegmentReader {}
 /// Instances pointing to the same segment (but with different deletes, etc)
 /// may share the same core data.
 /// @lucene.experimental
-///
 impl SegmentReader {
     pub fn new(
         si: Arc<SegmentCommitInfo>,
@@ -178,7 +177,6 @@ impl SegmentReader {
     /// Constructs a new SegmentReader with a new core.
     /// @throws CorruptIndexException if the index is corrupt
     /// @throws IOException if there is a low-level IO error
-    ///
     pub fn open(si: &Arc<SegmentCommitInfo>, ctx: &IOContext) -> Result<SegmentReader> {
         let core = Arc::new(SegmentCoreReaders::new(&si.info.directory, &si.info, ctx)?);
         let codec = si.info.codec();
@@ -275,7 +273,8 @@ impl SegmentReader {
                     return Ok(());
                 }
 
-                let dir = self.core
+                let dir = self
+                    .core
                     .cfs_reader
                     .as_ref()
                     .map(|s| Arc::clone(&s))
@@ -405,7 +404,8 @@ impl LeafReader for SegmentReader {
     fn get_numeric_doc_values(&self, field: &str) -> Result<NumericDocValuesRef> {
         self.init_local_doc_values_producer()?;
 
-        match self.doc_values_local
+        match self
+            .doc_values_local
             .get_or(|| Box::new(RefCell::new(HashMap::new())))
             .borrow_mut()
             .entry(String::from(field))
@@ -435,7 +435,8 @@ impl LeafReader for SegmentReader {
 
     fn get_binary_doc_values(&self, field: &str) -> Result<BinaryDocValuesRef> {
         self.init_local_doc_values_producer()?;
-        match self.doc_values_local
+        match self
+            .doc_values_local
             .get_or(|| Box::new(RefCell::new(HashMap::new())))
             .borrow_mut()
             .entry(String::from(field))
@@ -467,7 +468,8 @@ impl LeafReader for SegmentReader {
     fn get_sorted_doc_values(&self, field: &str) -> Result<SortedDocValuesRef> {
         self.init_local_doc_values_producer()?;
 
-        match self.doc_values_local
+        match self
+            .doc_values_local
             .get_or(|| Box::new(RefCell::new(HashMap::new())))
             .borrow_mut()
             .entry(String::from(field))
@@ -498,7 +500,8 @@ impl LeafReader for SegmentReader {
     fn get_sorted_numeric_doc_values(&self, field: &str) -> Result<SortedNumericDocValuesRef> {
         self.init_local_doc_values_producer()?;
 
-        match self.doc_values_local
+        match self
+            .doc_values_local
             .get_or(|| Box::new(RefCell::new(HashMap::new())))
             .borrow_mut()
             .entry(String::from(field))
@@ -529,7 +532,8 @@ impl LeafReader for SegmentReader {
     fn get_sorted_set_doc_values(&self, field: &str) -> Result<SortedSetDocValuesRef> {
         self.init_local_doc_values_producer()?;
 
-        match self.doc_values_local
+        match self
+            .doc_values_local
             .get_or(|| Box::new(RefCell::new(HashMap::new())))
             .borrow_mut()
             .entry(String::from(field))
@@ -571,7 +575,8 @@ impl LeafReader for SegmentReader {
     }
 
     fn get_docs_with_field(&self, field: &str) -> Result<BitsRef> {
-        if let Some(prev) = self.docs_with_field_local
+        if let Some(prev) = self
+            .docs_with_field_local
             .get_or(|| Box::new(RefCell::new(HashMap::new())))
             .borrow_mut()
             .get(field)

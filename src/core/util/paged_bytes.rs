@@ -91,7 +91,6 @@ impl PagedBytes {
     /// Copy bytes in, writing the length as a 1 or 2 byte
     /// vInt prefix. */
     /// TODO: this really needs to be refactored into fieldcacheimpl!
-    ///
     pub fn copy_using_length_prefix(&mut self, bytes: &BytesRef) -> Result<i64> {
         if bytes.len() >= 32768 {
             bail!("max length is 32767 (got {})", bytes.len());

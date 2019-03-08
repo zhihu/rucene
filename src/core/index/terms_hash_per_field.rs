@@ -123,7 +123,8 @@ impl<T: PostingsArray + 'static> TermsHashPerFieldBase<T> {
                 (self.int_upto_start as isize + self.int_block_pool().int_offset) as usize as u32;
 
             for i in 0..self.stream_count {
-                let upto = self.byte_pool_mut()
+                let upto = self
+                    .byte_pool_mut()
                     .new_slice(byte_block_pool::FIRST_LEVEL_SIZE);
                 unsafe {
                     (&mut *self.int_pool).buffers[self.int_upto_idx][self.int_upto_start + i] =
@@ -411,8 +412,12 @@ impl FreqProxTermsWriterPerField {
             stream_count,
             terms_hash,
             field_info,
-            FreqProxPostingsArray::new(2, index_options.has_freqs(),
-                index_options.has_positions(), index_options.has_offsets()),
+            FreqProxPostingsArray::new(
+                2,
+                index_options.has_freqs(),
+                index_options.has_positions(),
+                index_options.has_offsets(),
+            ),
         );
 
         FreqProxTermsWriterPerField {

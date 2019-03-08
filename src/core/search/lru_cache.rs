@@ -34,7 +34,6 @@ pub struct CacheEntry<K, V> {
 }
 
 /// A fixed-size cache.
-///
 pub struct LRUCache<K, V> {
     table: HashMap<K, usize>,
     entries: Vec<CacheEntry<K, V>>,
@@ -46,7 +45,6 @@ pub struct LRUCache<K, V> {
 
 impl<K: Clone + Hash + Eq, V> LRUCache<K, V> {
     /// Creates a new cache that can hold the specified number of elements.
-    ///
     pub fn with_capacity(cap: usize) -> Self {
         LRUCache {
             table: HashMap::with_capacity(cap),
@@ -86,7 +84,8 @@ impl<K: Clone + Hash + Eq, V> LRUCache<K, V> {
         } else {
             self.ensure_room();
             // Update old head
-            let idx = self.free_indexes
+            let idx = self
+                .free_indexes
                 .pop()
                 .unwrap_or_else(|| self.entries.len());
             if let Some(ent) = self.first {
@@ -214,7 +213,6 @@ impl<K: Clone + Hash + Eq, V> LRUCache<K, V> {
     }
 
     /// Returns the number of elements currently in the cache.
-    ///
     pub fn len(&self) -> usize {
         self.table.len()
     }
@@ -237,13 +235,11 @@ impl<K: Clone + Hash + Eq, V> LRUCache<K, V> {
 
     /// Returns true if the cache is at full capacity. Any subsequent insertions of keys not
     /// already present will eject the oldest element from the cache.
-    ///
     pub fn is_full(&self) -> bool {
         self.table.len() == self.capacity
     }
 
     /// Promotes the specified key to the top of the cache.
-    ///
     fn access<Q: ?Sized>(&mut self, key: &Q)
     where
         K: Borrow<Q>,
@@ -285,7 +281,6 @@ impl<K: Clone + Hash + Eq, V> LRUCache<K, V> {
     }
 
     /// Removes an item from the linked list.
-    ///
     fn remove_from_list(&mut self, i: usize) {
         let (prev, next) = {
             let entry = &self.entries[i];
@@ -327,7 +322,6 @@ impl<K: Clone + Hash + Eq, V> LRUCache<K, V> {
     }
 
     /// Removes the oldest item in the cache.
-    ///
     pub fn remove_last(&mut self) -> Option<K> {
         let key = if let Some(idx) = self.last {
             self.remove_from_list(idx);

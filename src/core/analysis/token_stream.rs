@@ -57,7 +57,6 @@ use error::Result;
 /// Therefore all non-abstract subclasses must be final or have at least a final
 /// implementation of {@link #incrementToken}! This is checked when Java
 /// assertions are enabled.
-///
 
 pub trait TokenStream: Debug {
     /// Consumers (i.e., {@link IndexWriter}) use this method to advance the stream to
@@ -82,7 +81,6 @@ pub trait TokenStream: Debug {
     /// {@link #incrementToken()}.
     ///
     /// @return false for end of stream; true otherwise
-    ///
     fn increment_token(&mut self) -> Result<bool>;
 
     /// This method is called by the consumer after the last token has been
@@ -100,7 +98,6 @@ pub trait TokenStream: Debug {
     /// attributes where the end-of-stream value may be important.
     ///
     /// If you override this method, always call {@code super.end()}.
-    ///
     fn end(&mut self) -> Result<()>;
 
     /// This method is called by a consumer before it begins consumption using
@@ -112,7 +109,6 @@ pub trait TokenStream: Debug {
     /// If you override this method, always call {@code super.reset()}, otherwise
     /// some internal state will not be correctly reset (e.g., {@link Tokenizer} will
     /// throw {@link IllegalStateException} on further usage).
-    ///
     fn reset(&mut self) -> Result<()>;
 
     // attributes used for build invert index

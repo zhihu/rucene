@@ -59,7 +59,8 @@ impl Query for FilterQuery {
 
 impl fmt::Display for FilterQuery {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let filters_fmt: Vec<String> = self.filters
+        let filters_fmt: Vec<String> = self
+            .filters
             .as_slice()
             .iter()
             .map(|q| format!("{}", q))
@@ -111,7 +112,8 @@ impl Weight for FilterWeight {
 
 impl fmt::Display for FilterWeight {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let filters_fmt: Vec<String> = self.filters
+        let filters_fmt: Vec<String> = self
+            .filters
             .as_slice()
             .iter()
             .map(|q| format!("{}", q))

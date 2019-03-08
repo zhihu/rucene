@@ -102,8 +102,11 @@ impl PointValues for TempMutablePointsReader {
         let point_values_writer = self.point_values_writer();
 
         if field_name != &point_values_writer.field_info.name {
-            bail!("fieldName must be the same, got: {}, expected: {}",
-                field_name, point_values_writer.field_info.name);
+            bail!(
+                "fieldName must be the same, got: {}, expected: {}",
+                field_name,
+                point_values_writer.field_info.name
+            );
         }
 
         let mut packed_value = vec![0u8; point_values_writer.packed_bytes_length];
@@ -133,8 +136,11 @@ impl PointValues for TempMutablePointsReader {
 
     fn size(&self, field_name: &str) -> Result<i64> {
         if field_name != &self.point_values_writer().field_info.name {
-            bail!("fieldName must be the same, got: {}, expected: {}",
-                field_name, self.point_values_writer().field_info.name);
+            bail!(
+                "fieldName must be the same, got: {}, expected: {}",
+                field_name,
+                self.point_values_writer().field_info.name
+            );
         }
 
         Ok(self.point_values_writer().num_points as i64)
@@ -142,8 +148,11 @@ impl PointValues for TempMutablePointsReader {
 
     fn doc_count(&self, field_name: &str) -> Result<i32> {
         if field_name != &self.point_values_writer().field_info.name {
-            bail!("fieldName must be the same, got: {}, expected: {}",
-                field_name, self.point_values_writer().field_info.name);
+            bail!(
+                "fieldName must be the same, got: {}, expected: {}",
+                field_name,
+                self.point_values_writer().field_info.name
+            );
         }
 
         Ok(self.point_values_writer().num_docs as i32)
@@ -176,7 +185,8 @@ impl MutablePointsReader for TempMutablePointsReader {
     }
 
     fn byte_at(&self, i: i32, k: i32) -> u8 {
-        let offset = self.point_values_writer().packed_bytes_length * self.ords[i as usize] as usize
+        let offset = self.point_values_writer().packed_bytes_length
+            * self.ords[i as usize] as usize
             + k as usize;
         self.point_values_writer().bytes.read_byte(offset)
     }

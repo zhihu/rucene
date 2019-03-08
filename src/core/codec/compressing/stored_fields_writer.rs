@@ -131,7 +131,8 @@ impl CompressingStoredFieldsIndexWriter {
         }
 
         let bits_per_start_pointer = unsigned_bits_required(max_delta);
-        self.fields_index_output.write_vint(bits_per_start_pointer)?;
+        self.fields_index_output
+            .write_vint(bits_per_start_pointer)?;
         writer = get_writer_no_header(Format::Packed, self.block_chunks, bits_per_start_pointer, 1);
         start_pointer = 0;
         for i in 0..self.block_chunks {
@@ -410,7 +411,9 @@ impl CompressingStoredFieldsWriter {
     fn write_zfloat(out: &mut DataOutput, f: f32) -> Result<()> {
         let int_val = f as i32;
         let float_bits = f.to_bits() as i32;
-        if f == int_val as f32 && int_val >= -1 && int_val <= 0x7D
+        if f == int_val as f32
+            && int_val >= -1
+            && int_val <= 0x7D
             && float_bits != NEGATIVE_ZERO_FLOAT
         {
             // small integer value [-1..125]: single byte
@@ -447,7 +450,9 @@ impl CompressingStoredFieldsWriter {
         let int_val = d as i32;
         let double_bits = d.to_bits() as i64;
 
-        if d == int_val as f64 && int_val >= -1 && int_val <= 0x7C
+        if d == int_val as f64
+            && int_val >= -1
+            && int_val <= 0x7C
             && double_bits != NEGATIVE_ZERO_DOUBLE
         {
             // small integer value [-1..124]: single byte
@@ -491,7 +496,6 @@ impl CompressingStoredFieldsWriter {
     /// <li>Bytes --&gt; Potential additional bytes to read depending on the
     /// header.
     /// </ul>
-    ///
     // T for "timestamp"
     fn write_tlong(out: &mut DataOutput, l: i64) -> Result<()> {
         let mut l = l;
@@ -795,7 +799,8 @@ impl StoredFieldsWriter for CompressingStoredFieldsWriter {
                         continue;
                     }
                     self.start_document()?;
-                    merge_state.stored_fields_readers[i].visit_document_mut(doc_id, &mut visitor)?;
+                    merge_state.stored_fields_readers[i]
+                        .visit_document_mut(doc_id, &mut visitor)?;
                     self.finish_document()?;
                     doc_count += 1;
                 }

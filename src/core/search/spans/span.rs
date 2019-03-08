@@ -42,13 +42,11 @@ pub trait Spans: DocIterator {
     /// Returns the next start position for the current doc.
     /// There is always at least one start/end position per doc.
     /// After the last start/end position at the current doc this returns `NO_MORE_POSITIONS`.
-    ///
     fn next_start_position(&mut self) -> Result<i32>;
 
     /// Returns the start position in the current doc, or -1 when {@link #nextStartPosition} was
     /// not yet called on the current doc. After the last start/end position at the current doc
     /// this returns `NO_MORE_POSITIONS`.
-    ///
     fn start_position(&self) -> i32;
 
     ///
@@ -63,7 +61,6 @@ pub trait Spans: DocIterator {
     /// to call this method when the iterator is on a valid doc ID and positioned.
     /// The return value must be positive, and lower values means that the match is
     /// better.
-    ///
     fn width(&self) -> i32;
 
     /// Collect postings data from the leaves of the current Spans.
@@ -72,14 +69,12 @@ pub trait Spans: DocIterator {
     /// `NO_MORE_POSITIONS` has been reached.
     ///
     /// @param collector a SpanCollector
-    ///
     fn collect(&mut self, collector: &mut SpanCollector) -> Result<()>;
 
     ////
     /// Return an estimation of the cost of using the positions of
     /// this `Spans` for any single document
     /// The returned value is independent of the current document.
-    ///
     fn positions_cost(&self) -> f32;
 
     /// Called before the current doc's frequency is calculated
@@ -514,7 +509,8 @@ macro_rules! conjunction_span_doc_iter {
             }
 
             fn advance(&mut self, target: DocId) -> Result<i32> {
-                let next = self.conjunction_span_base_mut()
+                let next = self
+                    .conjunction_span_base_mut()
                     .conjunction
                     .advance(target)?;
                 if next == NO_MORE_DOCS {

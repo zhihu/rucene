@@ -312,7 +312,8 @@ impl TermVectorsConsumerPerField {
             let freq = self.base.postings_array.freqs[term_id];
 
             // Get BytesPtr
-            let flush_term = self.base
+            let flush_term = self
+                .base
                 .term_pool()
                 .set_bytes_ref(self.base.postings_array.base.text_starts[term_id] as usize);
             tv.start_term(&flush_term, freq as i32)?;

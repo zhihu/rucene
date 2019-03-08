@@ -34,7 +34,6 @@ pub trait OutputFactory: Clone {
     type Value: Output;
 
     /// Return an empty Output
-    ///
     fn empty(&self) -> Self::Value;
 
     fn common(&self, o1: &Self::Value, o2: &Self::Value) -> Self::Value;
@@ -48,16 +47,13 @@ pub trait OutputFactory: Clone {
     }
 
     /// Decode an output value previously written with `write`
-    ///
     fn read<T: DataInput + ?Sized>(&self, data_in: &mut T) -> Result<Self::Value>;
 
     /// Encode an output value into a `DataOutput`
-    ///
     fn write<T: DataOutput + ?Sized>(&self, output: &Self::Value, data_out: &mut T) -> Result<()>;
 
     /// Encode an final node output value into a `DataOutput`.
     /// By default this just calls `write`.
-    ///
     fn write_final_output<T: DataOutput + ?Sized>(
         &self,
         output: &Self::Value,
@@ -68,21 +64,18 @@ pub trait OutputFactory: Clone {
 
     /// Decode an output value previously written with `write_final_output`.
     /// By default this just calls `read`.
-    ///
     fn read_final_output<T: DataInput + ?Sized>(&self, data_in: &mut T) -> Result<Self::Value> {
         self.read(data_in)
     }
 
     /// Skip the output previously written with `write_final_output`,
     /// defaults to just calling `read_final_output` and discarding the result.
-    ///
     fn skip_final_output<T: DataInput + ?Sized>(&self, data_in: &mut T) -> Result<()> {
         self.skip_output(data_in)
     }
 
     /// Skip the output; defaults to just calling `read`
     /// and discarding the result.
-    ///
     fn skip_output<T: DataInput + ?Sized>(&self, data_in: &mut T) -> Result<()> {
         self.read(data_in).map(|_| ())
     }

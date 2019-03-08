@@ -4,7 +4,6 @@ use error::*;
 
 /// A Scorer for queries with a required part and an optional part.
 /// Delays `advance()` on the optional part until a `score()` is needed.
-///
 pub struct ReqOptScorer {
     req_scorer: Box<Scorer>,
     opt_scorer: Box<Scorer>,

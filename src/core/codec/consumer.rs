@@ -29,7 +29,6 @@ use std::sync::Arc;
 /// payloads postings.  Concrete implementations of this
 /// actually do "something" with the postings (write it into
 /// the index in a specific format).
-///
 
 pub trait FieldsConsumer {
     // TODO: can we somehow compute stats for you...?
@@ -44,23 +43,15 @@ pub trait FieldsConsumer {
     /// traverse an XML tree.
     ///
     /// Notes:
-    /// - You must compute index statistics,
-    ///   including each Term's docFreq and totalTermFreq,
-    ///   as well as the summary sumTotalTermFreq,
-    ///   sumTotalDocFreq and docCount.
+    /// - You must compute index statistics, including each Term's docFreq and totalTermFreq, as
+    ///   well as the summary sumTotalTermFreq, sumTotalDocFreq and docCount.
     ///
-    /// - You must skip terms that have no docs and
-    ///   fields that have no terms, even though the provided
-    ///   Fields API will expose them; this typically
-    ///   requires lazily writing the field or term until
-    ///   you've actually seen the first term or
-    ///   document.
+    /// - You must skip terms that have no docs and fields that have no terms, even though the
+    ///   provided Fields API will expose them; this typically requires lazily writing the field or
+    ///   term until you've actually seen the first term or document.
     ///
-    /// - The provided Fields instance is limited: you
-    ///   cannot call any methods that return
-    ///   statistics/counts; you cannot pass a non-null
-    ///   live docs when pulling docs/positions enums.
-    ///
+    /// - The provided Fields instance is limited: you cannot call any methods that return
+    ///   statistics/counts; you cannot pass a non-null live docs when pulling docs/positions enums.
     fn write(&mut self, fields: &Fields) -> Result<()>;
 
     /// Merges in the fields from the readers in
@@ -68,7 +59,6 @@ pub trait FieldsConsumer {
     /// and maps around deleted documents, and calls {@link #write(Fields)}.
     /// Implementations can override this method for more sophisticated
     /// merging (bulk-byte copying, etc).
-    ///
     fn merge(&mut self, merge_state: &mut MergeState) -> Result<()> {
         let mut fields = vec![];
         let mut slices = vec![];
@@ -93,7 +83,6 @@ pub trait FieldsConsumer {
 /// sorted docvalues.  Concrete implementations of this
 /// actually do "something" with the docvalues (write it into
 /// the index in a specific format).
-///
 pub trait DocValuesConsumer {
     fn add_numeric_field(
         &mut self,
@@ -416,7 +405,7 @@ pub fn singleton_view<'a>(
     missing_value: Numeric,
 ) -> SingletonViewIter<'a> {
     debug_assert!(is_single_valued(doc_to_value_count).unwrap());
-    //doc_to_value_count.reset();
+    // doc_to_value_count.reset();
     // debug_assert!(doc_to_value_count.len() == values.len());
 
     SingletonViewIter::new(doc_to_value_count, values, missing_value)

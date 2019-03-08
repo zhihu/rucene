@@ -80,7 +80,6 @@ impl DocValuesWriter for DocValuesWriterEnum {
 
 /// Buffers up pending byte[] per doc, then flushes when
 /// segment flushes.
-///
 pub const MAX_ARRAY_LENGTH: usize = (i32::max_value() - 1024) as usize;
 // 32 KB block sizes for PagedBytes storage:
 pub const BLOCK_BITS: usize = 15;
@@ -893,7 +892,6 @@ impl<'a> ReusableIterator for SortedSetOrdCountIterator<'a> {
 /// Term.bytes: 2*OBJ_HEADER + 2*INT + PTR + bytes.length
 /// String: 2*OBJ_HEADER + 4*INT + PTR + string.length*CHAR
 /// T: OBJ_HEADER
-///
 // reference size is 4, if we have compressed oops, else 8
 pub const NUM_BYTES_OBJECT_REF: i32 = 4;
 pub const NUM_BYTES_OBJECT_HEADER: i32 = 8 + NUM_BYTES_OBJECT_REF;
@@ -979,7 +977,8 @@ impl SizeInBytesCalc for BinaryDocValuesUpdate {
     fn value_size_in_bytes(&self) -> usize {
         debug_assert!(self.update.value.get_binary().is_some());
         let raw_value_size_in_bytes = align_object_size(NUM_BYTES_OBJECT_HEADER + INT_BYTES) * 2
-            + 2 * INT_BYTES + NUM_BYTES_OBJECT_REF;
+            + 2 * INT_BYTES
+            + NUM_BYTES_OBJECT_REF;
 
         raw_value_size_in_bytes as usize + self.update.value.get_binary().as_ref().unwrap().len()
     }
@@ -1016,11 +1015,9 @@ pub struct DocValuesFieldUpdatesValue {
 /// An iterator over documents and their updated values. Only documents with
 /// updates are returned by this iterator, and the documents are returned in
 /// increasing order.
-///
 pub trait DocValuesFieldUpdatesIterator {
     /// Returns the next document which has an update, or
     /// {@link DocIdSetIterator#NO_MORE_DOCS} if there are no more documents to return.
-    ///
     fn next_doc(&mut self) -> Result<DocId>;
 
     /// Returns the current document this iterator is on.
@@ -1028,11 +1025,9 @@ pub trait DocValuesFieldUpdatesIterator {
 
     /// Returns the value of the document returned from {@link #nextDoc()}. A
     /// {@code null} value means that it was unset for this document.
-    ///
     fn value(&self) -> DocValuesFieldUpdatesValue;
 
     /// Reset the iterator's state. Should be called before {@link #nextDoc()} and {@link #value()}.
-    ///
     fn reset(&mut self);
 }
 
@@ -1040,7 +1035,6 @@ pub const PAGE_SIZE: usize = 1024;
 
 /// Returns the estimated capacity of a {@link PagedGrowableWriter} given the actual
 /// number of stored elements.
-///
 pub fn estimate_capacity(size: usize) -> usize {
     let extra = if size % PAGE_SIZE == 0 { 0 } else { 1 };
 
@@ -1086,12 +1080,14 @@ impl Container {
         doc_values_type: &DocValuesType,
     ) -> Result<&DocValuesFieldUpdates> {
         match doc_values_type {
-            DocValuesType::Numeric => Ok(self.numeric_dv_updates
+            DocValuesType::Numeric => Ok(self
+                .numeric_dv_updates
                 .get(field)
                 .as_ref()
                 .unwrap()
                 .as_base()),
-            DocValuesType::Binary => Ok(self.binary_dv_updates
+            DocValuesType::Binary => Ok(self
+                .binary_dv_updates
                 .get(field)
                 .as_ref()
                 .unwrap()
@@ -1112,7 +1108,8 @@ impl Container {
                 let numeric_updates = NumericDocValuesFieldUpdates::new(field, max_doc);
                 self.numeric_dv_updates
                     .insert(field.to_string(), numeric_updates);
-                Ok(self.numeric_dv_updates
+                Ok(self
+                    .numeric_dv_updates
                     .get(field)
                     .as_ref()
                     .unwrap()
@@ -1123,7 +1120,8 @@ impl Container {
                 let binary_updates = BinaryDocValuesFieldUpdates::new(field, max_doc);
                 self.binary_dv_updates
                     .insert(field.to_string(), binary_updates);
-                Ok(self.binary_dv_updates
+                Ok(self
+                    .binary_dv_updates
                     .get(field)
                     .as_ref()
                     .unwrap()
@@ -1140,7 +1138,6 @@ pub trait DocValuesFieldUpdates {
     fn add(&mut self, doc: DocId, value: &DocValuesFieldUpdatesValue) -> Result<()>;
 
     /// Returns an {@link Iterator} over the updated documents and their values.
-    ///
     fn iterator(&mut self) -> Result<Box<DocValuesFieldUpdatesIterator>>;
 
     /// Returns true if this instance contains any updates.
@@ -1149,7 +1146,6 @@ pub trait DocValuesFieldUpdates {
     /// Merge with another {@link DocValuesFieldUpdates}. This is called for a
     /// segment which received updates while it was being merged. The given updates
     /// should override whatever updates are in that instance.
-    ///
     fn merge(&mut self, other: &DocValuesFieldUpdates) -> Result<()>;
 
     fn doc_values_type(&self) -> &DocValuesType;

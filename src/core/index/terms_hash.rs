@@ -223,7 +223,8 @@ impl TermsHash for FreqProxTermsWriter {
         field_invert_state: &FieldInvertState,
         field_info: &FieldInfo,
     ) -> FreqProxTermsWriterPerField {
-        let next_field = self.next_terms_hash
+        let next_field = self
+            .next_terms_hash
             .add_field(field_invert_state, field_info);
         FreqProxTermsWriterPerField::new(&mut self.base, field_info.clone(), next_field)
     }
@@ -421,7 +422,8 @@ impl FreqProxTermsIterator {
     fn set_bytes(&mut self, term_id: usize) {
         let idx = self.terms().base.bytes_hash.ids[term_id] as usize;
         let text_start = self.terms().base.postings_array.base.text_starts[idx];
-        self.scratch = self.terms()
+        self.scratch = self
+            .terms()
             .base
             .byte_block_pool()
             .set_bytes_ref(text_start as usize);

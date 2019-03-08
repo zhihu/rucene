@@ -51,7 +51,7 @@ const DEFAULT_MAX_BLOCK_SIZE: i32 = 48;
 /// and decoding the Postings Metadata and Term Metadata sections.
 ///
 /// - TermsDict (.tim) --> Header, <i>PostingsHeader</i>, NodeBlock<sup>NumBlocks</sup>,
-///                               FieldSummary, DirOffset, Footer
+///   FieldSummary, DirOffset, Footer
 /// - NodeBlock --> (OuterNode | InnerNode)
 /// - OuterNode --> EntryCount, SuffixLength, Byte<sup>SuffixLength</sup>, StatsLength, < TermStats
 /// ><sup>EntryCount</sup>, MetaLength, <<i>TermMetadata</i>><sup>EntryCount</sup> - InnerNode -->
@@ -63,29 +63,28 @@ const DEFAULT_MAX_BLOCK_SIZE: i32 = 48;
 /// `CodecUtil#writeHeader CodecHeader} - DirOffset --> `DataOutput#writeLong Uint64}
 /// - MinTerm,MaxTerm --> `DataOutput#writeVInt VInt} length followed by the byte[]
 /// - EntryCount,SuffixLength,StatsLength,DocFreq,MetaLength,NumFields,
-///     FieldNumber,RootCodeLength,DocCount,LongsSize --> `DataOutput#writeVInt VInt}
-/// - TotalTermFreq,NumTerms,SumTotalTermFreq,SumDocFreq -->
-///     `DataOutput#writeVLong VLong}
+///   FieldNumber,RootCodeLength,DocCount,LongsSize --> `DataOutput#writeVInt VInt}
+/// - TotalTermFreq,NumTerms,SumTotalTermFreq,SumDocFreq --> `DataOutput#writeVLong VLong}
 /// - Footer --> `CodecUtil#writeFooter CodecFooter}
 /// Notes:
-///    - Header is a `CodecUtil#writeHeader CodecHeader} storing the version information
-///        for the BlockTree implementation.
+///    - Header is a `CodecUtil#writeHeader CodecHeader} storing the version information for the
+///      BlockTree implementation.
 ///    - DirOffset is a pointer to the FieldSummary section.
 ///    - DocFreq is the count of documents which contain the term.
-///    - TotalTermFreq is the total number of occurrences of the term. This is encoded
-///        as the difference between the total number of occurrences and the DocFreq.
+///    - TotalTermFreq is the total number of occurrences of the term. This is encoded as the
+///      difference between the total number of occurrences and the DocFreq.
 ///    - FieldNumber is the fields number from `FieldInfos}. (.fnm)
 ///    - NumTerms is the number of unique terms for the field.
 ///    - RootCode points to the root block for the field.
-///    - SumDocFreq is the total number of postings, the number of term-document pairs across
-///        the entire field.
+///    - SumDocFreq is the total number of postings, the number of term-document pairs across the
+///      entire field.
 ///    - DocCount is the number of documents that have at least one posting for this field.
-///    - LongsSize records how many long values the postings writer/reader record per term
-///        (e.g., to hold freq/prox/doc file offsets).
+///    - LongsSize records how many long values the postings writer/reader record per term (e.g., to
+///      hold freq/prox/doc file offsets).
 ///    - MinTerm, MaxTerm are the lowest and highest term in this field.
 ///    - PostingsHeader and TermMetadata are plugged into by the specific postings implementation:
-///        these contain arbitrary per-file data (such as parameters or versioning information)
-///        and per-term data (such as pointers to inverted files).
+///      these contain arbitrary per-file data (such as parameters or versioning information) and
+///      per-term data (such as pointers to inverted files).
 ///    - For inner nodes of the tree, every entry will steal one bit to mark whether it points
 /// to child nodes(sub-block). If so, the corresponding TermStats and TermMetaData are
 /// omitted
@@ -95,7 +94,7 @@ const DEFAULT_MAX_BLOCK_SIZE: i32 = 48;
 /// accessed randomly.  The index is also used to determine
 /// when a given term cannot exist on disk (in the .tim file), saving a disk seek.
 ///   - TermsIndex (.tip) --> Header, FSTIndex<sup>NumFields</sup>
-///                                <IndexStartFP><sup>NumFields</sup>, DirOffset, Footer
+///     <IndexStartFP><sup>NumFields</sup>, DirOffset, Footer
 ///   - Header --> `CodecUtil#writeHeader CodecHeader`
 ///   - DirOffset --> `DataOutput#writeLong Uint64`
 ///   - IndexStartFP --> `DataOutput#writeVLong VLong`
@@ -103,23 +102,16 @@ const DEFAULT_MAX_BLOCK_SIZE: i32 = 48;
 ///   - FSTIndex --> `FST FST<byte[]>`
 ///   - Footer --> `CodecUtil#writeFooter CodecFooter`
 /// Notes:
-///   - The .tip file contains a separate FST for each
-///       field.  The FST maps a term prefix to the on-disk
-///       block that holds all terms starting with that
-///       prefix.  Each field's IndexStartFP points to its
-///       FST.
-///   - DirOffset is a pointer to the start of the IndexStartFPs
-///       for all fields
-///   - It's possible that an on-disk block would contain
-///       too many terms (more than the allowed maximum
-///       (default: 48)).  When this happens, the block is
-///       sub-divided into new blocks (called "floor
-///       blocks"), and then the output in the FST for the
-///       block's prefix encodes the leading byte of each
-///       sub-block, and its file pointer.
+///   - The .tip file contains a separate FST for each field.  The FST maps a term prefix to the
+///     on-disk block that holds all terms starting with that prefix.  Each field's IndexStartFP
+///     points to its FST.
+///   - DirOffset is a pointer to the start of the IndexStartFPs for all fields
+///   - It's possible that an on-disk block would contain too many terms (more than the allowed
+///     maximum (default: 48)).  When this happens, the block is sub-divided into new blocks (called
+///     "floor blocks"), and then the output in the FST for the block's prefix encodes the leading
+///     byte of each sub-block, and its file pointer.
 ///
 /// @see BlockTreeTermsReader
-///
 pub struct BlockTreeTermsWriter {
     terms_out: Box<IndexOutput>,
     index_out: Box<IndexOutput>,
@@ -791,7 +783,8 @@ impl<'a> TermsWriter<'a> {
             debug_assert_eq!(root.prefix.len(), 0);
             debug_assert!(root.index.as_ref().unwrap().empty_output.is_some());
 
-            let empty_bytes = root.index
+            let empty_bytes = root
+                .index
                 .as_ref()
                 .unwrap()
                 .empty_output

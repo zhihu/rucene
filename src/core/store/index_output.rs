@@ -70,7 +70,8 @@ impl RateLimitIndexOutput {
 
     fn check_rate(&mut self) -> Result<()> {
         if self.bytes_since_last_pause > self.current_min_pause_check_bytes {
-            self.rate_limiter.pause(self.bytes_since_last_pause as u64)?;
+            self.rate_limiter
+                .pause(self.bytes_since_last_pause as u64)?;
             self.bytes_since_last_pause = 0;
             self.current_min_pause_check_bytes = self.rate_limiter.min_pause_check_bytes() as usize;
         }

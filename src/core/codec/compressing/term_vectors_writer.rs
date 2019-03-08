@@ -698,7 +698,8 @@ impl CompressingTermVectorsWriter {
                             };
                             let start_offset = self.start_offsets_buf[fd.off_start + pos] as usize;
                             self.writer.add(
-                                start_offset as i64 - prev_off as i64
+                                start_offset as i64
+                                    - prev_off as i64
                                     - (cpt * (position - prev_pos) as f32) as i64,
                                 self.vectors_stream.as_data_output(),
                             )?;
@@ -721,7 +722,8 @@ impl CompressingTermVectorsWriter {
                     for i in 0..fd.num_terms {
                         for _ in 0..fd.freqs[i] {
                             self.writer.add(
-                                (self.lengths_buf[fd.off_start + pos] - fd.prefix_lengths[i]
+                                (self.lengths_buf[fd.off_start + pos]
+                                    - fd.prefix_lengths[i]
                                     - fd.suffix_lengths[i]) as i64,
                                 self.vectors_stream.as_data_output(),
                             )?;

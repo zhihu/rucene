@@ -125,7 +125,6 @@ pub fn term_vectors_format_for_name(name: &str) -> Result<Box<TermVectorsFormat>
 
 /// Encodes/decodes {@link FieldInfos}
 /// @lucene.experimental
-///
 pub trait FieldInfosFormat {
     /// Read the {@link FieldInfos} previously written with {@link #write}. */
     fn read(

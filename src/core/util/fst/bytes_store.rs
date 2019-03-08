@@ -243,7 +243,6 @@ impl BytesStore {
 
     /// Writes an int at the absolute position without
     /// changing the current pointer.
-    ///
     #[allow(dead_code)]
     pub fn write_int_local(&mut self, pos: usize, value: i32) {
         let mut block_index = pos >> self.block_bits;
@@ -439,8 +438,8 @@ impl DataInput for StoreBytesReader {
             *(*((*self.blocks.as_ref())
                 .as_ptr()
                 .offset(self.block_index as isize)))
-                .as_ptr()
-                .offset(self.next_read as isize)
+            .as_ptr()
+            .offset(self.next_read as isize)
         };
 
         if self.reversed {

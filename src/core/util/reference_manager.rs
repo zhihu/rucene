@@ -1,7 +1,5 @@
-use std::{
-    mem,
-    sync::{Arc, Mutex, MutexGuard},
-};
+use std::{mem,
+          sync::{Arc, Mutex, MutexGuard}};
 
 use error::Result;
 
@@ -36,9 +34,10 @@ pub trait ReferenceManager<T: ?Sized> {
     fn base(&self) -> &ReferenceManagerBase<T>;
 
     fn _swap_reference(&self, new_reference: Option<Arc<T>>, _l: &MutexGuard<()>) -> Result<()> {
-        //let _l = base.lock.lock().unwrap();
+        // let _l = base.lock.lock().unwrap();
         // we use base.lock to make sure this operation is safe
-        let base_ptr = self.base() as *const ReferenceManagerBase<T> as *mut ReferenceManagerBase<T>;
+        let base_ptr =
+            self.base() as *const ReferenceManagerBase<T> as *mut ReferenceManagerBase<T>;
         unsafe {
             if let Some(old_ref) = mem::replace(&mut (*base_ptr).current, new_reference) {
                 self.release(old_ref.as_ref())?;
@@ -67,7 +66,7 @@ pub trait ReferenceManager<T: ?Sized> {
                 if self.try_inc_ref(cur)? {
                     return Ok(Arc::clone(cur));
                 }
-                // TODO double check for ref count
+            // TODO double check for ref count
             } else {
                 bail!("this ReferenceManager is closed");
             }
@@ -108,7 +107,7 @@ pub trait ReferenceManager<T: ?Sized> {
     }
 
     fn _do_maybe_refresh(&self, l: &MutexGuard<()>) -> Result<()> {
-        //let _l = self.base().refresh_lock.lock()?;
+        // let _l = self.base().refresh_lock.lock()?;
 
         let reference = self.acquire()?;
         let res = self._exec_maybe_refresh(&reference, l);
@@ -121,7 +120,10 @@ pub trait ReferenceManager<T: ?Sized> {
 
     fn _exec_maybe_refresh(&self, reference: &Arc<T>, l: &MutexGuard<()>) -> Result<()> {
         if let Some(new_reference) = self.refresh_if_needed(reference)? {
-            debug_assert_ne!(new_reference.as_ref() as *const T, reference.as_ref() as *const T);
+            debug_assert_ne!(
+                new_reference.as_ref() as *const T,
+                reference.as_ref() as *const T
+            );
             self._do_swap(new_reference, l)?;
         }
         Ok(())

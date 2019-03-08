@@ -315,10 +315,14 @@ impl<T: DocValuesSource> FieldComparator for NumericDocValuesComparator<T> {
     }
 
     fn get_information_from_reader(&mut self, reader: &LeafReader) -> Result<()> {
-        self.current_read_values = Some(self.doc_values_source
-            .numeric_doc_values(reader, &self.field)?);
-        self.docs_with_fields = Some(self.doc_values_source
-            .docs_with_fields(reader, &self.field)?);
+        self.current_read_values = Some(
+            self.doc_values_source
+                .numeric_doc_values(reader, &self.field)?,
+        );
+        self.docs_with_fields = Some(
+            self.doc_values_source
+                .docs_with_fields(reader, &self.field)?,
+        );
         Ok(())
     }
 
@@ -364,8 +368,8 @@ mod tests {
         let mut comparator = RelevanceComparator::new(3);
         {
             comparator.copy(0, ComparatorValue::Score(1f32));
-            comparator.copy(1,  ComparatorValue::Score(2f32));
-            comparator.copy(2,  ComparatorValue::Score(3f32));
+            comparator.copy(1, ComparatorValue::Score(2f32));
+            comparator.copy(2, ComparatorValue::Score(3f32));
         }
 
         assert_eq!(comparator.compare(0, 1), Ordering::Greater);
@@ -377,7 +381,7 @@ mod tests {
 
         assert_eq!(
             comparator
-                .compare_bottom( ComparatorValue::Score(10f32))
+                .compare_bottom(ComparatorValue::Score(10f32))
                 .unwrap(),
             Ordering::Greater
         );
@@ -403,9 +407,7 @@ mod tests {
         }
 
         assert_eq!(
-            comparator
-                .compare_bottom( ComparatorValue::Doc(2))
-                .unwrap(),
+            comparator.compare_bottom(ComparatorValue::Doc(2)).unwrap(),
             Ordering::Greater
         );
     }

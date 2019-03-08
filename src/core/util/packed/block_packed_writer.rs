@@ -1,8 +1,8 @@
 use core::store::DataOutput;
 use core::util::bit_util::{UnsignedShift, ZigZagEncoding};
 use core::util::packed::packed_misc::{check_block_size, get_encoder, max_value,
-                                      unsigned_bits_required, Format, MIN_VALUE_EQUALS_0,
-                                      BPV_SHIFT, MAX_BLOCK_SIZE, MIN_BLOCK_SIZE, VERSION_CURRENT};
+                                      unsigned_bits_required, Format, BPV_SHIFT, MAX_BLOCK_SIZE,
+                                      MIN_BLOCK_SIZE, MIN_VALUE_EQUALS_0, VERSION_CURRENT};
 
 use error::*;
 

@@ -367,7 +367,7 @@ fn from_json(doc: ContentDoc) -> Vec<Box<Fieldable>> {
         true,
         true,
         false,
-        true,
+        false,
         IndexOptions::DocsAndFreqsAndPositionsAndOffsets,
         DocValuesType::Null,
         0,
@@ -684,7 +684,8 @@ fn from_json(doc: ContentDoc) -> Vec<Box<Fieldable>> {
 fn from_file<P: AsRef<Path>>(path: P) -> Vec<Vec<Box<Fieldable>>> {
     let file = File::open(path).unwrap();
     let buf = io::BufReader::new(file);
-    let result: Vec<_> = buf.lines()
+    let result: Vec<_> = buf
+        .lines()
         .map(|l| {
             let line = l.unwrap();
             let r: ContentDoc = serde_json::from_str(&line).unwrap();
@@ -776,21 +777,23 @@ fn main() -> Result<()> {
                     }
                     println!("debug add_document {} {} {:?}", i, curr, doc_id);
 
-                    unsafe {
-                        let tick = ::std::time::SystemTime::now()
-                            .duration_since(::std::time::UNIX_EPOCH)?
-                            .subsec_nanos() as usize;
-                        // let to_delete = &terms[tick % terms.len()];
-                        let to_delete = terms.pop().unwrap();
-                        let deleted = (*w).delete_documents_by_terms(vec![to_delete.clone()]);
-                        println!(
-                            "debug delete_document {} {} {} {:?}",
-                            i,
-                            curr,
-                            String::from_utf8(to_delete.bytes.clone()).unwrap(),
-                            deleted
-                        );
-                    }
+                    //                    unsafe {
+                    //                        let tick = ::std::time::SystemTime::now()
+                    //                            .duration_since(::std::time::UNIX_EPOCH)?
+                    //                            .subsec_nanos() as usize;
+                    //                        // let to_delete = &terms[tick % terms.len()];
+                    //                        let to_delete = terms.pop().unwrap();
+                    //                        let deleted =
+                    // (*w).delete_documents_by_terms(vec![to_delete.clone()]);
+                    //                        println!(
+                    //                            "debug delete_document {} {} {} {:?}",
+                    //                            i,
+                    //                            curr,
+                    //                            
+                    // String::from_utf8(to_delete.bytes.clone()).unwrap(),
+                    //                            deleted
+                    //                        );
+                    //                    }
                 }
 
                 curr += 1;

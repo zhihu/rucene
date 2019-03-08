@@ -132,18 +132,16 @@ impl<'a> OneDimensionBKDWriter<'a> {
     pub fn add(&mut self, packed_value: &[u8], doc_id: i32) -> Result<()> {
         let bkd_writer = unsafe { &mut (*self.bkd_writer) };
 
-        debug_assert!(
-            bkd_writer
-                .value_in_order(
-                    self.value_count + self.leaf_count as i64,
-                    0,
-                    &self.last_packed_value,
-                    packed_value,
-                    doc_id,
-                    self.last_doc_id
-                )
-                .is_ok()
-        );
+        debug_assert!(bkd_writer
+            .value_in_order(
+                self.value_count + self.leaf_count as i64,
+                0,
+                &self.last_packed_value,
+                packed_value,
+                doc_id,
+                self.last_doc_id
+            )
+            .is_ok());
 
         self.last_packed_value[0..bkd_writer.packed_bytes_length]
             .copy_from_slice(&packed_value[0..bkd_writer.packed_bytes_length]);
@@ -583,8 +581,7 @@ impl BKDWriter {
 
         // Indexed by nodeID, but first (root) nodeID is 1.  We do 1+ because the lead byte at each
         // recursion says which dim we split on.
-        let mut split_packed_values =
-            vec![0u8; num_leaves as usize * (1 + self.bytes_per_dim)];
+        let mut split_packed_values = vec![0u8; num_leaves as usize * (1 + self.bytes_per_dim)];
         // +1 because leaf count is power of 2 (e.g. 8), and innerNodeCount is power of 2 minus 1
         // (e.g. 7)
         let mut leaf_block_fps = vec![0i64; num_leaves as usize];
@@ -872,8 +869,7 @@ impl BKDWriter {
 
         // This is the "file" we append the byte[] to:
         let mut blocks: Vec<Vec<u8>> = vec![];
-        let mut last_split_values: Vec<u8> =
-            vec![0u8; self.bytes_per_dim * self.num_dims];
+        let mut last_split_values: Vec<u8> = vec![0u8; self.bytes_per_dim * self.num_dims];
         let mut negative_deltas: Vec<bool> = vec![false; self.num_dims];
 
         let total_size = self.recurse_pack_index(
@@ -970,7 +966,8 @@ impl BKDWriter {
 
             // pack the prefix, splitDim and delta first diff byte into a single vInt:
             let code = ((first_diff_byte_delta as usize * (1 + self.bytes_per_dim) + prefix)
-                * self.num_dims + split_dim) as i32;
+                * self.num_dims
+                + split_dim) as i32;
             write_buffer.write_vint(code)?;
 
             // write the split value, prefix coded vs. our parent's split value:
@@ -1260,14 +1257,26 @@ impl BKDWriter {
             let cmp = last_packed_value[dim_offset..dim_offset + self.bytes_per_dim]
                 .cmp(&packed_value[dim_offset..dim_offset + self.bytes_per_dim]);
             if cmp == Ordering::Greater {
-                bail!("values out of order. offset: {}, bytes_per_dim: {},  value: {:?}, last: {:?}",
-                    dim_offset, self.bytes_per_dim, packed_value, last_packed_value);
+                bail!(
+                    "values out of order. offset: {}, bytes_per_dim: {},  value: {:?}, last: {:?}",
+                    dim_offset,
+                    self.bytes_per_dim,
+                    packed_value,
+                    last_packed_value
+                );
             }
 
             if cmp == Ordering::Equal && doc < last_doc {
-                bail!("docs out of order. offset: {}, bytes_per_dim: {},  value: {:?}, last: {:?}, doc: {}, last: {}",
-                    dim_offset, self.bytes_per_dim, packed_value, last_packed_value,
-                    doc, last_doc);
+                bail!(
+                    "docs out of order. offset: {}, bytes_per_dim: {},  value: {:?}, last: {:?}, \
+                     doc: {}, last: {}",
+                    dim_offset,
+                    self.bytes_per_dim,
+                    packed_value,
+                    last_packed_value,
+                    doc,
+                    last_doc
+                );
             }
         }
 
@@ -1288,14 +1297,16 @@ impl BKDWriter {
 
         for i in 0..count {
             debug_assert_eq!(values[i].len(), self.packed_bytes_length);
-            debug_assert!(self.value_in_order(
-                i as i64,
-                sorted_dim,
-                &last_packed_value,
-                values[i],
-                docs[i],
-                last_doc
-            ).is_ok());
+            debug_assert!(self
+                .value_in_order(
+                    i as i64,
+                    sorted_dim,
+                    &last_packed_value,
+                    values[i],
+                    docs[i],
+                    last_doc
+                )
+                .is_ok());
 
             last_packed_value[0..self.packed_bytes_length].copy_from_slice(values[i]);
 
@@ -1350,7 +1361,8 @@ impl BKDWriter {
             debug_assert!(slice.count == slices[0].count);
         }
 
-        if self.num_dims == 1 && slices[0].writer.point_type() == PointType::Offline
+        if self.num_dims == 1
+            && slices[0].writer.point_type() == PointType::Offline
             && slices[0].count <= self.max_points_sort_in_heap as i64
         {
             // Special case for 1D, to cutover to heap once we recurse deeply enough:
@@ -1563,7 +1575,8 @@ impl BKDWriter {
                     to_close_heroically,
                 )?;
 
-                let mut left_point_writer = self.point_writer(left_count, &format!("left{}", dim))?;
+                let mut left_point_writer =
+                    self.point_writer(left_count, &format!("left{}", dim))?;
                 let mut right_point_writer =
                     self.point_writer(source.count - left_count, &format!("right{}", dim))?;
                 let next_right_count = reader.split(
@@ -1822,7 +1835,8 @@ impl Drop for BKDWriter {
         if self.temp_input.is_some() {
             // NOTE: this should only happen on exception, e.g. caller calls close w/o calling
             // finish:
-            match self.temp_dir
+            match self
+                .temp_dir
                 .delete_file(self.temp_input.as_ref().unwrap().name())
             {
                 _ => {}

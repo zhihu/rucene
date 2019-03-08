@@ -304,8 +304,9 @@ impl SpanOrSpans {
                     list_at_current_doc.inner().start_position(),
                     NO_MORE_POSITIONS
                 );
-                self.by_position_queue
-                    .push(SpansElement::new(list_at_current_doc.inner_mut() as *mut Spans));
+                self.by_position_queue.push(SpansElement::new(
+                    list_at_current_doc.inner_mut() as *mut Spans
+                ));
             }
             if list_at_current_doc.next.is_null() {
                 break;
@@ -333,7 +334,8 @@ impl Spans for SpanOrSpans {
                 .next_start_position()?;
             self.top_position_spans_valid = true;
         }
-        Ok(self.by_position_queue
+        Ok(self
+            .by_position_queue
             .peek()
             .unwrap()
             .spans()

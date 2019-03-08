@@ -128,7 +128,7 @@ impl DocValuesProducer for DocValuesFieldsReader {
     fn get_numeric(&self, field: &FieldInfo) -> Result<Arc<NumericDocValues>> {
         match self.fields.get(&field.name) {
             Some(producer) => producer.get_numeric(field),
-            None => bail!(IllegalArgument(format!{
+            None => bail!(IllegalArgument(format! {
                 "DocValuesType of field {} isn't Numeric",
                 field.name
             })),
@@ -138,7 +138,7 @@ impl DocValuesProducer for DocValuesFieldsReader {
     fn get_binary(&self, field: &FieldInfo) -> Result<Arc<BinaryDocValues>> {
         match self.fields.get(&field.name) {
             Some(producer) => producer.get_binary(field),
-            None => bail!(IllegalArgument(format!{
+            None => bail!(IllegalArgument(format! {
                 "DocValuesType of field {} isn't Binary",
                 field.name
             })),
@@ -148,7 +148,7 @@ impl DocValuesProducer for DocValuesFieldsReader {
     fn get_sorted(&self, field: &FieldInfo) -> Result<Arc<SortedDocValues>> {
         match self.fields.get(&field.name) {
             Some(producer) => producer.get_sorted(field),
-            None => bail!(IllegalArgument(format!{
+            None => bail!(IllegalArgument(format! {
                 "DocValuesType of field {} isn't Sorted",
                 field.name
             })),
@@ -158,7 +158,7 @@ impl DocValuesProducer for DocValuesFieldsReader {
     fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Arc<SortedNumericDocValues>> {
         match self.fields.get(&field.name) {
             Some(producer) => producer.get_sorted_numeric(field),
-            None => bail!(IllegalArgument(format!{
+            None => bail!(IllegalArgument(format! {
                 "DocValuesType of field {} isn't SortedNumeric",
                 field.name
             })),
@@ -168,7 +168,7 @@ impl DocValuesProducer for DocValuesFieldsReader {
     fn get_sorted_set(&self, field: &FieldInfo) -> Result<Arc<SortedSetDocValues>> {
         match self.fields.get(&field.name) {
             Some(producer) => producer.get_sorted_set(field),
-            None => bail!(IllegalArgument(format!{
+            None => bail!(IllegalArgument(format! {
                 "DocValuesType of field {} isn't SortedSet",
                 field.name
             })),
@@ -178,7 +178,7 @@ impl DocValuesProducer for DocValuesFieldsReader {
     fn get_docs_with_field(&self, field: &FieldInfo) -> Result<BitsRef> {
         match self.fields.get(&field.name) {
             Some(producer) => producer.get_docs_with_field(field),
-            None => bail!(IllegalArgument(format!{
+            None => bail!(IllegalArgument(format! {
                 "field {} for get_docs_with_field",
                 field.name
             })),
@@ -299,7 +299,8 @@ impl DocValuesFieldsWriter {
 
         // TODO: we should only provide the "slice" of FIS
         // that this DVF actually sees ...
-        Ok(self.formats
+        Ok(self
+            .formats
             .get_mut(&format_name)
             .unwrap()
             .consumer

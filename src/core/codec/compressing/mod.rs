@@ -40,7 +40,6 @@ const HASH_LOG_HC: i32 = 15; // log size of the dictionary for compressHC
 ///
 /// http://code.google.com/p/lz4/
 /// http://fastcompression.blogspot.fr/p/lz4.html
-///
 pub struct LZ4;
 
 impl LZ4 {
@@ -54,8 +53,10 @@ impl LZ4 {
     }
 
     fn read_int(buf: &[u8], i: usize) -> i32 {
-        ((i32::from(buf[i])) << 24) | ((i32::from(buf[i + 1])) << 16)
-            | ((i32::from(buf[i + 2])) << 8) | (i32::from(buf[i + 3]))
+        ((i32::from(buf[i])) << 24)
+            | ((i32::from(buf[i + 1])) << 16)
+            | ((i32::from(buf[i + 2])) << 8)
+            | (i32::from(buf[i + 3]))
     }
 
     #[allow(dead_code)]
@@ -75,7 +76,8 @@ impl LZ4 {
     #[allow(dead_code)]
     fn common_bytes_backward(b: &[u8], o1: i32, o2: i32, l1: i32, l2: i32) -> i32 {
         let mut count = 0;
-        while o1 - count > l1 && o2 - count > l2
+        while o1 - count > l1
+            && o2 - count > l2
             && b[(o1 - count) as usize] == b[(o2 - count) as usize]
         {
             count += 1;
@@ -87,7 +89,6 @@ impl LZ4 {
     /// <code>dest[dOff:]</code>. Please note that <code>dest</code> must be large
     /// enough to be able to hold <b>all</b> decompressed data (meaning that you
     /// need to know the total decompressed length).
-    ///
     pub fn decompress<R: DataInput + ?Sized>(
         compressed: &mut R,
         decompressed_len: usize,
@@ -227,7 +228,6 @@ impl LZ4 {
     /// Compress <code>bytes[off:off+len]</code> into <code>out</code> using
     /// at most 16KB of memory. <code>ht</code> shouldn't be shared across threads
     /// but can safely be reused.
-    ///
     pub fn compress<R: DataOutput + ?Sized>(
         bytes: &[u8],
         off: usize,
@@ -565,7 +565,6 @@ pub trait Decompress: Send + Sync + Clone {
     /// @param offset, bytes before this offset do not need to be decompressed
     /// @param length, bytes after <code>offset+length</code> do not need to be decompressed
     /// @param bytes, a `SimpleBytesStore` where to store the decompressed data
-    ///
     fn decompress<R: DataInput + ?Sized>(
         &self,
         input: &mut R,

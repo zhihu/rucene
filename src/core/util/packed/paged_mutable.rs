@@ -148,7 +148,6 @@ pub trait PagedMutable: LongValues + Sized {
 /// A {@link PagedMutable}. This class slices data into fixed-size blocks
 /// which have the same number of bits per value. It can be a useful replacement
 /// for {@link PackedInts.Mutable} to store more than 2B values. @lucene.internal
-///
 pub struct PagedMutableHugeWriter {
     base: PagedMutableBase,
     format: Format,
@@ -256,7 +255,6 @@ impl NumericDocValues for PagedMutableHugeWriter {
 /// You should use this class instead of the `PackedLongValues` related ones only when
 /// you need random write-access. Otherwise this class will likely be slower and
 /// less memory-efficient.
-///
 pub struct PagedGrowableWriter {
     base: PagedMutableBase,
     acceptable_overhead_ratio: f32,

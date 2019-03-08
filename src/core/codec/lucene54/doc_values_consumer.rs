@@ -166,9 +166,11 @@ impl Lucene54DocValuesConsumer {
             NumberType::ORDINAL => (missing_ord_count as f64 / count as f64) >= 0.99,
         };
 
-        let format = if unique_values.is_some() && count as i32 <= i32::max_value()
+        let format = if unique_values.is_some()
+            && count as i32 <= i32::max_value()
             && (unique_values.as_ref().unwrap().len() == 1
-                || (unique_values.as_ref().unwrap().len() == 2 && missing_count > 0
+                || (unique_values.as_ref().unwrap().len() == 2
+                    && missing_count > 0
                     && zero_count == missing_count))
         {
             // either one unique value C or two unique values: "missing" and C
@@ -239,11 +241,7 @@ impl Lucene54DocValuesConsumer {
                 values.reset();
                 for nv in values {
                     let nv = nv?;
-                    let value = if nv.is_null() {
-                        0
-                    } else {
-                        nv.long_value()
-                    };
+                    let value = if nv.is_null() { 0 } else { nv.long_value() };
                     quotient_writer.add((value.wrapping_sub(min_value)) / gcd)?;
                 }
                 quotient_writer.finish()?;
@@ -257,11 +255,7 @@ impl Lucene54DocValuesConsumer {
                 values.reset();
                 for nv in values {
                     let nv = nv?;
-                    let value = if nv.is_null() {
-                        0
-                    } else {
-                        nv.long_value()
-                    };
+                    let value = if nv.is_null() { 0 } else { nv.long_value() };
                     writer.add(value.wrapping_sub(min_delta))?;
                 }
                 writer.finish()?;
@@ -282,11 +276,7 @@ impl Lucene54DocValuesConsumer {
                     values.reset();
                     for nv in values {
                         let nv = nv?;
-                        let index = if nv.is_null() {
-                            0
-                        } else {
-                            nv.long_value()
-                        };
+                        let index = if nv.is_null() { 0 } else { nv.long_value() };
                         ords_writer.add((*encode.get(&index).unwrap()) as i64)?;
                     }
                     ords_writer.finish()?;

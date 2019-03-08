@@ -24,7 +24,6 @@ pub struct TopDocsCollector {
     /// implementations of PriorityQueue give different meaning to 'top documents'.
     /// HitQueue for example aggregates the top scoring documents, while other PQ
     /// implementations may hold documents sorted by other criteria.
-    ///
     pq: ScoreDocPriorityQueue,
 
     estimated_hits: usize,

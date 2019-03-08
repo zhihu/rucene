@@ -138,28 +138,32 @@ impl NormsProducer for Lucene53NormsProducer {
         }
         match entry.bytes_per_value {
             1 => {
-                let slice = self.data
+                let slice = self
+                    .data
                     .random_access_slice(entry.offset as i64, i64::from(self.max_doc))?;
                 let consumer: fn(&RandomAccessInput, DocId) -> Result<i64> =
                     move |slice, doc_id| slice.read_byte(i64::from(doc_id)).map(i64::from);
                 Ok(Box::new(RandomAccessNumericDocValues::new(slice, consumer)))
             }
             2 => {
-                let slice = self.data
+                let slice = self
+                    .data
                     .random_access_slice(entry.offset as i64, i64::from(self.max_doc) * 2)?;
                 let consumer: fn(&RandomAccessInput, DocId) -> Result<i64> =
                     move |slice, doc_id| slice.read_short(i64::from(doc_id) << 1).map(i64::from);
                 Ok(Box::new(RandomAccessNumericDocValues::new(slice, consumer)))
             }
             4 => {
-                let slice = self.data
+                let slice = self
+                    .data
                     .random_access_slice(entry.offset as i64, i64::from(self.max_doc) * 4)?;
                 let consumer: fn(&RandomAccessInput, DocId) -> Result<i64> =
                     move |slice, doc_id| slice.read_int(i64::from(doc_id) << 2).map(i64::from);
                 Ok(Box::new(RandomAccessNumericDocValues::new(slice, consumer)))
             }
             8 => {
-                let slice = self.data
+                let slice = self
+                    .data
                     .random_access_slice(entry.offset as i64, i64::from(self.max_doc) * 8)?;
                 let consumer: fn(&RandomAccessInput, DocId) -> Result<i64> =
                     move |slice, doc_id| slice.read_long(i64::from(doc_id) << 3).map(i64::from);

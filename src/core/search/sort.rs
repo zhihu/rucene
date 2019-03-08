@@ -26,8 +26,16 @@ mod tests {
     #[test]
     fn test_sort() {
         let sort_fields: Vec<SortField> = vec![
-            SortField::Simple(SimpleSortField::new(String::from("field_one"), SortFieldType::Score, true)),
-            SortField::Simple(SimpleSortField::new(String::from("field_two"), SortFieldType::Doc, false)),
+            SortField::Simple(SimpleSortField::new(
+                String::from("field_one"),
+                SortFieldType::Score,
+                true,
+            )),
+            SortField::Simple(SimpleSortField::new(
+                String::from("field_two"),
+                SortFieldType::Doc,
+                false,
+            )),
         ];
         let sort = Sort::new(sort_fields);
 

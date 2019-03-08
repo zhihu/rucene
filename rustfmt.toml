@@ -1,7 +1,7 @@
 # REFERENCE: https://github.com/rust-lang-nursery/rustfmt/blob/master/Configurations.md
 unstable_features = true
 indent_style = "Block"
-use_small_heuristics = true
+use_small_heuristics = "Default"
 binop_separator = "Front"
 combine_control_expr = true
 condense_wildcard_suffixes = false
@@ -34,7 +34,6 @@ skip_children = false
 space_before_colon = false
 struct_field_align_threshold = 0
 spaces_around_ranges = false
-spaces_within_parens_and_brackets = false
 struct_lit_single_line = true
 tab_spaces = 4
 trailing_comma = "Vertical"
@@ -42,4 +41,3 @@ trailing_semicolon = true
 type_punctuation_density = "Wide"
 use_try_shorthand = false
 match_arm_blocks = true
-write_mode = "Overwrite"

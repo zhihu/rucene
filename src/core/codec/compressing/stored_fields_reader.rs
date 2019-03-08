@@ -486,7 +486,6 @@ impl CompressingStoredFieldsReader {
 
     /// Reads a float in a variable-length format.  Reads between one and
     /// five bytes. Small integral values typically take fewer bytes.
-    ///
     fn read_zfloat(input: &mut DataInput) -> Result<f32> {
         let b = i32::from(input.read_byte()?) & 0xffi32;
         if b == 0xff {
@@ -496,7 +495,8 @@ impl CompressingStoredFieldsReader {
             // small integer [-1..125]
             Ok(((b & 0x7f) - 1) as f32)
         } else {
-            let bits = b << 24 | ((i32::from(input.read_short()?) & 0xffff) << 8)
+            let bits = b << 24
+                | ((i32::from(input.read_short()?) & 0xffff) << 8)
                 | (i32::from(input.read_byte()?) & 0xff);
             Ok(f32::from_bits(bits as u32))
         }
@@ -504,7 +504,6 @@ impl CompressingStoredFieldsReader {
 
     /// Reads a double in a variable-length format.  Reads between one and
     /// nine bytes. Small integral values typically take fewer bytes.
-    ///
     fn read_zdouble(input: &mut DataInput) -> Result<f64> {
         let b = i32::from(input.read_byte()?) & 0xffi32;
         if b == 0xff {
@@ -524,7 +523,6 @@ impl CompressingStoredFieldsReader {
 
     /// Reads a long in a variable-length format.  Reads between one andCorePropLo
     /// nine bytes. Small values typically take fewer bytes.
-    ///
     fn read_tlong(input: &mut DataInput) -> Result<i64> {
         let header = i32::from(input.read_byte()?) & 0xff;
 
@@ -698,7 +696,7 @@ impl CompressingStoredFieldsReader {
                         [self.bytes_position.0..self.bytes_position.0 + self.spare_position.1]
                         .copy_from_slice(
                             &self.spare[self.spare_position.0
-                                            ..self.spare_position.0 + self.spare_position.1],
+                                ..self.spare_position.0 + self.spare_position.1],
                         );
                     self.bytes_position.1 += self.spare_position.1;
                     decompressed += to_decompress;
@@ -737,7 +735,6 @@ impl CompressingStoredFieldsReader {
 
     /// Get the serialized representation of the given docID. This docID has
     /// to be contained in the current block.
-    ///
     fn do_get_document(&mut self, doc_id: DocId) -> Result<()> {
         if !self.contains(doc_id) {
             bail!("document failed. docid={}", doc_id)

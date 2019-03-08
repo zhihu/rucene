@@ -44,8 +44,6 @@ use error::*;
 /// methods, concurrently.  If your application requires
 /// external synchronization, you should *not*
 /// synchronize on the `IndexSearcher` instance.
-///
-///
 
 pub struct DefaultSimilarityProducer;
 
@@ -118,7 +116,6 @@ pub trait IndexSearcher {
     /// The query is rewritten by this method and `Query#createWeight` called,
     /// afterwards the `Weight` is normalized. The returned `Weight`
     /// can then directly be used to get a `Scorer`.
-    ///
     fn create_normalized_weight(&self, query: &Query, needs_scores: bool) -> Result<Box<Weight>>;
 
     fn similarity(&self, field: &str, needs_scores: bool) -> Box<Similarity>;
@@ -348,7 +345,8 @@ where
     fn create_weight(&self, query: &Query, needs_scores: bool) -> Result<Box<Weight>> {
         let mut weight = query.create_weight(self, needs_scores)?;
         if !needs_scores {
-            weight = self.query_cache
+            weight = self
+                .query_cache
                 .do_cache(weight, Arc::clone(&self.cache_policy));
         }
         Ok(weight)
@@ -358,7 +356,6 @@ where
     /// The query is rewritten by this method and `Query#createWeight` called,
     /// afterwards the `Weight` is normalized. The returned `Weight`
     /// can then directly be used to get a `Scorer`.
-    ///
     fn create_normalized_weight(&self, query: &Query, needs_scores: bool) -> Result<Box<Weight>> {
         let weight = self.create_weight(query, needs_scores)?;
         //        let v = weight.value_for_normalization();
