@@ -14,19 +14,15 @@ use std::cmp::min;
 pub const FASTEST: f32 = 7.0;
 
 /// At most 50% memory overhead, always select a reasonably fast implementation.
-///
 pub const FAST: f32 = 0.5;
 
 /// At most 25% memory overhead.
-///
 pub const DEFAULT: f32 = 0.25;
 
 /// No memory overhead at all, but the returned implementation may be slow.
-///
 pub const COMPACT: f32 = 0.0;
 
 /// Default amount of memory to use for bulk operations.
-///
 pub const DEFAULT_BUFFER_SIZE: usize = 1024; // 1K
 
 pub const CODEC_NAME: &str = "PackedInts";
@@ -127,7 +123,6 @@ pub fn get_reader<T: DataInput + ?Sized>(input: &mut T) -> Result<Box<Reader>> {
 /// speed up iteration) @return             a ReaderIterator
 /// @see PackedInts#getWriterNoHeader(DataOutput, Format, int, int, int)
 /// @lucene.internal
-///
 pub fn get_reader_iterator_no_header(
     format: Format,
     version: i32,
@@ -161,7 +156,6 @@ pub fn get_reader_iterator_no_header(
 /// @param acceptableOverheadRatio an acceptable overhead
 ///        ratio per value
 /// @return a mutable packed integer array
-///
 pub fn get_mutable_by_ratio(
     value_count: usize,
     bits_per_value: i32,
@@ -181,7 +175,6 @@ pub fn get_mutable_by_ratio(
 
 /// Same as {@link #getMutable(int, int, float)} with a pre-computed number of bits per value and
 /// format.
-///
 pub fn get_mutable_by_format(
     value_count: usize,
     bits_per_value: i32,
@@ -406,7 +399,6 @@ impl FormatAndBits {
     /// <p>
     /// If you don't know how many values you are going to write, use
     /// <code>valueCount = -1</code>.
-    ///
     pub fn fastest(
         value_count: i32,
         bits_per_value: i32,
@@ -432,11 +424,13 @@ impl FormatAndBits {
             actual_bits_per_value = 32;
         } else if bits_per_value <= 64 && max_bits_per_value >= 64 {
             actual_bits_per_value = 64;
-        } else if value_count <= PACKED8_THREE_BLOCKS_MAX_SIZE && bits_per_value <= 24
+        } else if value_count <= PACKED8_THREE_BLOCKS_MAX_SIZE
+            && bits_per_value <= 24
             && max_bits_per_value >= 24
         {
             actual_bits_per_value = 24;
-        } else if value_count <= PACKED16_THREE_BLOCKS_MAX_SIZE && bits_per_value <= 48
+        } else if value_count <= PACKED16_THREE_BLOCKS_MAX_SIZE
+            && bits_per_value <= 48
             && max_bits_per_value >= 48
         {
             actual_bits_per_value = 48;
@@ -637,20 +631,17 @@ pub trait Mutable: Reader {
     ///        Note: This does not imply that memory usage is
     ///        {@code bitsPerValue * #values} as implementations are free to
     ///        use non-space-optimal packing of bits.
-    ///
     fn get_bits_per_value(&self) -> i32;
 
     /// Set the value at the given index in the array.
     /// @param index where the value should be positioned.
     /// @param value a value conforming to the constraints set by the array.
-    ///
     fn set(&mut self, index: usize, value: i64);
 
     /// Bulk set: set at least one and at most <code>len</code> longs starting
     /// at <code>off</code> in <code>arr</code> into this mutable, starting at
     /// <code>index</code>. Returns the actual number of values that have been
     /// set.
-    ///
     fn bulk_set(&mut self, index: usize, arr: &[i64], off: usize, len: usize) -> usize;
 
     /// Fill the mutable from <code>fromIndex</code> (inclusive) to
@@ -1151,7 +1142,8 @@ impl Packed8ThreeBlocks {
 impl Reader for Packed8ThreeBlocks {
     fn get(&self, doc_id: usize) -> i64 {
         let o = doc_id * 3;
-        (i64::from(self.blocks[o])) << 16 | (i64::from(self.blocks[o + 1])) << 8
+        (i64::from(self.blocks[o])) << 16
+            | (i64::from(self.blocks[o + 1])) << 8
             | (i64::from(self.blocks[o + 2]))
     }
 
@@ -1250,7 +1242,8 @@ impl Packed16ThreeBlocks {
 impl Reader for Packed16ThreeBlocks {
     fn get(&self, doc_id: usize) -> i64 {
         let o = doc_id * 3;
-        i64::from(self.blocks[o] as u16) << 32 | i64::from(self.blocks[o + 1] as u16) << 16
+        i64::from(self.blocks[o] as u16) << 32
+            | i64::from(self.blocks[o + 1] as u16) << 16
             | i64::from(self.blocks[o + 2] as u16)
     }
 
@@ -1328,8 +1321,6 @@ impl Mutable for Packed16ThreeBlocks {
 /// and masks, which also proved to be a bit slower than calculating the shifts
 /// and masks on the fly.
 /// See https://issues.apache.org/jira/browse/LUCENE-4062 for details.
-///
-///
 struct Packed64 {
     value_count: usize,
     bits_per_value: i32,
@@ -1418,7 +1409,8 @@ impl Reader for Packed64 {
                 | rshift_64(
                     self.blocks[element_pos + 1],
                     PACKED64_BLOCK_SIZE - end_bits as i32,
-                )) & self.mask_right
+                ))
+                & self.mask_right
         }
     }
 
@@ -1634,7 +1626,6 @@ const SUPPORTED_BITS_PER_VALUE: [i32; 14] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 
 /// This class is similar to {@link Packed64} except that it trades space for
 /// speed by ensuring that a single block needs to be read/written in order to
 /// read/write a value.
-///
 pub struct Packed64SingleBlock {
     value_count: usize,
     bits_per_value: i32,
@@ -1870,7 +1861,6 @@ impl Mutable for Packed64SingleBlock {
 /// bit count of the underlying packed ints on-demand.
 /// <p>Beware that this class will accept to set negative values but in order
 /// to do this, it will grow the number of bits per value to 64.
-///
 pub struct GrowableWriter {
     current_mark: i64,
     current: Box<Mutable>,
@@ -2609,10 +2599,14 @@ impl BulkOperationPackedSingleBlock {
     }
 
     fn read_long(&self, blocks: &[u8], offset: usize) -> i64 {
-        i64::from(blocks[offset]) << 56 | i64::from(blocks[offset + 1]) << 48
-            | i64::from(blocks[offset + 2]) << 40 | i64::from(blocks[offset + 3]) << 32
-            | i64::from(blocks[offset + 4]) << 24 | i64::from(blocks[offset + 5]) << 16
-            | i64::from(blocks[offset + 6]) << 8 | i64::from(blocks[offset + 7])
+        i64::from(blocks[offset]) << 56
+            | i64::from(blocks[offset + 1]) << 48
+            | i64::from(blocks[offset + 2]) << 40
+            | i64::from(blocks[offset + 3]) << 32
+            | i64::from(blocks[offset + 4]) << 24
+            | i64::from(blocks[offset + 5]) << 16
+            | i64::from(blocks[offset + 6]) << 8
+            | i64::from(blocks[offset + 7])
     }
 
     fn write_long(&self, block: i64, blocks: &mut [u8], blocks_offset: usize) -> usize {
@@ -2810,7 +2804,6 @@ pub struct OffsetAndLength(pub usize, pub usize);
 /// Reader for sequences of longs written with {@link BlockPackedWriter}.
 /// @see BlockPackedWriter
 /// @lucene.internal
-///
 #[derive(Clone)]
 pub struct BlockPackedReaderIterator {
     packed_ints_version: i32,
@@ -2848,7 +2841,6 @@ impl BlockPackedReaderIterator {
     ///  @param blockSize the number of values of a block, must be equal to the
     ///                   block size of the {@link BlockPackedWriter} which has
     ///                   been used to write the stream
-    ///
     pub fn new<T: DataInput + ?Sized>(
         _input: &mut T,
         packed_ints_version: i32,

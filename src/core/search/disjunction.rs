@@ -185,7 +185,6 @@ where
 /// same term in multiple fields to be judged better than results that include this term in only
 /// the best of those multiple fields, without confusing this with the better case of two different
 /// terms in the multiple fields.
-///
 
 pub struct DisjunctionMaxQuery {
     pub disjuncts: Vec<Box<Query>>,
@@ -262,7 +261,6 @@ impl fmt::Display for DisjunctionMaxQuery {
 ///
 /// <p>NOTE: this API and implementation is subject to
 /// change suddenly in the next release.</p>
-///
 pub struct DisjunctionMaxWeight {
     weights: Vec<Box<Weight>>,
     tie_breaker_multiplier: f32,

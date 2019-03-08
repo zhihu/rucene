@@ -214,7 +214,8 @@ impl TermIterator for CompressedBinaryTermIterator {
     fn seek_exact_ord(&mut self, ord: i64) -> Result<()> {
         let block = ord.unsigned_shift(lucene54::INTERVAL_SHIFT as usize);
         if block
-            != self.current_ord
+            != self
+                .current_ord
                 .unsigned_shift(lucene54::INTERVAL_SHIFT as usize)
         {
             // switch to different block

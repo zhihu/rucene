@@ -34,7 +34,6 @@ const FIRST_LEVEL_SIZE: usize = LEVEL_SIZE_ARRAY[0];
 /// that are writing into the slice don't need to record
 /// its length and instead allocate a new slice once they
 /// hit a non-zero byte.
-///
 pub struct IntBlockPool {
     /// array of buffers currently used in the pool. Buffers are allocated if
     /// needed don't modify this outside of this class.
@@ -124,7 +123,6 @@ impl IntBlockPool {
     /// after the constructor to initialize the pool. In contrast to the
     /// constructor a {@link ByteBlockPool#reset()} call will advance the pool to
     /// its first buffer immediately.
-    ///
     pub fn next_buffer(&mut self) {
         let idx = (self.buffer_upto + 1) as usize;
         if idx == self.buffers.len() {

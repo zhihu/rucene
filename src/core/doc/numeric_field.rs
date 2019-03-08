@@ -12,7 +12,6 @@ use num_traits::float::Float;
 /// is allowed.
 ///
 /// This field defines static factory methods for creating common queries
-///
 pub struct FloatPoint;
 
 impl FloatPoint {

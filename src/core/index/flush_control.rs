@@ -199,7 +199,8 @@ impl DocumentsWriterFlushControl {
     pub fn num_global_term_deletes(&self) -> usize {
         self.documents_writer()
             .delete_queue
-            .num_global_term_deletes() + self.buffered_update_stream().num_terms()
+            .num_global_term_deletes()
+            + self.buffered_update_stream().num_terms()
     }
 
     pub fn delete_bytes_used(&self) -> usize {
@@ -327,7 +328,8 @@ impl DocumentsWriterFlushControl {
         // reach the limit without any ongoing flushes. we need to ensure
         // that we don't stall/block if an ongoing or pending flush can
         // not free up enough memory to release the stall lock.
-        let stall = (self.active_bytes + self.flush_bytes) > limit && self.active_bytes < limit
+        let stall = (self.active_bytes + self.flush_bytes) > limit
+            && self.active_bytes < limit
             && !self.closed;
         self.stall_control.update_stalled(stall);
         stall
@@ -394,7 +396,8 @@ impl DocumentsWriterFlushControl {
 
             if guard.inited()
                 && guard.dwpt().delete_queue.generation.load(Ordering::Acquire)
-                    != self.documents_writer()
+                    != self
+                        .documents_writer()
                         .delete_queue
                         .generation
                         .load(Ordering::Acquire)
@@ -430,7 +433,8 @@ impl DocumentsWriterFlushControl {
                 self.documents_writer()
                     .delete_queue
                     .generation
-                    .load(Ordering::Acquire) + 1,
+                    .load(Ordering::Acquire)
+                    + 1,
                 seq_no + 1,
             ));
 
@@ -483,7 +487,8 @@ impl DocumentsWriterFlushControl {
             debug_assert!(
                 !guard.inited()
                     || guard.dwpt().delete_queue.generation.load(Ordering::Acquire)
-                        == self.documents_writer()
+                        == self
+                            .documents_writer()
                             .delete_queue
                             .generation
                             .load(Ordering::Acquire)
@@ -516,7 +521,8 @@ impl DocumentsWriterFlushControl {
 
         if !self.blocked_flushes.is_empty() {
             debug_assert!(self.assert_blocked_flushes());
-            let gen = self.documents_writer()
+            let gen = self
+                .documents_writer()
                 .delete_queue
                 .generation
                 .load(Ordering::Acquire);
@@ -561,7 +567,8 @@ impl DocumentsWriterFlushControl {
             bf.dwpt.delete_queue.generation.load(Ordering::Acquire) == flushing_generation
         });
         for blocked_flush in pruned {
-            debug_assert!(!self.flushing_writers
+            debug_assert!(!self
+                .flushing_writers
                 .contains_key(&blocked_flush.dwpt.segment_info.name));
             // Record the flushing DWPT to reduce flushBytes in doAfterFlush
             self.flushing_writers.insert(

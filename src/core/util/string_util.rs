@@ -39,7 +39,6 @@ pub fn bytes_subtract(bytes_per_dim: usize, dim: usize, a: &[u8], b: &[u8], resu
 
 /// Compares two {@link BytesRef}, element by element, and returns the
 /// number of elements common to both arrays (from the start of each).
-///
 pub fn bytes_difference(left: &[u8], right: &[u8]) -> i32 {
     let len = left.len().min(right.len());
     for i in 0..len {
@@ -54,7 +53,6 @@ pub fn bytes_difference(left: &[u8], right: &[u8]) -> i32 {
 /// Returns the length of {@code currentTerm} needed for use as a sort key.
 /// so that {@link BytesRef#compareTo(BytesRef)} still returns the same result.
 /// This method assumes currentTerm comes after priorTerm.
-///
 pub fn sort_key_length(prior_term: &[u8], current_term: &[u8]) -> usize {
     let current_term_offset = 0usize;
     let prior_term_offset = 0usize;

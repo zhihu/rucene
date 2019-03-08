@@ -180,7 +180,8 @@ impl DocumentsWriterPerThread {
         // document, so the counter will be "wrong" in that case, but
         // it's very hard to fix (we can't easily distinguish aborting
         // vs non-aborting exceptions):
-        let res = self.consumer
+        let res = self
+            .consumer
             .process_document(&mut self.doc_state, &mut doc);
         self.doc_state.clear();
         if !res.is_ok() {
@@ -237,7 +238,8 @@ impl DocumentsWriterPerThread {
             self.doc_state.doc_id = self.num_docs_in_ram as i32;
             *doc_count += 1;
 
-            let res = self.consumer
+            let res = self
+                .consumer
                 .process_document(&mut self.doc_state, &mut doc);
             if res.is_err() {
                 // Incr here because finishDocument will not
@@ -255,7 +257,8 @@ impl DocumentsWriterPerThread {
         // succeeded, but apply it only to docs prior to when
         // this batch started:
         let seq_no = if let Some(del_term) = del_term {
-            let seq = self.delete_queue
+            let seq = self
+                .delete_queue
                 .add_term_to_slice(del_term, &mut self.delete_slice)?;
             self.delete_slice.apply(
                 &mut self.pending_updates,
@@ -302,7 +305,8 @@ impl DocumentsWriterPerThread {
         let mut apply_slice = self.num_docs_in_ram > 0;
         let seq_no: u64;
         if let Some(del_term) = del_term {
-            seq_no = self.delete_queue
+            seq_no = self
+                .delete_queue
                 .add_term_to_slice(del_term, &mut self.delete_slice)?
 
         // debug_assert!(self.delete_slice.is_tail_item(del_term));
@@ -328,7 +332,8 @@ impl DocumentsWriterPerThread {
         debug_assert!(self.inited);
         debug_assert!(self.num_docs_in_ram > 0);
 
-        let frozen_updates = self.delete_queue
+        let frozen_updates = self
+            .delete_queue
             .freeze_global_buffer(Some(&mut self.delete_slice))?;
         // apply all deletes before we flush and release the delete slice
         self.delete_slice
@@ -363,7 +368,8 @@ impl DocumentsWriterPerThread {
         // happens when an exception is hit processing that
         // doc, eg if analyzer has some problem w/ the text):
         if !self.pending_updates.deleted_doc_ids.is_empty() {
-            flush_state.live_docs = self.codec()
+            flush_state.live_docs = self
+                .codec()
                 .live_docs_format()
                 .new_live_docs(self.num_docs_in_ram as usize)?;
             for del_doc_id in self.pending_updates.deleted_doc_ids.as_ref() {
@@ -407,7 +413,8 @@ impl DocumentsWriterPerThread {
 
         self.consumer.flush(&mut flush_state)?;
         self.pending_updates.deleted_terms.clear();
-        self.segment_info.set_files(&self.directory.create_files())?;
+        self.segment_info
+            .set_files(&self.directory.create_files())?;
         let segment_info_per_commit = SegmentCommitInfo::new(
             self.segment_info.clone(),
             0,

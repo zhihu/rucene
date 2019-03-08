@@ -134,11 +134,13 @@ impl DefaultIndexingChain {
                 debug_assert!(per_field.field_info().point_dimension_count > 0);
                 if points_writer.is_none() {
                     // lazy init
-                    points_writer = Some(state
-                        .segment_info
-                        .codec()
-                        .points_format()
-                        .fields_writer(state)?);
+                    points_writer = Some(
+                        state
+                            .segment_info
+                            .codec()
+                            .points_format()
+                            .fields_writer(state)?,
+                    );
                 }
                 per_field
                     .point_values_writer
@@ -164,11 +166,13 @@ impl DefaultIndexingChain {
             if per_field.doc_values_writer.is_some() {
                 debug_assert_ne!(per_field.field_info().doc_values_type, DocValuesType::Null);
                 if dv_consumer.is_none() {
-                    dv_consumer = Some(state
-                        .segment_info
-                        .codec()
-                        .doc_values_format()
-                        .fields_consumer(state)?);
+                    dv_consumer = Some(
+                        state
+                            .segment_info
+                            .codec()
+                            .doc_values_format()
+                            .fields_consumer(state)?,
+                    );
                 }
                 per_field
                     .doc_values_writer
@@ -226,14 +230,16 @@ impl DefaultIndexingChain {
 
     fn init_stored_fields_writer(&mut self) -> Result<()> {
         if self.stored_fields_writer.is_none() {
-            self.stored_fields_writer = Some(self.doc_writer()
-                .codec()
-                .stored_fields_format()
-                .fields_writer(
-                    self.doc_writer().directory.clone(),
-                    &mut self.doc_writer().segment_info,
-                    &IOContext::Default,
-                )?);
+            self.stored_fields_writer = Some(
+                self.doc_writer()
+                    .codec()
+                    .stored_fields_format()
+                    .fields_writer(
+                        self.doc_writer().directory.clone(),
+                        &mut self.doc_writer().segment_info,
+                        &IOContext::Default,
+                    )?,
+            );
         }
 
         Ok(())
@@ -557,8 +563,9 @@ impl DefaultIndexingChain {
                     point_dimension_count,
                     dimension_num_bytes,
                 )?;
-            self.field_infos.get_or_add(&per_field.field_info().name)?.set_dimensions(
-                point_dimension_count, dimension_num_bytes)?;
+            self.field_infos
+                .get_or_add(&per_field.field_info().name)?
+                .set_dimensions(point_dimension_count, dimension_num_bytes)?;
         }
 
         if per_field.point_values_writer.is_none() {
@@ -764,7 +771,8 @@ impl<T: TermsHashPerField> PerField<T> {
             .as_mut()
             .unwrap()
             .finish(&mut self.invert_state)?;
-        if self.term_hash_per_field
+        if self
+            .term_hash_per_field
             .as_ref()
             .unwrap()
             .base()

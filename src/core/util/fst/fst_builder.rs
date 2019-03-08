@@ -30,7 +30,6 @@ use error::Result;
 /// FSTs larger than 2.1GB are now possible (as of Lucene
 /// 4.2).  FSTs containing more than 2.1B nodes are also now
 /// possible, however they cannot be packed.
-///
 pub struct FstBuilder<F: OutputFactory> {
     dedup_hash: Option<NodeHash<F>>,
     pub fst: FST<F>,
@@ -354,7 +353,8 @@ impl<F: OutputFactory> FstBuilder<F> {
             let common_output_prefix: F::Value;
             if last_output != self.no_output {
                 common_output_prefix = self.fst.outputs().common(&output, &last_output);
-                let word_suffix = self.fst
+                let word_suffix = self
+                    .fst
                     .outputs()
                     .subtract(&last_output, &common_output_prefix);
                 self.frontier[i].prepend_output(word_suffix);
@@ -371,7 +371,8 @@ impl<F: OutputFactory> FstBuilder<F> {
         if self.last_input.length == input.length && prefix_len_plus1 == input.length + 1 {
             // same input more than 1 time in a row, mapping to
             // multiple outputs
-            self.frontier[last_idx].output = self.fst
+            self.frontier[last_idx].output = self
+                .fst
                 .outputs()
                 .merge(&self.frontier[last_idx].output, &output);
         } else {
@@ -798,13 +799,15 @@ impl<F: OutputFactory> UnCompiledNode<F> {
 
     fn prepend_output(&mut self, output_prefix: F::Value) {
         for i in 0..self.num_arcs {
-            self.arcs[i].output = self.builder()
+            self.arcs[i].output = self
+                .builder()
                 .fst
                 .outputs()
                 .add(&output_prefix, &self.arcs[i].output);
         }
         if self.is_final {
-            self.output = self.builder()
+            self.output = self
+                .builder()
                 .fst
                 .outputs()
                 .add(&output_prefix, &self.output);

@@ -62,7 +62,6 @@ impl Encoder for SimpleHtmlEncoder {
 
 ///
 // Term offsets (start + end)
-//
 #[derive(Clone, PartialEq, Eq, Ord, Debug)]
 pub struct Toffs {
     pub start_offset: i32,
@@ -90,7 +89,6 @@ impl Toffs {
 
 ///
 // Represents the list of term offsets for some text
-//
 #[derive(Clone, PartialEq)]
 pub struct SubInfo {
     pub text: String,
@@ -112,7 +110,6 @@ impl SubInfo {
 
 ///
 // List of term offsets + weight for a frag info
-//
 #[derive(Clone)]
 pub struct WeightedFragInfo {
     pub sub_infos: Vec<SubInfo>,
@@ -228,7 +225,6 @@ impl FieldFragList for WeightedFieldFragList {
 ///
 // Single term with its position/offsets in the document and IDF weight.
 // It is Comparable but considers only position.
-//
 #[derive(Clone)]
 pub struct TermInfo {
     pub text: String,
@@ -358,7 +354,9 @@ impl WeightedPhraseInfo {
         let oso = other.start_offset();
         let oeo = other.end_offset();
 
-        (so <= oso && oso < eo) || (so < oeo && oeo <= eo) || (oso <= so && so < oeo)
+        (so <= oso && oso < eo)
+            || (so < oeo && oeo <= eo)
+            || (oso <= so && so < oeo)
             || (oso < eo && eo <= oeo)
     }
 }
@@ -366,7 +364,6 @@ impl WeightedPhraseInfo {
 ///
 // Internal structure of a query for highlighting: represents
 // a nested query structure
-//
 #[derive(Debug)]
 pub struct QueryPhraseMap {
     pub terminal: bool,
@@ -543,23 +540,16 @@ impl FieldQuery {
 
     // Save the set of terms in the queries to termSetMap.
     // ex1) q=name:john
-    //      - fieldMatch==true
-    //          termSetMap=Map<"name",Set<"john">>
-    //      - fieldMatch==false
-    //          termSetMap=Map<null,Set<"john">>
+    //      - fieldMatch==true termSetMap=Map<"name",Set<"john">>
+    //      - fieldMatch==false termSetMap=Map<null,Set<"john">>
     //
     // ex2) q=name:john title:manager
-    //      - fieldMatch==true
-    //          termSetMap=Map<"name",Set<"john">,
-    //                         "title",Set<"manager">>
-    //      - fieldMatch==false
-    //          termSetMap=Map<null,Set<"john","manager">>
+    //      - fieldMatch==true termSetMap=Map<"name",Set<"john">, "title",Set<"manager">>
+    //      - fieldMatch==false termSetMap=Map<null,Set<"john","manager">>
     //
     // ex3) q=name:"john lennon"
-    //      - fieldMatch==true
-    //          termSetMap=Map<"name",Set<"john","lennon">>
-    //      - fieldMatch==false
-    //          termSetMap=Map<null,Set<"john","lennon">>
+    //      - fieldMatch==true termSetMap=Map<"name",Set<"john","lennon">>
+    //      - fieldMatch==false termSetMap=Map<null,Set<"john","lennon">>
     //
     fn save_terms(
         &mut self,
@@ -818,13 +808,15 @@ impl FieldPhraseList {
                     curr_map = Some(map);
                     phrase_candidate.push(first.clone());
                 }
-                None => for i in 0..first.next.len() {
-                    curr_map = field_query.get_field_term_map(&field, &first.next[i].text);
-                    if curr_map.is_some() {
-                        phrase_candidate.push(first.next[i].clone());
-                        break;
+                None => {
+                    for i in 0..first.next.len() {
+                        curr_map = field_query.get_field_term_map(&field, &first.next[i].text);
+                        if curr_map.is_some() {
+                            phrase_candidate.push(first.next[i].clone());
+                            break;
+                        }
                     }
-                },
+                }
             }
 
             // if not found, discard top TermInfo from stack, then try next element

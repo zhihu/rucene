@@ -18,8 +18,6 @@ use core::util::{DocId, KeyedContext};
 /// Susan Jones, Micheline Hancock-Beaulieu, and Mike Gatford. Okapi at TREC-3.
 /// In Proceedings of the Third *T*ext *RE*trieval *C*onference (TREC 1994).
 /// Gaithersburg, USA, November 1994.
-///
-///
 lazy_static! {
     static ref NORM_TABLE: [f32; 256] = {
         let mut norm_table: [f32; 256] = [0f32; 256];

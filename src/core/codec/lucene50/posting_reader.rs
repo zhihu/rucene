@@ -169,48 +169,50 @@ impl Lucene50PostingsReader {
         let index_has_offsets = options.has_offsets();
         let index_has_payloads = field_info.has_store_payloads;
 
-        Ok(if !index_has_positions
-            || !posting_feature_requested(flags, POSTING_ITERATOR_FLAG_POSITIONS)
-        {
-            Box::new(BlockDocIterator::new(
-                self.doc_in.clone()?,
-                field_info,
-                state,
-                flags,
-                self.for_util.clone(),
-                segment,
-                term,
-            )?)
-        } else if (!index_has_offsets
-            || !posting_feature_requested(flags, POSTING_ITERATOR_FLAG_OFFSETS))
-            && (!index_has_payloads
-                || !posting_feature_requested(flags, POSTING_ITERATOR_FLAG_PAYLOADS))
-        {
-            Box::new(BlockPostingIterator::new(
-                self.doc_in.clone()?,
-                self.clone_pos_in()?,
-                field_info,
-                state,
-                flags,
-                self.for_util.clone(),
-                segment,
-                term,
-            )?)
-        } else {
-            debug_assert!(self.pos_in.is_some());
-            debug_assert!(self.pay_in.is_some());
-            Box::new(EverythingIterator::new(
-                self.doc_in.clone()?,
-                self.clone_pos_in()?,
-                self.clone_pay_in()?,
-                field_info,
-                state,
-                flags,
-                self.for_util.clone(),
-                segment,
-                term,
-            )?)
-        })
+        Ok(
+            if !index_has_positions
+                || !posting_feature_requested(flags, POSTING_ITERATOR_FLAG_POSITIONS)
+            {
+                Box::new(BlockDocIterator::new(
+                    self.doc_in.clone()?,
+                    field_info,
+                    state,
+                    flags,
+                    self.for_util.clone(),
+                    segment,
+                    term,
+                )?)
+            } else if (!index_has_offsets
+                || !posting_feature_requested(flags, POSTING_ITERATOR_FLAG_OFFSETS))
+                && (!index_has_payloads
+                    || !posting_feature_requested(flags, POSTING_ITERATOR_FLAG_PAYLOADS))
+            {
+                Box::new(BlockPostingIterator::new(
+                    self.doc_in.clone()?,
+                    self.clone_pos_in()?,
+                    field_info,
+                    state,
+                    flags,
+                    self.for_util.clone(),
+                    segment,
+                    term,
+                )?)
+            } else {
+                debug_assert!(self.pos_in.is_some());
+                debug_assert!(self.pay_in.is_some());
+                Box::new(EverythingIterator::new(
+                    self.doc_in.clone()?,
+                    self.clone_pos_in()?,
+                    self.clone_pay_in()?,
+                    field_info,
+                    state,
+                    flags,
+                    self.for_util.clone(),
+                    segment,
+                    term,
+                )?)
+            },
+        )
     }
 
     pub fn check_integrity(&self) -> Result<()> {
@@ -1579,8 +1581,7 @@ impl<'a> EverythingIterator {
                         }
                         pos_in.read_exact(
                             &mut payload_bytes[self.payload_byte_upto as usize
-                                                   ..(self.payload_byte_upto + payload_length)
-                                                       as usize],
+                                ..(self.payload_byte_upto + payload_length) as usize],
                         )?;
                         self.payload_byte_upto += payload_length;
                     }

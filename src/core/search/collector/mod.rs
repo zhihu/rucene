@@ -52,10 +52,8 @@ error_chain! {
 /// Not all collectors will need to rebase the docID.  For
 /// example, a collector that simply counts the total number
 /// of hits would skip it.
-///
 pub trait SearchCollector: Collector {
     /// This method is called before collecting on a new leaf.
-    ///
     fn set_next_reader(&mut self, reader_ord: usize, reader: &LeafReader) -> Result<()>;
 
     /// iff this collector support parallel collect
@@ -82,7 +80,6 @@ pub trait Collector {
     /// Note: This is called in an inner search loop. For good search performance,
     /// implementations of this method should not call `IndexSearcher::doc(DocId)` on every hit.
     /// Doing so can slow searches by an order of magnitude or more.
-    ///
     fn collect(&mut self, doc: DocId, scorer: &mut Scorer) -> Result<()>;
 }
 

@@ -309,8 +309,9 @@ mod tests {
             term_str,
             String::from(
                 "BooleanQuery(must: [BooleanQuery(must: [], should: [TermQuery(field: title, \
-                 term: search, boost: 1), TermQuery(field: title, term: 搜索, boost: 1)], filters: [], match: \
-                 1)], should: [TermQuery(field: title, term: test, boost: 1)], filters: [], match: 0)",
+                 term: search, boost: 1), TermQuery(field: title, term: 搜索, boost: 1)], \
+                 filters: [], match: 1)], should: [TermQuery(field: title, term: test, boost: \
+                 1)], filters: [], match: 0)",
             )
         );
 
@@ -320,7 +321,8 @@ mod tests {
             vec![("title".to_string(), 1.0), ("content".to_string(), 1.0)],
             1,
             1.0,
-        ).build();
+        )
+        .build();
         let term_str: String = q.unwrap().to_string();
         assert_eq!(
             term_str,
@@ -344,16 +346,17 @@ mod tests {
             term_str,
             String::from(
                 "BooleanQuery(must: [BooleanQuery(must: [], should: [TermQuery(field: title, \
-                term: 市场定位, boost: 1), BooleanQuery(must: [TermQuery(field: title, term: 市场, \
-                boost: 1), TermQuery(field: title, term: 定位, boost: 1)], should: [], filters: \
-                [], match: 0)], filters: [], match: 1), TermQuery(field: title, term: b2b, boost: \
-                1), BooleanQuery(must: [], should: [BooleanQuery(must: [], should: [TermQuery(field: \
-                title, term: 电子商务, boost: 1), TermQuery(field: title, term: 电商, boost: 0.8)], \
-                filters: [], match: 1), BooleanQuery(must: [TermQuery(field: title, term: 电子, \
-                boost: 1), TermQuery(field: title, term: 商务, boost: 1)], should: [], filters: \
-                [], match: 0)], filters: [], match: 1), TermQuery(field: title, term: 网站, boost: \
-                1)], should: [TermQuery(field: title, term: 从, boost: 1), TermQuery(field: title, \
-                term: 分析, boost: 1)], filters: [], match: 0)",
+                 term: 市场定位, boost: 1), BooleanQuery(must: [TermQuery(field: title, term: \
+                 市场, boost: 1), TermQuery(field: title, term: 定位, boost: 1)], should: [], \
+                 filters: [], match: 0)], filters: [], match: 1), TermQuery(field: title, term: \
+                 b2b, boost: 1), BooleanQuery(must: [], should: [BooleanQuery(must: [], should: \
+                 [TermQuery(field: title, term: 电子商务, boost: 1), TermQuery(field: title, \
+                 term: 电商, boost: 0.8)], filters: [], match: 1), BooleanQuery(must: \
+                 [TermQuery(field: title, term: 电子, boost: 1), TermQuery(field: title, term: \
+                 商务, boost: 1)], should: [], filters: [], match: 0)], filters: [], match: 1), \
+                 TermQuery(field: title, term: 网站, boost: 1)], should: [TermQuery(field: title, \
+                 term: 从, boost: 1), TermQuery(field: title, term: 分析, boost: 1)], filters: \
+                 [], match: 0)",
             )
         );
     }

@@ -5,7 +5,6 @@ use core::util::DocId;
 use error::*;
 
 /// ChainCollector makes it possible to collect on more than one collector in sequence.
-///
 pub struct ChainedCollector<'a> {
     collectors: Vec<&'a mut SearchCollector>,
 }

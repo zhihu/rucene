@@ -153,7 +153,8 @@ impl SparseBits {
         if ctx.doc_id > doc_id || ctx.next_doc_id <= doc_id {
             bail!(IllegalState("internal error".to_owned()));
         }
-        if !((ctx.index == -1 && ctx.doc_id == -1) || ctx.doc_id == self.doc_ids.get64(ctx.index)?)
+        if !((ctx.index == -1 && ctx.doc_id == -1)
+            || ctx.doc_id == self.doc_ids.get64(ctx.index)?)
         {
             bail!(IllegalState("internal error".to_owned()));
         }

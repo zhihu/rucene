@@ -7,12 +7,10 @@ use core::util::packed::packed_misc::*;
 use error::*;
 
 /// Special number of bits per value used whenever all values to encode are equal.
-///
 const ALL_VALUES_EQUAL: i32 = 0;
 
 /// Upper limit of the number of bytes that might be required to stored
 /// <code>BLOCK_SIZE</code> encoded values.
-///
 pub const MAX_ENCODED_SIZE: usize = BLOCK_SIZE as usize * 4;
 
 /// Upper limit of the number of values that might be decoded in a single call to
@@ -116,11 +114,9 @@ impl ForUtilInstance {
         for bpv in 1..33usize {
             let format_and_bits =
                 FormatAndBits::fastest(BLOCK_SIZE, bpv as i32, acceptable_overhead_ratio);
-            debug_assert!(
-                format_and_bits
-                    .format
-                    .is_supported(format_and_bits.bits_per_value)
-            );
+            debug_assert!(format_and_bits
+                .format
+                .is_supported(format_and_bits.bits_per_value));
             debug_assert!(format_and_bits.bits_per_value <= 32);
             encoded_sizes[bpv] = encoded_size(
                 format_and_bits.format,

@@ -242,7 +242,8 @@ impl PointsWriter for Lucene60PointsWriter {
             &self.write_state.segment_suffix,
             INDEX_EXTENSION,
         );
-        let mut index_output = self.write_state
+        let mut index_output = self
+            .write_state
             .directory
             .create_output(&index_file_name, &self.write_state.context)?;
         write_index_header(

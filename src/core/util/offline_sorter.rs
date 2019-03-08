@@ -44,7 +44,6 @@ pub struct OfflineSorter {}
 impl OfflineSorter {
     /// All-details constructor.  If {@code valueLength} is -1 (the default), the length of each
     /// value differs; otherwise, all values have the specified length.
-    ///
     pub fn new(
         _dir: &DirectoryRc,
         _temp_file_name_prefix: &str,

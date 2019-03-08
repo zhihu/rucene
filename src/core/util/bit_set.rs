@@ -71,7 +71,6 @@ pub trait BitSet: ImmutableBitSet {
 /// long[], accessed with an int index, implementing {@link Bits} and
 /// `DocIdSet`. If you need to manage more than 2.1B bits, use
 /// `LongBitSet`.
-///
 pub struct FixedBitSet {
     pub bits: Vec<i64>,
     // Array of longs holding the bits
@@ -95,7 +94,6 @@ impl FixedBitSet {
     /// Creates a new LongBitSet.
     /// The internally allocated long array will be exactly the size needed to accommodate the
     /// numBits specified. @param numBits the number of bits needed
-    ///
     pub fn new(num_bits: usize) -> FixedBitSet {
         let num_words = bits2words(num_bits);
         let bits = vec![0; num_words];
@@ -111,7 +109,6 @@ impl FixedBitSet {
     /// larger. In that case the 'extra' or 'ghost' bits must be clear (or they may provoke
     /// spurious side-effects) @param storedBits the array to use as backing store
     /// @param numBits the number of bits actually needed
-    ///
     pub fn copy_from(stored_bits: Vec<i64>, num_bits: usize) -> Result<FixedBitSet> {
         let num_words = bits2words(num_bits);
         if num_words > stored_bits.len() {
@@ -137,7 +134,6 @@ impl FixedBitSet {
     /// NOTE: the returned bitset reuses the underlying {@code long[]} of
     /// the given `bits` if possible. Also, calling {@link #length()} on the
     /// returned bits may return a value greater than {@code numBits}.
-    ///
     pub fn ensure_capacity(&mut self, num_bits: usize) {
         if num_bits >= self.num_bits {
             // Depends on the ghost bits being clear!

@@ -106,7 +106,8 @@ impl IndexFileDeleter {
             let pattern = Regex::new(CODEC_FILE_PATTERN).unwrap();
             for filename in files {
                 if !filename.ends_with("write.lock")
-                    && (pattern.is_match(filename) || filename.starts_with(INDEX_FILE_SEGMENTS)
+                    && (pattern.is_match(filename)
+                        || filename.starts_with(INDEX_FILE_SEGMENTS)
                         || filename.starts_with(INDEX_FILE_PENDING_SEGMENTS))
                 {
                     // Add this file to ref_counts with initial count 0.
@@ -418,12 +419,14 @@ impl IndexFileDeleter {
     /// Returns true if the file should now be deleted.
     fn dec_ref(&self, filename: &str) -> bool {
         self.ensure_ref_count(filename);
-        if self.ref_counts
+        if self
+            .ref_counts
             .write()
             .unwrap()
             .get_mut(filename)
             .unwrap()
-            .dec_ref() == 0
+            .dec_ref()
+            == 0
         {
             // This file is no longer referenced by any past
             // commit points nor by the in-memory SegmentInfos:
@@ -547,7 +550,8 @@ impl IndexFileDeleter {
         let mut to_delete = HashSet::new();
         let pattern = Regex::new(CODEC_FILE_PATTERN).unwrap();
         for filename in &files {
-            if filename.ends_with("write.lock") && !self.ref_counts.read()?.contains_key(filename)
+            if filename.ends_with("write.lock")
+                && !self.ref_counts.read()?.contains_key(filename)
                 && (pattern.is_match(filename) || filename.starts_with(INDEX_FILE_SEGMENTS) ||
                 // we only try to clear out pending_segments_N during rollback(), because we don't ref-count it
                 // TODO: this is sneaky, should we do this, or change TestIWExceptions? rollback closes anyway, and

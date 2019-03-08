@@ -44,7 +44,8 @@ impl<F: OutputFactory> FSTIterBase<F> {
     }
 
     fn read_first_target_arc(&mut self, arc_idx: usize, into_idx: usize) -> Result<()> {
-        let arc = self.fst
+        let arc = self
+            .fst
             .read_first_target_arc(&self.arcs[arc_idx], &mut self.fst_reader)?;
         self.arcs[into_idx] = arc;
         Ok(())

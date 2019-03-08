@@ -137,8 +137,4 @@ where
     }
 }
 
-impl<T> DataOutput for ByteArrayDataOutput<T>
-where
-    T: AsMut<[u8]>,
-{
-}
+impl<T> DataOutput for ByteArrayDataOutput<T> where T: AsMut<[u8]> {}

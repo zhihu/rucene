@@ -143,10 +143,12 @@ impl FieldInfo {
             )));
         }
 
-        if self.dv_gen != -1 && match self.doc_values_type {
-            DocValuesType::Null => true,
-            _ => false,
-        } {
+        if self.dv_gen != -1
+            && match self.doc_values_type {
+                DocValuesType::Null => true,
+                _ => false,
+            }
+        {
             bail!(IllegalState(format!(
                 "Illegal State: field '{}' cannot have a docvalues update generation without \
                  having docvalues",
@@ -158,7 +160,8 @@ impl FieldInfo {
     }
 
     pub fn set_doc_values_type(&mut self, dv_type: DocValuesType) -> Result<()> {
-        if !self.doc_values_type.null() && !dv_type.null()
+        if !self.doc_values_type.null()
+            && !dv_type.null()
             && !variant_eq(&self.doc_values_type, &dv_type)
         {
             bail!(IllegalArgument(format!(
@@ -198,17 +201,13 @@ impl FieldInfo {
         }
     }
 
-    pub fn set_dimensions(
-        &mut self,
-        dimension_count: u32,
-        dimension_num_bytes: u32,
-    ) -> Result<()> {
+    pub fn set_dimensions(&mut self, dimension_count: u32, dimension_num_bytes: u32) -> Result<()> {
         if self.point_dimension_count == 0 && dimension_count > 0 {
             self.point_dimension_count = dimension_count;
             self.point_num_bytes = dimension_num_bytes;
         } else if dimension_count != 0
             && (self.point_dimension_count != dimension_count
-            || self.point_num_bytes != dimension_num_bytes)
+                || self.point_num_bytes != dimension_num_bytes)
         {
             bail!(IllegalArgument(format!(
                 "cannot change field '{}' dimension count or dimension_num_bytes",
@@ -385,7 +384,8 @@ impl Serialize for FieldInfos {
         s.serialize_field("has_doc_values", &self.has_doc_values)?;
         s.serialize_field("has_point_values", &self.has_point_values)?;
 
-        let fields: HashMap<&String, &FieldInfo> = self.by_name
+        let fields: HashMap<&String, &FieldInfo> = self
+            .by_name
             .iter()
             .map(|pair| (pair.0, pair.1.as_ref()))
             .collect();
@@ -529,10 +529,13 @@ where
             // number for this field.  If the field was seen
             // before then we'll get the same name and number,
             // else we'll allocate a new one:
-            let field_number =
-                self.global_field_numbers
-                    .as_mut()
-                    .add_or_get(name, 0, DocValuesType::Null, 0, 0)?;
+            let field_number = self.global_field_numbers.as_mut().add_or_get(
+                name,
+                0,
+                DocValuesType::Null,
+                0,
+                0,
+            )?;
             let fi = FieldInfo::new(
                 name.to_string(),
                 field_number,
@@ -741,7 +744,6 @@ impl FieldNumbersInner {
     /// does not exist yet it tries to add it with the given preferred field
     /// number assigned if possible otherwise the first unassigned field number
     /// is used as the field number.
-    ///
     pub fn add_or_get(
         &mut self,
         field_name: &str,
@@ -799,7 +801,8 @@ impl FieldNumbersInner {
                 preferred_field_number
             } else {
                 loop {
-                    if !self.number_to_name
+                    if !self
+                        .number_to_name
                         .contains_key(&self.lowest_unassigned_field_number)
                     {
                         break;
@@ -831,7 +834,8 @@ impl FieldNumbersInner {
             )));
         }
 
-        if dv_type != DocValuesType::Null && self.doc_values_type.contains_key(name)
+        if dv_type != DocValuesType::Null
+            && self.doc_values_type.contains_key(name)
             && self.doc_values_type[name] != DocValuesType::Null
             && self.doc_values_type[name] != dv_type
         {

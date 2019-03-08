@@ -47,7 +47,8 @@ impl<T: AsRef<Directory>> Directory for TrackingDirectoryWrapper<T> {
         suffix: &str,
         ctx: &IOContext,
     ) -> Result<Box<IndexOutput>> {
-        let temp_output = self.directory
+        let temp_output = self
+            .directory
             .as_ref()
             .create_temp_output(prefix, suffix, ctx)?;
         self.create_file_names

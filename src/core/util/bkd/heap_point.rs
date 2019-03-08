@@ -163,7 +163,8 @@ impl HeapPointWriter {
         let mut block_len = self.blocks.len();
         while block_len <= block {
             // If this is the last block, only allocate as large as necessary for maxSize:
-            let values_in_block = self.values_per_block
+            let values_in_block = self
+                .values_per_block
                 .min(self.max_size - block_len * self.values_per_block);
             self.blocks
                 .push(vec![0u8; values_in_block * self.packed_bytes_length]);

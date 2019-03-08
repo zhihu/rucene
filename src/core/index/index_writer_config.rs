@@ -24,7 +24,6 @@ use std::sync::Arc;
 /// </pre>
 ///
 /// @see IndexWriter#getConfig()
-///
 pub struct IndexWriterConfig {
     pub ram_buffer_size_mb: Option<f64>,
     pub use_compound_file: bool,

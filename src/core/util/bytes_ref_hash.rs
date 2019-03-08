@@ -24,7 +24,6 @@ pub const DEFAULT_CAPACITY: usize = 16;
 /// Note: The maximum capacity {@link BytesRef} instance passed to
 /// {@link #add(BytesRef)} must not be longer than {@link ByteBlockPool#BYTE_BLOCK_SIZE}-2.
 /// The internal storage is limited to 2GB total byte storage.
-///
 pub struct BytesRefHash {
     pub pool: *mut ByteBlockPool,
     scratch1: Vec<u8>,
@@ -399,9 +398,10 @@ impl<'a> BytesRefStringMSBSorter<'a> {
     }
 
     fn get(&self, i: i32) -> BytesRef {
-        self.bytes_hash.byte_pool().set_bytes_ref(self.bytes_hash
-            .byte_start(self.bytes_hash.ids[i as usize] as usize)
-            as usize)
+        self.bytes_hash.byte_pool().set_bytes_ref(
+            self.bytes_hash
+                .byte_start(self.bytes_hash.ids[i as usize] as usize) as usize,
+        )
     }
 }
 

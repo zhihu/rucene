@@ -34,18 +34,15 @@ use std::sync::{Arc, Mutex};
 /// DWPT updates a document it:
 ///
 /// - consumes a document and finishes its processing
-/// - updates its private `DeleteSlice} either by calling
-///   `update_slice(DeleteSlice)` or `add(Term, DeleteSlice)` (if the
-///   document has a delTerm)
-/// - applies all deletes in the slice to its private `BufferedUpdates`
-///   and resets it
+/// - updates its private `DeleteSlice} either by calling `update_slice(DeleteSlice)` or `add(Term,
+///   DeleteSlice)` (if the document has a delTerm)
+/// - applies all deletes in the slice to its private `BufferedUpdates` and resets it
 /// - increments its internal document id
 ///
 /// The DWPT also doesn't apply its current documents delete term until it has
 /// updated its delete slice which ensures the consistency of the update. If the
 /// update fails before the DeleteSlice could have been updated the deleteTerm
 /// will also not be added to its private deletes neither to the global deletes.
-///
 pub struct DocumentsWriterDeleteQueue {
     // current end(latest delete operation) in the delete queue:
     tail: Mutex<Arc<DeleteListNode>>,
@@ -156,7 +153,8 @@ impl DocumentsWriterDeleteQueue {
     pub fn any_changes(&self) -> bool {
         let guard = self.global_data.lock().unwrap();
         let tail_guard = self.tail.lock().unwrap();
-        guard.global_buffered_updates.any() || !guard.global_slice.is_empty()
+        guard.global_buffered_updates.any()
+            || !guard.global_slice.is_empty()
             || !same_node(&guard.global_slice.slice_tail, &*tail_guard)
             || !tail_guard.next.load(Ordering::Acquire).is_null()
     }

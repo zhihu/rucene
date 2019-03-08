@@ -18,7 +18,6 @@ use std::collections::{HashMap, HashSet};
 /// Each index commit point has a unique segments file
 /// associated with it. The segments file associated with a
 /// later index commit point would have a larger N.
-///
 // TODO: this is now a poor name, because this class also represents a
 // point-in-time view from an NRT reader
 pub trait IndexCommit {

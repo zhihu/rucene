@@ -101,7 +101,8 @@ impl TermVectorsFormat for CompressingTermVectorsFormat {
             ioctx,
             &self.format_name,
             self.compression_mode.clone(),
-        ).map(|tvf| -> Box<TermVectorsReader> { Box::new(tvf) })
+        )
+        .map(|tvf| -> Box<TermVectorsReader> { Box::new(tvf) })
     }
 
     fn tv_writer(
@@ -304,7 +305,8 @@ impl CompressingTermVectorsReader {
                 let mut field_positions = Vec::with_capacity(total_freq as usize);
                 let mut j = 0usize;
                 while j < total_freq as usize {
-                    let next_positions_off = self.reader
+                    let next_positions_off = self
+                        .reader
                         .next_longs_ref(vectors_stream, total_freq as usize - j)?;
                     let extended = self.reader.values
                         [next_positions_off.0..next_positions_off.0 + next_positions_off.1]
@@ -431,7 +433,8 @@ impl CompressingTermVectorsReader {
             total_fields,
             bits_per_off,
         )?;
-        // FIXME 下面定义的这两个 Option 实际是为了解决无法直接实现 Box<Mutable> -> Box<Reader> 的 work around
+        // FIXME 下面定义的这两个 Option 实际是为了解决无法直接实现 Box<Mutable> -> Box<Reader> 的
+        // work around
         let mut flags_reader: Option<Box<Reader>> = None;
         let mut flags_mutable: Option<Box<Mutable>> = None;
         match vectors_stream.read_vint()? {
@@ -559,7 +562,9 @@ impl CompressingTermVectorsReader {
             self.reader.reset(total_terms as i64);
             let mut i = 0usize;
             while i < total_terms {
-                let next = self.reader.next_longs_ref(vectors_stream, total_terms - i)?;
+                let next = self
+                    .reader
+                    .next_longs_ref(vectors_stream, total_terms - i)?;
                 let extended = (0..next.1).map(|k| self.reader.values[next.0 + k] as i32 + 1);
                 term_freqs.extend(extended);
                 i += next.1;
@@ -895,7 +900,8 @@ impl TVFields {
 
 impl Fields for TVFields {
     fn fields(&self) -> Vec<String> {
-        let field_names: Vec<_> = self.field_num_offs
+        let field_names: Vec<_> = self
+            .field_num_offs
             .iter()
             .map(|&k| {
                 self.field_infos.by_number[&(self.field_nums[k as usize] as u32)]

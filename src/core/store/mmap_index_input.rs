@@ -153,7 +153,8 @@ impl Clone for MmapIndexInput {
 impl MmapIndexInput {
     pub fn new<P: AsRef<Path> + Debug>(name: P) -> Result<MmapIndexInput> {
         let mmap = MmapIndexInput::mmap(name.as_ref(), 0, 0)?;
-        Ok(mmap.map(ReadOnlySource::from)
+        Ok(mmap
+            .map(ReadOnlySource::from)
             .map(MmapIndexInput::from)
             .ok_or_else(|| IllegalState(format!("Memmap empty file: {:?}", name)))?)
     }

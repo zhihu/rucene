@@ -214,7 +214,9 @@ impl DocumentsWriter {
             }
         };
 
-        let flush_dwpt = self.flush_control.do_after_document(&mut guard, is_update)?;
+        let flush_dwpt = self
+            .flush_control
+            .do_after_document(&mut guard, is_update)?;
 
         debug_assert!(seq_no > guard.last_seq_no());
         guard.set_last_seq_no(seq_no);
@@ -288,7 +290,9 @@ impl DocumentsWriter {
             }
         };
 
-        let flush_dwpt = self.flush_control.do_after_document(&mut guard, is_update)?;
+        let flush_dwpt = self
+            .flush_control
+            .do_after_document(&mut guard, is_update)?;
 
         debug_assert!(seq_no > guard.last_seq_no());
         guard.set_last_seq_no(seq_no);
@@ -569,9 +573,11 @@ impl DocumentsWriter {
         // could be a window where all changes are in the ticket queue
         // before they are published to the IW. ie we need to check if the
         // ticket queue has any tickets.
-        self.num_docs_in_ram.load(Ordering::Acquire) > 0 || self.delete_queue.any_changes()
+        self.num_docs_in_ram.load(Ordering::Acquire) > 0
+            || self.delete_queue.any_changes()
             || self.ticket_queue.has_tickets()
-            || self.pending_changes_in_current_full_flush
+            || self
+                .pending_changes_in_current_full_flush
                 .load(Ordering::Acquire)
     }
 
@@ -615,7 +621,8 @@ impl DocumentsWriter {
 
             self.ticket_queue.add_deletes(flushing_queue.as_ref())?;
         }
-        self.ticket_queue.force_purge(unsafe { &mut *self.writer })?;
+        self.ticket_queue
+            .force_purge(unsafe { &mut *self.writer })?;
         debug_assert!(!flushing_queue.any_changes() && !self.ticket_queue.has_tickets());
 
         Ok((anything_flushed, seq_no))

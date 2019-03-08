@@ -372,9 +372,11 @@ impl Lucene50PostingsWriter {
                 self.pay_out
                     .as_mut()
                     .write_vint(self.payload_byte_upto as i32)?;
-                self.pay_out
-                    .as_mut()
-                    .write_bytes(&self.payload_bytes, 0, self.payload_byte_upto)?;
+                self.pay_out.as_mut().write_bytes(
+                    &self.payload_bytes,
+                    0,
+                    self.payload_byte_upto,
+                )?;
                 self.payload_byte_upto = 0;
             }
 

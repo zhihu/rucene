@@ -41,7 +41,6 @@ impl TermState for OrdTermState {
 
 /// Access to the terms in a specific field.  See {@link Fields}.
 /// @lucene.experimental
-///
 pub trait Terms: Send + Sync {
     /// Returns an iterator that will step through all
     /// terms. This method will not return null. */
@@ -101,7 +100,6 @@ pub trait Terms: Send + Sync {
     // };
     // }
     // }
-    //
     /// Returns the number of terms for this field, or -1 if this
     /// measure isn't stored by the codec. Note that, just like
     /// other term measures, this measure does not take deleted
@@ -212,7 +210,6 @@ pub trait Terms: Send + Sync {
 
     /// Expert: returns additional information about this Terms instance
     /// for debugging purposes.
-    ///
     fn stats(&self) -> Result<String> {
         Ok(format!(
             "size={:?}, doc_count={:?}, sum_total_term_freq={:?}, sum_doc_freq={:?}",
@@ -294,7 +291,6 @@ pub trait TermIterator {
     /// @return the next term in the iterator or empty vector if
     /// the end of the iterator is reached.
     /// @throws IOException If there is a low-level I/O error.
-    ///
     fn next(&mut self) -> Result<Option<Vec<u8>>>;
 
     /// Attempts to seek to the exact term, returning
@@ -513,7 +509,8 @@ where
                 let t = self.next_seek_term();
                 // Make sure we always seek forward:
                 debug_assert!(
-                    self.base().actual_term.is_none() || t.is_none()
+                    self.base().actual_term.is_none()
+                        || t.is_none()
                         || t.as_ref().unwrap() > self.base().actual_term.as_ref().unwrap()
                 );
                 if t.is_none()

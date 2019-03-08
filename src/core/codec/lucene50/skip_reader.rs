@@ -134,7 +134,6 @@ pub struct Lucene50SkipReader {
 
     /// Number of docs skipped per level.
     /// It's possible for some values to overflow a signed int, but this has been accounted for.
-    ///
     num_skipped: Vec<i64>,
 
     /// Doc id of current skip entry per level.

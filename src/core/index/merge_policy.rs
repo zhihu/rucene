@@ -58,7 +58,6 @@ pub enum MergerTrigger {
 /// ConcurrentMergeScheduler} they will be run concurrently.
 ///
 /// The default MergePolicy is {@link TieredMergePolicy}.
-///
 pub trait MergePolicy {
     // Determine what set of merge operations are now necessary on the index.
     // {@link IndexWriter} calls this whenever there is a change to the segments.
@@ -162,7 +161,8 @@ pub trait MergePolicy {
         writer: &IndexWriter,
     ) -> bool {
         let has_deletions = writer.num_deleted_docs(info) > 0;
-        !has_deletions && ptr_eq(info.info.directory.as_ref(), writer.directory().as_ref())
+        !has_deletions
+            && ptr_eq(info.info.directory.as_ref(), writer.directory().as_ref())
             && self.use_compound_file(infos, info, writer) == info.info.is_compound_file()
     }
 }
@@ -318,10 +318,8 @@ pub struct OneMergeRunningInfo {
 /// forceMerge (unlike {@link LogByteSizeMergePolicy}).
 
 // TODO
-//   - we could try to take into account whether a large
-//     merge is already running (under CMS) and then bias
-//     ourselves towards picking smaller merges if so (or,
-//     maybe CMS should do so)
+//   - we could try to take into account whether a large merge is already running (under CMS) and
+//     then bias ourselves towards picking smaller merges if so (or, maybe CMS should do so)
 pub struct TieredMergePolicy {
     no_cfs_ratio: f64,
     max_cfs_segment_size: u64,
@@ -681,7 +679,8 @@ impl MergePolicy for TieredMergePolicy {
         }
 
         if (max_segment_count > 1 && eligible.len() <= max_segment_count as usize)
-            || (max_segment_count == 1 && eligible.len() == 1
+            || (max_segment_count == 1
+                && eligible.len() == 1
                 && (!segment_is_original
                     || self.is_merged(segment_infos, eligible[0].as_ref(), writer)))
         {

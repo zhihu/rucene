@@ -38,7 +38,6 @@ fn get_suffix(format: &str, suffix: &str) -> String {
 /// filenames would look like <tt>_1_Lucene40_0.prx</tt>.
 /// @see ServiceLoader
 /// @lucene.experimental
-///
 #[derive(Hash, Ord, PartialOrd, Eq, PartialEq)]
 pub struct PerFieldPostingsFormat {}
 
@@ -75,12 +74,14 @@ impl PerFieldFieldsReader {
             if let IndexOptions::Null = info.index_options {
                 continue;
             }
-            if let Some(format) = info.attributes
+            if let Some(format) = info
+                .attributes
                 .read()
                 .unwrap()
                 .get(PER_FIELD_POSTING_FORMAT_KEY)
             {
-                if let Some(suffix) = info.attributes
+                if let Some(suffix) = info
+                    .attributes
                     .read()
                     .unwrap()
                     .get(PER_FIELD_POSTING_SUFFIX_KEY)

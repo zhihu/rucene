@@ -70,7 +70,8 @@ impl LongValues for DirectPackedReader1 {
         }
 
         let shift = 7 - (index as i32 & 0x7);
-        let byte_dance = self.random_access_input
+        let byte_dance = self
+            .random_access_input
             .read_byte(self.offset + (index >> 3))?;
 
         Ok((i64::from((byte_dance >> shift) & 0x1), ctx))
@@ -117,7 +118,8 @@ impl LongValues for DirectPackedReader2 {
 
         let shift = (3 - (index as i32 & 0x3)) << 1;
 
-        let byte_dance = self.random_access_input
+        let byte_dance = self
+            .random_access_input
             .read_byte(self.offset + (index >> 2))?;
 
         Ok((i64::from((byte_dance >> shift) & 0x3), ctx))
@@ -164,7 +166,8 @@ impl LongValues for DirectPackedReader4 {
 
         let shift = (((index + 1) & 0x1) as i32) << 2;
 
-        let byte_dance = match self.random_access_input
+        let byte_dance = match self
+            .random_access_input
             .read_byte(self.offset + (index >> 1))
         {
             Ok(byte_dance) => byte_dance,
@@ -310,7 +313,8 @@ impl LongValues for DirectPackedReader16 {
             )));
         }
 
-        let word = match self.random_access_input
+        let word = match self
+            .random_access_input
             .read_short(self.offset + (index << 1))
         {
             Ok(w) => w as u16,
@@ -502,7 +506,8 @@ impl LongValues for DirectPackedReader32 {
             )));
         }
 
-        match self.random_access_input
+        match self
+            .random_access_input
             .read_int(self.offset + (index << 2))
         {
             Ok(v) => Ok((i64::from(v as u32), ctx)),
@@ -684,7 +689,8 @@ impl LongValues for DirectPackedReader64 {
             )));
         }
 
-        match self.random_access_input
+        match self
+            .random_access_input
             .read_long(self.offset + (index << 3))
         {
             Ok(v) => Ok((v, ctx)),

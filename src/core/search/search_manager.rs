@@ -30,7 +30,6 @@ use std::sync::Arc;
 /// since it penalizes the unlucky queries that need to refresh. It's better to use
 /// a separate background thread, that periodically calls {@link #maybeRefresh}. Finally,
 /// be sure to call {@link #close} once you are done
-///
 pub struct SearcherManager {
     searcher_factory: Box<SearcherFactory>,
     manager_base: ReferenceManagerBase<ManagedIndexSearcher>,

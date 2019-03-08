@@ -146,7 +146,8 @@ impl Lucene50CompoundReader {
                 "length should be {} bytes, but is {} instead",
                 expected_length,
                 input.as_ref().len()
-            ).into());
+            )
+            .into());
         }
         Ok(Lucene50CompoundReader {
             directory,
@@ -193,7 +194,8 @@ impl Lucene50CompoundReader {
 impl Directory for Lucene50CompoundReader {
     /// Returns an array of strings, one for each file in the directory.
     fn list_all(&self) -> Result<Vec<String>> {
-        Ok(self.entries
+        Ok(self
+            .entries
             .keys()
             .map(|n| format!("{}{}", self.name, n))
             .collect())

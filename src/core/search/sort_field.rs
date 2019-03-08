@@ -306,7 +306,8 @@ impl SortedNumericSelector {
         selector: SortedNumericSelectorType,
         numeric_type: SortFieldType,
     ) -> Result<NumericDocValuesRef> {
-        if numeric_type != SortFieldType::Int && numeric_type != SortFieldType::Long
+        if numeric_type != SortFieldType::Int
+            && numeric_type != SortFieldType::Long
             && numeric_type != SortFieldType::Float
             && numeric_type != SortFieldType::Double
         {
@@ -467,7 +468,11 @@ mod tests {
 
     #[test]
     fn test_sort_field_with_score_type() {
-        let sort_field = SortField::Simple(SimpleSortField::new(String::from("test"), SortFieldType::Score, true));
+        let sort_field = SortField::Simple(SimpleSortField::new(
+            String::from("test"),
+            SortFieldType::Score,
+            true,
+        ));
 
         assert_eq!("test", sort_field.field());
         assert_eq!(SortFieldType::Score, sort_field.field_type());
@@ -476,7 +481,11 @@ mod tests {
 
     #[test]
     fn test_sort_field_with_doc_type() {
-        let sort_field = SortField::Simple(SimpleSortField::new(String::from("test"), SortFieldType::Doc, true));
+        let sort_field = SortField::Simple(SimpleSortField::new(
+            String::from("test"),
+            SortFieldType::Doc,
+            true,
+        ));
 
         assert_eq!("test", sort_field.field());
         assert_eq!(SortFieldType::Doc, sort_field.field_type());

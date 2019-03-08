@@ -269,7 +269,9 @@ impl Lucene54DocValuesProducer {
             num_fields += 1;
             let info = infos
                 .field_info_by_number(field_number as u32)
-                .ok_or_else(|| IllegalArgument(format!("invalid field number: {}", field_number)))?;
+                .ok_or_else(|| {
+                    IllegalArgument(format!("invalid field number: {}", field_number))
+                })?;
             let dv_type = meta.read_byte()?;
             match dv_type {
                 lucene54::NUMERIC => {
@@ -843,7 +845,8 @@ impl Lucene54DocValuesProducer {
     }
 
     fn get_numeric_delta_compressed(&self, entry: &NumericEntryLink) -> Result<DeltaLongValues> {
-        let slice = self.data
+        let slice = self
+            .data
             .random_access_slice(entry.offset, entry.end_offset - entry.offset)?;
         let slice = Arc::from(slice);
         let delta = entry.min_value;
@@ -852,7 +855,8 @@ impl Lucene54DocValuesProducer {
     }
 
     fn get_numeric_gcd_compressed(&self, entry: &NumericEntryLink) -> Result<GcdLongValues> {
-        let slice = self.data
+        let slice = self
+            .data
             .random_access_slice(entry.offset, entry.end_offset - entry.offset)?;
         let slice = Arc::from(slice);
         let base = entry.min_value;
@@ -954,7 +958,9 @@ impl Lucene54DocValuesProducer {
     fn get_sparse_live_bits_by_entry(&self, entry: &NumericEntry) -> Result<SparseBits> {
         let length = entry.offset - entry.missing_offset;
 
-        let doc_ids_data = self.data.random_access_slice(entry.missing_offset, length)?;
+        let doc_ids_data = self
+            .data
+            .random_access_slice(entry.missing_offset, length)?;
         let doc_ids_data = Arc::from(doc_ids_data);
 
         if let Some(ref meta) = entry.monotonic_meta {
@@ -993,7 +999,8 @@ impl Lucene54DocValuesProducer {
             .ok_or_else(|| IllegalArgument("addresses_meta None???".to_owned()))?;
         let meta = Arc::clone(meta_ref);
 
-        let addresses_data = self.data
+        let addresses_data = self
+            .data
             .random_access_slice(bytes.addresses_offset, addresses_length)?;
         let addresses_data = Arc::from(addresses_data);
         let addresses = DirectMonotonicReader::get_instance(meta.as_ref(), &addresses_data)?;
@@ -1081,15 +1088,17 @@ impl Lucene54DocValuesProducer {
         let addresses = self.get_interval_instance(field, &bytes)?;
         let index = self.get_reverse_index_instance(field, &bytes)?;
         debug_assert!(addresses.size() > 0); // we don't have to handle empty case
-        let slice = self.data
-            .slice("terms", bytes.offset, bytes.addresses_offset - bytes.offset)?;
+        let slice =
+            self.data
+                .slice("terms", bytes.offset, bytes.addresses_offset - bytes.offset)?;
         CompressedBinaryDocValues::new(bytes, addresses, index, slice)
     }
 }
 
 impl Lucene54DocValuesProducer {
     fn get_ord_index_instance(&self, entry: &NumericEntryLink) -> Result<Box<LongValues>> {
-        let data = self.data
+        let data = self
+            .data
             .random_access_slice(entry.offset, entry.end_offset - entry.offset)?;
         if let Some(ref meta) = entry.monotonic_meta {
             DirectMonotonicReader::get_instance(meta.as_ref(), &Arc::from(data))
@@ -1099,13 +1108,15 @@ impl Lucene54DocValuesProducer {
     }
 
     fn get_sorted_set_with_addresses(&self, field: &FieldInfo) -> Result<Box<SortedSetDocValues>> {
-        let value_count = self.binaries
+        let value_count = self
+            .binaries
             .get(&field.name)
             .ok_or_else(|| IllegalArgument(format!("No binary field named {}", field.name)))?
             .count as usize;
 
         let ordinals = {
-            let ord_entry = self.ords
+            let ord_entry = self
+                .ords
                 .get(&field.name)
                 .ok_or_else(|| IllegalArgument(format!("No ords field named {}", &field.name)))?;
 
@@ -1113,13 +1124,14 @@ impl Lucene54DocValuesProducer {
         };
 
         let ord_index = {
-            let ord_index_entry = self.ord_indexes
-                .get(&field.name)
-                .ok_or_else(|| IllegalArgument(format!("No OrdIndex field named {}", field.name)))?;
+            let ord_index_entry = self.ord_indexes.get(&field.name).ok_or_else(|| {
+                IllegalArgument(format!("No OrdIndex field named {}", field.name))
+            })?;
             self.get_ord_index_instance(ord_index_entry)?
         };
 
-        let bytes = self.binaries
+        let bytes = self
+            .binaries
             .get(&field.name)
             .ok_or_else(|| IllegalArgument(format!("No binary field named {}", field.name)))?
             .clone();
@@ -1168,7 +1180,8 @@ impl Lucene54DocValuesProducer {
             table_offsets = ss.table_offsets.clone();
         }
 
-        let value_count = self.binaries
+        let value_count = self
+            .binaries
             .get(&field.name)
             .ok_or_else(|| IllegalArgument(format!("No binary field named {}", field.name)))?
             .count as usize;
@@ -1176,13 +1189,15 @@ impl Lucene54DocValuesProducer {
         let ordinals;
         {
             let ord_entry;
-            ord_entry = self.ords
+            ord_entry = self
+                .ords
                 .get(&field.name)
                 .ok_or_else(|| IllegalArgument(format!("No ords field named {}", &field.name)))?;
             ordinals = self.get_numeric_by_entry(ord_entry)?;
         }
 
-        let bytes = self.binaries
+        let bytes = self
+            .binaries
             .get(&field.name)
             .ok_or_else(|| IllegalArgument(format!("No binary field named {}", field.name)))?
             .clone();
@@ -1239,7 +1254,8 @@ impl DocValuesProducer for Lucene54DocValuesProducer {
     }
 
     fn get_binary(&self, field: &FieldInfo) -> Result<Arc<BinaryDocValues>> {
-        let bytes = self.binaries
+        let bytes = self
+            .binaries
             .get(&field.name)
             .ok_or_else(|| IllegalArgument(format!("No binary field named {}", field.name)))?
             .clone();
@@ -1267,19 +1283,22 @@ impl DocValuesProducer for Lucene54DocValuesProducer {
     }
 
     fn get_sorted(&self, field: &FieldInfo) -> Result<Arc<SortedDocValues>> {
-        let value_count = self.binaries
+        let value_count = self
+            .binaries
             .get(&field.name)
             .ok_or_else(|| IllegalArgument(format!("No binary field named {}", &field.name)))?
             .count as usize;
         let ordinals;
         {
-            let entry = self.ords
+            let entry = self
+                .ords
                 .get(&field.name)
                 .ok_or_else(|| IllegalArgument(format!("No ords field named {}", &field.name)))?;
             ordinals = self.get_numeric_by_entry(entry)?;
         }
 
-        let bytes = self.binaries
+        let bytes = self
+            .binaries
             .get(&field.name)
             .ok_or_else(|| IllegalArgument(format!("No binary field named {}", field.name)))?
             .clone();
@@ -1370,9 +1389,9 @@ impl DocValuesProducer for Lucene54DocValuesProducer {
                 )))
             }
             lucene54::SORTED_SET_TABLE => {
-                let numeric_entry = self.ords
-                    .get(&field.name)
-                    .ok_or_else(|| IllegalArgument(format!("No Ords field named {}", field.name)))?;
+                let numeric_entry = self.ords.get(&field.name).ok_or_else(|| {
+                    IllegalArgument(format!("No Ords field named {}", field.name))
+                })?;
                 let ordinals: Box<LongValues> = self.get_numeric_by_entry(numeric_entry)?;
                 Ok(Arc::new(TabledSortedNumericDocValues::new(
                     ordinals,
@@ -1388,7 +1407,8 @@ impl DocValuesProducer for Lucene54DocValuesProducer {
     }
 
     fn get_sorted_set(&self, field: &FieldInfo) -> Result<Arc<SortedSetDocValues>> {
-        let my_format = self.sorted_sets
+        let my_format = self
+            .sorted_sets
             .get(&field.name)
             .ok_or_else(|| IllegalArgument(format!("No SortedSet field named {}", &field.name)))?
             .format;

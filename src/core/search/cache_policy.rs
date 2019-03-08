@@ -129,7 +129,6 @@ impl Default for UsageTrackingQueryCachingPolicy {
 ///
 /// This data-structure requires 22 bytes per entry on average (between 16 and
 /// 28).
-///
 pub struct FrequencyTrackingRingBuffer {
     max_size: usize,
     buffer: Vec<u32>,
@@ -159,7 +158,6 @@ impl FrequencyTrackingRingBuffer {
 
     /// Add a new item to this ring buffer, potentially removing the oldest
     /// entry from this buffer if it is already full.
-    ///
     pub fn add(&mut self, i: u32) {
         // remove the previous value
         let removed = self.buffer[self.position];
@@ -181,7 +179,6 @@ impl FrequencyTrackingRingBuffer {
 /// A bag of integers.
 /// Since in the context of the ring buffer the maximum size is known up-front
 /// there is no need to worry about resizing the underlying storage.
-///
 struct IntBag {
     keys: Vec<u32>,
     freqs: Vec<u32>,

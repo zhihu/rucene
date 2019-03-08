@@ -124,7 +124,6 @@ pub trait PointWriter {
 /// than 2.1B bits, otherwise you should use {@link FixedBitSet}.
 ///
 /// @lucene.internal
-///
 pub struct LongBitSet {
     // Array of longs holding the bits
     bits: Vec<i64>,
@@ -216,9 +215,7 @@ impl UtilMSBIntroSorter {
 
     #[inline]
     fn reader(&self) -> &mut MutablePointsReader {
-        unsafe {
-            &mut *self.reader
-        }
+        unsafe { &mut *self.reader }
     }
 }
 
@@ -229,7 +226,11 @@ impl MSBSorter for UtilMSBIntroSorter {
             self.reader().byte_at(i, k)
         } else {
             let shift = self.bits_per_doc_id - ((k - self.packed_bytes_length + 1) << 3);
-            (self.reader().doc_id(i).unsigned_shift(0.max(shift) as usize) & 0xff) as u8
+            (self
+                .reader()
+                .doc_id(i)
+                .unsigned_shift(0.max(shift) as usize)
+                & 0xff) as u8
         };
         Some(v)
     }
@@ -273,7 +274,9 @@ impl Sorter for UtilMSBIntroSorter {
 
     fn compare_pivot(&mut self, j: i32) -> Ordering {
         if self.k < self.packed_bytes_length {
-            unsafe {(*self.reader).value(j, &mut self.scratch);}
+            unsafe {
+                (*self.reader).value(j, &mut self.scratch);
+            }
 
             let count = (self.packed_bytes_length - self.k) as usize;
             let offset = self.k as usize;

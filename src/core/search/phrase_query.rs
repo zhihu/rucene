@@ -167,7 +167,8 @@ impl Query for PhraseQuery {
 
     fn extract_terms(&self) -> Vec<TermQuery> {
         let mut term_query_list: Vec<TermQuery> = vec![];
-        let ctxs = self.ctxs
+        let ctxs = self
+            .ctxs
             .as_ref()
             .map(|ctxs| Clone::clone(ctxs).into_iter().map(Some).collect())
             .unwrap_or_else(|| vec![None; self.terms.len()]);
@@ -256,20 +257,20 @@ impl Weight for PhraseWeight {
         debug_assert!(!self.terms.len() >= 2);
 
         let mut postings_freqs: Vec<PostingsAndFreq> = Vec::with_capacity(self.terms.len());
-        let mut term_iter: Box<TermIterator> = if let Some(field_terms) = reader.terms(&self.field)?
-        {
-            debug_assert!(
-                field_terms.has_positions()?,
-                format!(
-                    "field {} was indexed without position data; cannot run PhraseQuery \
-                     (phrase={:?})",
-                    self.field, self.terms
-                )
-            );
-            field_terms.iterator()?
-        } else {
-            Box::new(EmptyTermIterator::default())
-        };
+        let mut term_iter: Box<TermIterator> =
+            if let Some(field_terms) = reader.terms(&self.field)? {
+                debug_assert!(
+                    field_terms.has_positions()?,
+                    format!(
+                        "field {} was indexed without position data; cannot run PhraseQuery \
+                         (phrase={:?})",
+                        self.field, self.terms
+                    )
+                );
+                field_terms.iterator()?
+            } else {
+                Box::new(EmptyTermIterator::default())
+            };
 
         let mut total_match_cost = 0f32;
         for i in 0..self.terms.len() {
@@ -334,21 +335,21 @@ impl Weight for PhraseWeight {
 
         let mut matched = true;
         let mut postings_freqs: Vec<PostingsAndFreq> = Vec::with_capacity(self.terms.len());
-        let mut term_iter: Box<TermIterator> = if let Some(field_terms) = reader.terms(&self.field)?
-        {
-            debug_assert!(
-                field_terms.has_positions()?,
-                format!(
-                    "field {} was indexed without position data; cannot run PhraseQuery \
-                     (phrase={:?})",
-                    self.field, self.terms
-                )
-            );
-            field_terms.iterator()?
-        } else {
-            matched = false;
-            Box::new(EmptyTermIterator::default())
-        };
+        let mut term_iter: Box<TermIterator> =
+            if let Some(field_terms) = reader.terms(&self.field)? {
+                debug_assert!(
+                    field_terms.has_positions()?,
+                    format!(
+                        "field {} was indexed without position data; cannot run PhraseQuery \
+                         (phrase={:?})",
+                        self.field, self.terms
+                    )
+                );
+                field_terms.iterator()?
+            } else {
+                matched = false;
+                Box::new(EmptyTermIterator::default())
+            };
 
         let mut total_match_cost = 0f32;
         for i in 0..self.terms.len() {
@@ -738,7 +739,6 @@ impl PhrasePositions {
     /// <code>position</code> as <code>location - offset</code>, so that a
     /// matching exact phrase is easily identified when all PhrasePositions
     /// have exactly the same <code>position</code>.
-    ///
     fn next_position(&mut self) -> Result<bool> {
         if self.count > 0 {
             // read subsequent pos's
@@ -936,7 +936,6 @@ impl SloppyPhraseScorer {
     /// Similarly, for doc "a b c b a f g", query "c b"~2
     /// would get same score as "g f"~2, although "c b"~2 could be matched twice.
     /// We may want to fix this in the future (currently not, for performance reasons).
-    ///
     fn phrase_freq(&mut self) -> Result<f32> {
         if !self.init_phrase_positions()? {
             return Ok(0.0f32);
@@ -987,7 +986,6 @@ impl SloppyPhraseScorer {
     ///  3. repetitions: "my ho my"~2
     ///
     /// @return false if PPs are exhausted (and so current doc will not be a match)
-    ///
     fn init_phrase_positions(&mut self) -> Result<bool> {
         self.end = i32::min_value();
         if !self.checked_rpts {
@@ -1156,7 +1154,6 @@ impl SloppyPhraseScorer {
     /// Case 2: multi-term repeats
     ///
     /// @return false if PPs are exhausted.
-    ///
     fn advance_repeat_groups(&mut self) -> Result<bool> {
         for rg_idx in 0..self.rpt_group.len() {
             if self.has_multi_term_rpts {
@@ -1209,7 +1206,6 @@ impl SloppyPhraseScorer {
     /// made of all repeating pps. But this would slow down the check for collisions,
     /// as all pps would need to be checked. Instead, we compute "connected regions"
     /// on the bipartite graph of postings and terms.
-    ///
     fn init_first_time(&mut self) -> Result<bool> {
         self.checked_rpts = true;
         self.place_first_positions()?;

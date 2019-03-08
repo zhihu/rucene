@@ -619,7 +619,8 @@ impl<T: MSBSorter> MSBRadixSorter<T> {
         let mut index = from + 1;
         'outer: while index < to {
             for j in 0..common_prefix_length {
-                let b = self.msb_sorter
+                let b = self
+                    .msb_sorter
                     .byte_at(index, k + j as i32)
                     .map_or(-1, |v| v as i32);
                 if b != self.common_prefix[j] {

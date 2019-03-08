@@ -21,7 +21,6 @@ const BIT_ARC_HAS_FINAL_OUTPUT: u8 = 1 << 5;
 /// this when number of arcs is > NUM_ARCS_ARRAY:
 /// If set, the target node is delta coded vs current
 /// position:
-///
 // const BIT_TARGET_DELTA: u8 = 1 << 6;
 
 /// We use this as a marker (because this one flag is
@@ -436,7 +435,8 @@ impl<F: OutputFactory> FST<F> {
             }
         }
 
-        if use_root_arc_cache && self.cached_root_arcs.len() > 0
+        if use_root_arc_cache
+            && self.cached_root_arcs.len() > 0
             && incoming_arc.target == self.start_node
             && label < self.cached_root_arcs.len() as i32
         {
@@ -871,7 +871,6 @@ impl<F: OutputFactory> FST<F> {
     ///
     /// @return <code>true</code> if <code>node</code> should be stored in an
     ///         expanded (array) form.
-    ///
     fn should_expand(&self, builder: &FstBuilder<F>, idx: usize) -> bool {
         let node = &builder.frontier[idx];
         builder.allow_array_arcs

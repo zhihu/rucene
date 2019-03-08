@@ -201,18 +201,22 @@ impl QueryRescorer {
         let readers = searcher.reader().leaves();
         let mut score_field_index = -1;
         match *top_docs {
-            TopDocs::Field(ref f) => for (index, field) in f.fields.iter().enumerate() {
-                if field.field_type() == SortFieldType::Score {
-                    score_field_index = index as i32;
-                    break;
+            TopDocs::Field(ref f) => {
+                for (index, field) in f.fields.iter().enumerate() {
+                    if field.field_type() == SortFieldType::Score {
+                        score_field_index = index as i32;
+                        break;
+                    }
                 }
-            },
-            TopDocs::Collapse(ref c) => for (index, field) in c.fields.iter().enumerate() {
-                if field.field_type() == SortFieldType::Score {
-                    score_field_index = index as i32;
-                    break;
+            }
+            TopDocs::Collapse(ref c) => {
+                for (index, field) in c.fields.iter().enumerate() {
+                    if field.field_type() == SortFieldType::Score {
+                        score_field_index = index as i32;
+                        break;
+                    }
                 }
-            },
+            }
             _ => {}
         }
 

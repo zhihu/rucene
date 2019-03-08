@@ -58,7 +58,6 @@ use std::sync::Arc;
 /// <h1>Advanced usage</h1>
 /// Custom structures can be created on top of single- or multi- dimensional basic types, on top of
 /// `BinaryPoint` for more flexibility, or via custom `Field` subclasses.
-///
 pub trait PointValues: Send + Sync {
     /// Finds all documents and points matching the provided visitor.
     /// This method does not enforce live documents, so it's up to the caller

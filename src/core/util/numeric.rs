@@ -185,8 +185,10 @@ pub fn int2sortable_bytes(value: i32, result: &mut [u8]) {
 
 /// Decodes an integer value previously written with {@link #int2sortable_bytes}
 pub fn sortable_bytes2int(encoded: &[u8]) -> i32 {
-    let x = ((i32::from(encoded[0]) & 0xff) << 24) | ((i32::from(encoded[1]) & 0xff) << 16)
-        | ((i32::from(encoded[2]) & 0xff) << 8) | (i32::from(encoded[3]) & 0xff);
+    let x = ((i32::from(encoded[0]) & 0xff) << 24)
+        | ((i32::from(encoded[1]) & 0xff) << 16)
+        | ((i32::from(encoded[2]) & 0xff) << 8)
+        | (i32::from(encoded[3]) & 0xff);
     (x as u32 ^ 0x8000_0000) as i32
 }
 
@@ -203,12 +205,14 @@ pub fn long2sortable_bytes(value: i64, result: &mut [u8]) {
 }
 
 pub fn sortable_bytes2long(encoded: &[u8]) -> i64 {
-    let v = ((i64::from(encoded[0]) & 0xffi64) << 56) | ((i64::from(encoded[1]) & 0xffi64) << 48)
+    let v = ((i64::from(encoded[0]) & 0xffi64) << 56)
+        | ((i64::from(encoded[1]) & 0xffi64) << 48)
         | ((i64::from(encoded[2]) & 0xffi64) << 40)
         | ((i64::from(encoded[3]) & 0xffi64) << 32)
         | ((i64::from(encoded[4]) & 0xffi64) << 24)
         | ((i64::from(encoded[5]) & 0xffi64) << 16)
-        | ((i64::from(encoded[6]) & 0xffi64) << 8) | (i64::from(encoded[7]) & 0xffi64);
+        | ((i64::from(encoded[6]) & 0xffi64) << 8)
+        | (i64::from(encoded[7]) & 0xffi64);
     (v as u64 ^ 0x8000_0000_0000_0000) as i64
 }
 

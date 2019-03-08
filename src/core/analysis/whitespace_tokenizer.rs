@@ -17,7 +17,6 @@ const IO_BUFFER_SIZE: usize = 4096;
 /// non-breaking space. Adjacent sequences of non-Whitespace characters form tokens.
 ///
 /// @see UnicodeWhitespaceTokenizer
-///
 pub struct WhitespaceTokenizer {
     offset: usize,
     buffer_index: usize,
@@ -64,7 +63,6 @@ impl WhitespaceTokenizer {
     /// Called on each token character to normalize it before it is added to the
     /// token. The default implementation does nothing. Subclasses may use this to,
     /// e.g., lowercase tokens.
-    ///
     fn normalize(&self, c: i32) -> i32 {
         c
     }

@@ -14,7 +14,6 @@ use std::sync::Mutex;
 /// </pre>
 ///
 /// @see Directory#obtainLock(String)
-///
 pub trait Lock: Sync + Send {
     /// Releases exclusive access.
     ///
@@ -56,7 +55,6 @@ pub trait Lock: Sync + Send {
 /// @see LockVerifyServer
 /// @see LockStressTest
 /// @see VerifyingLockFactory
-///
 pub trait LockFactory {
     ///
     // Return a new obtained Lock instance identified by lockName.

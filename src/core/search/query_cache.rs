@@ -693,7 +693,8 @@ impl RoaringDocIdSetBuilder {
 
         if self.current_block_cardinality < MAX_ARRAY_LENGTH {
             unsafe {
-                *self.buffer
+                *self
+                    .buffer
                     .as_mut_ptr()
                     .offset(self.current_block_cardinality as isize) = doc_id as u16
             };

@@ -149,7 +149,8 @@ impl PointValues for Lucene60PointsReader {
     fn min_packed_value(&self, field_name: &str) -> Result<Vec<u8>> {
         // Schema ghost corner case!  This field did index points in the past, but
         // now all docs having this point field were deleted in this segment:
-        Ok(self.bkd_reader(field_name)?
+        Ok(self
+            .bkd_reader(field_name)?
             .map(|reader| reader.min_packed_value.clone())
             .unwrap_or_default())
     }
@@ -157,7 +158,8 @@ impl PointValues for Lucene60PointsReader {
     fn max_packed_value(&self, field_name: &str) -> Result<Vec<u8>> {
         // Schema ghost corner case!  This field did index points in the past, but
         // now all docs having this point field were deleted in this segment:
-        Ok(self.bkd_reader(field_name)?
+        Ok(self
+            .bkd_reader(field_name)?
             .map(|reader| reader.max_packed_value.clone())
             .unwrap_or_default())
     }
@@ -165,7 +167,8 @@ impl PointValues for Lucene60PointsReader {
     fn num_dimensions(&self, field_name: &str) -> Result<usize> {
         // Schema ghost corner case!  This field did index points in the past, but
         // now all docs having this point field were deleted in this segment:
-        Ok(self.bkd_reader(field_name)?
+        Ok(self
+            .bkd_reader(field_name)?
             .map(|reader| reader.num_dims)
             .unwrap_or(0usize))
     }
@@ -173,7 +176,8 @@ impl PointValues for Lucene60PointsReader {
     fn bytes_per_dimension(&self, field_name: &str) -> Result<usize> {
         // Schema ghost corner case!  This field did index points in the past, but
         // now all docs having this point field were deleted in this segment:
-        Ok(self.bkd_reader(field_name)?
+        Ok(self
+            .bkd_reader(field_name)?
             .map(|reader| reader.bytes_per_dim)
             .unwrap_or(0usize))
     }
@@ -181,7 +185,8 @@ impl PointValues for Lucene60PointsReader {
     fn size(&self, field_name: &str) -> Result<i64> {
         // Schema ghost corner case!  This field did index points in the past, but
         // now all docs having this point field were deleted in this segment:
-        Ok(self.bkd_reader(field_name)?
+        Ok(self
+            .bkd_reader(field_name)?
             .map(|reader| reader.point_count as i64)
             .unwrap_or(0i64))
     }
@@ -189,7 +194,8 @@ impl PointValues for Lucene60PointsReader {
     fn doc_count(&self, field_name: &str) -> Result<i32> {
         // Schema ghost corner case!  This field did index points in the past, but
         // now all docs having this point field were deleted in this segment:
-        Ok(self.bkd_reader(field_name)?
+        Ok(self
+            .bkd_reader(field_name)?
             .map(|reader| reader.doc_count)
             .unwrap_or(0i32))
     }
