@@ -2,7 +2,7 @@ use std::collections::BinaryHeap;
 use std::f32;
 use std::usize;
 
-use core::index::LeafReader;
+use core::index::LeafReaderContext;
 use core::search::collector::{Collector, LeafCollector, SearchCollector};
 use core::search::top_docs::{ScoreDoc, ScoreDocHit, TopDocs, TopScoreDocs};
 use core::search::Scorer;
@@ -13,11 +13,6 @@ use crossbeam::channel::{unbounded, Receiver, Sender};
 use std::mem;
 
 type ScoreDocPriorityQueue = BinaryHeap<ScoreDoc>;
-
-struct LeafReaderContext {
-    _ord: usize,
-    doc_base: DocId,
-}
 
 pub struct TopDocsCollector {
     /// The priority queue which holds the top documents. Note that different
@@ -31,7 +26,7 @@ pub struct TopDocsCollector {
     /// The total number of documents that the collector encountered.
     total_hits: usize,
 
-    reader_context: Option<LeafReaderContext>,
+    cur_doc_base: DocId,
 
     // TODO used for parallel collect, maybe should be move the new struct for parallel search
     channel: Option<(Sender<ScoreDoc>, Receiver<ScoreDoc>)>,
@@ -44,7 +39,7 @@ impl TopDocsCollector {
             pq,
             estimated_hits,
             total_hits: 0,
-            reader_context: None,
+            cur_doc_base: 0,
             channel: None,
         }
     }
@@ -78,19 +73,11 @@ impl TopDocsCollector {
             }
         }
     }
-
-    fn doc_base(&self) -> DocId {
-        self.reader_context.as_ref().unwrap().doc_base
-    }
 }
 
 impl SearchCollector for TopDocsCollector {
-    fn set_next_reader(&mut self, reader_ord: usize, reader: &LeafReader) -> Result<()> {
-        let reader_context = LeafReaderContext {
-            _ord: reader_ord,
-            doc_base: reader.doc_base(),
-        };
-        self.reader_context = Some(reader_context);
+    fn set_next_reader(&mut self, reader: &LeafReaderContext) -> Result<()> {
+        self.cur_doc_base = reader.doc_base;
 
         Ok(())
     }
@@ -99,12 +86,12 @@ impl SearchCollector for TopDocsCollector {
         true
     }
 
-    fn leaf_collector(&mut self, reader: &LeafReader) -> Result<Box<LeafCollector>> {
+    fn leaf_collector(&mut self, reader: &LeafReaderContext) -> Result<Box<LeafCollector>> {
         if self.channel.is_none() {
             self.channel = Some(unbounded());
         }
         Ok(Box::new(TopDocsLeafCollector::new(
-            reader.doc_base(),
+            reader.doc_base,
             self.channel.as_ref().unwrap().0.clone(),
         )))
     }
@@ -127,13 +114,12 @@ impl Collector for TopDocsCollector {
     }
 
     fn collect(&mut self, doc: DocId, scorer: &mut Scorer) -> Result<()> {
-        debug_assert!(self.reader_context.is_some());
-        let doc_base = self.doc_base();
         let score = scorer.score()?;
         debug_assert!((score - f32::NEG_INFINITY).abs() >= f32::EPSILON);
         debug_assert!(!score.is_nan());
 
-        self.add_doc(doc + doc_base, score);
+        let id = doc + self.cur_doc_base;
+        self.add_doc(id, score);
 
         Ok(())
     }
@@ -175,6 +161,7 @@ mod tests {
     use core::search::tests::*;
 
     use core::index::tests::*;
+    use core::index::IndexReader;
     use core::search::*;
 
     #[test]
@@ -183,10 +170,12 @@ mod tests {
         let scorer = scorer_box.as_mut();
 
         let leaf_reader = MockLeafReader::new(0);
+        let index_reader = MockIndexReader::new(vec![leaf_reader]);
+        let leaf_reader_context = index_reader.leaves();
         let mut collector = TopDocsCollector::new(3);
 
         {
-            collector.set_next_reader(0, &leaf_reader).unwrap();
+            collector.set_next_reader(&leaf_reader_context[0]).unwrap();
             loop {
                 let doc = scorer.next().unwrap();
                 if doc != NO_MORE_DOCS {

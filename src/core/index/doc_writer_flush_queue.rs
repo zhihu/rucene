@@ -1,4 +1,4 @@
-use core::index::bufferd_updates::FrozenBufferUpdates;
+use core::index::bufferd_updates::FrozenBufferedUpdates;
 use core::index::doc_writer_delete_queue::DocumentsWriterDeleteQueue;
 use core::index::index_writer::IndexWriter;
 use core::index::thread_doc_writer::{DocumentsWriterPerThread, FlushedSegment};
@@ -54,18 +54,35 @@ impl DocumentsWriterFlushQueue {
     }
 
     fn inc_tickets(&self) {
-        let count = self.ticket_count.fetch_add(1, Ordering::AcqRel);
+        self.ticket_count.fetch_add(1, Ordering::AcqRel);
     }
 
     fn dec_tickets(&self) {
         self.ticket_count.fetch_sub(1, Ordering::AcqRel);
     }
 
-    pub fn add_flush_ticket(&mut self, ticket: SegmentFlushTicket) {
+    pub fn ticket_count(&self) -> u32 {
+        self.ticket_count.load(Ordering::Relaxed)
+    }
+
+    pub fn add_flush_ticket(
+        &mut self,
+        dwpt: &mut DocumentsWriterPerThread,
+    ) -> Result<&mut FlushTicket> {
         let lock = Arc::clone(&self.lock);
         let _l = lock.lock().unwrap();
         self.inc_tickets();
-        self.queue.push_back(FlushTicket::Segment(ticket));
+        match dwpt.prepare_flush() {
+            Ok(update) => {
+                let ticket = SegmentFlushTicket::new(update);
+                self.queue.push_back(FlushTicket::Segment(Box::new(ticket)));
+                Ok(self.queue.back_mut().unwrap())
+            }
+            Err(e) => {
+                self.dec_tickets();
+                Err(e)
+            }
+        }
     }
 
     fn add_segment(&self, ticket: &mut FlushTicket, segment: FlushedSegment) {
@@ -87,7 +104,7 @@ impl DocumentsWriterFlushQueue {
         let purge_lock = Arc::clone(&self.purge_lock);
         let lock_res = purge_lock.try_lock();
         match lock_res {
-            Ok(l) => {
+            Ok(_l) => {
                 let lock = Arc::clone(&self.lock);
                 let l = lock.lock()?;
                 self.inner_purge(writer, &l)
@@ -136,7 +153,7 @@ trait IFlushTicket {
         &self,
         index_writer: &mut IndexWriter,
         new_segment: FlushedSegment,
-        global_packet: Option<FrozenBufferUpdates>,
+        global_packet: Option<FrozenBufferedUpdates>,
     ) -> Result<()> {
         debug!(
             "publish_flush_segment seg-private update={:?}",
@@ -157,7 +174,7 @@ trait IFlushTicket {
         &self,
         index_writer: &mut IndexWriter,
         new_segment: Option<FlushedSegment>,
-        buffered_update: Option<FrozenBufferUpdates>,
+        buffered_update: Option<FrozenBufferedUpdates>,
     ) -> Result<()> {
         // Finish the flushed segment and publish it to IndexWriter
         if let Some(segment) = new_segment {
@@ -174,12 +191,12 @@ trait IFlushTicket {
 }
 
 pub struct GlobalDeletesTicket {
-    frozen_updates: Option<FrozenBufferUpdates>,
+    frozen_updates: Option<FrozenBufferedUpdates>,
     published: bool,
 }
 
 impl GlobalDeletesTicket {
-    pub fn new(frozen_updates: FrozenBufferUpdates) -> Self {
+    pub fn new(frozen_updates: FrozenBufferedUpdates) -> Self {
         GlobalDeletesTicket {
             frozen_updates: Some(frozen_updates),
             published: false,
@@ -201,14 +218,14 @@ impl IFlushTicket for GlobalDeletesTicket {
 }
 
 pub struct SegmentFlushTicket {
-    frozen_updates: Option<FrozenBufferUpdates>,
+    frozen_updates: Option<FrozenBufferedUpdates>,
     published: bool,
     segment: Option<FlushedSegment>,
     failed: bool,
 }
 
 impl SegmentFlushTicket {
-    pub fn new(frozen_updates: FrozenBufferUpdates) -> Self {
+    pub fn new(frozen_updates: FrozenBufferedUpdates) -> Self {
         SegmentFlushTicket {
             frozen_updates: Some(frozen_updates),
             published: false,
@@ -223,7 +240,7 @@ impl SegmentFlushTicket {
     }
 
     pub fn set_failed(&mut self) {
-        debug_assert!(!self.failed);
+        debug_assert!(self.segment.is_none());
         self.failed = true;
     }
 }
@@ -245,7 +262,7 @@ impl IFlushTicket for SegmentFlushTicket {
 
 pub enum FlushTicket {
     Global(GlobalDeletesTicket),
-    Segment(SegmentFlushTicket),
+    Segment(Box<SegmentFlushTicket>),
 }
 
 impl FlushTicket {

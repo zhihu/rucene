@@ -124,8 +124,8 @@ impl<'a> OneDimensionBKDWriter<'a> {
             value_count: 0,
             leaf_count: 0,
             last_packed_value: vec![0u8; bkd_writer.packed_bytes_length],
-            last_doc_id: -1,
-            bkd_writer: bkd_writer as *mut BKDWriter,
+            last_doc_id: 0,
+            bkd_writer,
         })
     }
 
@@ -284,7 +284,6 @@ impl<'a> OneDimensionBKDWriter<'a> {
             0,
             &mut packed_values,
         )?;
-        let fp = self.out.file_pointer();
         let length = bkd_writer.scratch_out.position();
         self.out
             .write_bytes(&mut bkd_writer.scratch_out.bytes, 0, length)?;
@@ -314,7 +313,7 @@ pub struct BKDWriter {
     offline_point_writer: Option<OfflinePointWriter>,
     heap_point_writer: Option<HeapPointWriter>,
 
-    temp_input: Option<Box<IndexOutput>>,
+    temp_input: Option<String>,
     max_points_in_leaf_node: i32,
     max_points_sort_in_heap: i32,
 
@@ -355,11 +354,7 @@ impl BKDWriter {
         // creates temp files doesn't need crazy try/finally/sucess logic:
         // If we may have more than 1+Integer.MAX_VALUE values, then we must encode ords with long
         // (8 bytes), else we can use int (4 bytes).
-        let long_ords = if total_point_count > i32::max_value() as i64 {
-            true
-        } else {
-            false
-        };
+        let long_ords = total_point_count > i32::max_value() as i64;
 
         let packed_bytes_length = num_dims * bytes_per_dim;
         // dimensional values (numDims * bytesPerDim) + ord (int or long) + docID (int)
@@ -600,7 +595,7 @@ impl BKDWriter {
 
         if self.temp_input.is_some() {
             self.temp_dir
-                .delete_file(self.temp_input.as_ref().unwrap().name())?;
+                .delete_file(self.temp_input.as_ref().unwrap())?;
             self.temp_input = None;
         } else {
             debug_assert!(self.heap_point_writer.is_some());
@@ -716,6 +711,15 @@ impl BKDWriter {
             self.single_value_per_doc,
         ));
 
+        let input = self
+            .offline_point_writer
+            .as_ref()
+            .unwrap()
+            .output()
+            .name()
+            .to_string();
+        self.temp_input = Some(input);
+
         let mut reader = HeapPointWriter::point_reader(
             self.heap_point_writer.as_ref().unwrap(),
             0,
@@ -726,7 +730,7 @@ impl BKDWriter {
             debug_assert!(has_next);
 
             self.offline_point_writer.as_mut().unwrap().append(
-                &reader.packed_value(),
+                reader.packed_value(),
                 i,
                 self.heap_point_writer.as_ref().unwrap().doc_ids[i as usize],
             )?;
@@ -829,10 +833,10 @@ impl BKDWriter {
 
     fn pack_index(
         &mut self,
-        leaf_block_fps: &Vec<i64>,
+        leaf_block_fps: &[i64],
         split_packed_values: &mut Vec<u8>,
     ) -> Result<Vec<u8>> {
-        let mut leaf_block_fps = leaf_block_fps.clone();
+        let mut leaf_block_fps = leaf_block_fps.to_vec();
         let num_leaves = leaf_block_fps.len();
         // Possibly rotate the leaf block FPs, if the index not fully balanced binary tree (only
         // happens if it was created by OneDimensionBKDWriter).  In this case the leaf
@@ -842,13 +846,12 @@ impl BKDWriter {
             loop {
                 if num_leaves >= level_count && num_leaves <= 2 * level_count {
                     let last_level = 2 * (num_leaves - level_count);
-                    // debug_assert!(last_level >= 0);
 
                     if last_level != 0 {
                         // Last level is partially filled, so we must rotate the leaf FPs to match.
                         // We do this here, after loading at read-time, so
                         // that we can still delta code them on disk at write:
-                        let mut new_leaf_block_fps: Vec<i64> = vec![0i64; num_leaves];
+                        let mut new_leaf_block_fps = vec![0i64; num_leaves];
                         let length = leaf_block_fps.len() - last_level;
                         new_leaf_block_fps[0..length]
                             .copy_from_slice(&leaf_block_fps[last_level..last_level + length]);
@@ -868,9 +871,9 @@ impl BKDWriter {
         let mut write_buffer = RAMOutputStream::new(false);
 
         // This is the "file" we append the byte[] to:
-        let mut blocks: Vec<Vec<u8>> = vec![];
-        let mut last_split_values: Vec<u8> = vec![0u8; self.bytes_per_dim * self.num_dims];
-        let mut negative_deltas: Vec<bool> = vec![false; self.num_dims];
+        let mut blocks = vec![];
+        let mut last_split_values = vec![0u8; self.bytes_per_dim * self.num_dims];
+        let mut negative_deltas = vec![false; self.num_dims];
 
         let total_size = self.recurse_pack_index(
             &mut write_buffer,
@@ -899,16 +902,16 @@ impl BKDWriter {
         &self,
         write_buffer: &mut RAMOutputStream,
         leaf_block_fps: &[i64],
-        split_packed_values: &mut Vec<u8>,
+        split_packed_values: &mut [u8],
         min_block_fp: i64,
         blocks: &mut Vec<Vec<u8>>,
-        node_id: i32,
-        last_split_values: &mut Vec<u8>,
-        negative_deltas: &mut Vec<bool>,
+        node_id: usize,
+        last_split_values: &mut [u8],
+        negative_deltas: &mut [bool],
         is_left: bool,
     ) -> Result<i32> {
-        if node_id >= leaf_block_fps.len() as i32 {
-            let leaf_id = node_id as usize - leaf_block_fps.len();
+        if node_id >= leaf_block_fps.len() {
+            let leaf_id = node_id - leaf_block_fps.len();
 
             // In the unbalanced case it's possible the left most node only has one child:
             if leaf_id < leaf_block_fps.len() {
@@ -927,7 +930,7 @@ impl BKDWriter {
         } else {
             let left_block_fp: i64;
             if !is_left {
-                left_block_fp = self.left_most_leaf_block_fp(leaf_block_fps, node_id)?;
+                left_block_fp = self.left_most_leaf_block_fp(leaf_block_fps, node_id);
                 let delta = left_block_fp - min_block_fp;
                 debug_assert!(node_id == 1 || delta > 0);
                 write_buffer.write_vlong(delta)?;
@@ -936,7 +939,7 @@ impl BKDWriter {
                 left_block_fp = min_block_fp;
             }
 
-            let mut address = node_id as usize * (1 + self.bytes_per_dim);
+            let mut address = node_id * (1 + self.bytes_per_dim);
             let split_dim = split_packed_values[address] as usize;
             address += 1;
 
@@ -976,7 +979,7 @@ impl BKDWriter {
                 write_buffer.write_bytes(split_packed_values, address + prefix + 1, suffix - 1)?;
             }
 
-            let cmp = last_split_values.clone();
+            let cmp = last_split_values.to_vec();
             let src_offset = split_dim * self.bytes_per_dim + prefix;
 
             // copy our split value into lastSplitValues for our children to prefix-code against
@@ -1006,7 +1009,7 @@ impl BKDWriter {
                 negative_deltas,
                 true,
             )?;
-            if node_id * 2 < leaf_block_fps.len() as i32 {
+            if node_id * 2 < leaf_block_fps.len() {
                 write_buffer.write_vint(left_num_bytes)?;
             } else {
                 debug_assert!(left_num_bytes == 0);
@@ -1037,7 +1040,7 @@ impl BKDWriter {
             // restore lastSplitValues to what caller originally passed us:
             let dest_offset = split_dim * self.bytes_per_dim + prefix;
             last_split_values[dest_offset..dest_offset + suffix].copy_from_slice(&sav_split_value);
-            debug_assert!(last_split_values == &cmp);
+            debug_assert!(last_split_values == cmp.as_slice());
 
             return Ok(num_bytes + num_bytes2 as i32 + left_num_bytes + right_num_bytes);
         }
@@ -1050,7 +1053,7 @@ impl BKDWriter {
     ) -> Result<i32> {
         let pos = write_buffer.file_pointer();
         debug_assert_eq!(pos as i32 as i64, pos);
-        let mut bytes: Vec<u8> = vec![0u8; pos as usize];
+        let mut bytes = vec![0u8; pos as usize];
 
         write_buffer.write_to_buf(&mut bytes)?;
         write_buffer.reset();
@@ -1060,25 +1063,21 @@ impl BKDWriter {
         Ok(pos as i32)
     }
 
-    fn left_most_leaf_block_fp(&self, leaf_block_fps: &[i64], node_id: i32) -> Result<i64> {
+    fn left_most_leaf_block_fp(&self, leaf_block_fps: &[i64], mut node_id: usize) -> i64 {
         // TODO: can we do this cheaper, e.g. a closed form solution instead of while loop?  Or
         // change the recursion while packing the index to return this left-most leaf block FP
         // from each recursion instead?
         //
         // Still, the overall cost here is minor: this method's cost is O(log(N)), and while writing
         // we call it O(N) times (N = number of leaf blocks)
-        let mut node_id = node_id as usize;
         while node_id < leaf_block_fps.len() {
             node_id *= 2;
         }
 
         let leaf_id = node_id - leaf_block_fps.len();
         let result = leaf_block_fps[leaf_id];
-        if result < 0 {
-            bail!("{} for leaf {}", result, leaf_id);
-        }
-
-        Ok(result)
+        debug_assert!(result >= 0);
+        result
     }
 
     fn write_index(
@@ -1510,12 +1509,8 @@ impl BKDWriter {
             let right_count = source.count / 2;
             let left_count = source.count - right_count;
 
-            let split_value = self.mark_right_tree(
-                right_count,
-                split_dim as i32,
-                source,
-                ord_bitset.as_mut().unwrap(),
-            )?;
+            let split_value =
+                self.mark_right_tree(right_count, split_dim as i32, source, ord_bitset)?;
             let address = node_id as usize * (1 + self.bytes_per_dim);
             split_packed_values[address] = split_dim as u8;
 
@@ -1534,9 +1529,9 @@ impl BKDWriter {
 
             // When we are on this dim, below, we clear the ordBitSet:
             let dim_to_clear = if self.num_dims - 1 == split_dim {
-                self.num_dims - 2
+                self.num_dims as i32 - 2
             } else {
-                self.num_dims - 1
+                self.num_dims as i32 - 1
             };
 
             for dim in 0..self.num_dims as usize {
@@ -1584,7 +1579,7 @@ impl BKDWriter {
                     ord_bitset.as_mut().unwrap(),
                     left_point_writer.as_mut(),
                     right_point_writer.as_mut(),
-                    dim == dim_to_clear as usize,
+                    dim as i32 == dim_to_clear,
                 )?;
 
                 if right_count != next_right_count {
@@ -1658,7 +1653,7 @@ impl BKDWriter {
         right_count: i64,
         split_dim: i32,
         source: &PathSlice,
-        ord_bitset: &mut LongBitSet,
+        ord_bitset: &mut Option<LongBitSet>,
     ) -> Result<Vec<u8>> {
         // Now we mark ords that fall into the right half, so we can partition on all other dims
         // that are not the split dim: Read the split value, then mark all ords in the
@@ -1676,6 +1671,8 @@ impl BKDWriter {
         scratch[0..self.bytes_per_dim]
             .copy_from_slice(&reader.packed_value()[offset..offset + self.bytes_per_dim]);
         if self.num_dims > 1 {
+            debug_assert!(ord_bitset.is_some());
+            let ord_bitset = ord_bitset.as_mut().unwrap();
             debug_assert!(!ord_bitset.get(reader.ord()));
             ord_bitset.set(reader.ord());
             // Subtract 1 from rightCount because we already did the first value above (so we could
@@ -1781,7 +1778,7 @@ impl BKDWriter {
             let has_next: bool = reader.next()?;
             debug_assert!(has_next);
 
-            writer.append(&reader.packed_value(), reader.ord(), reader.doc_id())?;
+            writer.append(reader.packed_value(), reader.ord(), reader.doc_id())?;
         }
 
         Ok(PathSlice::new(Box::new(writer), 0, count))
@@ -1805,7 +1802,7 @@ impl BKDWriter {
         debug_assert!(dim >= 0 && dim < self.num_dims as i32);
 
         if self.heap_point_writer.is_some() {
-            debug_assert!(self.temp_input.is_some());
+            debug_assert!(self.temp_input.is_none());
 
             // We never spilled the incoming points to disk, so now we sort in heap:
             let mut sorted = HeapPointWriter::new(
@@ -1815,11 +1812,8 @@ impl BKDWriter {
                 self.long_ords,
                 self.single_value_per_doc,
             );
-
             sorted.copy_from(&self.heap_point_writer.as_ref().unwrap())?;
-
             self.sort_heap_point_writer(&mut sorted, dim);
-
             sorted.close()?;
 
             return Ok(Box::new(sorted));
@@ -1835,10 +1829,7 @@ impl Drop for BKDWriter {
         if self.temp_input.is_some() {
             // NOTE: this should only happen on exception, e.g. caller calls close w/o calling
             // finish:
-            match self
-                .temp_dir
-                .delete_file(self.temp_input.as_ref().unwrap().name())
-            {
+            match self.temp_dir.delete_file(self.temp_input.as_ref().unwrap()) {
                 _ => {}
             }
             self.temp_input = None;
@@ -1866,8 +1857,8 @@ impl BKDWriterMSBIntroSorter {
         dim: i32,
     ) -> BKDWriterMSBIntroSorter {
         BKDWriterMSBIntroSorter {
-            bkd_writer: bkd_writer as (*mut BKDWriter),
-            heap_writer: heap_writer as (*mut HeapPointWriter),
+            bkd_writer,
+            heap_writer,
             dim,
             k,
             max_length,
@@ -1906,21 +1897,13 @@ impl MSBSorter for BKDWriterMSBIntroSorter {
         let bkd_writer = unsafe { &mut (*self.bkd_writer) };
         let heap_writer = unsafe { &mut (*self.heap_writer) };
 
-        let doc_id = heap_writer.doc_ids[i];
-        heap_writer.doc_ids[i] = heap_writer.doc_ids[j];
-        heap_writer.doc_ids[j] = doc_id;
+        heap_writer.doc_ids.swap(i, j);
 
         if !bkd_writer.single_value_per_doc {
             if bkd_writer.long_ords {
-                let ord_i = heap_writer.ords_long[i];
-                let ord_j = heap_writer.ords_long[j];
-                heap_writer.ords_long[i] = ord_j;
-                heap_writer.ords_long[j] = ord_i;
+                heap_writer.ords_long.swap(i, j);
             } else {
-                let ord_i = heap_writer.ords[i];
-                let ord_j = heap_writer.ords[j];
-                heap_writer.ords[i] = ord_j;
-                heap_writer.ords[j] = ord_i;
+                heap_writer.ords.swap(i, j);
             }
         }
 
@@ -1929,17 +1912,17 @@ impl MSBSorter for BKDWriterMSBIntroSorter {
         let index_i = (i % heap_writer.values_per_block) * bkd_writer.packed_bytes_length;
         let index_j = (j % heap_writer.values_per_block) * bkd_writer.packed_bytes_length;
 
-        bkd_writer.scratch1[0..bkd_writer.packed_bytes_length].copy_from_slice(
+        bkd_writer.scratch1.copy_from_slice(
             &heap_writer.blocks[block_i][index_i..index_i + bkd_writer.packed_bytes_length],
         );
-        bkd_writer.scratch2[0..bkd_writer.packed_bytes_length].copy_from_slice(
+        bkd_writer.scratch2.copy_from_slice(
             &heap_writer.blocks[block_j][index_j..index_j + bkd_writer.packed_bytes_length],
         );
 
         heap_writer.blocks[block_i][index_i..index_i + bkd_writer.packed_bytes_length]
-            .copy_from_slice(&bkd_writer.scratch2[0..bkd_writer.packed_bytes_length]);
+            .copy_from_slice(&bkd_writer.scratch2);
         heap_writer.blocks[block_j][index_j..index_j + bkd_writer.packed_bytes_length]
-            .copy_from_slice(&bkd_writer.scratch1[0..bkd_writer.packed_bytes_length]);
+            .copy_from_slice(&bkd_writer.scratch1);
     }
 
     fn fallback_sorter(&mut self, k: i32) -> BKDWriterMSBIntroSorter {

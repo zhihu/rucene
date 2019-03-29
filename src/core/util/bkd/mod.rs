@@ -50,7 +50,7 @@ pub enum PointType {
 
 pub trait PointReader {
     fn next(&mut self) -> Result<bool>;
-    fn packed_value(&self) -> Vec<u8>;
+    fn packed_value(&self) -> &[u8];
     fn ord(&self) -> i64;
     fn doc_id(&self) -> DocId;
     fn mark_ords(&mut self, count: i64, ord_bit_set: &mut LongBitSet) -> Result<()> {
@@ -84,7 +84,7 @@ pub trait PointReader {
             let ord = self.ord();
             let doc_id = self.doc_id();
             if right_tree.get(ord) {
-                right.append(&packed_value, ord, doc_id)?;
+                right.append(packed_value, ord, doc_id)?;
                 right_count += 1;
                 if do_clear_bits {
                     right_tree.clear(ord);

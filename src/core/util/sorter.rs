@@ -593,7 +593,7 @@ impl<T: MSBSorter> MSBRadixSorter<T> {
     fn get_bucket(&self, i: i32, k: i32) -> usize {
         let byte = self.msb_sorter.byte_at(i, k);
         if let Some(b) = byte {
-            (b + 1) as usize
+            b as usize + 1
         } else {
             (-1 + 1) as usize
         }

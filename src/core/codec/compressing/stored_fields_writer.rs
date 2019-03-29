@@ -14,7 +14,7 @@ use core::util::packed_misc::Format;
 use core::util::packed_misc::VERSION_CURRENT as PACKED_VERSION_CURRENT;
 use core::util::packed_misc::{get_writer_no_header, unsigned_bits_required};
 use core::util::DocId;
-use core::util::{Numeric, VariantValue};
+use core::util::Numeric;
 
 use error::Result;
 
@@ -577,7 +577,7 @@ impl StoredFieldsWriter for CompressingStoredFieldsWriter {
                 _ => unreachable!(),
             }
         } else {
-            if let Some(b) = field.binary_value() {
+            if field.binary_value().is_some() {
                 BYTE_ARR
             } else {
                 STRING

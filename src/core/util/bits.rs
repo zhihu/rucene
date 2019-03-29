@@ -56,6 +56,10 @@ impl Bits for MatchAllBits {
     fn len(&self) -> usize {
         self.len
     }
+
+    fn is_empty(&self) -> bool {
+        true
+    }
 }
 
 pub struct MatchNoBits {

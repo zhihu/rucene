@@ -74,23 +74,22 @@ impl Default for PrefixCodedTermsBuilder {
 }
 
 impl PrefixCodedTermsBuilder {
-    pub fn add_term(&mut self, term: &Term) {
-        self.add(&term.field, &term.bytes).unwrap();
+    pub fn add_term(&mut self, term: Term) {
+        self.add(term.field, &term.bytes).unwrap();
     }
 
-    pub fn add(&mut self, field: &String, term: &[u8]) -> Result<()> {
-        debug_assert!(self.last_term.is_empty() || self.compare(field, term) == Ordering::Less);
+    pub fn add(&mut self, field: String, term: &[u8]) -> Result<()> {
+        debug_assert!(self.last_term.is_empty() || self.compare(&field, term) == Ordering::Less);
 
         let prefix = self.shared_prefix_len(&self.last_term.bytes, term);
         let suffix = term.len() - prefix;
 
-        if field == &self.last_term.field {
+        if &field == &self.last_term.field {
             self.output.write_vint((prefix << 1) as i32)?;
         } else {
             self.output.write_vint((prefix << 1 | 1) as i32)?;
-            self.output.write_string(field)?;
-            self.last_term.field.clear();
-            self.last_term.field.push_str(field);
+            self.output.write_string(&field)?;
+            self.last_term.field = field;
         }
         self.output.write_vint(suffix as i32)?;
         self.output.write_bytes(term, prefix, suffix)?;

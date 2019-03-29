@@ -1,5 +1,5 @@
 use core::index::doc_writer_delete_queue::DocumentsWriterDeleteQueue;
-use core::index::doc_writer_flush_queue::{DocumentsWriterFlushQueue, SegmentFlushTicket};
+use core::index::doc_writer_flush_queue::DocumentsWriterFlushQueue;
 use core::index::flush_control::DocumentsWriterFlushControl;
 use core::index::flush_policy::{FlushByRamOrCountsPolicy, FlushPolicy};
 use core::index::index_writer::IndexWriter;
@@ -11,14 +11,16 @@ use core::index::SegmentInfo;
 use core::index::Term;
 use core::search::Query;
 use core::store::DirectoryRc;
+use core::util::Volatile;
 use error::Result;
 
 use crossbeam::queue::MsQueue;
 
 use std::cmp::max;
 use std::collections::HashSet;
+use std::mem;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 
@@ -93,7 +95,7 @@ pub struct DocumentsWriter {
     // before we release all changes. NTR Readers otherwise suddenly return
     // true from is_current while there are actually changes currently
     // committed. See also self.any_change() & self.flush_all_threads.
-    pending_changes_in_current_full_flush: AtomicBool,
+    pending_changes_in_current_full_flush: Volatile<bool>,
     pub per_thread_pool: DocumentsWriterPerThreadPool,
     pub flush_policy: Arc<FlushPolicy>,
     flush_control: DocumentsWriterFlushControl,
@@ -123,7 +125,7 @@ impl DocumentsWriter {
             num_docs_in_ram: AtomicU32::new(0),
             delete_queue: Arc::new(DocumentsWriterDeleteQueue::default()),
             ticket_queue: DocumentsWriterFlushQueue::new(),
-            pending_changes_in_current_full_flush: AtomicBool::new(false),
+            pending_changes_in_current_full_flush: Volatile::new(false),
             per_thread_pool: DocumentsWriterPerThreadPool::new(),
             flush_policy,
             flush_control,
@@ -271,6 +273,7 @@ impl DocumentsWriter {
             // TODO, we should only deal with AbortException here instead of
             // all errors
             let mut dwpt = self.flush_control.do_on_abort(&mut guard);
+
             dwpt.as_mut().unwrap().abort();
             dwpt.as_ref().unwrap().num_docs_in_ram
         } else {
@@ -307,7 +310,7 @@ impl DocumentsWriter {
             loop {
                 // Try pick up pending threads here if possible
                 loop {
-                    if let Some(dwpt) = self.flush_control.next_pending_flush() {
+                    if let Some(dwpt) = self.flush_control.next_pending_flush(None) {
                         // Don't push the delete here since the update could fail!
                         has_events |= self.do_flush(dwpt)?;
                     } else {
@@ -332,7 +335,7 @@ impl DocumentsWriter {
         if let Some(dwpt) = flushing_dwpt {
             has_events |= self.do_flush(dwpt)?;
         } else {
-            if let Some(mut next_pending_flush) = self.flush_control.next_pending_flush() {
+            if let Some(mut next_pending_flush) = self.flush_control.next_pending_flush(None) {
                 has_events |= self.do_flush(next_pending_flush)?;
             }
         }
@@ -484,14 +487,29 @@ impl DocumentsWriter {
         }
     }
 
-    fn do_flush(&mut self, flushing_dwpt: DocumentsWriterPerThread) -> Result<bool> {
-        let mut dwpt = flushing_dwpt;
+    fn do_flush(&mut self, mut dwpt: DocumentsWriterPerThread) -> Result<bool> {
+        let mut has_events = false;
         loop {
-            let res = self.flush_dwpt(&mut dwpt);
-            self.flush_control.do_after_flush(dwpt);
+            let res = self.flush_dwpt(&mut dwpt, &mut has_events);
+            if res.is_ok() {
+                // Now we are done and try to flush the ticket queue if the head of the
+                // queue has already finished the flush.
+                if self.ticket_queue.ticket_count() as usize
+                    >= self.per_thread_pool.active_thread_state_count()
+                {
+                    // This means there is a backlog: the one
+                    // thread in innerPurge can't keep up with all
+                    // other threads flushing segments.  In this case
+                    // we forcefully stall the producers.
+                    self.put_event(WriterEvent::ForcedPurge);
+                    self.flush_control.do_after_flush(dwpt, None);
+                    break;
+                }
+            }
+            self.flush_control.do_after_flush(dwpt, None);
             res?;
 
-            match self.flush_control.next_pending_flush() {
+            match self.flush_control.next_pending_flush(None) {
                 Some(writer) => {
                     dwpt = writer;
                 }
@@ -500,7 +518,9 @@ impl DocumentsWriter {
                 }
             }
         }
-        self.put_event(WriterEvent::MergePending);
+        if has_events {
+            self.put_event(WriterEvent::MergePending);
+        }
 
         // If deletes alone are consuming > 1/2 our RAM
         // buffer, force them all to apply now. This is to
@@ -509,16 +529,21 @@ impl DocumentsWriter {
         if self.config.flush_on_ram()
             && self.flush_control.delete_bytes_used() > self.config.ram_buffer_size() / 2
         {
+            has_events = true;
             if !self.apply_all_deletes_local()? {
                 debug!("DW: force apply deletes");
                 self.put_event(WriterEvent::ApplyDeletes);
             }
         }
 
-        Ok(true)
+        Ok(has_events)
     }
 
-    fn flush_dwpt(&mut self, dwpt: &mut DocumentsWriterPerThread) -> Result<()> {
+    fn flush_dwpt(
+        &mut self,
+        dwpt: &mut DocumentsWriterPerThread,
+        has_events: &mut bool,
+    ) -> Result<()> {
         // Since with DWPT the flush process is concurrent and several DWPT
         // could flush at the same time we must maintain the order of the
         // flushes before we can apply the flushed segment and the frozen global
@@ -534,37 +559,36 @@ impl DocumentsWriter {
 
         // Each flush is assigned a ticket in the order they acquire the
         // ticket_queue lock
+        let res = {
+            let ticket = self.ticket_queue.add_flush_ticket(dwpt)?;
 
-        match dwpt.prepare_flush() {
-            Ok(global_deletes) => {
-                let mut ticket = SegmentFlushTicket::new(global_deletes);
-                let flushing_docs_in_ram = dwpt.num_docs_in_ram;
-                let res = dwpt.flush();
-                let success = res.is_ok();
-                match res {
-                    Ok(seg) => {
-                        ticket.set_segment(seg);
-                    }
-                    Err(e) => {
-                        error!("dwpt flush failed by {:?}", e);
-                        ticket.set_failed();
-                    }
-                };
-
-                self.subtract_flushed_num_docs(flushing_docs_in_ram);
-                if !dwpt.files_to_delete.is_empty() {
-                    self.put_event(WriterEvent::DeleteNewFiles(dwpt.files_to_delete.clone()));
+            match dwpt.flush() {
+                Ok(seg) => {
+                    ticket.set_segment(seg);
+                    Ok(())
                 }
-                if !success {
-                    self.put_event(WriterEvent::FlushFailed(dwpt.segment_info.clone()));
+                Err(e) => {
+                    error!("dwpt flush failed by {:?}", e);
+                    // In the case of a failure make sure we are making progress and
+                    // apply all the deletes since the segment flush failed since the flush
+                    // ticket could hold global deletes see FlushTicket#canPublish()
+                    ticket.set_failed();
+                    Err(e)
                 }
-
-                self.ticket_queue.add_flush_ticket(ticket);
             }
-            Err(e) => {}
+        };
+        let flushing_docs_in_ram = dwpt.num_docs_in_ram;
+        self.subtract_flushed_num_docs(flushing_docs_in_ram);
+        if !dwpt.files_to_delete.is_empty() {
+            let files_to_delete = mem::replace(&mut dwpt.files_to_delete, HashSet::new());
+            self.put_event(WriterEvent::DeleteNewFiles(files_to_delete));
+            *has_events = true;
         }
-
-        Ok(())
+        if res.is_err() {
+            self.put_event(WriterEvent::FlushFailed(dwpt.segment_info.clone()));
+            *has_events = true;
+        }
+        res
     }
 
     pub fn any_changes(&self) -> bool {
@@ -576,9 +600,7 @@ impl DocumentsWriter {
         self.num_docs_in_ram.load(Ordering::Acquire) > 0
             || self.delete_queue.any_changes()
             || self.ticket_queue.has_tickets()
-            || self
-                .pending_changes_in_current_full_flush
-                .load(Ordering::Acquire)
+            || self.pending_changes_in_current_full_flush.read()
     }
 
     pub fn subtract_flushed_num_docs(&self, num_flushed: u32) {
@@ -597,14 +619,14 @@ impl DocumentsWriter {
             let lock = Arc::clone(&self.lock);
             let _l = lock.lock()?;
             self.pending_changes_in_current_full_flush
-                .store(self.any_changes(), Ordering::Release);
+                .write(self.any_changes());
             self.flush_control.mark_for_full_flush()
         };
 
         let mut anything_flushed = false;
         loop {
             // Help out with flushing:
-            if let Some(flushing_dwpt) = self.flush_control.next_pending_flush() {
+            if let Some(flushing_dwpt) = self.flush_control.next_pending_flush(None) {
                 anything_flushed |= self.do_flush(flushing_dwpt)?;
             } else {
                 break;
@@ -639,8 +661,7 @@ impl DocumentsWriter {
         } else {
             self.flush_control.abort_full_flushes();
         }
-        self.pending_changes_in_current_full_flush
-            .store(false, Ordering::Release);
+        self.pending_changes_in_current_full_flush.write(false);
     }
 
     pub fn close(&mut self) {

@@ -1468,8 +1468,8 @@ impl DocValuesProducer for Lucene54DocValuesProducer {
         }
     }
     fn check_integrity(&self) -> Result<()> {
-        let mut input = self.data.as_ref().clone()?;
-        let input: &mut IndexInput = input.borrow_mut();
+        //        let mut input = self.data.as_ref().clone()?;
+        //        let input: &mut IndexInput = input.borrow_mut();
         // codec_util::checksum_entire_file(input)?;
         Ok(())
     }

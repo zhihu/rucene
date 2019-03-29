@@ -8,7 +8,6 @@ use error::Result;
 
 use std::mem;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
 
 /// The SegmentMerger class combines two or more Segments, represented by an
 /// IndexReader, into a single Segment.  Call the merge method to combine the
@@ -58,14 +57,7 @@ impl SegmentMerger {
         }
         self.merge_field_infos()?;
 
-        let start = SystemTime::now();
         let num_merged = self.merge_fields()?;
-        let after_fields = SystemTime::now();
-        //        println!(
-        //            "merge {} fields costs {:?}",
-        //            self.merge_state.segment_info().name,
-        //            after_fields.duration_since(start).unwrap()
-        //        );
         assert_eq!(num_merged, self.merge_state.segment_info().max_doc);
 
         let segment_write_state = SegmentWriteState::new(
@@ -82,13 +74,6 @@ impl SegmentMerger {
             "".into(),
         );
         self.merge_terms(&segment_write_state)?;
-        let after_terms = SystemTime::now();
-        //        println!(
-        //            "merge {} {} terms costs {:?}",
-        //            self.merge_state.segment_info().name,
-        //            self.merge_state.segment_info().max_doc(),
-        //            after_terms.duration_since(after_fields).unwrap()
-        //        );
 
         if self
             .merge_state
@@ -99,13 +84,6 @@ impl SegmentMerger {
         {
             self.merge_doc_values(&segment_write_state)?;
         }
-        let after_dvs = SystemTime::now();
-        //        println!(
-        //            "merge {} {} doc values costs {:?}",
-        //            self.merge_state.segment_info().name,
-        //            self.merge_state.segment_info().max_doc(),
-        //            after_dvs.duration_since(after_terms).unwrap()
-        //        );
         if self
             .merge_state
             .merge_field_infos
@@ -115,7 +93,6 @@ impl SegmentMerger {
         {
             self.merge_points(&segment_write_state)?;
         }
-        let after_points = SystemTime::now();
 
         if self
             .merge_state
@@ -136,13 +113,7 @@ impl SegmentMerger {
             let num_merged = self.merge_vectors()?;
             assert_eq!(num_merged, self.merge_state.segment_info().max_doc);
         }
-        let after_tvs = SystemTime::now();
-        //        println!(
-        //            "merge {} {} term vector costs {:?}",
-        //            self.merge_state.segment_info().name,
-        //            self.merge_state.segment_info().max_doc(),
-        //            after_tvs.duration_since(after_points).unwrap()
-        //        );
+
         self.codec.field_infos_format().write(
             self.directory.as_ref(),
             self.merge_state.segment_info(),
@@ -154,12 +125,7 @@ impl SegmentMerger {
                 .as_ref(),
             &self.context,
         )?;
-        println!(
-            "merge {} {} total cost {:?}",
-            self.merge_state.segment_info().name,
-            self.merge_state.segment_info().max_doc(),
-            SystemTime::now().duration_since(start).unwrap()
-        );
+
         Ok(())
     }
 

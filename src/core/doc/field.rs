@@ -10,7 +10,6 @@ use error::{ErrorKind, Result};
 
 use std::cmp::Ordering;
 use std::collections::HashSet;
-use std::hash::Hash;
 use std::mem;
 
 #[derive(Debug)]
@@ -349,8 +348,7 @@ impl TokenStream for WordTokenStream {
         self.end_attributes();
         if let Some(word) = self.values.last() {
             let final_offset = word.begin + word.length;
-            // self.offset_attribute.set_offset(final_offset, final_offset)
-            self.offset_attribute.set_offset(0, 0)
+            self.offset_attribute.set_offset(final_offset, final_offset)
         } else {
             self.offset_attribute.set_offset(0, 0)
         }

@@ -1,5 +1,5 @@
-use core::index::POSTINGS_POSITIONS;
-use core::index::{IndexReader, LeafReader, Term};
+use core::index::{IndexReader, Term};
+use core::index::{LeafReaderContext, POSTINGS_POSITIONS};
 use core::search::term_query::TermQuery;
 use core::search::Query;
 use core::util::DocId;
@@ -655,7 +655,7 @@ pub struct FieldTermStack {
 
 impl FieldTermStack {
     pub fn new(
-        reader: &LeafReader,
+        ctx: &LeafReaderContext,
         doc_id: DocId,
         field_name: &str,
         field_query: &FieldQuery,
@@ -671,7 +671,9 @@ impl FieldTermStack {
             }
         };
 
-        if let Some(vectors) = reader.term_vector(doc_id)? {
+        let reader = ctx.reader;
+
+        if let Some(vectors) = reader.term_vector(doc_id - ctx.doc_base)? {
             if let Some(vector) = vectors.terms(field_name)? {
                 // true null snippet
                 if vectors.fields().is_empty() || !vector.has_positions()? {

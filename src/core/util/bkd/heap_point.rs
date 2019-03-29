@@ -5,21 +5,26 @@ use core::util::bkd::PointType;
 use core::util::bkd::{PointReader, PointWriter};
 use core::util::DocId;
 
+use std::cell::RefCell;
+
 pub struct HeapPointReader {
     point_writer: *const HeapPointWriter,
-    curr_read: usize,
+    curr_read: isize,
     end: usize,
+    scratch: RefCell<Vec<u8>>,
 }
 
 impl HeapPointReader {
     pub fn new(point_writer: &HeapPointWriter, start: usize, end: usize) -> HeapPointReader {
         HeapPointReader {
             point_writer: point_writer as *const HeapPointWriter,
-            curr_read: start - 1,
+            curr_read: start as isize - 1,
             end,
+            scratch: RefCell::new(vec![0u8; point_writer.packed_bytes_length]),
         }
     }
 
+    #[inline]
     fn point_writer(&self) -> &HeapPointWriter {
         unsafe { &(*self.point_writer) }
     }
@@ -28,34 +33,38 @@ impl HeapPointReader {
 impl PointReader for HeapPointReader {
     fn next(&mut self) -> Result<bool> {
         self.curr_read += 1;
-        Ok(self.curr_read < self.end)
+        debug_assert!(self.curr_read >= 0);
+        Ok((self.curr_read as usize) < self.end)
     }
 
-    fn packed_value(&self) -> Vec<u8> {
-        let block = self.curr_read / self.point_writer().values_per_block;
-        let block_index = self.curr_read % self.point_writer().values_per_block;
+    fn packed_value(&self) -> &[u8] {
+        debug_assert!(self.curr_read >= 0);
+        let block = self.curr_read as usize / self.point_writer().values_per_block;
+        let block_index = self.curr_read as usize % self.point_writer().values_per_block;
 
         let bytes_len = self.point_writer().packed_bytes_length;
-        let mut scratch = vec![0u8; bytes_len];
         let src_pos = block_index * bytes_len;
-        scratch.copy_from_slice(&self.point_writer().blocks[block][src_pos..src_pos + bytes_len]);
-
-        scratch
+        self.scratch
+            .borrow_mut()
+            .copy_from_slice(&self.point_writer().blocks[block][src_pos..src_pos + bytes_len]);
+        unsafe { &*self.scratch.as_ptr() }
     }
 
     fn ord(&self) -> i64 {
+        debug_assert!(self.curr_read >= 0);
         if self.point_writer().single_value_per_doc {
-            self.point_writer().doc_ids[self.curr_read] as i64
+            self.point_writer().doc_ids[self.curr_read as usize] as i64
         } else if self.point_writer().ords_long.capacity() > 0 {
-            self.point_writer().ords_long[self.curr_read]
+            self.point_writer().ords_long[self.curr_read as usize]
         } else {
             debug_assert!(self.point_writer().ords.capacity() > 0);
-            self.point_writer().ords[self.curr_read] as i64
+            self.point_writer().ords[self.curr_read as usize] as i64
         }
     }
 
     fn doc_id(&self) -> DocId {
-        self.point_writer().doc_ids[self.curr_read]
+        debug_assert!(self.curr_read >= 0);
+        self.point_writer().doc_ids[self.curr_read as usize]
     }
 }
 
@@ -81,18 +90,18 @@ impl HeapPointWriter {
         long_ords: bool,
         single_value_per_doc: bool,
     ) -> HeapPointWriter {
-        let mut ords_long = vec![];
-        let mut ords = vec![];
-        if !single_value_per_doc {
+        let (ords_long, ords) = if single_value_per_doc {
+            (Vec::with_capacity(0), Vec::with_capacity(0))
+        } else {
             if long_ords {
-                ords_long = vec![0i64; init_size];
+                (Vec::with_capacity(init_size), Vec::with_capacity(0))
             } else {
-                ords = vec![0i32; init_size];
+                (Vec::with_capacity(0), Vec::with_capacity(init_size))
             }
-        }
+        };
 
         HeapPointWriter {
-            doc_ids: vec![0i32; init_size],
+            doc_ids: Vec::with_capacity(init_size),
             ords_long,
             ords,
             next_write: 0,
@@ -107,7 +116,7 @@ impl HeapPointWriter {
     }
 
     pub fn copy_from(&mut self, other: &HeapPointWriter) -> Result<()> {
-        if self.doc_ids.len() < other.next_write {
+        if self.doc_ids.capacity() < other.next_write {
             bail!(
                 "doc_ids.len={}, other.next_write={}",
                 self.doc_ids.capacity(),
@@ -115,15 +124,18 @@ impl HeapPointWriter {
             );
         }
 
+        self.doc_ids.resize(other.next_write, 0);
         self.doc_ids[0..other.next_write].copy_from_slice(&other.doc_ids[0..other.next_write]);
         if !self.single_value_per_doc {
             if other.ords.len() > 0 {
-                debug_assert!(self.ords.len() > 0);
-                self.ords[0..other.next_write].copy_from_slice(&other.ords[0..other.next_write]);
+                debug_assert!(self.ords.capacity() > 0);
+                self.ords.resize(other.next_write, 0);
+                self.ords.copy_from_slice(&other.ords[0..other.next_write]);
             } else {
-                debug_assert!(self.ords_long.len() > 0);
-                self.ords_long[0..other.next_write]
-                    .copy_from_slice(&other.ords_long[0..other.next_write]);
+                debug_assert!(self.ords_long.capacity() > 0);
+                self.ords_long.resize(other.next_write, 0);
+                self.ords_long
+                    .copy_from_slice(&other.ords_long[..other.next_write]);
             }
         }
 
@@ -137,13 +149,12 @@ impl HeapPointWriter {
     }
 
     pub fn read_packed_value(&self, index: usize, bytes: &mut [u8]) {
-        debug_assert!(bytes.len() == self.packed_bytes_length);
+        debug_assert_eq!(bytes.len(), self.packed_bytes_length);
         let block = index / self.values_per_block;
         let block_index = index % self.values_per_block;
 
         let src_pos = block_index * self.packed_bytes_length;
-        bytes[0..self.packed_bytes_length]
-            .copy_from_slice(&self.blocks[block][src_pos..src_pos + self.packed_bytes_length]);
+        bytes.copy_from_slice(&self.blocks[block][src_pos..src_pos + self.packed_bytes_length]);
     }
 
     pub fn packed_value_slice(&self, index: usize, bytes: &mut [u8]) {
@@ -172,8 +183,7 @@ impl HeapPointWriter {
         }
 
         let src_pos = block_index * self.packed_bytes_length;
-        self.blocks[block][src_pos..src_pos + self.packed_bytes_length]
-            .copy_from_slice(&bytes[0..self.packed_bytes_length]);
+        self.blocks[block][src_pos..src_pos + self.packed_bytes_length].copy_from_slice(bytes);
     }
 }
 
@@ -182,17 +192,18 @@ impl PointWriter for HeapPointWriter {
         debug_assert!(!self.closed);
         debug_assert_eq!(packed_value.len(), self.packed_bytes_length);
         let next_write = self.next_write;
+
         self.write_packed_value(next_write, packed_value);
 
         if !self.single_value_per_doc {
             if self.ords_long.capacity() > 0 {
-                self.ords_long[self.next_write] = ord;
+                self.ords_long.push(ord);
             } else {
-                self.ords[self.next_write] = ord as i32;
+                self.ords.push(ord as i32);
             }
         }
 
-        self.doc_ids[self.next_write] = doc_id;
+        self.doc_ids.push(doc_id);
         self.next_write += 1;
 
         Ok(())
@@ -221,7 +232,7 @@ impl PointWriter for HeapPointWriter {
         debug_assert!(start + length <= self.doc_ids.len());
         debug_assert!(start + length <= self.next_write);
 
-        Ok(Box::new(HeapPointReader::new(self, start, length)))
+        Ok(Box::new(HeapPointReader::new(self, start, start + length)))
     }
 
     fn shared_point_reader(

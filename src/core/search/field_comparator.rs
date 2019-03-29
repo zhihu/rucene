@@ -1,5 +1,5 @@
-use core::index::LeafReader;
 use core::index::NumericDocValuesRef;
+use core::index::{LeafReader, LeafReaderContext};
 use core::search::sort_field::SortFieldType;
 use core::util::bits::BitsRef;
 use core::util::{DocId, VariantValue};
@@ -96,7 +96,7 @@ pub trait FieldComparator: fmt::Display {
 
     fn copy(&mut self, slot: usize, value: ComparatorValue) -> Result<()>;
 
-    fn get_information_from_reader(&mut self, reader: &LeafReader) -> Result<()>;
+    fn get_information_from_reader(&mut self, reader: &LeafReaderContext) -> Result<()>;
 
     fn get_type(&self) -> SortFieldType;
 }
@@ -146,7 +146,7 @@ impl FieldComparator for RelevanceComparator {
         Ok(())
     }
 
-    fn get_information_from_reader(&mut self, _reader: &LeafReader) -> Result<()> {
+    fn get_information_from_reader(&mut self, _reader: &LeafReaderContext) -> Result<()> {
         Ok(())
     }
 
@@ -206,8 +206,8 @@ impl FieldComparator for DocComparator {
         Ok(())
     }
 
-    fn get_information_from_reader(&mut self, reader: &LeafReader) -> Result<()> {
-        self.doc_base = reader.doc_base();
+    fn get_information_from_reader(&mut self, reader: &LeafReaderContext) -> Result<()> {
+        self.doc_base = reader.doc_base;
         Ok(())
     }
 
@@ -227,7 +227,7 @@ impl fmt::Display for DocComparator {
 }
 
 pub struct NumericDocValuesComparator<T: DocValuesSource> {
-    missing_value: VariantValue,
+    missing_value: Option<VariantValue>,
     field: String,
     field_type: SortFieldType,
     docs_with_fields: Option<BitsRef>,
@@ -243,7 +243,7 @@ impl<T: DocValuesSource> NumericDocValuesComparator<T> {
         num_hits: usize,
         field: String,
         field_type: SortFieldType,
-        missing_value: VariantValue,
+        missing_value: Option<VariantValue>,
         doc_values_source: T,
     ) -> Self {
         NumericDocValuesComparator {
@@ -295,7 +295,7 @@ impl<T: DocValuesSource> FieldComparator for NumericDocValuesComparator<T> {
         let value = self.get_doc_value(doc_id)?;
         if let Some(ref bits) = self.docs_with_fields {
             if value.is_zero() && bits.get(doc_id as usize)? {
-                return Ok(self.bottom.cmp(&self.missing_value));
+                return Ok(self.bottom.cmp(self.missing_value.as_ref().unwrap()));
             }
         }
         Ok(self.bottom.cmp(&value))
@@ -307,22 +307,25 @@ impl<T: DocValuesSource> FieldComparator for NumericDocValuesComparator<T> {
         let mut value = self.get_doc_value(doc_id)?;
         if let Some(ref bits) = self.docs_with_fields {
             if value.is_zero() && bits.get(doc_id as usize)? {
-                value = self.missing_value.clone();
+                value = self.missing_value.as_ref().unwrap().clone();
             }
         }
         self.values[slot] = value;
         Ok(())
     }
 
-    fn get_information_from_reader(&mut self, reader: &LeafReader) -> Result<()> {
+    fn get_information_from_reader(&mut self, reader: &LeafReaderContext) -> Result<()> {
         self.current_read_values = Some(
             self.doc_values_source
-                .numeric_doc_values(reader, &self.field)?,
+                .numeric_doc_values(reader.reader, &self.field)?,
         );
-        self.docs_with_fields = Some(
-            self.doc_values_source
-                .docs_with_fields(reader, &self.field)?,
-        );
+        if self.missing_value.is_some() {
+            self.docs_with_fields = Some(
+                self.doc_values_source
+                    .docs_with_fields(reader.reader, &self.field)?,
+            );
+        }
+
         Ok(())
     }
 
@@ -362,6 +365,7 @@ impl DocValuesSource for DefaultDocValuesSource {
 mod tests {
     use super::*;
     use core::index::tests::*;
+    use core::index::IndexReader;
 
     #[test]
     fn test_relevance_comparator() {
@@ -392,8 +396,10 @@ mod tests {
         let mut comparator = DocComparator::new(3);
 
         let leaf_reader = MockLeafReader::new(0);
+        let index_reader = MockIndexReader::new(vec![leaf_reader]);
+        let leaf_reader_context = index_reader.leaves();
         {
-            comparator.get_information_from_reader(&leaf_reader);
+            comparator.get_information_from_reader(&leaf_reader_context[0]);
             comparator.copy(0, ComparatorValue::Doc(1));
             comparator.copy(1, ComparatorValue::Doc(2));
             comparator.copy(2, ComparatorValue::Doc(3));

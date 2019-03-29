@@ -82,10 +82,6 @@ impl LeafReader for MergeReaderWrapper {
         self.reader.name()
     }
 
-    fn doc_base(&self) -> i32 {
-        self.reader.doc_base()
-    }
-
     fn term_vector(&self, doc_id: i32) -> Result<Option<Box<Fields>>> {
         self.check_bounds(doc_id)?;
         if let Some(ref vectors) = self.vectors {
@@ -265,10 +261,6 @@ impl<T: LeafReader> LeafReader for SortingLeafReader<T> {
 
     fn name(&self) -> &str {
         self.reader.name()
-    }
-
-    fn doc_base(&self) -> DocId {
-        self.reader.doc_base()
     }
 
     fn term_vector(&self, doc_id: DocId) -> Result<Option<Box<Fields>>> {
@@ -1008,6 +1000,10 @@ impl Bits for SortingBits {
     fn len(&self) -> usize {
         self.bits.len()
     }
+
+    fn is_empty(&self) -> bool {
+        self.bits.is_empty()
+    }
 }
 
 struct SortingPointValues {
@@ -1180,10 +1176,6 @@ impl LeafReader for SlowCodecReaderWrapper {
 
     fn name(&self) -> &str {
         self.reader.name()
-    }
-
-    fn doc_base(&self) -> DocId {
-        self.reader.doc_base()
     }
 
     fn term_vector(&self, doc_id: DocId) -> Result<Option<Box<Fields>>> {

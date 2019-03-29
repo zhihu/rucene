@@ -40,12 +40,12 @@ fn fields(reader: &IndexReader) -> Result<FieldsProducerRef> {
     let leaves = reader.leaves();
 
     if leaves.len() == 1 {
-        Ok(leaves[0].fields()?)
+        Ok(leaves[0].reader.fields()?)
     } else {
         let mut fields: Vec<FieldsProducerRef> = Vec::with_capacity(leaves.len());
         let mut slices: Vec<ReaderSlice> = Vec::with_capacity(leaves.len());
         for leaf in leaves {
-            fields.push(leaf.fields()?);
+            fields.push(leaf.reader.fields()?);
             slices.push(ReaderSlice::new(
                 leaf.doc_base(),
                 reader.max_doc(),

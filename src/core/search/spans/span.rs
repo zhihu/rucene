@@ -1,4 +1,4 @@
-use core::index::LeafReader;
+use core::index::{LeafReader, LeafReaderContext};
 use core::index::{Term, TermContext};
 use core::search::conjunction::ConjunctionScorer;
 use core::search::explanation::Explanation;
@@ -282,16 +282,16 @@ pub trait SpanWeight: Weight {
     /// Expert: Return a Spans object iterating over matches from this Weight
     fn get_spans(
         &self,
-        reader: &LeafReader,
+        reader: &LeafReaderContext,
         required_postings: &PostingsFlag,
     ) -> Result<Option<Box<Spans>>>;
 
     /// Collect all TermContexts used by this Weight
     fn extract_term_contexts(&self, contexts: &mut HashMap<Term, Arc<TermContext>>);
 
-    fn do_create_scorer(&self, reader: &LeafReader) -> Result<Box<Scorer>> {
-        if let Some(spans) = self.get_spans(reader, &PostingsFlag::Positions)? {
-            let doc_scorer = self.sim_scorer(reader)?;
+    fn do_create_scorer(&self, ctx: &LeafReaderContext) -> Result<Box<Scorer>> {
+        if let Some(spans) = self.get_spans(ctx, &PostingsFlag::Positions)? {
+            let doc_scorer = self.sim_scorer(ctx.reader)?;
             Ok(Box::new(SpanScorer::new(spans, doc_scorer)))
         } else {
             // TODO maybe return None is better, then `Scorer` trait should be changed
@@ -322,9 +322,9 @@ pub trait SpanWeight: Weight {
         Ok(sim_scorer)
     }
 
-    fn explain_span(&self, reader: &LeafReader, doc: DocId) -> Result<Explanation> {
+    fn explain_span(&self, reader: &LeafReaderContext, doc: DocId) -> Result<Explanation> {
         if let Some(spans) = self.get_spans(reader, &PostingsFlag::Positions)? {
-            let mut scorer = SpanScorer::new(spans, self.sim_scorer(reader)?);
+            let mut scorer = SpanScorer::new(spans, self.sim_scorer(reader.reader)?);
 
             if scorer.advance(doc)? == doc {
                 match self.sim_weight() {
@@ -333,7 +333,7 @@ pub trait SpanWeight: Weight {
                         let freq = scorer.freq;
                         let freq_expl =
                             Explanation::new(true, freq, format!("phraseFreq={}", freq), vec![]);
-                        let score_expl = w.explain(reader, doc, freq_expl)?;
+                        let score_expl = w.explain(reader.reader, doc, freq_expl)?;
                         let score_expl_value = score_expl.value();
 
                         return Ok(Explanation::new(

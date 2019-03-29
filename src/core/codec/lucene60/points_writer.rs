@@ -1,20 +1,20 @@
 use core::codec::lucene60::points_reader::{DATA_CODEC_NAME, DATA_EXTENSION, DATA_VERSION_CURRENT,
                                            INDEX_EXTENSION, INDEX_VERSION_CURRENT, META_CODEC_NAME};
+use core::codec::BoxedPointsReader;
 use core::codec::Lucene60PointsReader;
-use core::codec::MutablePointsReader;
 use core::codec::{merge_point_values, PointsWriter};
 use core::codec::{write_footer, write_index_header};
 use core::index::segment_file_name;
 use core::index::FieldInfo;
 use core::index::LiveDocsDocMap;
-use core::index::{IntersectVisitor, Relation};
+use core::index::{IntersectVisitor, PointValues, Relation};
 use core::index::{MergeState, SegmentWriteState};
 use core::store::IndexOutput;
 use core::util::bkd::{BKDWriter, DEFAULT_MAX_MB_SORT_IN_HEAP, DEFAULT_MAX_POINTS_IN_LEAF_NODE};
 use core::util::DocId;
 
-use error::*;
-use std::collections::HashMap;
+use error::Result;
+use std::collections::btree_map::BTreeMap;
 use std::sync::Arc;
 
 // Writes dimensional values
@@ -22,7 +22,7 @@ pub struct Lucene60PointsWriter {
     // Output used to write the BKD tree data file
     data_out: Box<IndexOutput>,
     // Maps field name to file pointer in the data file where the BKD index is located.
-    index_fps: HashMap<String, i64>,
+    index_fps: BTreeMap<String, i64>,
     write_state: SegmentWriteState,
     max_points_in_leaf_node: i32,
     max_mb_sort_in_heap: f64,
@@ -51,7 +51,7 @@ impl Lucene60PointsWriter {
 
         Ok(Lucene60PointsWriter {
             data_out,
-            index_fps: HashMap::new(),
+            index_fps: BTreeMap::new(),
             write_state,
             max_points_in_leaf_node: DEFAULT_MAX_POINTS_IN_LEAF_NODE,
             max_mb_sort_in_heap: DEFAULT_MAX_MB_SORT_IN_HEAP as f64,
@@ -85,11 +85,7 @@ impl<'a> IntersectVisitor for ValuesIntersectVisitor<'a> {
 }
 
 impl PointsWriter for Lucene60PointsWriter {
-    fn write_field(
-        &mut self,
-        field_info: &FieldInfo,
-        values: Box<MutablePointsReader>,
-    ) -> Result<()> {
+    fn write_field(&mut self, field_info: &FieldInfo, values: BoxedPointsReader) -> Result<()> {
         let single_value_per_doc =
             values.size(&field_info.name)? == values.doc_count(&field_info.name)? as i64;
         let mut writer = BKDWriter::new(
@@ -104,28 +100,27 @@ impl PointsWriter for Lucene60PointsWriter {
             single_value_per_doc,
         )?;
 
-        // only used as MutablePointsReader
-        if true {
-            let fp = writer.write_field(self.data_out.as_mut(), &field_info.name, values)?;
-            if fp != -1 {
-                self.index_fps.insert(field_info.name.clone(), fp);
+        match values {
+            BoxedPointsReader::Mutable(s) => {
+                let fp = writer.write_field(self.data_out.as_mut(), &field_info.name, s)?;
+                if fp != -1 {
+                    self.index_fps.insert(field_info.name.clone(), fp);
+                }
             }
-
-            return Ok(());
-        } else {
-            {
-                let mut visitor = ValuesIntersectVisitor::new(&mut writer);
-                values.intersect(&field_info.name, &mut visitor)?;
+            BoxedPointsReader::Simple(m) => {
+                {
+                    let mut visitor = ValuesIntersectVisitor::new(&mut writer);
+                    m.intersect(&field_info.name, &mut visitor)?;
+                }
+                // We could have 0 points on merge since all docs with dimensional fields may be
+                // deleted:
+                if writer.point_count > 0 {
+                    let fp = writer.finish(self.data_out.as_mut())?;
+                    self.index_fps.insert(field_info.name.clone(), fp);
+                }
             }
-            // We could have 0 points on merge since all docs with dimensional fields may be
-            // deleted:
-            if writer.point_count > 0 {
-                let fp = writer.finish(self.data_out.as_mut())?;
-                self.index_fps.insert(field_info.name.clone(), fp);
-            }
-
-            return Ok(());
         }
+        Ok(())
     }
 
     fn merge(&mut self, merge_state: &MergeState) -> Result<()> {

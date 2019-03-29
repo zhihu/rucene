@@ -146,6 +146,11 @@ impl MergeState {
         for leaf in seg_readers {
             let leaf_wrapper = if leaf.index_sort().is_some() {
                 if leaf.index_sort() != segment_info.index_sort() {
+                    error!(
+                        "leaf: {:?}, seg: {:?}",
+                        leaf.index_sort(),
+                        segment_info.index_sort()
+                    );
                     bail!(IllegalArgument("index sort mismatch".into()))
                 } else {
                     ReaderWrapperEnum::Segment(leaf)
@@ -157,7 +162,7 @@ impl MergeState {
 
                 // This segment was written by flush, so documents are not yet sorted, so we sort
                 // them now:
-                let sort_doc_map = sorter.sort_leaf_reader(leaf.as_ref())?;
+                let sort_doc_map = sorter.sort_leaf_reader(&leaf.leaf_context())?;
                 if let Some(sort_doc_map) = sort_doc_map {
                     *needs_index_sort = true;
                     let doc_map_ref = Arc::new(sort_doc_map);
@@ -247,23 +252,16 @@ impl LeafReader for ReaderWrapperEnum {
         }
     }
 
-    fn doc_base(&self) -> DocId {
-        match self {
-            ReaderWrapperEnum::Segment(s) => s.doc_base(),
-            ReaderWrapperEnum::SortedSegment(s) => s.doc_base(),
-        }
-    }
-
     fn term_vector(&self, doc_id: DocId) -> Result<Option<Box<Fields>>> {
         match self {
-            ReaderWrapperEnum::Segment(s) => s.term_vector(doc_id),
+            ReaderWrapperEnum::Segment(s) => LeafReader::term_vector(s.as_ref(), doc_id),
             ReaderWrapperEnum::SortedSegment(s) => s.term_vector(doc_id),
         }
     }
 
     fn document(&self, doc_id: DocId, visitor: &mut StoredFieldVisitor) -> Result<()> {
         match self {
-            ReaderWrapperEnum::Segment(s) => s.document(doc_id, visitor),
+            ReaderWrapperEnum::Segment(s) => LeafReader::document(s.as_ref(), doc_id, visitor),
             ReaderWrapperEnum::SortedSegment(s) => s.document(doc_id, visitor),
         }
     }
@@ -298,7 +296,7 @@ impl LeafReader for ReaderWrapperEnum {
 
     fn max_doc(&self) -> DocId {
         match self {
-            ReaderWrapperEnum::Segment(s) => s.max_doc(),
+            ReaderWrapperEnum::Segment(s) => LeafReader::max_doc(s.as_ref()),
             ReaderWrapperEnum::SortedSegment(s) => s.max_doc(),
         }
     }

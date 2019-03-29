@@ -3,7 +3,7 @@ use core::highlight::fragments_builder::BaseFragmentsBuilder;
 use core::highlight::{Encoder, FieldFragList, FieldPhraseList, FieldQuery, FieldTermStack,
                       FragListBuilder, FragmentsBuilder};
 
-use core::index::{IndexReader, LeafReader};
+use core::index::{IndexReader, LeafReaderContext};
 use core::search::Query;
 use core::util::DocId;
 use error::*;
@@ -58,8 +58,7 @@ impl FastVectorHighlighter {
     pub fn get_best_fragments(
         &mut self,
         field_query: &mut FieldQuery,
-        top_level_reader: &IndexReader,
-        reader: &LeafReader,
+        reader: &LeafReaderContext,
         doc_id: DocId,
         field_name: &str,
         frag_char_size: i32,
@@ -91,7 +90,7 @@ impl FastVectorHighlighter {
         };
 
         fragments_builder.create_fragments(
-            top_level_reader,
+            reader.parent,
             doc_id,
             field_name,
             field_frag_list.as_mut(),
@@ -107,8 +106,7 @@ impl FastVectorHighlighter {
     pub fn get_best_fragments_with_tags_fields(
         &mut self,
         field_query: &mut FieldQuery,
-        top_level_reader: &IndexReader,
-        reader: &LeafReader,
+        reader: &LeafReaderContext,
         doc_id: DocId,
         stored_field: &str,
         matched_fields: &[String],
@@ -131,7 +129,7 @@ impl FastVectorHighlighter {
         )?;
 
         fragments_builder.create_fragments(
-            top_level_reader,
+            reader.parent,
             doc_id,
             stored_field,
             field_frag_list.as_mut(),
@@ -155,7 +153,7 @@ impl FastVectorHighlighter {
         &self,
         frag_list_builder: &FragListBuilder,
         field_query: &FieldQuery,
-        reader: &LeafReader,
+        reader: &LeafReaderContext,
         doc_id: DocId,
         field: &str,
         frag_char_size: i32,
@@ -171,7 +169,7 @@ impl FastVectorHighlighter {
         &self,
         frag_list_builder: &FragListBuilder,
         field_query: &FieldQuery,
-        reader: &LeafReader,
+        reader: &LeafReaderContext,
         doc_id: DocId,
         matched_fields: &[String],
         frag_char_size: i32,

@@ -3,7 +3,7 @@ use std::boxed::Box;
 use std::collections::HashMap;
 use std::fmt;
 
-use core::index::LeafReader;
+use core::index::LeafReaderContext;
 use core::index::{Term, TermState};
 use core::index::{POSTINGS_FREQS, POSTINGS_NONE};
 use core::search::explanation::Explanation;
@@ -118,11 +118,13 @@ impl TermWeight {
 
     fn create_postings_iterator(
         &self,
-        reader: &LeafReader,
+        reader: &LeafReaderContext,
         flags: i32,
     ) -> Result<Box<PostingIterator>> {
-        if let Some(state) = self.term_states.get(&reader.doc_base()) {
-            reader.postings_from_state(&self.term, state.as_ref(), flags)
+        if let Some(state) = self.term_states.get(&reader.doc_base) {
+            reader
+                .reader
+                .postings_from_state(&self.term, state.as_ref(), flags)
         } else {
             Ok(Box::new(EmptyPostingIterator::default()))
         }
@@ -130,9 +132,9 @@ impl TermWeight {
 }
 
 impl Weight for TermWeight {
-    fn create_scorer(&self, reader: &LeafReader) -> Result<Box<Scorer>> {
-        let _norms = reader.norm_values(&self.term.field);
-        let sim_scorer = self.sim_weight.sim_scorer(reader)?;
+    fn create_scorer(&self, reader_context: &LeafReaderContext) -> Result<Box<Scorer>> {
+        let _norms = reader_context.reader.norm_values(&self.term.field);
+        let sim_scorer = self.sim_weight.sim_scorer(reader_context.reader)?;
 
         let flags = if self.needs_scores {
             POSTINGS_FREQS
@@ -142,7 +144,7 @@ impl Weight for TermWeight {
 
         Ok(Box::new(TermScorer::new(
             sim_scorer,
-            self.create_postings_iterator(reader, i32::from(flags))?,
+            self.create_postings_iterator(reader_context, i32::from(flags))?,
             self.boost,
         )))
     }
@@ -163,7 +165,7 @@ impl Weight for TermWeight {
         self.needs_scores
     }
 
-    fn explain(&self, reader: &LeafReader, doc: DocId) -> Result<Explanation> {
+    fn explain(&self, reader: &LeafReaderContext, doc: DocId) -> Result<Explanation> {
         let flags = if self.needs_scores {
             POSTINGS_FREQS
         } else {
@@ -176,7 +178,7 @@ impl Weight for TermWeight {
             let freq = postings_iterator.freq()? as f32;
 
             let freq_expl = Explanation::new(true, freq, format!("termFreq={}", freq), vec![]);
-            let score_expl = self.sim_weight.explain(reader, doc, freq_expl)?;
+            let score_expl = self.sim_weight.explain(reader.reader, doc, freq_expl)?;
 
             Ok(Explanation::new(
                 true,

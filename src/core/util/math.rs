@@ -3,12 +3,11 @@ use error::Result;
 
 use core::util::bit_util::UnsignedShift;
 
-pub fn log(x: i64, base: i32) -> i32 {
+pub fn log(mut x: i64, base: i32) -> i32 {
     debug_assert!(base > 1);
 
     let base = i64::from(base);
     let mut ret = 0;
-    let mut x = x;
     while x >= base {
         x /= base;
         ret += 1;

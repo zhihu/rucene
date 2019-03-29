@@ -511,7 +511,7 @@ impl MergePolicy for TieredMergePolicy {
 
         for info_level in &info_levels {
             if info_level.len() < self.segs_per_tier as usize {
-                for i in 0..info_level.len() {
+                for _i in 0..info_level.len() {
                     total_index_bytes -= info_seg_bytes[too_big_count];
                     too_big_count += 1;
                 }
@@ -568,8 +568,8 @@ impl MergePolicy for TieredMergePolicy {
                 // OK we are over budget -- find best merge!
                 let mut best_score = MergeScore::new(f64::INFINITY, 0.0, 0.0);
                 let mut best = vec![];
-                let mut best_too_large = false;
-                let mut best_merge_bytes = 0;
+                let mut _best_too_large = false;
+                let mut _best_merge_bytes = 0;
 
                 // Consider all merge starts:
                 if eligible.len() >= self.max_merge_at_once as usize {
@@ -616,8 +616,8 @@ impl MergePolicy for TieredMergePolicy {
                         {
                             best = candidate;
                             best_score = score;
-                            best_too_large = hit_too_large;
-                            best_merge_bytes = total_after_merge_bytes;
+                            _best_too_large = hit_too_large;
+                            _best_merge_bytes = total_after_merge_bytes;
                         }
 
                         start_idx += 1;

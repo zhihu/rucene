@@ -100,7 +100,7 @@ pub trait Directory: Drop + fmt::Display + Send + Sync {
         unreachable!()
     }
 
-    fn resolve(&self, name: &str) -> PathBuf {
+    fn resolve(&self, _name: &str) -> PathBuf {
         unimplemented!()
     }
 }

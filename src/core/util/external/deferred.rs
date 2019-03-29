@@ -1,7 +1,7 @@
 // TODO: copy from package `crossbeam-epoch` from it's not a public module
 // we use this to manage callback functions
 
-use std::{fmt, marker::PhantomData, mem, ptr};
+use std::{fmt, mem, ptr};
 
 /// Number of words a piece of `Data` can hold.
 ///

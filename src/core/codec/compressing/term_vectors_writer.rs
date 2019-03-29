@@ -690,7 +690,7 @@ impl CompressingTermVectorsWriter {
                     for i in 0..fd.num_terms {
                         let mut prev_pos = 0usize;
                         let mut prev_off = 0usize;
-                        for j in 0..fd.freqs[i] {
+                        for _j in 0..fd.freqs[i] {
                             let position = if fd.has_positions {
                                 self.positions_buf[fd.pos_start + pos] as usize
                             } else {

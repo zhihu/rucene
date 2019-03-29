@@ -6,7 +6,7 @@ use std::fmt::Display;
 use std::hash::{Hash, Hasher};
 use std::i32;
 
-use core::index::LeafReader;
+use core::index::{LeafReader, LeafReaderContext};
 use core::search::explanation::Explanation;
 use core::search::searcher::IndexSearcher;
 use core::search::statistics::CollectionStatistics;
@@ -305,7 +305,7 @@ pub trait Query: Display {
 }
 
 pub trait Weight: Display {
-    fn create_scorer(&self, reader: &LeafReader) -> Result<Box<Scorer>>;
+    fn create_scorer(&self, reader: &LeafReaderContext) -> Result<Box<Scorer>>;
 
     fn hash_code(&self) -> u32 {
         let key = format!("{}", self);
@@ -335,7 +335,7 @@ pub trait Weight: Display {
     }
 
     /// An explanation of the score computation for the named document.
-    fn explain(&self, reader: &LeafReader, doc: DocId) -> Result<Explanation>;
+    fn explain(&self, reader: &LeafReaderContext, doc: DocId) -> Result<Explanation>;
 }
 
 pub trait BatchScorer: Send + Sync {
@@ -713,7 +713,7 @@ pub mod tests {
     }
 
     impl Weight for MockSimpleWeight {
-        fn create_scorer(&self, _reader: &LeafReader) -> Result<Box<Scorer>> {
+        fn create_scorer(&self, _reader: &LeafReaderContext) -> Result<Box<Scorer>> {
             Ok(create_mock_scorer(self.docs.clone()))
         }
 
@@ -731,7 +731,7 @@ pub mod tests {
             false
         }
 
-        fn explain(&self, _reader: &LeafReader, _doc: DocId) -> Result<Explanation> {
+        fn explain(&self, _reader: &LeafReaderContext, _doc: DocId) -> Result<Explanation> {
             unimplemented!()
         }
     }

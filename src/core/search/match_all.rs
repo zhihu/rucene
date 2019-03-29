@@ -1,4 +1,4 @@
-use core::index::LeafReader;
+use core::index::LeafReaderContext;
 use core::search::explanation::Explanation;
 use core::search::searcher::IndexSearcher;
 use core::search::term_query::TermQuery;
@@ -51,11 +51,12 @@ impl Default for MatchAllDocsWeight {
 }
 
 impl Weight for MatchAllDocsWeight {
-    fn create_scorer(&self, leaf_reader: &LeafReader) -> Result<Box<Scorer>> {
+    fn create_scorer(&self, leaf_reader: &LeafReaderContext) -> Result<Box<Scorer>> {
+        let max_doc = leaf_reader.reader.max_doc();
         Ok(Box::new(ConstantScoreScorer {
             score: self.weight,
-            iterator: Box::new(AllDocsIterator::new(leaf_reader.max_doc())),
-            cost: leaf_reader.max_doc() as usize,
+            iterator: Box::new(AllDocsIterator::new(max_doc)),
+            cost: max_doc as usize,
         }))
     }
 
@@ -76,7 +77,7 @@ impl Weight for MatchAllDocsWeight {
         false
     }
 
-    fn explain(&self, _reader: &LeafReader, _doc: DocId) -> Result<Explanation> {
+    fn explain(&self, _reader: &LeafReaderContext, _doc: DocId) -> Result<Explanation> {
         Ok(Explanation::new(
             true,
             self.weight,
@@ -248,7 +249,7 @@ impl ConstantScoreWeight {
 }
 
 impl Weight for ConstantScoreWeight {
-    fn create_scorer(&self, reader: &LeafReader) -> Result<Box<Scorer>> {
+    fn create_scorer(&self, reader: &LeafReaderContext) -> Result<Box<Scorer>> {
         let inner_scorer = self.sub_weight.create_scorer(reader)?;
         let cost = inner_scorer.cost();
         Ok(Box::new(ConstantScoreScorer {
@@ -275,7 +276,7 @@ impl Weight for ConstantScoreWeight {
         false
     }
 
-    fn explain(&self, reader: &LeafReader, doc: DocId) -> Result<Explanation> {
+    fn explain(&self, reader: &LeafReaderContext, doc: DocId) -> Result<Explanation> {
         let mut iterator = self.sub_weight.create_scorer(reader)?;
         let exists = if iterator.support_two_phase() {
             two_phase_next(iterator.as_mut())? == doc && iterator.matches()?

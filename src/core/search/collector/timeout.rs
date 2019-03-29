@@ -1,4 +1,4 @@
-use core::index::LeafReader;
+use core::index::LeafReaderContext;
 use core::search::collector;
 use core::search::collector::{Collector, LeafCollector, SearchCollector};
 use core::search::Scorer;
@@ -25,7 +25,7 @@ impl TimeoutCollector {
 }
 
 impl SearchCollector for TimeoutCollector {
-    fn set_next_reader(&mut self, _reader_ord: usize, _reader: &LeafReader) -> Result<()> {
+    fn set_next_reader(&mut self, _reader: &LeafReaderContext) -> Result<()> {
         Ok(())
     }
 
@@ -33,7 +33,7 @@ impl SearchCollector for TimeoutCollector {
         true
     }
 
-    fn leaf_collector(&mut self, _reader: &LeafReader) -> Result<Box<LeafCollector>> {
+    fn leaf_collector(&mut self, _reader: &LeafReaderContext) -> Result<Box<LeafCollector>> {
         Ok(Box::new(TimeoutLeafCollector::new(
             self.timeout_duration,
             self.start_time,

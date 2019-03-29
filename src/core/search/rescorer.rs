@@ -2,7 +2,7 @@ use error::*;
 
 use std::collections::HashMap;
 
-use core::index::LeafReader;
+use core::index::LeafReaderContext;
 use core::search::explanation::Explanation;
 use core::search::searcher::IndexSearcher;
 use core::search::sort_field::SortFieldType;
@@ -19,7 +19,7 @@ pub struct QueryRescorer;
 impl QueryRescorer {
     fn batch_rescore(
         &self,
-        readers: &[&LeafReader],
+        readers: &[LeafReaderContext],
         req: &RescoreRequest,
         hits: &mut [ScoreDocHit],
         weight: &Weight,
@@ -40,12 +40,12 @@ impl QueryRescorer {
                 // reader_upto += 1;
                 reader_idx += 1;
                 end_doc = readers[reader_idx as usize].doc_base()
-                    + readers[reader_idx as usize].max_doc();
+                    + readers[reader_idx as usize].reader.max_doc();
             }
 
             if reader_idx != current_reader_idx {
-                let reader = readers[reader_idx as usize];
-                doc_base = reader.doc_base();
+                let reader = &readers[reader_idx as usize];
+                doc_base = reader.doc_base;
                 let current_scorer = weight.create_scorer(reader)?;
                 scorer = Some(current_scorer);
                 current_reader_idx = reader_idx;
@@ -116,7 +116,7 @@ impl QueryRescorer {
 
     fn iterative_rescore(
         &self,
-        readers: &[&LeafReader],
+        readers: &[LeafReaderContext],
         req: &RescoreRequest,
         hits: &mut [ScoreDocHit],
         weight: &Weight,
@@ -136,11 +136,11 @@ impl QueryRescorer {
                 // reader_upto += 1;
                 reader_idx += 1;
                 end_doc = readers[reader_idx as usize].doc_base()
-                    + readers[reader_idx as usize].max_doc();
+                    + readers[reader_idx as usize].reader.max_doc();
             }
 
             if reader_idx != current_reader_idx {
-                let reader = readers[reader_idx as usize];
+                let reader = &readers[reader_idx as usize];
                 doc_base = reader.doc_base();
                 let current_scorer = weight.create_scorer(reader)?;
                 scorer = Some(current_scorer);
@@ -428,11 +428,11 @@ impl QueryRescorer {
                 // reader_upto += 1;
                 reader_idx += 1;
                 end_doc = readers[reader_idx as usize].doc_base()
-                    + readers[reader_idx as usize].max_doc();
+                    + readers[reader_idx as usize].reader.max_doc();
             }
 
             if reader_idx != current_reader_idx {
-                let reader = readers[reader_idx as usize];
+                let reader = &readers[reader_idx as usize];
                 doc_base = reader.doc_base();
                 let current_scorer = weight.create_scorer(reader)?;
                 scorer = Some(current_scorer);

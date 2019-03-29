@@ -1,4 +1,4 @@
-use core::index::{LeafReader, Term, TermContext};
+use core::index::{LeafReaderContext, Term, TermContext};
 use core::search::explanation::Explanation;
 use core::search::searcher::IndexSearcher;
 use core::search::spans::span::{build_sim_weight, PostingsFlag, NO_MORE_POSITIONS};
@@ -225,13 +225,13 @@ impl SpanWeight for SpanNearWeight {
 
     fn get_spans(
         &self,
-        reader: &LeafReader,
+        ctx: &LeafReaderContext,
         required_postings: &PostingsFlag,
     ) -> Result<Option<Box<Spans>>> {
-        if reader.terms(&self.field)?.is_some() {
+        if ctx.reader.terms(&self.field)?.is_some() {
             let mut sub_spans = Vec::with_capacity(self.sub_weights.len());
             for w in &self.sub_weights {
-                if let Some(span) = w.get_spans(reader, required_postings)? {
+                if let Some(span) = w.get_spans(ctx, required_postings)? {
                     sub_spans.push(span);
                 } else {
                     // all required
@@ -256,8 +256,8 @@ impl SpanWeight for SpanNearWeight {
 }
 
 impl Weight for SpanNearWeight {
-    fn create_scorer(&self, leaf_reader: &LeafReader) -> Result<Box<Scorer>> {
-        self.do_create_scorer(leaf_reader)
+    fn create_scorer(&self, ctx: &LeafReaderContext) -> Result<Box<Scorer>> {
+        self.do_create_scorer(ctx)
     }
 
     fn query_type(&self) -> &'static str {
@@ -276,7 +276,7 @@ impl Weight for SpanNearWeight {
         true
     }
 
-    fn explain(&self, reader: &LeafReader, doc: DocId) -> Result<Explanation> {
+    fn explain(&self, reader: &LeafReaderContext, doc: DocId) -> Result<Explanation> {
         self.explain_span(reader, doc)
     }
 }
@@ -870,7 +870,7 @@ impl SpanWeight for SpanGapWeight {
 
     fn get_spans(
         &self,
-        _reader: &LeafReader,
+        _reader: &LeafReaderContext,
         _required_postings: &PostingsFlag,
     ) -> Result<Option<Box<Spans>>> {
         Ok(Some(Box::new(GapSpans::new(self.width))))
@@ -880,8 +880,8 @@ impl SpanWeight for SpanGapWeight {
 }
 
 impl Weight for SpanGapWeight {
-    fn create_scorer(&self, leaf_reader: &LeafReader) -> Result<Box<Scorer>> {
-        self.do_create_scorer(leaf_reader)
+    fn create_scorer(&self, ctx: &LeafReaderContext) -> Result<Box<Scorer>> {
+        self.do_create_scorer(ctx)
     }
 
     fn query_type(&self) -> &'static str {
@@ -906,7 +906,7 @@ impl Weight for SpanGapWeight {
         false
     }
 
-    fn explain(&self, reader: &LeafReader, doc: DocId) -> Result<Explanation> {
+    fn explain(&self, reader: &LeafReaderContext, doc: DocId) -> Result<Explanation> {
         self.explain_span(reader, doc)
     }
 }

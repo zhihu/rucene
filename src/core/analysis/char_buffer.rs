@@ -38,7 +38,6 @@ impl CharacterBuffer {
         let mut unicode_reader = CodePoints::from(reader);
         self.offset = 0;
         let mut offset = 0;
-        let mut offset = 0;
 
         loop {
             if offset >= self.buffer.len() {

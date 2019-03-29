@@ -19,7 +19,7 @@ use core::index::{INDEX_FILE_OLD_SEGMENT_GEN, INDEX_FILE_PENDING_SEGMENTS, INDEX
 use core::store::{BufferedChecksumIndexInput, ChecksumIndexInput, IndexInput, IndexOutput};
 use core::store::{Directory, DirectoryRc, IOContext};
 use core::util::external::deferred::Deferred;
-use core::util::string_util::{random_id, ID_LENGTH};
+use core::util::string_util::{id2str, random_id, ID_LENGTH};
 use core::util::to_base36;
 use core::util::{Version, VERSION_LATEST};
 use error::ErrorKind::{IllegalState, NumError};
@@ -45,7 +45,7 @@ pub const SEGMENT_VERSION_CURRENT: i32 = SEGMENT_VERSION_53;
 /// be deleted, or a custom {@link IndexDeletionPolicy} is in
 /// use). This file lists each segment by name and has details about the codec
 /// and generation of deletes.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct SegmentInfos {
     /// Used to name new segments.
     pub counter: i32,
@@ -520,7 +520,7 @@ impl SegmentInfos {
     pub fn create_backup_segment_infos(&self) -> Vec<Arc<SegmentCommitInfo>> {
         let mut list = Vec::with_capacity(self.segments.len());
         for s in &self.segments {
-            list.push(Arc::clone(s));
+            list.push(Arc::new(s.as_ref().clone()));
         }
         list
     }
@@ -591,6 +591,29 @@ impl SegmentInfos {
         if !inserted && !drop_segment {
             self.segments
                 .insert(0, Arc::clone(&merge.info.as_ref().unwrap()));
+        }
+    }
+}
+
+impl Clone for SegmentInfos {
+    fn clone(&self) -> Self {
+        let segments: Vec<Arc<SegmentCommitInfo>> = self
+            .segments
+            .iter()
+            .map(|s| Arc::new(s.as_ref().clone()))
+            .collect();
+        let mut id = [0u8; ID_LENGTH];
+        id.copy_from_slice(&self.id);
+        Self {
+            counter: self.counter,
+            version: self.version,
+            generation: self.generation,
+            last_generation: self.last_generation,
+            segments,
+            id,
+            lucene_version: self.lucene_version.clone(),
+            min_seg_version: self.min_seg_version.clone(),
+            pending_commit: self.pending_commit,
         }
     }
 }
@@ -721,7 +744,8 @@ pub struct SegmentCoreReaders {
     /// in the case of DV updates, SR may hold a newer version.
     pub core_field_infos: Arc<FieldInfos>,
     pub points_reader: Option<Arc<PointValues>>,
-    core_dropped_listeners: Mutex<Vec<Deferred>>,
+    pub core_dropped_listeners: Mutex<Vec<Deferred>>,
+    pub core_cache_key: String,
 }
 
 impl SegmentCoreReaders {
@@ -802,6 +826,7 @@ impl SegmentCoreReaders {
             core_field_infos,
             points_reader,
             core_dropped_listeners: Mutex::new(vec![]),
+            core_cache_key: format!("{}@{}", si.name, id2str(&random_id())),
         })
     }
 

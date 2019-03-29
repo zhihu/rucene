@@ -5,10 +5,11 @@ use core::index::index_writer::IndexWriter;
 use core::index::INDEX_FILE_SEGMENTS;
 use core::index::{get_segment_file_name, run_with_find_segment_file, SegmentInfos};
 use core::index::{IndexReader, LeafReader, SegmentReader};
-use core::store::{Directory, DirectoryRc, IOContext, IO_CONTEXT_READ};
+use core::store::{Directory, DirectoryRc, IO_CONTEXT_READ};
 use core::util::DocId;
 use error::{ErrorKind::IllegalState, Result};
 
+use core::index::leaf_reader::LeafReaderContext;
 use std::{any::Any, collections::HashMap, fmt, sync::Arc};
 
 ///
@@ -44,12 +45,12 @@ pub struct StandardDirectoryReader {
     #[allow(dead_code)]
     segment_infos: SegmentInfos,
     max_doc: i32,
-    num_docs: i32,
+    pub num_docs: i32,
     starts: Vec<i32>,
     readers: Vec<Arc<SegmentReader>>,
     apply_all_deletes: bool,
     write_all_deletes: bool,
-    writer: Option<IndexWriter>,
+    writer: Option<Arc<IndexWriter>>,
 }
 
 impl StandardDirectoryReader {
@@ -182,7 +183,7 @@ impl StandardDirectoryReader {
         directory: DirectoryRc,
         mut readers: Vec<Arc<SegmentReader>>,
         segment_infos: SegmentInfos,
-        writer: Option<IndexWriter>,
+        writer: Option<Arc<IndexWriter>>,
         apply_all_deletes: bool,
         write_all_deletes: bool,
     ) -> StandardDirectoryReader {
@@ -190,7 +191,6 @@ impl StandardDirectoryReader {
         let mut max_doc = 0;
         let mut num_docs = 0;
         for reader in &mut readers {
-            reader.set_doc_base(max_doc);
             starts.push(max_doc);
             max_doc += reader.max_docs();
             num_docs += reader.num_docs();
@@ -209,6 +209,14 @@ impl StandardDirectoryReader {
             apply_all_deletes,
             write_all_deletes,
         }
+    }
+
+    pub fn set_writer(&mut self, writer: Option<Arc<IndexWriter>>) {
+        self.writer = writer;
+    }
+
+    pub fn get_writer(&self) -> Option<Arc<IndexWriter>> {
+        self.writer.as_ref().map(Arc::clone)
     }
 
     pub fn version(&self) -> i64 {
@@ -234,7 +242,8 @@ impl StandardDirectoryReader {
                 return Ok(None);
             }
 
-            let reader = writer.get_reader(self.apply_all_deletes, self.write_all_deletes)?;
+            let mut reader = writer.get_reader(self.apply_all_deletes, self.write_all_deletes)?;
+            reader.writer = self.writer.as_ref().map(Arc::clone);
             if reader.version() == self.segment_infos.version {
                 return Ok(None);
             }
@@ -282,10 +291,13 @@ impl StandardDirectoryReader {
 }
 
 impl IndexReader for StandardDirectoryReader {
-    fn leaves(&self) -> Vec<&LeafReader> {
+    fn leaves(&self) -> Vec<LeafReaderContext> {
         self.readers
             .iter()
-            .map(|r| r.as_ref() as &LeafReader)
+            .enumerate()
+            .map(|(i, r)| {
+                LeafReaderContext::new(self, r.as_ref() as &LeafReader, i, self.starts[i])
+            })
             .collect()
     }
 
@@ -343,11 +355,11 @@ impl fmt::Debug for StandardDirectoryReader {
         } else {
             String::new()
         };
-        let leaf_readers: Vec<&str> = self.leaves().iter().map(|l| l.name()).collect();
+        let leaf_readers: Vec<&str> = self.leaves().iter().map(|l| l.reader.name()).collect();
         write!(
             f,
             "StandardDirectoryReader({},  leaves: {:?})",
-            seg_infos, leaf_readers
+            seg_infos, leaf_readers,
         )
     }
 }
@@ -355,5 +367,18 @@ impl fmt::Debug for StandardDirectoryReader {
 impl AsRef<IndexReader> for Arc<StandardDirectoryReader> {
     fn as_ref(&self) -> &(IndexReader + 'static) {
         &**self as &(IndexReader + 'static)
+    }
+}
+
+impl Drop for StandardDirectoryReader {
+    fn drop(&mut self) {
+        if let Some(ref writer) = self.writer {
+            if let Err(e) = writer.dec_ref_deleter(&self.segment_infos) {
+                error!(
+                    "StandardDirectoryReader drop failed by dec_ref_deleter: {:?}",
+                    e
+                );
+            }
+        }
     }
 }

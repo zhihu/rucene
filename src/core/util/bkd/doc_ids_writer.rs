@@ -160,7 +160,7 @@ impl DocIdsWriter {
         }
 
         if sorted {
-            out.write_byte(0 as u8)?;
+            out.write_byte(0)?;
             let mut previous = 0;
             for doc in &doc_ids[start..start + count] {
                 let d = *doc;

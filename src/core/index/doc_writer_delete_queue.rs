@@ -1,10 +1,11 @@
-use core::index::bufferd_updates::{BufferedUpdates, FrozenBufferUpdates};
+use core::index::bufferd_updates::{BufferedUpdates, FrozenBufferedUpdates};
 use core::index::Term;
 use core::search::{Query, NO_MORE_DOCS};
 use core::util::DocId;
 
 use error::Result;
 
+use std::cell::Cell;
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -50,8 +51,9 @@ pub struct DocumentsWriterDeleteQueue {
     // Whenever any segment flushes, we bundle up this set of deletes and insert
     // into the buffered updates stream before the newly flushed segment(s).
     global_data: Mutex<GlobalData>,
-    pub generation: AtomicU64,
+    pub generation: u64,
     next_seq_no: AtomicU64,
+    pub max_seq_no: Cell<u64>,
 }
 
 struct GlobalData {
@@ -100,8 +102,9 @@ impl DocumentsWriterDeleteQueue {
         Self {
             tail: Mutex::new(tail),
             global_data: Mutex::new(global_data),
-            generation: AtomicU64::new(generation),
+            generation,
             next_seq_no: AtomicU64::new(start_seq_no),
+            max_seq_no: Cell::new(u64::max_value()),
         }
     }
 
@@ -121,7 +124,7 @@ impl DocumentsWriterDeleteQueue {
         Ok(seq_no)
     }
 
-    /// invariant for docment update
+    /// invariant for document update
     pub fn add_term_to_slice(&self, term: Term, slice: &mut DeleteSlice) -> Result<u64> {
         let seq = self.next_seq_no.load(Ordering::Acquire);
         let del_node = Arc::new(DeleteListNode::new(DeleteNode::Term(term), seq));
@@ -168,7 +171,9 @@ impl DocumentsWriterDeleteQueue {
     }
 
     pub fn next_sequence_number(&self) -> u64 {
-        self.next_seq_no.fetch_add(1, Ordering::AcqRel)
+        let no = self.next_seq_no.fetch_add(1, Ordering::AcqRel);
+        debug_assert!(no < self.max_seq_no.get());
+        no
     }
 
     fn try_apply_global_slice(&self) -> Result<()> {
@@ -197,7 +202,7 @@ impl DocumentsWriterDeleteQueue {
     pub fn freeze_global_buffer(
         &self,
         caller_slice: Option<&mut DeleteSlice>,
-    ) -> Result<FrozenBufferUpdates> {
+    ) -> Result<FrozenBufferedUpdates> {
         let mut global_guard = self.global_data.lock()?;
         // Here we freeze the global buffer so we need to lock it, apply all deletes in the
         // queue and reset the global slice to let the GC prune the queue
@@ -214,7 +219,7 @@ impl DocumentsWriterDeleteQueue {
             global_guard.global_slice.slice_tail = current_tail;
             global_guard.apply_global_updates(NO_MORE_DOCS);
         }
-        let packet = FrozenBufferUpdates::new(&global_guard.global_buffered_updates, false);
+        let packet = FrozenBufferedUpdates::new(&mut global_guard.global_buffered_updates, false);
         global_guard.global_buffered_updates.clear();
         Ok(packet)
     }
@@ -337,9 +342,7 @@ impl Drop for DeleteListNode {
                 let next2 = (*next).next.load(Ordering::Acquire);
 
                 if Arc::strong_count(&(*next)) <= 1 {
-                    if let Some(n) = Arc::get_mut(&mut (*next)) {
-                        (*n).next = AtomicPtr::default();
-                    }
+                    Arc::get_mut(&mut *next).unwrap().next = AtomicPtr::default();
 
                     Box::from_raw(next);
                     next = next2;

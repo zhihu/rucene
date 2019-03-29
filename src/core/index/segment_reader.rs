@@ -1,9 +1,10 @@
 use std::{any::Any,
-          cell::{Cell, RefCell},
+          cell::RefCell,
           collections::{hash_map::Entry, HashMap},
           sync::Arc};
 use thread_local::{CachedThreadLocal, ThreadLocal};
 
+use core::index::leaf_reader::LeafReaderContext;
 use core::{codec::{DocValuesProducer, FieldsProducerRef, NormsProducer, StoredFieldsReader,
                    TermVectorsReader},
            doc::{Document, DocumentStoredFieldVisitor},
@@ -35,8 +36,6 @@ pub struct SegmentReader {
     pub is_nrt: bool,
     pub field_infos: Arc<FieldInfos>,
     // context: LeafReaderContext
-    // TODO the doc base in parent, temporarily put here
-    doc_base: Cell<DocId>,
     doc_values_producer: ThreadLocalDocValueProducer,
     docs_with_field_local: CachedThreadLocal<RefCell<HashMap<String, BitsRef>>>,
     doc_values_local: CachedThreadLocal<RefCell<HashMap<String, DocValuesRefEnum>>>,
@@ -71,7 +70,6 @@ impl SegmentReader {
             core,
             is_nrt,
             field_infos,
-            doc_base: Cell::new(0),
             doc_values_producer,
             docs_with_field_local,
             doc_values_local,
@@ -164,13 +162,8 @@ impl SegmentReader {
 
     pub fn check_bounds(&self, doc_id: DocId) {
         debug_assert!(
-            doc_id >= 0 && doc_id < self.doc_base.get() + self.max_docs(),
-            format!(
-                "doc_id={} max_docs={} doc_base={}",
-                doc_id,
-                self.max_docs(),
-                self.doc_base.get()
-            )
+            doc_id >= 0 && doc_id < self.max_docs(),
+            format!("doc_id={} max_docs={}", doc_id, self.max_docs(),)
         );
     }
 
@@ -203,7 +196,7 @@ impl SegmentReader {
             )?
         } else {
             assert_eq!(si.del_count(), 0);
-            Arc::new(MatchAllBits::new(0))
+            Arc::new(MatchAllBits::new(si.info.max_doc() as usize))
         };
 
         let doc_values_producer =
@@ -224,15 +217,15 @@ impl SegmentReader {
         self.core.fields()
     }
 
-    pub fn set_doc_base(&self, doc_base: DocId) {
-        self.doc_base.set(doc_base);
-    }
-
     fn get_dv_field(&self, field: &str, dv_type: DocValuesType) -> Option<&FieldInfo> {
         match self.field_infos.field_info_by_name(field) {
             Some(fi) if fi.doc_values_type == dv_type => Some(fi),
             _ => None,
         }
+    }
+
+    pub fn leaf_context(&self) -> LeafReaderContext {
+        LeafReaderContext::new(self, self, 0, 0)
     }
 }
 
@@ -315,8 +308,8 @@ impl SegmentReader {
 }
 
 impl IndexReader for SegmentReader {
-    fn leaves(&self) -> Vec<&LeafReader> {
-        vec![self]
+    fn leaves(&self) -> Vec<LeafReaderContext> {
+        vec![self.leaf_context()]
     }
 
     fn term_vector(&self, doc_id: i32) -> Result<Option<Box<Fields>>> {
@@ -337,9 +330,9 @@ impl IndexReader for SegmentReader {
         LeafReader::num_docs(self)
     }
 
-    fn leaf_reader_for_doc(&self, doc: i32) -> &LeafReader {
+    fn leaf_reader_for_doc(&self, doc: i32) -> LeafReaderContext {
         debug_assert!(doc <= IndexReader::max_doc(self));
-        self
+        self.leaf_context()
     }
 
     fn as_any(&self) -> &Any {
@@ -356,14 +349,10 @@ impl LeafReader for SegmentReader {
         &self.si.info.name
     }
 
-    fn doc_base(&self) -> DocId {
-        self.doc_base.get()
-    }
-
     fn term_vector(&self, doc_id: DocId) -> Result<Option<Box<Fields>>> {
         self.check_bounds(doc_id);
         if let Some(ref reader) = self.core.term_vectors_reader {
-            reader.get(doc_id - self.doc_base.get())
+            reader.get(doc_id)
         } else {
             bail!("the index does not support term vectors!");
         }
@@ -618,7 +607,7 @@ impl LeafReader for SegmentReader {
 
     fn core_cache_key(&self) -> &str {
         // use segment name as unique segment cache key
-        &self.si.info.name
+        &self.core.core_cache_key
     }
 
     fn index_sort(&self) -> Option<&Sort> {

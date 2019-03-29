@@ -2,12 +2,12 @@ use core::codec::{DocValuesProducerRef, FieldsProducerRef};
 use core::codec::{NormsProducer, StoredFieldsReader, TermVectorsReader};
 use core::index::point_values::PointValuesRef;
 use core::index::term::{TermState, TermsRef};
-use core::index::BinaryDocValuesRef;
 use core::index::SortedDocValuesRef;
 use core::index::SortedNumericDocValuesRef;
 use core::index::SortedSetDocValuesRef;
 use core::index::StoredFieldVisitor;
 use core::index::Term;
+use core::index::{BinaryDocValuesRef, IndexReader};
 use core::index::{FieldInfo, FieldInfos, Fields};
 use core::index::{NumericDocValues, NumericDocValuesRef};
 use core::search::posting_iterator::{EmptyPostingIterator, PostingIterator};
@@ -39,8 +39,6 @@ pub trait LeafReader: Send + Sync {
 
         Ok(0)
     }
-
-    fn doc_base(&self) -> DocId;
 
     fn docs(&self, term: &Term, flags: i32) -> Result<Box<DocIterator>> {
         self.postings(term, flags)?.clone_as_doc_iterator()
@@ -80,7 +78,7 @@ pub trait LeafReader: Send + Sync {
         Ok(Box::new(EmptyPostingIterator::default()))
     }
 
-    fn term_vector(&self, doc_id: DocId) -> Result<Option<Box<Fields>>>;
+    fn term_vector(&self, leaf_doc_id: DocId) -> Result<Option<Box<Fields>>>;
 
     fn document(&self, doc_id: DocId, visitor: &mut StoredFieldVisitor) -> Result<()>;
 
@@ -141,4 +139,36 @@ pub trait LeafReader: Send + Sync {
     fn doc_values_reader(&self) -> Result<Option<DocValuesProducerRef>>;
 
     fn postings_reader(&self) -> Result<FieldsProducerRef>;
+}
+
+// TODO currently we don't support multi-level index reader
+#[derive(Clone)]
+pub struct LeafReaderContext<'a> {
+    /// ord in parent
+    pub ord: usize,
+    /// doc base in parent
+    pub doc_base: DocId,
+    pub reader: &'a LeafReader,
+    pub parent: &'a IndexReader,
+}
+
+impl<'a> LeafReaderContext<'a> {
+    pub fn new(
+        parent: &'a IndexReader,
+        reader: &'a LeafReader,
+        ord: usize,
+        doc_base: DocId,
+    ) -> Self {
+        Self {
+            parent,
+            reader,
+            ord,
+            doc_base,
+        }
+    }
+
+    #[inline]
+    pub fn doc_base(&self) -> DocId {
+        self.doc_base
+    }
 }

@@ -160,7 +160,7 @@ impl FreqProxTermsWriter {
         if state.seg_updates.is_some() {
             if !state.seg_updates().deleted_terms.is_empty() {
                 let mut deleted_terms = Vec::with_capacity(state.seg_updates().deleted_terms.len());
-                for (k, _) in state.seg_updates().deleted_terms.as_ref() {
+                for k in state.seg_updates().deleted_terms.keys() {
                     deleted_terms.push(k.clone());
                 }
                 deleted_terms.sort();
@@ -186,7 +186,7 @@ impl FreqProxTermsWriter {
                                 let mut doc = postings_iter.next()?;
                                 if doc < del_doc_limit {
                                     let size = state.segment_info.max_doc as usize;
-                                    if state.live_docs.len() == 0 {
+                                    if state.live_docs.is_empty() {
                                         state.live_docs = Box::new(FixedBitSet::new(size));
                                         state.live_docs.as_bit_set_mut().batch_set(0, size);
                                     }

@@ -8,7 +8,7 @@ use std::sync::{Arc, RwLock};
 
 use core::search::lru_cache::LRUCache;
 
-use core::index::LeafReader;
+use core::index::LeafReaderContext;
 use core::search::bulk_scorer::BulkScorer;
 use core::search::cache_policy::QueryCachingPolicy;
 use core::search::collector::{Collector, LeafCollector, SearchCollector};
@@ -140,17 +140,19 @@ pub struct CacheData {
     pub cache: HashMap<String, LeafCache>,
 
     max_size: usize,
-    max_doc: i32,
     min_size: i32,
     min_size_ratio: f32,
 }
 
 impl CacheData {
-    fn test(&self, leaf_reader: &LeafReader) -> Result<bool> {
-        if leaf_reader.max_doc() < self.min_size {
+    fn test(&self, leaf_reader: &LeafReaderContext) -> Result<bool> {
+        if leaf_reader.reader.max_doc() < self.min_size {
             Ok(false)
         } else {
-            Ok(leaf_reader.max_doc() as f32 / self.max_doc as f32 >= self.min_size_ratio)
+            Ok(
+                leaf_reader.reader.max_doc() as f32 / leaf_reader.parent.max_doc() as f32
+                    >= self.min_size_ratio,
+            )
         }
     }
 
@@ -162,9 +164,9 @@ impl CacheData {
     pub fn get(
         &mut self,
         query_key: &str,
-        leaf_reader: &LeafReader,
+        leaf_reader: &LeafReaderContext,
     ) -> Result<Option<Box<DocIterator>>> {
-        if let Some(leaf_cache) = self.cache.get(leaf_reader.core_cache_key()) {
+        if let Some(leaf_cache) = self.cache.get(leaf_reader.reader.core_cache_key()) {
             if let Some(singleton) = self.unique_queries.get(&query_key.to_string()) {
                 // this get call moves the query to the most-recently-used position
                 return leaf_cache.get(singleton);
@@ -176,7 +178,7 @@ impl CacheData {
     pub fn put_if_absent(
         &mut self,
         query_key: &str,
-        leaf_reader: &LeafReader,
+        leaf_reader: &LeafReaderContext,
         set: Box<DocIdSet>,
     ) -> Result<()> {
         self.evict_if_necessary()?;
@@ -192,7 +194,7 @@ impl CacheData {
             query_key.to_string()
         };
 
-        let key = leaf_reader.core_cache_key();
+        let key = leaf_reader.reader.core_cache_key();
         if self.cache.contains_key(key) {
         } else {
             let leaf_cache = LeafCache::new(key.into());
@@ -241,13 +243,12 @@ pub struct LRUQueryCache {
 }
 
 impl LRUQueryCache {
-    pub fn new(max_size: usize, max_doc: i32) -> LRUQueryCache {
+    pub fn new(max_size: usize) -> LRUQueryCache {
         // let max_size = 10;
         let cache_data = CacheData {
             unique_queries: LRUCache::with_capacity(max_size),
             cache: HashMap::new(),
             max_size,
-            max_doc,
             min_size: 10000,
             min_size_ratio: 0.03f32,
         };
@@ -343,14 +344,18 @@ impl CachingWrapperWeight {
         Ok(Box::new(leaf_collector.doc_id_set.build()))
     }
 
-    fn should_cache(&self, leaf_reader: &LeafReader) -> Result<bool> {
+    fn should_cache(&self, leaf_reader: &LeafReaderContext) -> Result<bool> {
         self.cache_data.read()?.test(leaf_reader)
     }
 
-    fn cache(&self, leaf_reader: &LeafReader, query_key: &str) -> Result<Option<Box<DocIterator>>> {
+    fn cache(
+        &self,
+        leaf_reader: &LeafReaderContext,
+        query_key: &str,
+    ) -> Result<Option<Box<DocIterator>>> {
         let mut scorer = self.weight.create_scorer(leaf_reader)?;
         let mut bulk_scorer = BulkScorer::new(scorer.as_mut());
-        let max_doc = leaf_reader.max_doc();
+        let max_doc = leaf_reader.reader.max_doc();
 
         let doc_id_set = self.cache_impl(&mut bulk_scorer, max_doc)?;
 
@@ -366,7 +371,7 @@ impl CachingWrapperWeight {
 static CACHING_QUERY_TYPE_STR: &str = "CachingWrapperWeight";
 
 impl Weight for CachingWrapperWeight {
-    fn create_scorer(&self, leaf_reader: &LeafReader) -> Result<Box<Scorer>> {
+    fn create_scorer(&self, leaf_reader: &LeafReaderContext) -> Result<Box<Scorer>> {
         if !self.used.compare_and_swap(false, true, Ordering::AcqRel) {
             self.policy.on_use(self)
         }
@@ -429,7 +434,7 @@ impl Weight for CachingWrapperWeight {
         self.weight.needs_scores()
     }
 
-    fn explain(&self, reader: &LeafReader, doc: DocId) -> Result<Explanation> {
+    fn explain(&self, reader: &LeafReaderContext, doc: DocId) -> Result<Explanation> {
         let mut iterator = self.weight.create_scorer(reader)?;
         let exists = if iterator.support_two_phase() {
             two_phase_next(iterator.as_mut())? == doc && iterator.matches()?
@@ -470,7 +475,7 @@ pub struct BitSetLeafCollector {
 }
 
 impl SearchCollector for BitSetLeafCollector {
-    fn set_next_reader(&mut self, _reader_ord: usize, _reader: &LeafReader) -> Result<()> {
+    fn set_next_reader(&mut self, _reader: &LeafReaderContext) -> Result<()> {
         Ok(())
     }
 
@@ -478,7 +483,7 @@ impl SearchCollector for BitSetLeafCollector {
         false
     }
 
-    fn leaf_collector(&mut self, _reader: &LeafReader) -> Result<Box<LeafCollector>> {
+    fn leaf_collector(&mut self, _reader: &LeafReaderContext) -> Result<Box<LeafCollector>> {
         unimplemented!()
     }
 
@@ -505,7 +510,7 @@ pub struct DocIdSetLeafCollector {
 }
 
 impl SearchCollector for DocIdSetLeafCollector {
-    fn set_next_reader(&mut self, _reader_ord: usize, _reader: &LeafReader) -> Result<()> {
+    fn set_next_reader(&mut self, _reader: &LeafReaderContext) -> Result<()> {
         Ok(())
     }
 
@@ -513,7 +518,7 @@ impl SearchCollector for DocIdSetLeafCollector {
         false
     }
 
-    fn leaf_collector(&mut self, _reader: &LeafReader) -> Result<Box<LeafCollector>> {
+    fn leaf_collector(&mut self, _reader: &LeafReaderContext) -> Result<Box<LeafCollector>> {
         unimplemented!()
     }
 

@@ -1499,7 +1499,7 @@ pub trait NormsConsumer: Drop {
                         };
                     to_merge.push(norms);
                 }
-                self.merge_norms_field(merge_field_info, merge_state, &to_merge);
+                self.merge_norms_field(merge_field_info, merge_state, &to_merge)?;
             }
         }
         Ok(())

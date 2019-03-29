@@ -1,6 +1,6 @@
 use error::*;
 
-use core::index::LeafReader;
+use core::index::LeafReaderContext;
 use core::search::Scorer;
 use core::util::DocId;
 
@@ -54,13 +54,13 @@ error_chain! {
 /// of hits would skip it.
 pub trait SearchCollector: Collector {
     /// This method is called before collecting on a new leaf.
-    fn set_next_reader(&mut self, reader_ord: usize, reader: &LeafReader) -> Result<()>;
+    fn set_next_reader(&mut self, reader: &LeafReaderContext) -> Result<()>;
 
     /// iff this collector support parallel collect
     fn support_parallel(&self) -> bool;
 
     /// segment collector for parallel search
-    fn leaf_collector(&mut self, reader: &LeafReader) -> Result<Box<LeafCollector>>;
+    fn leaf_collector(&mut self, reader: &LeafReaderContext) -> Result<Box<LeafCollector>>;
 
     fn finish(&mut self) -> Result<()>;
 }

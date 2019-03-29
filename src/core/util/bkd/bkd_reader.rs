@@ -201,24 +201,20 @@ impl BKDReader {
         }
     }
 
-    fn tree_depth(&self) -> Result<usize> {
+    fn tree_depth(&self) -> usize {
         // First +1 because all the non-leave nodes makes another power
         // of 2; e.g. to have a fully balanced tree with 4 leaves you
         // need a depth=3 tree:
 
         // Second +1 because MathUtil.log computes floor of the logarithm; e.g.
         // with 5 leaves you need a depth=4 tree:
-        Ok((math::log(self.num_leaves as i64, 2) + 2) as usize)
+        (math::log(self.num_leaves as i64, 2) + 2) as usize
     }
 
     pub fn intersect(&self, visitor: &mut IntersectVisitor) -> Result<()> {
         let mut state = self.create_intersect_state(visitor)?;
 
-        self.intersect_with_state(
-            &mut state,
-            self.min_packed_value.as_slice(),
-            self.max_packed_value.as_slice(),
-        )
+        self.intersect_with_state(&mut state, &self.min_packed_value, &self.max_packed_value)
     }
 
     fn intersect_with_state(
@@ -337,7 +333,7 @@ impl BKDReader {
             Box::new(PackedIndexTree::new(
                 self.bytes_per_dim,
                 self.num_dims,
-                self.tree_depth()?,
+                self.tree_depth(),
                 self.packed_bytes_length,
                 self.leaf_node_offset,
                 Arc::clone(&self.packed_index),
@@ -349,7 +345,7 @@ impl BKDReader {
                 self.num_dims as i32,
                 Arc::clone(&self.leaf_block_fps),
                 self.version,
-                self.tree_depth()?,
+                self.tree_depth(),
                 self.packed_bytes_length,
                 self.leaf_node_offset,
             ))
@@ -1103,7 +1099,7 @@ impl IndexTree for PackedIndexTree {
     fn split_dim_value(&mut self) -> Vec<u8> {
         debug_assert!(!self.is_leaf_node());
         let split_dim = self.index_tree.split_dim as usize;
-        self.scratch[0..self.bytes_per_dim].copy_from_slice(
+        self.scratch.copy_from_slice(
             &self.split_values_stack[self.index_tree.level]
                 [split_dim * self.bytes_per_dim..(split_dim + 1) * self.bytes_per_dim],
         );
@@ -1351,7 +1347,7 @@ impl IndexTree for StubIndexTree {
         unreachable!()
     }
 
-    fn set_split_dim_value(&mut self, data: &[u8]) {
+    fn set_split_dim_value(&mut self, _data: &[u8]) {
         unreachable!()
     }
 

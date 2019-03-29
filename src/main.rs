@@ -2,18 +2,12 @@
 #![cfg_attr(feature = "clippy", feature(plugin))]
 #![cfg_attr(feature = "clippy", plugin(clippy))]
 #![cfg_attr(not(feature = "clippy"), allow(unknown_lints))]
-//#![feature(const_max_value, option_filter, exact_size_is_empty)]
-#![feature(option_filter, exact_size_is_empty)]
+#![feature(exact_size_is_empty)]
 #![feature(drain_filter)]
-#![feature(duration_extras)]
-#![feature(hash_map_remove_entry)]
 #![feature(hashmap_internals)]
-//#![feature(vec_remove_item)]
 #![feature(fnbox)]
 #![feature(integer_atomics)]
 #![feature(vec_remove_item)]
-//#![feature(io)]
-//#![feature(repr_transparent)]
 
 #[macro_use]
 extern crate error_chain;
@@ -51,7 +45,8 @@ use core::doc::NumericDocValuesField;
 use core::doc::Word;
 use core::doc::WordTokenStream;
 use core::doc::{BINARY_DOC_VALUES_FIELD_TYPE, NUMERIC_DOC_VALUES_FIELD_TYPE,
-                SORTED_DOC_VALUES_FIELD_TYPE, SORTED_SET_DOC_VALUES_FIELD_TYPE};
+                SORTED_DOC_VALUES_FIELD_TYPE, SORTED_NUMERIC_DOC_VALUES_FIELD_TYPE,
+                SORTED_SET_DOC_VALUES_FIELD_TYPE};
 use core::index::index_writer_config::{IndexWriterConfig, OpenMode};
 use core::index::merge_policy::TieredMergePolicy;
 use core::index::merge_policy::{MergePolicy, MergeSpecification, MergerTrigger};
@@ -250,14 +245,14 @@ fn mock_doc_token() -> Vec<Box<Fieldable>> {
 
     fields.push(Box::new(Field::new(
         "up_vote".into(),
-        NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
+        SORTED_NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
         Some(VariantValue::Int(11)),
         None,
     )));
 
     fields.push(Box::new(Field::new(
         "wilson_score".into(),
-        NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
+        SORTED_NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
         Some(VariantValue::Double(1111.95)),
         None,
     )));
@@ -435,13 +430,13 @@ fn from_json(doc: ContentDoc) -> Vec<Box<Fieldable>> {
         // doc_value fields
         fields.push(Box::new(Field::new(
             "data_version".into(),
-            BINARY_DOC_VALUES_FIELD_TYPE,
+            SORTED_SET_DOC_VALUES_FIELD_TYPE,
             Some(VariantValue::Binary(doc.data_version.into_bytes())),
             None,
         )));
         fields.push(Box::new(Field::new(
             "doc_id".into(),
-            BINARY_DOC_VALUES_FIELD_TYPE,
+            SORTED_SET_DOC_VALUES_FIELD_TYPE,
             Some(VariantValue::Binary(doc.doc_id.clone().into_bytes())),
             None,
         )));
@@ -457,13 +452,13 @@ fn from_json(doc: ContentDoc) -> Vec<Box<Fieldable>> {
         )));
         fields.push(Box::new(Field::new(
             "segmenter_version".into(),
-            BINARY_DOC_VALUES_FIELD_TYPE,
+            SORTED_SET_DOC_VALUES_FIELD_TYPE,
             Some(VariantValue::Binary(doc.segmenter_version.into_bytes())),
             None,
         )));
         fields.push(Box::new(Field::new(
             "original_id".into(),
-            BINARY_DOC_VALUES_FIELD_TYPE,
+            SORTED_SET_DOC_VALUES_FIELD_TYPE,
             Some(VariantValue::Binary(doc.original_id.clone().into_bytes())),
             None,
         )));
@@ -479,13 +474,13 @@ fn from_json(doc: ContentDoc) -> Vec<Box<Fieldable>> {
         )));
         fields.push(Box::new(Field::new(
             "url".into(),
-            BINARY_DOC_VALUES_FIELD_TYPE,
+            SORTED_SET_DOC_VALUES_FIELD_TYPE,
             Some(VariantValue::Binary(doc.url.into_bytes())),
             None,
         )));
         fields.push(Box::new(Field::new(
             "url_token".into(),
-            BINARY_DOC_VALUES_FIELD_TYPE,
+            SORTED_SET_DOC_VALUES_FIELD_TYPE,
             Some(VariantValue::Binary(doc.url_token.clone().into_bytes())),
             None,
         )));
@@ -501,7 +496,7 @@ fn from_json(doc: ContentDoc) -> Vec<Box<Fieldable>> {
         )));
         fields.push(Box::new(Field::new(
             "unique_id".into(),
-            BINARY_DOC_VALUES_FIELD_TYPE,
+            SORTED_SET_DOC_VALUES_FIELD_TYPE,
             Some(VariantValue::Binary(doc.unique_id.into_bytes())),
             None,
         )));
@@ -510,55 +505,55 @@ fn from_json(doc: ContentDoc) -> Vec<Box<Fieldable>> {
     if true {
         fields.push(Box::new(Field::new(
             "upvote_count".into(),
-            NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
+            SORTED_NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
             Some(VariantValue::Int(doc.upvote_count)),
             None,
         )));
         fields.push(Box::new(Field::new(
             "comment_count".into(),
-            NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
+            SORTED_NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
             Some(VariantValue::Int(doc.comment_count)),
             None,
         )));
         fields.push(Box::new(Field::new(
             "content_length".into(),
-            NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
+            SORTED_NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
             Some(VariantValue::Int(doc.content_length)),
             None,
         )));
         fields.push(Box::new(Field::new(
             "content_type".into(),
-            NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
+            SORTED_NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
             Some(VariantValue::Int(doc.content_type)),
             None,
         )));
         fields.push(Box::new(Field::new(
             "created_time".into(),
-            NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
+            SORTED_NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
             Some(VariantValue::Long(doc.created_time)),
             None,
         )));
         fields.push(Box::new(Field::new(
             "status".into(),
-            NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
+            SORTED_NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
             Some(VariantValue::Int(doc.status)),
             None,
         )));
         fields.push(Box::new(Field::new(
             "title_length".into(),
-            NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
+            SORTED_NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
             Some(VariantValue::Int(doc.title_length)),
             None,
         )));
         fields.push(Box::new(Field::new(
             "updated_time".into(),
-            NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
+            SORTED_NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
             Some(VariantValue::Long(doc.updated_time)),
             None,
         )));
         fields.push(Box::new(Field::new(
             "wilson_score".into(),
-            NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
+            SORTED_NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
             Some(VariantValue::Double(doc.wilson_score)),
             None,
         )));
@@ -568,7 +563,7 @@ fn from_json(doc: ContentDoc) -> Vec<Box<Fieldable>> {
         if let Some(downvote_count) = doc.downvote_count {
             fields.push(Box::new(Field::new(
                 "downvote_count".into(),
-                NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
+                SORTED_NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
                 Some(VariantValue::Int(downvote_count)),
                 None,
             )));
@@ -576,7 +571,7 @@ fn from_json(doc: ContentDoc) -> Vec<Box<Fieldable>> {
         if let Some(follower_count) = doc.follower_count {
             fields.push(Box::new(Field::new(
                 "follower_count".into(),
-                NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
+                SORTED_NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
                 Some(VariantValue::Int(follower_count)),
                 None,
             )));
@@ -584,7 +579,7 @@ fn from_json(doc: ContentDoc) -> Vec<Box<Fieldable>> {
         if let Some(is_pu) = doc.is_pu {
             fields.push(Box::new(Field::new(
                 "is_pu".into(),
-                NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
+                SORTED_NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
                 Some(VariantValue::Int(is_pu)),
                 None,
             )));
@@ -592,7 +587,7 @@ fn from_json(doc: ContentDoc) -> Vec<Box<Fieldable>> {
         if let Some(is_pu_goodat_topic) = doc.is_pu_goodat_topic {
             fields.push(Box::new(Field::new(
                 "is_pu_goodat_topic".into(),
-                NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
+                SORTED_NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
                 Some(VariantValue::Int(is_pu_goodat_topic)),
                 None,
             )));
@@ -600,7 +595,7 @@ fn from_json(doc: ContentDoc) -> Vec<Box<Fieldable>> {
         if let Some(member_id) = doc.member_id {
             fields.push(Box::new(Field::new(
                 "member_id".into(),
-                NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
+                SORTED_NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
                 Some(VariantValue::Int(member_id)),
                 None,
             )));
@@ -608,7 +603,7 @@ fn from_json(doc: ContentDoc) -> Vec<Box<Fieldable>> {
         if let Some(q_answer_count) = doc.q_answer_count {
             fields.push(Box::new(Field::new(
                 "q_answer_count".into(),
-                NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
+                SORTED_NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
                 Some(VariantValue::Int(q_answer_count)),
                 None,
             )));
@@ -616,7 +611,7 @@ fn from_json(doc: ContentDoc) -> Vec<Box<Fieldable>> {
         if let Some(question_id) = doc.question_id {
             fields.push(Box::new(Field::new(
                 "question_id".into(),
-                NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
+                SORTED_NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
                 Some(VariantValue::Int(question_id)),
                 None,
             )));
@@ -624,7 +619,7 @@ fn from_json(doc: ContentDoc) -> Vec<Box<Fieldable>> {
         if let Some(thank_count) = doc.thank_count {
             fields.push(Box::new(Field::new(
                 "thank_count".into(),
-                NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
+                SORTED_NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
                 Some(VariantValue::Int(thank_count)),
                 None,
             )));
@@ -632,7 +627,7 @@ fn from_json(doc: ContentDoc) -> Vec<Box<Fieldable>> {
         if let Some(q_url_token) = doc.q_url_token {
             fields.push(Box::new(Field::new(
                 "q_url_token".into(),
-                BINARY_DOC_VALUES_FIELD_TYPE,
+                SORTED_SET_DOC_VALUES_FIELD_TYPE,
                 Some(VariantValue::Binary(q_url_token.into_bytes())),
                 None,
             )));
@@ -640,7 +635,7 @@ fn from_json(doc: ContentDoc) -> Vec<Box<Fieldable>> {
         if let Some(collect_count) = doc.collect_count {
             fields.push(Box::new(Field::new(
                 "collect_count".into(),
-                NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
+                SORTED_NUMERIC_DOC_VALUES_FIELD_TYPE.clone(),
                 Some(VariantValue::Int(collect_count)),
                 None,
             )));
@@ -671,7 +666,7 @@ fn from_json(doc: ContentDoc) -> Vec<Box<Fieldable>> {
         if doc.title.raw.len() > 0 {
             fields.push(Box::new(Field::new(
                 "title_raw".into(),
-                BINARY_DOC_VALUES_FIELD_TYPE,
+                SORTED_SET_DOC_VALUES_FIELD_TYPE,
                 Some(VariantValue::Binary(doc.title.raw.into_bytes())),
                 None,
             )));
@@ -695,7 +690,7 @@ fn from_file<P: AsRef<Path>>(path: P) -> Vec<Vec<Box<Fieldable>>> {
     result
 }
 
-fn main() -> Result<()> {
+fn main10() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let mut max_buffered_docs = if args.len() > 1 {
         args[1].parse::<u32>().unwrap()
@@ -789,7 +784,7 @@ fn main() -> Result<()> {
                     //                            "debug delete_document {} {} {} {:?}",
                     //                            i,
                     //                            curr,
-                    //                            
+                    //
                     // String::from_utf8(to_delete.bytes.clone()).unwrap(),
                     //                            deleted
                     //                        );
@@ -822,7 +817,10 @@ fn main() -> Result<()> {
 use core::index::{IndexReader, StandardDirectoryReader};
 use core::search::collector::TopDocsCollector;
 use core::search::match_all::MatchAllDocsQuery;
+use core::search::query_string::QueryStringQueryBuilder;
 use core::search::searcher::{DefaultIndexSearcher, IndexSearcher};
+use core::search::term_query::TermQuery;
+use core::search::Query;
 use core::store::FSDirectory;
 
 fn show_docs() -> Result<()> {
@@ -840,8 +838,11 @@ fn show_docs() -> Result<()> {
     for doc in docs.score_docs() {
         let id = doc.doc_id();
         let leaf = searcher.reader().leaf_reader_for_doc(id);
-        let binary_doc_values = leaf.get_binary_doc_values("doc_id")?;
-        let res = binary_doc_values.get(id - leaf.doc_base())?;
+        let values = leaf.reader.get_sorted_set_doc_values("doc_id")?;
+        let mut ctx = values.set_document(id - leaf.doc_base())?;
+        let ord = values.next_ord(&mut ctx)?;
+        let res = values.lookup_ord(ord)?;
+
         println!(" --- doc id: {}, raw id: {}", id, String::from_utf8(res)?);
     }
 
@@ -877,6 +878,52 @@ fn main1() -> Result<()> {
 
     index_writer.force_merge(1, true)?;
     index_writer.close()?;
+
+    Ok(())
+}
+
+fn main() -> Result<()> {
+    let dir = FSDirectory::new(
+        "/tmp/test_dir/batch_content_20190121/0/index",
+        Box::new(NativeFSLockFactory::default()),
+    )?;
+    let reader: Arc<IndexReader> = Arc::new(StandardDirectoryReader::open(Arc::new(dir))?);
+    let searcher = DefaultIndexSearcher::new(reader);
+
+    for info in searcher.reader().leaves()[0]
+        .reader
+        .field_infos()
+        .by_name
+        .values()
+    {
+        println!("{:?}", info);
+    }
+
+    let query = QueryStringQueryBuilder::new(
+        "美女".into(),
+        vec![("title".into(), 1.0), ("content".into(), 1.0)],
+        1,
+        1.0,
+    )
+    .build()?;
+
+    let query: Box<Query> = Box::new(MatchAllDocsQuery {});
+
+    let mut collector = TopDocsCollector::new(10);
+    searcher.search(query.as_ref(), &mut collector)?;
+
+    let docs = collector.top_docs();
+    println!("\n ===== total: {}", docs.total_hits());
+    for doc in docs.score_docs() {
+        let id = doc.doc_id();
+        let leaf = searcher.reader().leaf_reader_for_doc(id);
+        let values = leaf.reader.get_sorted_set_doc_values("doc_id")?;
+        let mut ctx = values.set_document(id - leaf.doc_base())?;
+        let ord = values.next_ord(&mut ctx)?;
+        let res = values.lookup_ord(ord)?;
+
+        println!("    - doc id: {}, raw id: {}", id, String::from_utf8(res)?);
+    }
 
     Ok(())
 }

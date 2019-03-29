@@ -1,5 +1,3 @@
-use std::ops::Deref;
-
 use core::analysis::TokenStream;
 use core::doc::{Field, FieldType, SORTED_SET_DOC_VALUES_FIELD_TYPE};
 use core::index::Fieldable;

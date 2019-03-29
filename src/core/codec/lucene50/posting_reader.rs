@@ -533,6 +533,7 @@ impl PostingIterator for BlockDocIterator {
     }
 
     fn freq(&self) -> Result<i32> {
+        debug_assert!(self.freq > 0);
         Ok(self.freq)
     }
 

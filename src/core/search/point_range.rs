@@ -2,8 +2,8 @@ use error::*;
 use std::fmt;
 
 use core::doc::{DoublePoint, FloatPoint, IntPoint, LongPoint};
-use core::index::LeafReader;
 use core::index::{IntersectVisitor, PointValues, Relation};
+use core::index::{LeafReader, LeafReaderContext};
 use core::search::explanation::Explanation;
 use core::search::match_all::{AllDocsIterator, ConstantScoreScorer};
 use core::search::searcher::IndexSearcher;
@@ -194,7 +194,8 @@ impl PointRangeWeight {
 }
 
 impl Weight for PointRangeWeight {
-    fn create_scorer(&self, leaf_reader: &LeafReader) -> Result<Box<Scorer>> {
+    fn create_scorer(&self, leaf_reader_ctx: &LeafReaderContext) -> Result<Box<Scorer>> {
+        let leaf_reader = leaf_reader_ctx.reader;
         if let Some(ref values) = leaf_reader.point_values() {
             if let Some(field_info) = leaf_reader.field_info(&self.field) {
                 if field_info.point_dimension_count != self.num_dims as u32 {
@@ -269,7 +270,7 @@ impl Weight for PointRangeWeight {
         false
     }
 
-    fn explain(&self, _reader: &LeafReader, _doc: DocId) -> Result<Explanation> {
+    fn explain(&self, _reader: &LeafReaderContext, _doc: DocId) -> Result<Explanation> {
         unimplemented!()
     }
 }
@@ -338,7 +339,7 @@ impl<'a> IntersectVisitor for PointRangeIntersectVisitor<'a> {
             let offset = dim * bytes;
             let end = offset + bytes;
             if min_packed_value[offset..end] > self.weight.upper_point[offset..end]
-                || min_packed_value[offset..end] < self.weight.lower_point[offset..]
+                || max_packed_value[offset..end] < self.weight.lower_point[offset..]
             {
                 return Relation::CellOutsideQuery;
             }

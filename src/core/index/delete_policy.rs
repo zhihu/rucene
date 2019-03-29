@@ -1,5 +1,4 @@
 use core::index::index_commit::IndexCommit;
-use core::index::IndexWriter;
 use error::Result;
 
 /// Expert: policy for deletion of stale `IndexCommit index commits`.

@@ -1,5 +1,5 @@
 use core::codec::Codec;
-use core::index::bufferd_updates::{self, BufferedUpdates, FrozenBufferUpdates};
+use core::index::bufferd_updates::{self, BufferedUpdates, FrozenBufferedUpdates};
 use core::index::doc_consumer::{DefaultIndexingChain, DocConsumer};
 use core::index::doc_writer_delete_queue::{DeleteSlice, DocumentsWriterDeleteQueue};
 use core::index::index_writer::IndexWriter;
@@ -7,7 +7,6 @@ use core::index::index_writer::INDEX_MAX_DOCS;
 use core::index::index_writer_config::IndexWriterConfig;
 use core::index::{FieldInfos, FieldInfosBuilder, FieldNumbers, FieldNumbersRef, Fieldable};
 use core::index::{SegmentCommitInfo, SegmentInfo, SegmentWriteState, Term};
-use core::search::Similarity;
 use core::store::{DirectoryRc, FlushInfo, IOContext, TrackingDirectoryWrapper};
 use core::util::byte_block_pool::DirectTrackingAllocator;
 use core::util::int_block_pool::{IntAllocator, INT_BLOCK_SIZE};
@@ -164,14 +163,6 @@ impl DocumentsWriterPerThread {
         self.reserve_one_doc()?;
         // self.doc_state.doc = doc;
         self.doc_state.doc_id = self.num_docs_in_ram as i32;
-        {
-            let mut doc_id_index = "";
-            for f in &doc {
-                if f.name() == "doc_id_index" {
-                    doc_id_index = f.fields_data().unwrap().get_string().unwrap();
-                }
-            }
-        }
         // self.doc_state.analyzer = analyzer;
 
         // Even on exception, the document is still added (but marked
@@ -328,7 +319,7 @@ impl DocumentsWriterPerThread {
     // Prepares this DWPT for flushing. This method will freeze and return the
     // `DocumentsWriterDeleteQueue`s global buffer and apply all pending deletes
     // to this DWPT
-    pub fn prepare_flush(&mut self) -> Result<FrozenBufferUpdates> {
+    pub fn prepare_flush(&mut self) -> Result<FrozenBufferedUpdates> {
         debug_assert!(self.inited);
         debug_assert!(self.num_docs_in_ram > 0);
 
@@ -372,19 +363,18 @@ impl DocumentsWriterPerThread {
                 .codec()
                 .live_docs_format()
                 .new_live_docs(self.num_docs_in_ram as usize)?;
-            for del_doc_id in self.pending_updates.deleted_doc_ids.as_ref() {
+            let docs_len = self.pending_updates.deleted_doc_ids.len();
+            for del_doc_id in self.pending_updates.deleted_doc_ids.drain(..) {
                 flush_state
                     .live_docs
                     .as_bit_set_mut()
-                    .clear(*del_doc_id as usize);
+                    .clear(del_doc_id as usize);
             }
-            let docs_len = self.pending_updates.deleted_doc_ids.len();
             flush_state.del_count_on_flush = docs_len as u32;
             self.pending_updates.bytes_used.fetch_sub(
                 docs_len * bufferd_updates::BYTES_PER_DEL_DOCID,
                 Ordering::AcqRel,
             );
-            self.pending_updates.deleted_doc_ids.clear();
         }
 
         if self.aborted {
@@ -430,7 +420,7 @@ impl DocumentsWriterPerThread {
                 self.pending_updates.clear();
                 None
             } else {
-                Some(&self.pending_updates)
+                Some(&mut self.pending_updates)
             };
             FlushedSegment::new(
                 Arc::new(segment_info_per_commit),
@@ -459,15 +449,17 @@ impl DocumentsWriterPerThread {
         let ctx = &IOContext::Flush(flush_info);
 
         if self.index_writer_config.use_compound_file {
+            let original_files = flushed_segment.segment_info.info.files().clone();
             // TODO: like addIndexes, we are relying on createCompoundFile to successfully
             // cleanup...
             let dir = TrackingDirectoryWrapper::new(&self.directory);
-            let files = unsafe {
+            unsafe {
                 // flushed_segment has no other reference, so Arc::get_mut is safe
                 let segment_info = Arc::get_mut(&mut flushed_segment.segment_info).unwrap();
-                (*self.index_writer).create_compound_file(&dir, &mut segment_info.info, ctx)?
-            };
-            self.files_to_delete.extend(files);
+                (*self.index_writer).create_compound_file(&dir, &mut segment_info.info, ctx)?;
+                segment_info.info.set_use_compound_file();
+            }
+            self.files_to_delete.extend(original_files);
         }
 
         // Have codec write SegmentInfo.  Must do this after
@@ -476,19 +468,11 @@ impl DocumentsWriterPerThread {
         // above:
         {
             let segment_info = Arc::get_mut(&mut flushed_segment.segment_info).unwrap();
-            let mut created_files = Vec::with_capacity(1);
-            let res = self.codec().segment_info_format().write(
+            self.codec().segment_info_format().write(
                 self.directory.as_ref(),
                 &mut segment_info.info,
-                &mut created_files,
                 ctx,
-            );
-            for f in created_files {
-                segment_info.info.add_file(&f)?;
-            }
-            if res.is_err() {
-                return res;
-            }
+            )?;
         }
 
         // TODO: ideally we would freeze newSegment here!!
@@ -544,7 +528,7 @@ impl DocumentsWriterPerThread {
 pub struct FlushedSegment {
     pub segment_info: Arc<SegmentCommitInfo>,
     pub field_infos: FieldInfos,
-    pub segment_updates: Option<FrozenBufferUpdates>,
+    pub segment_updates: Option<FrozenBufferedUpdates>,
     pub live_docs: BitsRef,
     pub del_count: u32,
 }
@@ -553,14 +537,16 @@ impl FlushedSegment {
     pub fn new(
         segment_info: Arc<SegmentCommitInfo>,
         field_infos: FieldInfos,
-        buffered_updates: Option<&BufferedUpdates>,
+        buffered_updates: Option<&mut BufferedUpdates>,
         live_docs: BitsRef,
         del_count: u32,
     ) -> Self {
-        let segment_updates = match buffered_updates {
-            Some(b) if b.any() => Some(FrozenBufferUpdates::new(b, true)),
-            _ => None,
-        };
+        let mut segment_updates = None;
+        if let Some(b) = buffered_updates {
+            if b.any() {
+                segment_updates = Some(FrozenBufferedUpdates::new(b, true));
+            }
+        }
         FlushedSegment {
             segment_info,
             field_infos,
@@ -685,7 +671,7 @@ impl DocumentsWriterPerThreadPool {
 
     pub fn release(&mut self, state: LockedThreadState) {
         let lock = Arc::clone(&self.lock);
-        let l = lock.lock().unwrap();
+        let _l = lock.lock().unwrap();
         debug_assert!(!self.free_list.contains(&state.index));
         self.free_list.push(state.index);
         // In case any thread is waiting, wake one of them up since we just
