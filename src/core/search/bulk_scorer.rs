@@ -117,6 +117,8 @@ mod tests {
     use core::search::tests::*;
 
     use core::index::tests::*;
+    use core::index::IndexReader;
+    use core::index::LeafReaderContext;
     use core::search::collector::top_docs::*;
     use core::search::collector::SearchCollector;
     use core::util::*;
@@ -127,10 +129,14 @@ mod tests {
         let bits = MatchAllBits::new(docs.len());
         let mut scorer_box = create_mock_scorer(docs);
         let leaf_reader = MockLeafReader::new(0);
+        let index_reader = MockIndexReader::new(vec![leaf_reader]);
+        let leaf_reader_context = index_reader.leaves();
         let mut top_collector = TopDocsCollector::new(3);
         {
             let mut bulk_scorer = BulkScorer::new(scorer_box.as_mut());
-            top_collector.set_next_reader(0, &leaf_reader).unwrap();
+            top_collector
+                .set_next_reader(&leaf_reader_context[0])
+                .unwrap();
             bulk_scorer
                 .score(&mut top_collector, Some(&bits), 0, NO_MORE_DOCS)
                 .unwrap();

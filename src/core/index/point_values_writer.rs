@@ -1,4 +1,4 @@
-use core::codec::{MutablePointsReader, PointsReader, PointsWriter};
+use core::codec::{BoxedPointsReader, MutablePointsReader, PointsReader, PointsWriter};
 use core::index::thread_doc_writer::DocumentsWriterPerThread;
 use core::index::FieldInfo;
 use core::index::IntersectVisitor;
@@ -69,21 +69,18 @@ impl PointValuesWriter {
 
     pub fn flush(&mut self, _state: &SegmentWriteState, writer: &mut PointsWriter) -> Result<()> {
         let reader: Box<MutablePointsReader> = Box::new(TempMutablePointsReader::new(self));
-        writer.write_field(&self.field_info, reader)
+        writer.write_field(&self.field_info, BoxedPointsReader::Mutable(reader))
     }
 }
 
 pub struct TempMutablePointsReader {
     point_values_writer: *const PointValuesWriter,
-    ords: Vec<i32>,
+    ords: Vec<usize>,
 }
 
 impl TempMutablePointsReader {
     pub fn new(point_values_writer: &PointValuesWriter) -> TempMutablePointsReader {
-        let mut ords: Vec<i32> = vec![0i32; point_values_writer.num_points];
-        for i in 0..point_values_writer.num_points {
-            ords[i] = i as i32;
-        }
+        let ords: Vec<usize> = (0..point_values_writer.num_points).collect();
 
         TempMutablePointsReader {
             point_values_writer,
@@ -93,7 +90,7 @@ impl TempMutablePointsReader {
 
     #[inline]
     pub fn point_values_writer(&self) -> &PointValuesWriter {
-        unsafe { &(*self.point_values_writer) }
+        unsafe { &*self.point_values_writer }
     }
 }
 
@@ -177,7 +174,7 @@ impl MutablePointsReader for TempMutablePointsReader {
     fn value(&self, i: i32, packed_value: &mut Vec<u8>) {
         let point_values_writer = self.point_values_writer();
 
-        let offset = point_values_writer.packed_bytes_length * self.ords[i as usize] as usize;
+        let offset = point_values_writer.packed_bytes_length * self.ords[i as usize];
         packed_value.resize(point_values_writer.packed_bytes_length, 0);
         point_values_writer
             .bytes
@@ -185,15 +182,13 @@ impl MutablePointsReader for TempMutablePointsReader {
     }
 
     fn byte_at(&self, i: i32, k: i32) -> u8 {
-        let offset = self.point_values_writer().packed_bytes_length
-            * self.ords[i as usize] as usize
-            + k as usize;
+        let offset =
+            self.point_values_writer().packed_bytes_length * self.ords[i as usize] + k as usize;
         self.point_values_writer().bytes.read_byte(offset)
     }
 
     fn doc_id(&self, i: i32) -> DocId {
-        let index = self.ords[i as usize] as usize;
-        self.point_values_writer().doc_ids[index]
+        self.point_values_writer().doc_ids[self.ords[i as usize]]
     }
 
     fn swap(&mut self, i: i32, j: i32) {

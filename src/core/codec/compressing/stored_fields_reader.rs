@@ -755,7 +755,7 @@ impl CompressingStoredFieldsReader {
             // already decompressed
             let start = self.bytes_position.0 + offset;
             DocumentInput::Bytes(ByteArrayDataInput::new(BytesRef::new(
-                &self.bytes[start..start + self.bytes_position.1],
+                &self.bytes[start..start + length],
             )))
         } else if self.sliced {
             self.fields_stream.seek(self.start_pointer)?;

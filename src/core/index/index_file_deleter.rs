@@ -10,6 +10,7 @@ use core::store::{Directory, DirectoryRc};
 use regex::Regex;
 use std::cmp::{max, Ordering};
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::mem;
 use std::ptr;
 use std::sync::{Arc, RwLock};
@@ -343,9 +344,10 @@ impl IndexFileDeleter {
             // DecRef file for commits that were deleted by the policy
             self.delete_commits()
         } else {
-            let res = self.dec_ref_batch((&self.last_files).iter());
+            let res = self.dec_ref_batch(&self.last_files);
             self.last_files.clear();
             res?;
+            // Save files so we can decr on next checkpoint/commit:
             self.last_files.extend(segment_infos.files(false));
             Ok(())
         }
@@ -370,9 +372,7 @@ impl IndexFileDeleter {
     pub fn inc_ref_by_segment(&self, segment_infos: &SegmentInfos, is_commit: bool) {
         // If this is a commit point, also incRef the
         // segments_N file:
-        for filename in segment_infos.files(is_commit) {
-            self.inc_ref(&filename)
-        }
+        self.inc_ref_files(&segment_infos.files(is_commit));
     }
 
     pub fn inc_ref_files(&self, files: &HashSet<String>) {
@@ -419,18 +419,11 @@ impl IndexFileDeleter {
     /// Returns true if the file should now be deleted.
     fn dec_ref(&self, filename: &str) -> bool {
         self.ensure_ref_count(filename);
-        if self
-            .ref_counts
-            .write()
-            .unwrap()
-            .get_mut(filename)
-            .unwrap()
-            .dec_ref()
-            == 0
-        {
+        let mut ref_counts = self.ref_counts.write().unwrap();
+        if ref_counts.get_mut(filename).unwrap().dec_ref() == 0 {
             // This file is no longer referenced by any past
             // commit points nor by the in-memory SegmentInfos:
-            self.ref_counts.write().unwrap().remove(filename);
+            ref_counts.remove(filename);
             true
         } else {
             false
@@ -525,8 +518,8 @@ impl IndexFileDeleter {
         // merging, and it reuses that segment name.
         // TestCrash.testCrashAfterReopen can hit this:
         let filtered = files.into_iter().filter(|f: &&String| {
-            !self.ref_counts.read().unwrap().contains_key(*f)
-                || self.ref_counts.read().unwrap()[*f].count == 0
+            let ref_counts = self.ref_counts.read().unwrap();
+            !ref_counts.contains_key(*f) || ref_counts[*f].count == 0
         });
 
         self.delete_files(filtered)
@@ -550,7 +543,7 @@ impl IndexFileDeleter {
         let mut to_delete = HashSet::new();
         let pattern = Regex::new(CODEC_FILE_PATTERN).unwrap();
         for filename in &files {
-            if filename.ends_with("write.lock")
+            if !filename.ends_with("write.lock")
                 && !self.ref_counts.read()?.contains_key(filename)
                 && (pattern.is_match(filename) || filename.starts_with(INDEX_FILE_SEGMENTS) ||
                 // we only try to clear out pending_segments_N during rollback(), because we don't ref-count it
@@ -569,7 +562,7 @@ impl IndexFileDeleter {
     pub fn close(&mut self) -> Result<()> {
         if !self.last_files.is_empty() {
             let files = mem::replace(&mut self.last_files, Vec::with_capacity(0));
-            self.dec_ref_batch((&files).iter())?;
+            self.dec_ref_batch(&files)?;
         }
         Ok(())
     }
@@ -604,6 +597,18 @@ impl RefCount {
         debug_assert!(self.count > 0);
         self.count -= 1;
         self.count
+    }
+}
+
+impl fmt::Display for RefCount {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.count)
+    }
+}
+
+impl fmt::Debug for RefCount {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.count)
     }
 }
 

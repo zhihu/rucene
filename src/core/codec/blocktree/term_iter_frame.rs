@@ -46,7 +46,7 @@ pub struct SegmentTermsIterFrame {
     // scanning fo find the matching term is fast and only if you find
     // a match and app wants the stats or docs/positions iterators,
     // will we decode the metadata
-    metadata_upto: i32,
+    pub metadata_upto: i32,
     pub state: BlockTermState,
     // metadata bufffer, holding monotonic values
     longs: Vec<i64>,
@@ -342,6 +342,7 @@ impl SegmentTermsIterFrame {
                         self.state.term_block_ord += 1;
                         self.suffixes_reader.read_byte()?;
                     }
+                    // just to make the compiler happy
                     _ => unreachable!(),
                 }
             }

@@ -7,7 +7,7 @@ use core::util::bkd::LongBitSet;
 use core::util::bkd::PointType;
 use core::util::bkd::{PointReader, PointWriter};
 use core::util::DocId;
-use error::*;
+use error::{Error, ErrorKind::UnexpectedEOF, Result};
 use std::sync::Arc;
 
 pub struct OfflinePointReader {
@@ -147,11 +147,14 @@ impl PointReader for OfflinePointReader {
             self.count_left -= 1;
         }
 
-        let capacity = self.packed_value.capacity();
-        match self.input.read_bytes(&mut self.packed_value, 0, capacity) {
-            Err(_e) => {
-                debug_assert!(self.count_left == -1);
+        let len = self.packed_value.len();
+        match self.input.read_bytes(&mut self.packed_value, 0, len) {
+            Err(Error(UnexpectedEOF(_), _)) => {
+                debug_assert_eq!(self.count_left, -1);
                 return Ok(false);
+            }
+            Err(e) => {
+                return Err(e);
             }
             _ => {}
         }
@@ -170,8 +173,8 @@ impl PointReader for OfflinePointReader {
         Ok(true)
     }
 
-    fn packed_value(&self) -> Vec<u8> {
-        self.packed_value.clone()
+    fn packed_value(&self) -> &[u8] {
+        &self.packed_value
     }
 
     fn ord(&self) -> i64 {
@@ -322,6 +325,12 @@ impl OfflinePointWriter {
         }
     }
 
+    // only used for BKDWriter
+    pub fn output(&self) -> &IndexOutput {
+        debug_assert!(self.output.is_some());
+        self.output.as_ref().unwrap().as_ref()
+    }
+
     pub fn prefix_new(
         temp_dir: &DirectoryRc,
         temp_file_name_prefix: &str,
@@ -365,9 +374,9 @@ impl PointWriter for OfflinePointWriter {
         debug_assert!(packed_value.len() == self.packed_bytes_length);
         let output = self.output.as_mut().unwrap();
 
-        output.write_bytes(&packed_value, 0, packed_value.len())?;
+        output.write_bytes(packed_value, 0, packed_value.len())?;
         output.write_int(doc_id)?;
-        if self.single_value_per_doc {
+        if !self.single_value_per_doc {
             if self.long_ords {
                 output.write_long(ord)?;
             } else {
@@ -395,6 +404,7 @@ impl PointWriter for OfflinePointWriter {
     }
 
     fn index_output(&mut self) -> &mut IndexOutput {
+        debug_assert!(self.output.is_some());
         self.output.as_mut().unwrap().as_mut()
     }
 

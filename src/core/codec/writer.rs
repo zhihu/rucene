@@ -27,13 +27,88 @@ use std::mem;
 use std::ptr;
 use std::sync::Arc;
 
+pub enum BoxedPointsReader {
+    Simple(Box<PointsReader>),
+    Mutable(Box<MutablePointsReader>),
+}
+
+impl PointsReader for BoxedPointsReader {
+    fn check_integrity(&self) -> Result<()> {
+        match self {
+            BoxedPointsReader::Simple(s) => s.check_integrity(),
+            BoxedPointsReader::Mutable(m) => m.check_integrity(),
+        }
+    }
+
+    fn as_any(&self) -> &Any {
+        match self {
+            BoxedPointsReader::Simple(s) => PointsReader::as_any(s.as_ref()),
+            BoxedPointsReader::Mutable(m) => PointsReader::as_any(m.as_ref()),
+        }
+    }
+}
+
+impl PointValues for BoxedPointsReader {
+    fn intersect(&self, field_name: &str, visitor: &mut IntersectVisitor) -> Result<()> {
+        match self {
+            BoxedPointsReader::Simple(s) => s.intersect(field_name, visitor),
+            BoxedPointsReader::Mutable(m) => m.intersect(field_name, visitor),
+        }
+    }
+
+    fn min_packed_value(&self, field_name: &str) -> Result<Vec<u8>> {
+        match self {
+            BoxedPointsReader::Simple(s) => s.min_packed_value(field_name),
+            BoxedPointsReader::Mutable(m) => m.min_packed_value(field_name),
+        }
+    }
+
+    fn max_packed_value(&self, field_name: &str) -> Result<Vec<u8>> {
+        match self {
+            BoxedPointsReader::Simple(s) => s.max_packed_value(field_name),
+            BoxedPointsReader::Mutable(m) => m.max_packed_value(field_name),
+        }
+    }
+
+    fn num_dimensions(&self, field_name: &str) -> Result<usize> {
+        match self {
+            BoxedPointsReader::Simple(s) => s.num_dimensions(field_name),
+            BoxedPointsReader::Mutable(m) => m.num_dimensions(field_name),
+        }
+    }
+
+    fn bytes_per_dimension(&self, field_name: &str) -> Result<usize> {
+        match self {
+            BoxedPointsReader::Simple(s) => s.bytes_per_dimension(field_name),
+            BoxedPointsReader::Mutable(m) => m.bytes_per_dimension(field_name),
+        }
+    }
+
+    fn size(&self, field_name: &str) -> Result<i64> {
+        match self {
+            BoxedPointsReader::Simple(s) => s.size(field_name),
+            BoxedPointsReader::Mutable(m) => m.size(field_name),
+        }
+    }
+
+    fn doc_count(&self, field_name: &str) -> Result<i32> {
+        match self {
+            BoxedPointsReader::Simple(s) => s.doc_count(field_name),
+            BoxedPointsReader::Mutable(m) => m.doc_count(field_name),
+        }
+    }
+
+    fn as_any(&self) -> &Any {
+        match self {
+            BoxedPointsReader::Simple(s) => PointValues::as_any(s.as_ref()),
+            BoxedPointsReader::Mutable(m) => PointValues::as_any(m.as_ref()),
+        }
+    }
+}
+
 pub trait PointsWriter {
     /// Write all values contained in the provided reader
-    fn write_field(
-        &mut self,
-        field_info: &FieldInfo,
-        values: Box<MutablePointsReader>,
-    ) -> Result<()>;
+    fn write_field(&mut self, field_info: &FieldInfo, values: BoxedPointsReader) -> Result<()>;
 
     /// Default naive merge implementation for one field: it just re-indexes all the values
     /// from the incoming segment.  The default codec overrides this for 1D fields and uses
@@ -58,12 +133,12 @@ pub trait PointsWriter {
 
         self.write_field(
             field_info,
-            Box::new(MergePointsReader::new(
+            BoxedPointsReader::Simple(Box::new(MergePointsReader::new(
                 field_info.clone(),
                 merge_state,
                 max_point_count,
                 doc_count,
-            )),
+            ))),
         )
     }
 
@@ -115,29 +190,6 @@ impl MergePointsReader {
             max_point_count,
             doc_count,
         }
-    }
-}
-
-// TODO just to make the compiler happy
-impl MutablePointsReader for MergePointsReader {
-    fn value(&self, _i: i32, _packed_value: &mut Vec<u8>) {
-        unreachable!()
-    }
-
-    fn byte_at(&self, _i: i32, _k: i32) -> u8 {
-        unreachable!()
-    }
-
-    fn doc_id(&self, _i: i32) -> i32 {
-        unreachable!()
-    }
-
-    fn swap(&mut self, _i: i32, _j: i32) {
-        unreachable!()
-    }
-
-    fn clone(&self) -> Box<MutablePointsReader> {
-        unreachable!()
     }
 }
 
@@ -860,6 +912,6 @@ impl Fieldable for MergeVisitor {
     }
 
     fn numeric_value(&self) -> Option<Numeric> {
-        unimplemented!()
+        self.value.as_ref().and_then(|v| v.get_numeric())
     }
 }

@@ -65,7 +65,7 @@ pub const CHAR_BYTES: i32 = 2;
 pub const INT_BYTES: i32 = 4;
 pub const LONG_BYTES: i32 = 8;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct BlockTermState {
     /// Term ordinal, i.e. its position in the full list of
     /// sorted terms.
@@ -110,6 +110,20 @@ impl BlockTermState {
             last_pos_block_offset: -1,
             singleton_doc_id: -1,
         }
+    }
+
+    pub fn copy_from(&mut self, other: &BlockTermState) {
+        self.ord = other.ord;
+        self.doc_freq = other.doc_freq;
+        self.total_term_freq = other.total_term_freq;
+        self.term_block_ord = other.term_block_ord;
+        self.block_file_pointer = other.block_file_pointer;
+        self.doc_start_fp = other.doc_start_fp;
+        self.pos_start_fp = other.pos_start_fp;
+        self.pay_start_fp = other.pay_start_fp;
+        self.last_pos_block_offset = other.last_pos_block_offset;
+        self.skip_offset = other.skip_offset;
+        self.singleton_doc_id = other.singleton_doc_id;
     }
 
     pub fn deserialize(from: &[u8]) -> Result<BlockTermState> {
@@ -227,6 +241,10 @@ impl TermState for BlockTermState {
 
     fn clone_to(&self) -> Box<TermState> {
         Box::new(self.clone())
+    }
+
+    fn as_any(&self) -> &::std::any::Any {
+        self
     }
 }
 

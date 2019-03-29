@@ -1,4 +1,4 @@
-use core::index::LeafReader;
+use core::index::LeafReaderContext;
 use core::search::explanation::Explanation;
 use core::search::searcher::IndexSearcher;
 use core::search::term_query::TermQuery;
@@ -14,7 +14,7 @@ use std::sync::Arc;
 const FILTER_QUERY: &str = "filter_query";
 
 pub trait FilterFunction: fmt::Display {
-    fn leaf_function(&self, leaf_reader: &LeafReader) -> Result<Box<LeafFilterFunction>>;
+    fn leaf_function(&self, leaf_reader: &LeafReaderContext) -> Result<Box<LeafFilterFunction>>;
 }
 
 pub trait LeafFilterFunction: Send + Sync {
@@ -80,11 +80,11 @@ struct FilterWeight {
 }
 
 impl Weight for FilterWeight {
-    fn create_scorer(&self, reader: &LeafReader) -> Result<Box<Scorer>> {
-        let scorer = self.weight.create_scorer(reader)?;
+    fn create_scorer(&self, reader_context: &LeafReaderContext) -> Result<Box<Scorer>> {
+        let scorer = self.weight.create_scorer(reader_context)?;
         let mut filters = Vec::with_capacity(self.filters.len());
         for filter in &self.filters {
-            filters.push(filter.leaf_function(reader)?);
+            filters.push(filter.leaf_function(reader_context)?);
         }
         Ok(Box::new(FilterScorer { scorer, filters }))
     }
@@ -105,7 +105,7 @@ impl Weight for FilterWeight {
         self.weight.needs_scores()
     }
 
-    fn explain(&self, reader: &LeafReader, doc: DocId) -> Result<Explanation> {
+    fn explain(&self, reader: &LeafReaderContext, doc: DocId) -> Result<Explanation> {
         self.weight.explain(reader, doc)
     }
 }

@@ -45,7 +45,7 @@ impl SimpleRateLimiter {
 }
 
 impl RateLimiter for SimpleRateLimiter {
-    fn set_mb_per_sec(&self, mb_per_sec: f64) {
+    fn set_mb_per_sec(&self, _mb_per_sec: f64) {
         unimplemented!()
     }
 
@@ -53,7 +53,7 @@ impl RateLimiter for SimpleRateLimiter {
         unimplemented!()
     }
 
-    fn pause(&self, bytes: u64) -> Result<Duration> {
+    fn pause(&self, _bytes: u64) -> Result<Duration> {
         unimplemented!()
     }
 

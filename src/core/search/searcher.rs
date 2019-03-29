@@ -2,10 +2,10 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, RwLock};
 
-use core::index::MultiFields;
 use core::index::Term;
 use core::index::TermContext;
 use core::index::{IndexReader, LeafReader};
+use core::index::{LeafReaderContext, MultiFields};
 use core::search::bm25_similarity::BM25Similarity;
 use core::search::bulk_scorer::BulkScorer;
 use core::search::cache_policy::{QueryCachingPolicy, UsageTrackingQueryCachingPolicy};
@@ -173,11 +173,10 @@ where
     SP: SimilarityProducer,
 {
     pub fn with_similarity(reader: IR, sim_producer: SP) -> DefaultIndexSearcher<IR, SP> {
-        let max_doc = reader.as_ref().max_doc();
         DefaultIndexSearcher {
             reader,
             sim_producer,
-            query_cache: Arc::new(LRUQueryCache::new(1000, max_doc)),
+            query_cache: Arc::new(LRUQueryCache::new(1000)),
             cache_policy: Arc::new(UsageTrackingQueryCachingPolicy::default()),
             collection_statistics: RwLock::new(HashMap::new()),
             term_contexts: RwLock::new(HashMap::new()),
@@ -247,19 +246,19 @@ where
     fn search(&self, query: &Query, collector: &mut SearchCollector) -> Result<()> {
         let weight = self.create_weight(query, collector.needs_scores())?;
 
-        for (ord, reader) in self.reader.as_ref().leaves().iter().enumerate() {
-            let mut scorer = weight.create_scorer(*reader)?;
+        for reader in self.reader.as_ref().leaves() {
+            let mut scorer = weight.create_scorer(&reader)?;
             // some in running segment maybe wrong, just skip it!
             // TODO maybe we should matching more specific error type
-            if let Err(e) = collector.set_next_reader(ord, *reader) {
+            if let Err(e) = collector.set_next_reader(&reader) {
                 error!(
                     "set next reader for leaf {} failed!, {:?}",
-                    reader.name(),
+                    reader.reader.name(),
                     e
                 );
                 continue;
             }
-            let live_docs = reader.live_docs();
+            let live_docs = reader.reader.live_docs();
 
             Self::do_search(scorer, collector, &live_docs)?;
         }
@@ -273,10 +272,10 @@ where
                 let weight = self.create_weight(query, collector.needs_scores())?;
 
                 for (_ord, reader) in self.reader.as_ref().leaves().iter().enumerate() {
-                    let scorer = weight.create_scorer(*reader)?;
-                    match collector.leaf_collector(*reader) {
+                    let scorer = weight.create_scorer(reader)?;
+                    match collector.leaf_collector(reader) {
                         Ok(leaf_collector) => {
-                            let live_docs = reader.live_docs();
+                            let live_docs = reader.reader.live_docs();
                             thread_pool.execute(move |_ctx| {
                                 let mut collector = leaf_collector;
                                 if let Err(e) =
@@ -300,7 +299,7 @@ where
                         Err(e) => {
                             error!(
                                 "create leaf collector for leaf {} failed with '{:?}'",
-                                reader.name(),
+                                reader.reader.name(),
                                 e
                             );
                         }
@@ -322,14 +321,14 @@ where
             }
         }
 
-        if let Some(match_all) = query.as_any().downcast_ref::<MatchAllDocsQuery>() {
+        if let Some(_) = query.as_any().downcast_ref::<MatchAllDocsQuery>() {
             return Ok(self.reader().num_docs());
         } else if let Some(term_query) = query.as_any().downcast_ref::<TermQuery>() {
             if !self.reader().has_deletions() {
                 let term = &term_query.term;
                 let mut count = 0;
                 for leaf in self.reader().leaves() {
-                    count += leaf.doc_freq(term)?;
+                    count += leaf.reader.doc_freq(term)?;
                 }
                 return Ok(count);
             }
@@ -439,7 +438,7 @@ where
 
     fn explain(&self, query: &Query, doc: DocId) -> Result<Explanation> {
         let reader = self.reader.as_ref().leaf_reader_for_doc(doc);
-        let live_docs = reader.live_docs();
+        let live_docs = reader.reader.live_docs();
         if !live_docs.get((doc - reader.doc_base()) as usize)? {
             Ok(Explanation::new(
                 false,
@@ -449,7 +448,7 @@ where
             ))
         } else {
             self.create_normalized_weight(query, true)?
-                .explain(reader, doc - reader.doc_base())
+                .explain(&reader, doc - reader.doc_base())
         }
     }
 }
@@ -469,7 +468,7 @@ impl TotalHitCountCollector {
 }
 
 impl SearchCollector for TotalHitCountCollector {
-    fn set_next_reader(&mut self, _reader_ord: usize, _reader: &LeafReader) -> Result<()> {
+    fn set_next_reader(&mut self, _reader: &LeafReaderContext) -> Result<()> {
         Ok(())
     }
 
@@ -478,7 +477,7 @@ impl SearchCollector for TotalHitCountCollector {
         false
     }
 
-    fn leaf_collector(&mut self, reader: &LeafReader) -> Result<Box<LeafCollector>> {
+    fn leaf_collector(&mut self, _reader: &LeafReaderContext) -> Result<Box<LeafCollector>> {
         unreachable!()
     }
 

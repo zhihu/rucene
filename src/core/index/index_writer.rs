@@ -1,5 +1,5 @@
 use core::codec::FieldInfosFormat;
-use core::index::bufferd_updates::FrozenBufferUpdates;
+use core::index::bufferd_updates::FrozenBufferedUpdates;
 use core::index::bufferd_updates::{ApplyDeletesResult, BufferedUpdatesStream};
 use core::index::directory_reader::index_exist;
 use core::index::doc_writer::{DocumentsWriter, Event};
@@ -91,7 +91,6 @@ pub struct IndexWriter {
     segment_infos: SegmentInfos,
     segment_infos_lock: Arc<Mutex<()>>,
     pub global_field_numbers: FieldNumbers,
-    pub flushed_segments: Vec<FlushedSegment>,
 
     doc_writer: DocumentsWriter,
     // event_queue: MsQueue<WriterEvent>, self.doc_writer.events
@@ -312,7 +311,6 @@ impl IndexWriter {
             segment_infos,
             segment_infos_lock: Arc::new(Mutex::new(())),
             global_field_numbers,
-            flushed_segments: vec![],
             doc_writer,
             deleter,
             segments_to_merge: HashMap::new(),
@@ -357,6 +355,14 @@ impl IndexWriter {
     pub fn max_doc(&self) -> u32 {
         // self.ensure_open(true);
         self.doc_writer.num_docs() + self.segment_infos.total_max_doc() as u32
+    }
+
+    pub fn num_docs(&self) -> u32 {
+        let mut count = self.doc_writer.num_docs();
+        for info in &self.segment_infos.segments {
+            count += info.info.max_doc() as u32 - self.num_deleted_docs(&info);
+        }
+        count
     }
 
     /// Expert: returns a readonly reader, covering all
@@ -466,7 +472,7 @@ impl IndexWriter {
     ) -> Result<StandardDirectoryReader> {
         let full_flush_lock = Arc::clone(&self.full_flush_lock);
         let _l = full_flush_lock.lock()?;
-        // TODO triky logic
+        // TODO tricky logic
         let writer = unsafe {
             let writer_ptr = self as *const IndexWriter as *mut IndexWriter;
             &mut *writer_ptr
@@ -482,7 +488,7 @@ impl IndexWriter {
                 Ok(reader)
             }
             Err(e) => {
-                debug!("IW - hit error during NRT reader");
+                error!("IW - hit error during NRT reader: {:?}", e);
                 Err(e)
             }
         }
@@ -567,6 +573,10 @@ impl IndexWriter {
     }
 
     pub fn close(&mut self) -> Result<()> {
+        debug!(
+            "IW - start close. commit on close: {}",
+            self.config.commit_on_close
+        );
         if self.config.commit_on_close {
             self.shutdown()
         } else {
@@ -643,7 +653,7 @@ impl IndexWriter {
     pub fn publish_flushed_segment(
         &mut self,
         new_segment: FlushedSegment,
-        global_packet: Option<FrozenBufferUpdates>,
+        global_packet: Option<FrozenBufferedUpdates>,
     ) -> Result<()> {
         let res = self.do_publish_flushed_segment(new_segment, global_packet);
         self.flush_count.fetch_add(1, Ordering::AcqRel);
@@ -653,15 +663,15 @@ impl IndexWriter {
 
     fn do_publish_flushed_segment(
         &mut self,
-        new_segment: FlushedSegment,
-        global_packet: Option<FrozenBufferUpdates>,
+        mut new_segment: FlushedSegment,
+        global_packet: Option<FrozenBufferedUpdates>,
     ) -> Result<()> {
         let lock = Arc::clone(&self.lock);
         let l = lock.lock()?;
         // Lock order IW -> BDS
         self.ensure_open(false)?;
         let updates_stream_lock = Arc::clone(&self.updates_stream_lock);
-        let bl = updates_stream_lock.lock()?;
+        let _bl = updates_stream_lock.lock()?;
 
         debug!("publish_flushed_segment");
 
@@ -673,7 +683,6 @@ impl IndexWriter {
 
         // Publishing the segment must be synched on IW -> BDS to make the sure
         // that no merge prunes away the seg. private delete packet
-        let mut new_segment = new_segment;
         let segment_updates = mem::replace(&mut new_segment.segment_updates, None);
         let next_gen = if let Some(p) = segment_updates {
             if p.any() {
@@ -694,13 +703,12 @@ impl IndexWriter {
             .set_buffered_deletes_gen(next_gen as i64);
         self.segment_infos
             .add(Arc::clone(&new_segment.segment_info));
-        self.flushed_segments.push(new_segment);
         self.check_point(&l)
     }
 
-    pub fn publish_frozen_updates(&mut self, packet: FrozenBufferUpdates) -> Result<()> {
-        let _gl = self.lock.lock()?;
+    pub fn publish_frozen_updates(&mut self, packet: FrozenBufferedUpdates) -> Result<()> {
         debug_assert!(packet.any());
+        let _gl = self.lock.lock()?;
         let _l = self.updates_stream_lock.lock()?;
         self.buffered_updates_stream.push(packet)?;
         Ok(())
@@ -715,13 +723,16 @@ impl IndexWriter {
     /// writer was first opened.  This also clears a previous
     /// call to `#prepareCommit`.
     /// @throws IOException if there is a low-level IO error
-    pub fn rollback(&mut self) -> Result<()> {
+    pub fn rollback(&self) -> Result<()> {
         // don't call ensureOpen here: this acts like "close()" in closeable.
 
         // Ensure that only one thread actually gets to do the
         // closing, and make sure no commit is also in progress:
         if self.should_close(true) {
-            self.rollback_internal()
+            unsafe {
+                let writer = self as *const IndexWriter as *mut IndexWriter;
+                (*writer).rollback_internal()
+            }
         } else {
             Ok(())
         }
@@ -829,6 +840,7 @@ impl IndexWriter {
             // Keep the same segmentInfos instance but replace all
             // of its SegmentInfo instances so IFD below will remove
             // any segments we flushed since the last commit:
+
             self.segment_infos
                 .rollback_segment_infos(self.rollback_segments.clone());
             debug!("IW - rollback segment commit infos");
@@ -893,9 +905,9 @@ impl IndexWriter {
 
             {
                 let lock = Arc::clone(&self.lock);
-                let mut gl = lock.lock()?;
+                let mut _gl = lock.lock()?;
                 // Abort any running merges
-                gl = self.abort_merges(gl)?;
+                _gl = self.abort_merges(_gl)?;
                 // Let merges run again
                 self.stop_merges = false;
                 // Remove all segments
@@ -983,13 +995,17 @@ impl IndexWriter {
         // they are aborted.
         while !self.running_merges.is_empty() {
             let (loc, _) = self.cond.wait_timeout(lock, Duration::from_millis(1000))?;
+            warn!(
+                "IW - abort merges, waiting for running_merges to be empty, current size: {}",
+                self.running_merges.len()
+            );
             lock = loc;
         }
 
         self.cond.notify_all();
 
         println!(
-            "debug merging_segments {} {} {}",
+            "debug abort_merges {} {} {}",
             self.pending_merges.len(),
             self.running_merges.len(),
             self.merging_segments.len()
@@ -1101,6 +1117,11 @@ impl IndexWriter {
         Ok(())
     }
 
+    pub fn dec_ref_deleter(&self, segment_infos: &SegmentInfos) -> Result<()> {
+        self.ensure_open(true)?;
+        self.deleter.dec_ref_by_segment(segment_infos)
+    }
+
     fn process_events(&mut self, trigger_merge: bool, force_purge: bool) -> Result<bool> {
         let mut processed = false;
         if self.tragedy.is_none() {
@@ -1158,7 +1179,6 @@ impl IndexWriter {
             return Ok(false);
         }
 
-        let mut new_merges_found = false;
         let mut spec: Option<MergeSpecification>;
         if let Some(max_num_segments) = max_num_segments {
             debug_assert!(
@@ -1171,7 +1191,6 @@ impl IndexWriter {
                 self,
             )?;
             if let Some(ref mut spec) = spec {
-                new_merges_found = true;
                 for merge in &mut spec.merges {
                     merge.max_num_segments.set(Some(max_num_segments));
                 }
@@ -1182,7 +1201,7 @@ impl IndexWriter {
                 .merge_policy()
                 .find_merges(trigger, &self.segment_infos, self)?;
         }
-        new_merges_found = spec.is_some();
+        let new_merges_found = spec.is_some();
         if let Some(ref mut spec) = spec {
             let merges = mem::replace(&mut spec.merges, vec![]);
             for merge in merges {
@@ -1221,12 +1240,14 @@ impl IndexWriter {
             || self.buffered_updates_stream.any()
     }
 
-    pub fn commit(&mut self) -> Result<i64> {
+    pub fn commit(&self) -> Result<i64> {
         debug!("IW - commit: start");
+
+        let writer = self as *const IndexWriter as *mut IndexWriter;
 
         let mut do_maybe_merge = false;
         let seq_no: i64;
-        {
+        unsafe {
             let commit_lock = Arc::clone(&self.commit_lock);
             let l = commit_lock.lock()?;
             self.ensure_open(false)?;
@@ -1235,13 +1256,13 @@ impl IndexWriter {
 
             seq_no = if self.pending_commit.is_none() {
                 debug!("IW - commit: now prepare");
-                self.prepare_commit_internal(&mut do_maybe_merge, &l)?
+                (*writer).prepare_commit_internal(&mut do_maybe_merge, &l)?
             } else {
                 debug!("IW - commit: already prepared");
                 self.pending_seq_no.load(Ordering::Acquire)
             };
 
-            self.finish_commit()?;
+            (*writer).finish_commit()?;
         }
 
         if do_maybe_merge {
@@ -1441,6 +1462,9 @@ impl IndexWriter {
                 self.files_to_commit.clear();
             }
         }
+        if let Err(err) = err {
+            self.tragic_event(err, "start_commit")?;
+        }
         Ok(())
     }
 
@@ -1633,7 +1657,11 @@ impl IndexWriter {
             }
             self.doc_writer.finish_full_flush(true);
             if let Err(e) = self.process_events(false, true) {
-                error!("process events failed after do_flush by: '{:?}'", e);
+                if !res.is_err() {
+                    return Err(e);
+                } else {
+                    error!("process events failed after do_flush by: '{:?}'", e);
+                }
             }
 
             if let Err(e) = res {
@@ -1668,7 +1696,7 @@ impl IndexWriter {
         self.flush_deletes_count.fetch_add(1, Ordering::AcqRel);
 
         debug!(
-            "IW: new apply all deletes for all segments, max_doc={}",
+            "IW: now apply all deletes for all segments, max_doc={}",
             self.doc_writer.num_docs() + self.segment_infos.total_max_doc() as u32
         );
 
@@ -1747,7 +1775,7 @@ impl IndexWriter {
     ///
     /// @return The <a href="#sequence_number">sequence number</a>
     /// for this operation
-    pub fn add_document(&mut self, doc: Vec<Box<Fieldable>>) -> Result<u64> {
+    pub fn add_document(&self, doc: Vec<Box<Fieldable>>) -> Result<u64> {
         self.update_document(doc, None)
     }
 
@@ -1789,7 +1817,7 @@ impl IndexWriter {
     /// @throws IOException if there is a low-level IO error
     ///
     /// @lucene.experimental
-    pub fn add_documents(&mut self, docs: Vec<Vec<Box<Fieldable>>>) -> Result<u64> {
+    pub fn add_documents(&self, docs: Vec<Vec<Box<Fieldable>>>) -> Result<u64> {
         self.update_documents(docs, None)
     }
 
@@ -1806,18 +1834,21 @@ impl IndexWriter {
     /// @throws CorruptIndexException if the index is corrupt
     /// @throws IOException if there is a low-level IO error
     pub fn update_documents(
-        &mut self,
+        &self,
         docs: Vec<Vec<Box<Fieldable>>>,
         term: Option<Term>,
     ) -> Result<u64> {
         self.ensure_open(true)?;
 
-        let (seq_no, has_event) = self.doc_writer.update_documents(docs, term)?;
-        if has_event {
-            // self.process_events(true, false)?;
-            self.process_events(true, false)?;
+        let writer = self as *const IndexWriter as *mut IndexWriter;
+        unsafe {
+            let (seq_no, changed) = (*writer).doc_writer.update_documents(docs, term)?;
+            if changed {
+                (*writer).process_events(true, false)?;
+            }
+
+            Ok(seq_no)
         }
-        Ok(seq_no)
     }
 
     /// Deletes the document(s) containing any of the
@@ -1882,13 +1913,17 @@ impl IndexWriter {
     /// @param doc the document to be added
     /// @throws CorruptIndexException if the index is corrupt
     /// @throws IOException if there is a low-level IO error
-    pub fn update_document(&mut self, doc: Vec<Box<Fieldable>>, term: Option<Term>) -> Result<u64> {
+    pub fn update_document(&self, doc: Vec<Box<Fieldable>>, term: Option<Term>) -> Result<u64> {
         self.ensure_open(true)?;
-        let (seq_no, changed) = self.doc_writer.update_document(doc, term)?;
-        if changed {
-            self.process_events(true, false)?;
+        let writer = self as *const IndexWriter as *mut IndexWriter;
+        unsafe {
+            let (seq_no, changed) = (*writer).doc_writer.update_document(doc, term)?;
+            if changed {
+                (*writer).process_events(true, false)?;
+            }
+
+            Ok(seq_no)
         }
-        Ok(seq_no)
     }
 
     /// Updates a document's `NumericDocValues` for <code>field</code> to the
@@ -1909,7 +1944,12 @@ impl IndexWriter {
     ///           if the index is corrupt
     /// @throws IOException
     ///           if there is a low-level IO error
-    pub fn update_numeric_doc_value(&mut self, field: &str, value: i64, term: Term) -> Result<u64> {
+    pub fn update_numeric_doc_value(
+        &mut self,
+        _field: &str,
+        _value: i64,
+        _term: Term,
+    ) -> Result<u64> {
         unimplemented!()
     }
 
@@ -1930,7 +1970,7 @@ impl IndexWriter {
         directory: &TrackingDirectoryWrapper<T>,
         info: &mut SegmentInfo,
         context: &IOContext,
-    ) -> Result<HashSet<String>> {
+    ) -> Result<()> {
         // maybe this check is not needed, but why take the risk?
         if !directory.create_files().is_empty() {
             bail!(IllegalState(
@@ -1957,7 +1997,7 @@ impl IndexWriter {
 
         // Replace all previous files with the CFS/CFE files:
         info.set_files(&directory.create_files())?;
-        Ok(directory.create_files())
+        Ok(())
     }
 
     pub fn nrt_is_current(&self, infos: &SegmentInfos) -> bool {
@@ -2242,7 +2282,7 @@ impl IndexWriter {
         //            .lock()?
         //            .insert(thread::current().id(), Arc::clone(&merge.rate_limiter));
 
-        let t0 = SystemTime::now();
+        // let t0 = SystemTime::now();
 
         self.merge_init(merge)?;
 
@@ -2358,7 +2398,7 @@ impl IndexWriter {
     fn merge_middle(&mut self, merge: &mut OneMerge) -> Result<i32> {
         match self.do_merge_middle(merge) {
             Err(e) => {
-                println!("merge_middle err {:?}", e);
+                error!("merge_middle err {:?}", e);
                 let l = self.lock.lock().unwrap();
                 self.close_merge_readers(merge, true, &l)?;
                 Err(e)
@@ -2473,7 +2513,6 @@ impl IndexWriter {
             )
         };
 
-        let mut created_files = HashSet::new();
         if use_compound_file {
             let tracking_cfs_dir = TrackingDirectoryWrapper::new(&self.merge_directory);
 
@@ -2481,20 +2520,18 @@ impl IndexWriter {
             let segment_info = Arc::get_mut(info).unwrap();
             let files_to_remove = segment_info.files();
 
-            match self.create_compound_file(&tracking_cfs_dir, &mut segment_info.info, &context) {
-                Err(e) => {
-                    let _l = self.lock.lock().unwrap();
-                    if merge.rate_limiter.aborted() {
-                        // This can happen if rollback is called while we were building
-                        // our CFS -- fall through to logic below to remove the non-CFS
-                        // merged files:
-                        return Ok(0);
-                    } else {
-                        return Err(e);
-                    }
-                }
-                Ok(files) => {
-                    created_files = files;
+            if let Err(e) =
+                self.create_compound_file(&tracking_cfs_dir, &mut segment_info.info, &context)
+            {
+                let _l = self.lock.lock().unwrap();
+                if merge.rate_limiter.aborted() {
+                    // This can happen if rollback is called while we were building
+                    // our CFS -- fall through to logic below to remove the non-CFS
+                    // merged files:
+                    return Ok(0);
+                } else {
+                    self.delete_new_files(&segment_info.files())?;
+                    return Err(e);
                 }
             }
 
@@ -2508,7 +2545,7 @@ impl IndexWriter {
                 self.delete_new_files(&files_to_remove)?;
 
                 if merge.rate_limiter.aborted() {
-                    self.delete_new_files(&created_files)?;
+                    self.delete_new_files(&segment_info.files())?;
                     return Ok(0);
                 }
             }
@@ -2520,20 +2557,15 @@ impl IndexWriter {
         // creating CFS so that 1) .si isn't slurped into CFS,
         // and 2) .si reflects useCompoundFile=true change
         // above:
-        let mut new_files = Vec::with_capacity(1);
         {
             let info = merge.info.as_mut().unwrap();
             let segment_info = Arc::get_mut(info).unwrap();
             if let Err(e) = self.config.codec().segment_info_format().write(
                 self.directory.as_ref(),
                 &mut segment_info.info,
-                &mut new_files,
                 &context,
             ) {
-                for f in new_files {
-                    created_files.insert(f);
-                }
-                self.delete_new_files(&created_files)?;
+                self.delete_new_files(&segment_info.files())?;
                 return Err(e);
             }
         }
@@ -3220,7 +3252,7 @@ impl ReadersAndUpdates {
     // _X_N updates files) to the directory; returns true if it wrote any file
     // and false if there were no new deletes or updates to write:
     pub fn write_live_docs(&self, dir: &DirectoryRc) -> Result<bool> {
-        let guard = self.inner.lock()?;
+        let mut guard = self.inner.lock()?;
         guard.write_live_docs(&self.info, dir)
     }
 
@@ -3370,7 +3402,7 @@ impl ReadersAndUpdatesInner {
         self.live_docs.as_ref().unwrap()
     }
 
-    pub fn reader(&self) -> &SegmentReader {
+    pub fn reader(&self) -> &Arc<SegmentReader> {
         debug_assert!(self.reader.is_some());
 
         self.reader.as_ref().unwrap()
@@ -3385,7 +3417,12 @@ impl ReadersAndUpdatesInner {
     pub fn delete(&mut self, doc_id: DocId) -> Result<bool> {
         debug_assert!(self.live_docs.is_some());
         let live_docs = self.live_docs.as_mut().unwrap();
-        debug_assert!(doc_id >= 0 && doc_id < live_docs.len() as i32);
+        debug_assert!(
+            doc_id >= 0 && doc_id < live_docs.len() as i32,
+            "doc: {}, live docs len: {}",
+            doc_id,
+            live_docs.len()
+        );
         debug_assert!(!self.live_docs_shared);
 
         let did_deleted = live_docs.get(doc_id as usize)?;
@@ -3440,7 +3477,7 @@ impl ReadersAndUpdatesInner {
 
             let mut live_docs = None;
             if let Some(ref docs) = self.live_docs {
-                if docs.len() > 0 {
+                if !docs.is_empty() {
                     live_docs = Some(live_docs_format.new_live_docs_from_existing(docs.as_ref())?);
                 }
             };
@@ -3460,7 +3497,7 @@ impl ReadersAndUpdatesInner {
     // _X_N updates files) to the directory; returns true if it wrote any file
     // and false if there were no new deletes or updates to write:
     pub fn write_live_docs(
-        &self,
+        &mut self,
         info: &Arc<SegmentCommitInfo>,
         dir: &DirectoryRc,
     ) -> Result<bool> {
@@ -3505,6 +3542,7 @@ impl ReadersAndUpdatesInner {
         info.advance_del_gen();
         let del_count = info.del_count() + self.pending_delete_count as i32;
         info.set_del_count(del_count)?;
+        self.pending_delete_count = 0;
         match res {
             Err(e) => Err(e),
             _ => Ok(true),

@@ -1,7 +1,7 @@
 use std::any::Any;
 use std::fmt;
 
-use core::index::LeafReader;
+use core::index::LeafReaderContext;
 use core::search::conjunction::ConjunctionScorer;
 use core::search::disjunction::DisjunctionSumScorer;
 use core::search::explanation::Explanation;
@@ -147,7 +147,7 @@ impl BooleanWeight {
     fn build_scorers(
         &self,
         weights: &[Box<Weight>],
-        leaf_reader: &LeafReader,
+        leaf_reader: &LeafReaderContext,
     ) -> Result<Vec<Box<Scorer>>> {
         let mut result = Vec::with_capacity(weights.len());
         for weight in weights {
@@ -163,7 +163,7 @@ impl BooleanWeight {
 }
 
 impl Weight for BooleanWeight {
-    fn create_scorer(&self, leaf_reader: &LeafReader) -> Result<Box<Scorer>> {
+    fn create_scorer(&self, leaf_reader: &LeafReaderContext) -> Result<Box<Scorer>> {
         let must_scorer: Option<Box<Scorer>> = if !self.must_weights.is_empty() {
             let mut scorers = self.build_scorers(&self.must_weights, leaf_reader)?;
             if scorers.len() > 1 {
@@ -224,7 +224,7 @@ impl Weight for BooleanWeight {
         self.needs_scores
     }
 
-    fn explain(&self, reader: &LeafReader, doc: DocId) -> Result<Explanation> {
+    fn explain(&self, reader: &LeafReaderContext, doc: DocId) -> Result<Explanation> {
         let mut coord = 0;
         let mut max_coord = 0;
         let mut sum = 0.0f32;

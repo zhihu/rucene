@@ -10,6 +10,7 @@ use core::util::{BitsRef, DocId};
 use error::ErrorKind::IllegalArgument;
 use error::Result;
 
+use core::index::leaf_reader::LeafReaderContext;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
@@ -23,6 +24,13 @@ impl Sorter {
     pub fn new(sort: Sort) -> Self {
         debug_assert!(!sort.needs_scores());
         Sorter { sort }
+    }
+
+    pub fn sort_field_type(sort: &SortField) -> SortFieldType {
+        match sort {
+            SortField::Simple(s) => s.field_type(),
+            SortField::SortedNumeric(s) => s.numeric_type(),
+        }
     }
 
     /// Check consistency of a `SorterDocMap`, useful for assertions.
@@ -123,7 +131,7 @@ impl Sorter {
     ///
     /// NOTE: deleted documents are expected to appear in the mapping as
     /// well, they will however be marked as deleted in the sorted view.
-    pub fn sort_leaf_reader(&self, reader: &LeafReader) -> Result<Option<PackedLongDocMap>> {
+    pub fn sort_leaf_reader(&self, reader: &LeafReaderContext) -> Result<Option<PackedLongDocMap>> {
         let fields = self.sort.get_sort();
         let mut reverses = Vec::with_capacity(fields.len());
         let mut comparators = Vec::with_capacity(fields.len());
@@ -137,7 +145,7 @@ impl Sorter {
             comparators,
             reverses,
         };
-        Self::sort(reader.max_doc(), &mut comparator)
+        Self::sort(reader.reader.max_doc(), &mut comparator)
     }
 
     pub fn get_or_wrap_numeric(
@@ -210,7 +218,7 @@ impl SorterDocComparator for SortFieldsDocComparator {
             self.comparators[i].copy(0, ComparatorValue::Doc(doc1))?;
             self.comparators[i].set_bottom(0);
             let mut comp = self.comparators[i].compare_bottom(ComparatorValue::Doc(doc2))?;
-            if !self.reverses[i] {
+            if self.reverses[i] {
                 comp = comp.reverse();
             }
             if comp != Ordering::Equal {
@@ -307,7 +315,7 @@ impl MultiSorter {
         sort_field: &SortField,
     ) -> Result<CrossReaderComparatorEnum> {
         let reverse = sort_field.is_reverse();
-        let field_type = sort_field.field_type();
+        let field_type = Sorter::sort_field_type(sort_field);
         match field_type {
             SortFieldType::String => unimplemented!(),
             SortFieldType::Long | SortFieldType::Int => {
@@ -512,7 +520,7 @@ impl CrossReaderComparator for LongCrossReaderComparator {
             self.missing_value
         };
         let res = value1.cmp(&value2);
-        if !self.reverse {
+        if self.reverse {
             Ok(res.reverse())
         } else {
             Ok(res)
@@ -562,7 +570,7 @@ impl CrossReaderComparator for DoubleCrossReaderComparator {
             self.missing_value
         };
         let res = value1.partial_cmp(&value2).unwrap();
-        if !self.reverse {
+        if self.reverse {
             Ok(res.reverse())
         } else {
             Ok(res)

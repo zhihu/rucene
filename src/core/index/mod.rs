@@ -291,7 +291,7 @@ fn strip_extension(filename: &str) -> &str {
 }
 
 pub trait IndexReader: Send + Sync {
-    fn leaves(&self) -> Vec<&LeafReader>;
+    fn leaves(&self) -> Vec<LeafReaderContext>;
     fn term_vector(&self, doc_id: DocId) -> Result<Option<Box<Fields>>>;
     fn document(&self, doc_id: DocId, fields: &[String]) -> Result<Document>;
     fn max_doc(&self) -> i32;
@@ -302,26 +302,26 @@ pub trait IndexReader: Send + Sync {
     fn has_deletions(&self) -> bool {
         self.num_deleted_docs() > 0
     }
-    fn leaf_reader_for_doc(&self, doc: DocId) -> &LeafReader {
+    fn leaf_reader_for_doc(&self, doc: DocId) -> LeafReaderContext {
         let leaves = self.leaves();
         let size = leaves.len();
         let mut lo = 0usize;
         let mut hi = size - 1;
         while hi >= lo {
             let mut mid = (lo + hi) >> 1;
-            let mid_value = leaves[mid].doc_base();
+            let mid_value = leaves[mid].doc_base;
             if doc < mid_value {
                 hi = mid - 1;
             } else if doc > mid_value {
                 lo = mid + 1;
             } else {
-                while mid + 1 < size && leaves[mid + 1].doc_base() == mid_value {
+                while mid + 1 < size && leaves[mid + 1].doc_base == mid_value {
                     mid += 1;
                 }
-                return leaves[mid];
+                return leaves[mid].clone();
             }
         }
-        leaves[hi]
+        leaves[hi].clone()
     }
 
     fn as_any(&self) -> &Any;
@@ -385,6 +385,7 @@ impl SegmentInfo {
     }
 
     pub fn max_doc(&self) -> i32 {
+        debug_assert!(self.max_doc >= 0);
         self.max_doc
     }
 
@@ -607,7 +608,7 @@ impl TermContext {
 
     pub fn build(&mut self, reader: &IndexReader, term: &Term) -> Result<()> {
         for reader in reader.leaves() {
-            if let Some(terms) = reader.terms(&term.field)? {
+            if let Some(terms) = reader.reader.terms(&term.field)? {
                 let mut terms_enum = terms.iterator()?;
                 if terms_enum.seek_exact(&term.bytes)? {
                     // TODO add TermStates if someone need it
@@ -632,9 +633,9 @@ impl TermContext {
         }
     }
 
-    pub fn get_term_state(&self, reader: &LeafReader) -> Option<&TermState> {
+    pub fn get_term_state(&self, reader: &LeafReaderContext) -> Option<&TermState> {
         for (doc_base, state) in &self.states {
-            if *doc_base == reader.doc_base() {
+            if *doc_base == reader.doc_base {
                 return Some(state.as_ref());
             }
         }
@@ -1222,10 +1223,6 @@ pub mod tests {
             unreachable!()
         }
 
-        fn doc_base(&self) -> DocId {
-            self.doc_base
-        }
-
         fn name(&self) -> &str {
             "test"
         }
@@ -1334,23 +1331,43 @@ pub mod tests {
         }
     }
 
+    impl AsRef<LeafReader> for MockLeafReader {
+        fn as_ref(&self) -> &(LeafReader + 'static) {
+            self
+        }
+    }
+
     pub struct MockIndexReader {
         leaves: Vec<MockLeafReader>,
+        starts: Vec<i32>,
     }
 
     impl MockIndexReader {
         pub fn new(leaves: Vec<MockLeafReader>) -> MockIndexReader {
-            MockIndexReader { leaves }
+            let mut starts = Vec::with_capacity(leaves.len() + 1);
+            let mut max_doc = 0;
+            let mut num_docs = 0;
+            for reader in &leaves {
+                starts.push(max_doc);
+                max_doc += reader.max_doc();
+                num_docs += reader.num_docs();
+            }
+
+            starts.push(max_doc);
+
+            MockIndexReader { leaves, starts }
         }
     }
 
     impl IndexReader for MockIndexReader {
-        fn leaves(&self) -> Vec<&LeafReader> {
-            let mut leaves: Vec<&LeafReader> = vec![];
-            for leaf in &self.leaves {
-                leaves.push(leaf);
-            }
-            leaves
+        fn leaves(&self) -> Vec<LeafReaderContext> {
+            self.leaves
+                .iter()
+                .enumerate()
+                .map(|(i, r)| {
+                    LeafReaderContext::new(self, r.as_ref() as &LeafReader, i, self.starts[i])
+                })
+                .collect()
         }
 
         fn term_vector(&self, _doc_id: DocId) -> Result<Option<Box<Fields>>> {

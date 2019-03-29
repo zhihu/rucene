@@ -759,7 +759,6 @@ impl<F: OutputFactory> UnCompiledNode<F> {
     fn add_arc(&mut self, label: i32, target: Node) {
         assert!(label > 0);
         assert!(self.num_arcs == 0 || label > self.arcs[self.num_arcs - 1].label);
-        debug!("add arc, label: {}", label);
         let new_arc = BuilderArc {
             label,
             target,

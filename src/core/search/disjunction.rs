@@ -1,4 +1,4 @@
-use core::index::LeafReader;
+use core::index::LeafReaderContext;
 use core::search::disi::*;
 use core::search::explanation::Explanation;
 use core::search::searcher::IndexSearcher;
@@ -282,10 +282,10 @@ impl DisjunctionMaxWeight {
 }
 
 impl Weight for DisjunctionMaxWeight {
-    fn create_scorer(&self, leaf_reader: &LeafReader) -> Result<Box<Scorer>> {
+    fn create_scorer(&self, reader_context: &LeafReaderContext) -> Result<Box<Scorer>> {
         let mut scorers = Vec::with_capacity(self.weights.len());
         for w in &self.weights {
-            scorers.push(w.create_scorer(leaf_reader)?);
+            scorers.push(w.create_scorer(reader_context)?);
         }
         Ok(Box::new(DisjunctionMaxScorer::new(
             scorers,
@@ -318,7 +318,7 @@ impl Weight for DisjunctionMaxWeight {
         self.needs_scores
     }
 
-    fn explain(&self, reader: &LeafReader, doc: DocId) -> Result<Explanation> {
+    fn explain(&self, reader: &LeafReaderContext, doc: DocId) -> Result<Explanation> {
         let mut matched = false;
         let mut max = f32::NEG_INFINITY;
         let mut sum = 0.0f32;

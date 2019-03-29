@@ -95,9 +95,9 @@ pub type PointValuesRef = Arc<PointValues>;
 pub fn point_values_size(reader: &IndexReader, field: &str) -> Result<i64> {
     let mut size = 0i64;
     for leaf_reader in reader.leaves() {
-        if let Some(info) = leaf_reader.field_info(field) {
+        if let Some(info) = leaf_reader.reader.field_info(field) {
             if info.point_dimension_count != 0 {
-                if let Some(ref values) = leaf_reader.point_values() {
+                if let Some(ref values) = leaf_reader.reader.point_values() {
                     size += values.size(field)?;
                 }
             }
@@ -113,9 +113,9 @@ pub fn point_values_size(reader: &IndexReader, field: &str) -> Result<i64> {
 pub fn point_values_doc_count(reader: &IndexReader, field: &str) -> Result<i32> {
     let mut count = 0i32;
     for leaf_reader in reader.leaves() {
-        if let Some(info) = leaf_reader.field_info(field) {
+        if let Some(info) = leaf_reader.reader.field_info(field) {
             if info.point_dimension_count != 0 {
-                if let Some(ref values) = leaf_reader.point_values() {
+                if let Some(ref values) = leaf_reader.reader.point_values() {
                     count += values.doc_count(field)?;
                 }
             }
@@ -131,11 +131,11 @@ pub fn point_values_doc_count(reader: &IndexReader, field: &str) -> Result<i32> 
 pub fn point_values_min_packed_value(reader: &IndexReader, field: &str) -> Result<Vec<u8>> {
     let mut min_value = Vec::new();
     for leaf_reader in reader.leaves() {
-        if let Some(info) = leaf_reader.field_info(field) {
+        if let Some(info) = leaf_reader.reader.field_info(field) {
             if info.point_dimension_count == 0 {
                 continue;
             }
-            if let Some(ref values) = leaf_reader.point_values() {
+            if let Some(ref values) = leaf_reader.reader.point_values() {
                 let leaf_min_value = values.min_packed_value(field)?;
                 if leaf_min_value.is_empty() {
                     continue;
@@ -169,11 +169,11 @@ pub fn point_values_min_packed_value(reader: &IndexReader, field: &str) -> Resul
 pub fn point_values_max_packed_value(reader: &IndexReader, field: &str) -> Result<Vec<u8>> {
     let mut max_value = Vec::new();
     for leaf_reader in reader.leaves() {
-        if let Some(info) = leaf_reader.field_info(field) {
+        if let Some(info) = leaf_reader.reader.field_info(field) {
             if info.point_dimension_count == 0 {
                 continue;
             }
-            let values = leaf_reader.point_values();
+            let values = leaf_reader.reader.point_values();
             if let Some(ref values) = values {
                 let leaf_max_value = values.max_packed_value(field)?;
                 if leaf_max_value.is_empty() {

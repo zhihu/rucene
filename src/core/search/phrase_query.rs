@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::f32;
 use std::fmt;
 
-use core::index::LeafReader;
+use core::index::LeafReaderContext;
 use core::index::POSTINGS_POSITIONS;
 use core::index::{EmptyTermIterator, TermIterator};
 use core::index::{Term, TermState};
@@ -253,12 +253,12 @@ impl PhraseWeight {
 }
 
 impl Weight for PhraseWeight {
-    fn create_scorer(&self, reader: &LeafReader) -> Result<Box<Scorer>> {
+    fn create_scorer(&self, reader_context: &LeafReaderContext) -> Result<Box<Scorer>> {
         debug_assert!(!self.terms.len() >= 2);
 
         let mut postings_freqs: Vec<PostingsAndFreq> = Vec::with_capacity(self.terms.len());
         let mut term_iter: Box<TermIterator> =
-            if let Some(field_terms) = reader.terms(&self.field)? {
+            if let Some(field_terms) = reader_context.reader.terms(&self.field)? {
                 debug_assert!(
                     field_terms.has_positions()?,
                     format!(
@@ -274,7 +274,7 @@ impl Weight for PhraseWeight {
 
         let mut total_match_cost = 0f32;
         for i in 0..self.terms.len() {
-            let postings = if let Some(state) = self.term_states[i].get(&reader.doc_base()) {
+            let postings = if let Some(state) = self.term_states[i].get(&reader_context.doc_base) {
                 term_iter.seek_exact_state(self.terms[i].bytes.as_ref(), state.as_ref())?;
                 total_match_cost += self.term_positions_cost(term_iter.as_mut())?;
 
@@ -290,7 +290,7 @@ impl Weight for PhraseWeight {
             ));
         }
 
-        let sim_scorer = self.sim_weight.sim_scorer(reader)?;
+        let sim_scorer = self.sim_weight.sim_scorer(reader_context.reader)?;
         let scorer: Box<Scorer> = if self.slop == 0 {
             // sort by increasing docFreq order
             // optimize exact case
@@ -330,13 +330,13 @@ impl Weight for PhraseWeight {
         self.needs_scores
     }
 
-    fn explain(&self, reader: &LeafReader, doc: DocId) -> Result<Explanation> {
+    fn explain(&self, reader: &LeafReaderContext, doc: DocId) -> Result<Explanation> {
         debug_assert!(!self.terms.len() >= 2);
 
         let mut matched = true;
         let mut postings_freqs: Vec<PostingsAndFreq> = Vec::with_capacity(self.terms.len());
         let mut term_iter: Box<TermIterator> =
-            if let Some(field_terms) = reader.terms(&self.field)? {
+            if let Some(field_terms) = reader.reader.terms(&self.field)? {
                 debug_assert!(
                     field_terms.has_positions()?,
                     format!(
@@ -371,7 +371,7 @@ impl Weight for PhraseWeight {
         }
 
         if matched {
-            let sim_scorer = self.sim_weight.sim_scorer(reader)?;
+            let sim_scorer = self.sim_weight.sim_scorer(reader.reader)?;
             if self.slop == 0 {
                 postings_freqs.sort();
                 let mut scorer = ExactPhraseScorer::new(
@@ -385,7 +385,7 @@ impl Weight for PhraseWeight {
                     let freq = scorer.freq as f32;
                     let freq_expl =
                         Explanation::new(true, freq, format!("phraseFreq={}", freq), vec![]);
-                    let score_expl = self.sim_weight.explain(reader, doc, freq_expl)?;
+                    let score_expl = self.sim_weight.explain(reader.reader, doc, freq_expl)?;
 
                     return Ok(Explanation::new(
                         true,
@@ -407,7 +407,7 @@ impl Weight for PhraseWeight {
                     let freq = scorer.sloppy_freq;
                     let freq_expl =
                         Explanation::new(true, freq, format!("phraseFreq={}", freq), vec![]);
-                    let score_expl = self.sim_weight.explain(reader, doc, freq_expl)?;
+                    let score_expl = self.sim_weight.explain(reader.reader, doc, freq_expl)?;
 
                     return Ok(Explanation::new(
                         true,

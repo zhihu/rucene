@@ -22,7 +22,7 @@ impl<F: OutputFactory> FSTIterBase<F> {
             arcs.push(Arc::empty());
         }
         let mut output = Vec::with_capacity(10);
-        for i in 0..10 {
+        for _i in 0..10 {
             output.push(no_output.clone());
         }
 

@@ -169,13 +169,7 @@ pub trait SegmentInfoFormat {
     /// Write {@link SegmentInfo} data.
     /// The codec must add its SegmentInfo filename(s) to {@code info} before doing i/o.
     /// @throws IOException If an I/O error occurs
-    fn write(
-        &self,
-        dir: &Directory,
-        info: &mut SegmentInfo,
-        created_files: &mut Vec<String>,
-        io_context: &IOContext,
-    ) -> Result<()>;
+    fn write(&self, dir: &Directory, info: &mut SegmentInfo, io_context: &IOContext) -> Result<()>;
 }
 
 pub trait DocValuesFormat {

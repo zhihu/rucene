@@ -543,8 +543,13 @@ impl PostingsWriterBase for Lucene50PostingsWriter {
 
     fn close(&mut self) -> Result<()> {
         write_footer(self.doc_out.as_mut())?;
-        write_footer(self.pos_out.as_mut())?;
-        write_footer(self.pay_out.as_mut())
+        if self.pos_out_valid {
+            write_footer(self.pos_out.as_mut())?;
+        }
+        if self.pay_out_valid {
+            write_footer(self.pay_out.as_mut())?;
+        }
+        Ok(())
     }
 
     fn write_term(

@@ -1,6 +1,6 @@
 use core::search::sort_field::*;
 
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq, Debug)]
 pub struct Sort {
     fields: Vec<SortField>,
 }

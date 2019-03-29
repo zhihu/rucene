@@ -10,7 +10,7 @@ use core::search::posting_iterator::{EmptyPostingIterator, PostingIterator};
 use core::search::query_cache::{NoCacheQueryCache, QueryCache};
 use core::search::searcher::{DefaultIndexSearcher, IndexSearcher};
 use core::search::{Query, NO_MORE_DOCS};
-use core::store::{IOContext, IO_CONTEXT_READ};
+use core::store::IO_CONTEXT_READ;
 use core::util::DocId;
 
 use std::cmp::{min, Ordering as CmpOrdering};
@@ -52,10 +52,10 @@ pub struct BufferedUpdates {
     // num_binary_updates: AtomicIsize,
     //
     // TODO: rename thes three: put "deleted" prefix in front:
-    pub deleted_terms: Box<HashMap<Term, DocId>>,
+    pub deleted_terms: HashMap<Term, DocId>,
     // the key is string represent of query, query is share by multi-thread
-    pub deleted_queries: Box<HashMap<String, (Arc<Query>, DocId)>>,
-    pub deleted_doc_ids: Box<Vec<i32>>,
+    pub deleted_queries: HashMap<String, (Arc<Query>, DocId)>,
+    pub deleted_doc_ids: Vec<i32>,
     // Map<dvField,Map<updateTerm,NumericUpdate>>
     // For each field we keep an ordered list of NumericUpdates, key'd by the
     // update Term. LinkedHashMap guarantees we will later traverse the map in
@@ -82,9 +82,9 @@ impl BufferedUpdates {
     pub fn new(name: String) -> Self {
         BufferedUpdates {
             num_term_deletes: AtomicUsize::new(0),
-            deleted_terms: Box::new(HashMap::new()),
-            deleted_queries: Box::new(HashMap::new()),
-            deleted_doc_ids: Box::new(vec![]),
+            deleted_terms: HashMap::new(),
+            deleted_queries: HashMap::new(),
+            deleted_doc_ids: vec![],
             bytes_used: AtomicUsize::new(0),
             segment_name: name,
         }
@@ -160,7 +160,7 @@ const BYTES_PER_DEL_QUERY: usize = 24 + mem::size_of::<i32>();
 /// deletes/updates are write-once, so we shift to more memory efficient data
 /// structure to hold them. We don't hold docIDs because these are applied on
 /// flush.
-pub struct FrozenBufferUpdates {
+pub struct FrozenBufferedUpdates {
     terms: Arc<PrefixCodedTerms>,
     // Parallel array of deleted query, and the doc_id_upto for each
     query_and_limits: Vec<(Arc<Query>, DocId)>,
@@ -173,7 +173,7 @@ pub struct FrozenBufferUpdates {
     is_segment_private: bool,
 }
 
-impl fmt::Display for FrozenBufferUpdates {
+impl fmt::Display for FrozenBufferedUpdates {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if self.num_term_deletes > 0 {
             write!(
@@ -192,12 +192,12 @@ impl fmt::Display for FrozenBufferUpdates {
     }
 }
 
-impl FrozenBufferUpdates {
-    pub fn new(deletes: &BufferedUpdates, is_segment_private: bool) -> Self {
+impl FrozenBufferedUpdates {
+    pub fn new(deletes: &mut BufferedUpdates, is_segment_private: bool) -> Self {
         debug_assert!(!is_segment_private || deletes.deleted_terms.is_empty());
 
         let mut terms_array = Vec::with_capacity(deletes.deleted_terms.len());
-        for (t, _) in deletes.deleted_terms.as_ref() {
+        for (t, _) in deletes.deleted_terms.drain() {
             terms_array.push(t);
         }
         terms_array.sort();
@@ -208,17 +208,18 @@ impl FrozenBufferUpdates {
         }
         let terms = builder.finish();
 
-        let mut query_and_limits = Vec::with_capacity(deletes.deleted_queries.len());
-        for (_, (query, limit)) in deletes.deleted_queries.as_ref() {
-            query_and_limits.push((Arc::clone(query), *limit));
-        }
+        let query_and_limits: Vec<_> = deletes
+            .deleted_queries
+            .drain()
+            .map(|(_key, value)| value)
+            .collect();
 
         // TODO if a Term affects multiple fields, we could keep the updates key'd by Term
         // so that it maps to all fields it affects, sorted by their docUpto, and traverse
         // that Term only once, applying the update to all fields that still need to be
         // updated.
         let bytes_used = terms.ram_bytes_used() + query_and_limits.len() * BYTES_PER_DEL_QUERY;
-        FrozenBufferUpdates {
+        FrozenBufferedUpdates {
             terms: Arc::new(terms),
             query_and_limits,
             bytes_used,
@@ -255,7 +256,8 @@ impl FrozenBufferUpdates {
 /// track which BufferedDeletes packets to apply to any given
 /// segment.
 pub struct BufferedUpdatesStream {
-    updates: Mutex<Vec<FrozenBufferUpdates>>,
+    lock: Arc<Mutex<()>>,
+    updates: Mutex<Vec<FrozenBufferedUpdates>>,
     // Starts at 1 so that SegmentInfos that have never had
     // deletes applied (whose bufferedDelGen defaults to 0)
     // will be correct:
@@ -269,6 +271,7 @@ pub struct BufferedUpdatesStream {
 impl Default for BufferedUpdatesStream {
     fn default() -> Self {
         BufferedUpdatesStream {
+            lock: Arc::new(Mutex::new(())),
             updates: Mutex::new(vec![]),
             next_gen: AtomicU64::new(1),
             last_delete_term: Vec::with_capacity(0),
@@ -285,13 +288,15 @@ impl BufferedUpdatesStream {
 
     // Append a new packet of buffered deletes to the stream:
     // setting its generation:
-    pub fn push(&self, mut packet: FrozenBufferUpdates) -> Result<u64> {
+    pub fn push(&self, mut packet: FrozenBufferedUpdates) -> Result<u64> {
         // The insert operation must be atomic. If we let threads increment the gen
         // and push the packet afterwards we risk that packets are out of order.
         // With DWPT this is possible if two or more flushes are racing for pushing
         // updates. If the pushed packets get our of order would loose documents
         // since deletes are applied to the wrong segments.
-        packet.set_del_gen(self.get_next_gen());
+        let lock = Arc::clone(&self.lock);
+        let _l = lock.lock().unwrap();
+        packet.set_del_gen(self.next_gen.fetch_add(1, Ordering::AcqRel));
         let mut updates = self.updates.lock()?;
         debug_assert!(packet.any());
         debug_assert!(self.check_delete_stats(&updates));
@@ -331,10 +336,12 @@ impl BufferedUpdatesStream {
         pool: &ReaderPool,
         infos: &[Arc<SegmentCommitInfo>],
     ) -> Result<ApplyDeletesResult> {
+        let lock = Arc::clone(&self.lock);
+        let _l = lock.lock().unwrap();
         let mut seg_states = Vec::with_capacity(infos.len());
         let gen = self.next_gen.load(Ordering::Acquire);
         match self.do_apply_deletes_and_updates(pool, infos, &mut seg_states) {
-            Ok((res, false)) => {
+            Ok(Some(res)) => {
                 return Ok(res);
             }
             Err(e) => {
@@ -356,32 +363,34 @@ impl BufferedUpdatesStream {
         pool: &ReaderPool,
         infos: &[Arc<SegmentCommitInfo>],
         seg_states: &mut Vec<SegmentState>,
-    ) -> Result<(ApplyDeletesResult, bool)> {
-        let mut coalesce_udpates = CoalescedUpdates::default();
+    ) -> Result<Option<ApplyDeletesResult>> {
+        let mut coalesce_updates = CoalescedUpdates::default();
 
         // We only init these on demand, when we find our first deletes that need to be applied:
         let mut total_del_count = 0;
         let mut total_term_visited_count = 0;
 
-        let gen = self.get_next_gen() as i64;
+        let gen = self.next_gen.fetch_add(1, Ordering::AcqRel) as i64;
 
         {
             let mut updates = self.updates.lock()?;
 
             if infos.is_empty() {
-                return Ok((
-                    ApplyDeletesResult::new(false, gen, Vec::with_capacity(0)),
+                return Ok(Some(ApplyDeletesResult::new(
                     false,
-                ));
+                    gen,
+                    Vec::with_capacity(0),
+                )));
             }
 
             debug_assert!(self.check_delete_stats(&updates));
 
             if !self.any() {
-                return Ok((
-                    ApplyDeletesResult::new(false, gen, Vec::with_capacity(0)),
+                return Ok(Some(ApplyDeletesResult::new(
                     false,
-                ));
+                    gen,
+                    Vec::with_capacity(0),
+                )));
             }
 
             let mut infos = infos.to_vec();
@@ -395,8 +404,8 @@ impl BufferedUpdatesStream {
             // Backwards merge sort the segment delGens with the packet
             // delGens in the buffered stream:
             while infos_idx > 0 {
-                let seg_gen = infos[infos_idx - 1].buffered_deletes_gen();
                 let info = &infos[infos_idx - 1];
+                let seg_gen = info.buffered_deletes_gen();
 
                 if del_idx > 0 && seg_gen < updates[del_idx - 1].gen as i64 {
                     if !updates[del_idx - 1].is_segment_private && updates[del_idx - 1].any() {
@@ -406,7 +415,7 @@ impl BufferedUpdatesStream {
                         // since it had no more documents remaining after some del packets
                         // younger than its segPrivate packet (higher delGen) have been
                         // applied, the segPrivate packet has not been removed.
-                        coalesce_udpates.update(&mut updates[del_idx - 1]);
+                        coalesce_updates.update(&mut updates[del_idx - 1]);
                     }
                     del_idx -= 1;
                 } else if del_idx > 0 && seg_gen == updates[del_idx - 1].gen as i64 {
@@ -421,18 +430,17 @@ impl BufferedUpdatesStream {
                     let mut del_count = 0;
 
                     // first apply segment-private deletes
-                    let mut qals = vec![];
-                    for ql in &updates[del_idx - 1].query_and_limits {
-                        qals.push(ql);
-                    }
-                    del_count += Self::apply_query_deletes(qals, seg_state)?;
+                    del_count += Self::apply_query_deletes(
+                        updates[del_idx - 1].query_and_limits.iter(),
+                        seg_state,
+                    )?;
 
                     // ... then coalesced deletes/updates, so that if there is an update
                     // that appears in both, the coalesced updates (carried from
                     // updates ahead of the segment-privates ones) win:
-                    if coalesce_udpates.any() {
+                    if coalesce_updates.has_queries() {
                         del_count += Self::apply_query_deletes(
-                            coalesce_udpates.query_and_limits(),
+                            coalesce_updates.query_and_limits(),
                             seg_state,
                         )?;
                     }
@@ -444,7 +452,7 @@ impl BufferedUpdatesStream {
                     del_idx -= 1;
                     infos_idx -= 1;
                 } else {
-                    if coalesce_udpates.any() {
+                    if coalesce_updates.any() {
                         if seg_states.is_empty() {
                             self.open_segment_states(pool, &infos, seg_states)?;
                         }
@@ -454,10 +462,12 @@ impl BufferedUpdatesStream {
                         // Lock order: IW -> BD -> RP
                         debug_assert!(pool.info_is_live(info, None));
                         let mut del_count = 0;
-                        del_count += Self::apply_query_deletes(
-                            coalesce_udpates.query_and_limits(),
-                            seg_state,
-                        )?;
+                        if coalesce_updates.has_queries() {
+                            del_count += Self::apply_query_deletes(
+                                coalesce_updates.query_and_limits(),
+                                seg_state,
+                            )?;
+                        }
 
                         total_del_count += del_count;
                     }
@@ -468,42 +478,38 @@ impl BufferedUpdatesStream {
         }
 
         // Now apply all term deletes:
-        if coalesce_udpates.total_term_count > 0 {
+        if coalesce_updates.total_term_count > 0 {
             if seg_states.is_empty() {
                 self.open_segment_states(pool, infos, seg_states)?;
             }
             total_term_visited_count +=
-                self.apply_term_deletes(&coalesce_udpates, seg_states.as_mut())?;
+                self.apply_term_deletes(&coalesce_updates, seg_states.as_mut())?;
         }
 
         // debug_assert!(self.check_delete_stats(&updates));
 
-        Ok((ApplyDeletesResult::new(false, gen, vec![]), true))
+        Ok(None)
     }
 
     /// Delete by query
-    fn apply_query_deletes(
-        queries: Vec<&(Arc<Query>, DocId)>,
+    fn apply_query_deletes<'a>(
+        queries: impl Iterator<Item = &'a (Arc<Query>, DocId)>,
         seg_state: &mut SegmentState,
     ) -> Result<u64> {
-        if queries.is_empty() {
-            return Ok(0);
-        }
-
         let mut del_count: u64 = 0;
-        let rld = seg_state.rld.inner.lock()?;
-        let seg_reader = rld.reader();
-        let mut searcher = DefaultIndexSearcher::new(seg_reader);
+        let mut rld = seg_state.rld.inner.lock()?;
+        let reader = Arc::clone(rld.reader());
+        let mut searcher = DefaultIndexSearcher::new(reader.as_ref());
         let query_cache: Arc<QueryCache> = Arc::new(NoCacheQueryCache::new());
         searcher.set_query_cache(query_cache);
-        let reader = searcher.reader().leaves()[0];
+        let reader = searcher.reader().leaves().remove(0);
         for (query, limit) in queries {
             let weight = searcher.create_normalized_weight(query.as_ref(), false)?;
-            let mut scorer = weight.create_scorer(reader)?;
-            let live_docs = reader.live_docs();
+            let mut scorer = weight.create_scorer(&reader)?;
+            let live_docs = reader.reader.live_docs();
             loop {
                 let doc = scorer.next()?;
-                if doc > *limit {
+                if doc >= *limit {
                     break;
                 }
                 if !live_docs.get(doc as usize)? {
@@ -511,10 +517,10 @@ impl BufferedUpdatesStream {
                 }
 
                 if !seg_state.any {
-                    seg_state.rld.init_writable_live_docs()?;
+                    rld.init_writable_live_docs(&seg_state.rld.info)?;
                     seg_state.any = true;
                 }
-                if seg_state.rld.delete(doc)? {
+                if rld.delete(doc)? {
                     del_count += 1;
                 }
             }
@@ -702,7 +708,6 @@ impl BufferedUpdatesStream {
         let mut all_deleted = vec![];
 
         for seg_state in seg_states {
-            let mut should_push = false;
             if success {
                 total_del_count +=
                     seg_state.rld.pending_delete_count() - seg_state.start_del_count as u32;
@@ -724,7 +729,10 @@ impl BufferedUpdatesStream {
             return first_err;
         }
 
-        debug!("apply_deletes: {} new delete documents.", total_del_count);
+        debug!(
+            "BD - apply_deletes: {} new delete documents.",
+            total_del_count
+        );
 
         Ok(ApplyDeletesResult::new(
             total_del_count > 0,
@@ -743,7 +751,7 @@ impl BufferedUpdatesStream {
     }
 
     // only used for assert
-    fn check_delete_stats(&self, updates: &[FrozenBufferUpdates]) -> bool {
+    fn check_delete_stats(&self, updates: &[FrozenBufferedUpdates]) -> bool {
         let mut num_terms2 = 0;
         let mut bytes_used2 = 0;
         for update in updates {
@@ -756,6 +764,8 @@ impl BufferedUpdatesStream {
     }
 
     pub fn get_next_gen(&self) -> u64 {
+        let lock = Arc::clone(&self.lock);
+        let _l = lock.lock().unwrap();
         self.next_gen.fetch_add(1, Ordering::AcqRel)
     }
 
@@ -763,6 +773,8 @@ impl BufferedUpdatesStream {
     /// Remove any BufferDeletes that we on longer need to store because
     /// all segments in the index have had the deletes applied.
     pub fn prune(&mut self, segment_infos: &SegmentInfos) {
+        let lock = Arc::clone(&self.lock);
+        let _l = lock.lock().unwrap();
         let mut updates = self.updates.lock().unwrap();
         debug_assert!(self.check_delete_stats(&updates));
 
@@ -784,7 +796,7 @@ impl BufferedUpdatesStream {
         debug_assert!(self.check_delete_stats(&updates));
     }
 
-    fn do_prune(&self, updates: &mut MutexGuard<Vec<FrozenBufferUpdates>>, idx: usize) {
+    fn do_prune(&self, updates: &mut MutexGuard<Vec<FrozenBufferedUpdates>>, idx: usize) {
         if idx > 0 {
             debug!(
                 "BD: prune_deletes: prune {} packets; {} packets remain.",
@@ -920,7 +932,7 @@ impl Default for CoalescedUpdates {
 }
 
 impl CoalescedUpdates {
-    fn update(&mut self, up: &mut FrozenBufferUpdates) {
+    fn update(&mut self, up: &mut FrozenBufferedUpdates) {
         self.total_term_count += up.terms.size;
         self.terms.push(Arc::clone(&up.terms));
 
@@ -935,8 +947,12 @@ impl CoalescedUpdates {
         FieldTermIterator::build(&self.terms)
     }
 
-    pub fn query_and_limits(&self) -> Vec<&(Arc<Query>, DocId)> {
-        self.queries.values().collect()
+    pub fn query_and_limits(&self) -> impl Iterator<Item = &(Arc<Query>, DocId)> {
+        self.queries.values()
+    }
+
+    pub fn has_queries(&self) -> bool {
+        !self.queries.is_empty()
     }
 
     pub fn any(&self) -> bool {

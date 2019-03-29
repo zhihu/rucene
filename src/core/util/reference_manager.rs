@@ -30,8 +30,10 @@ impl<T: ?Sized> ReferenceManagerBase<T> {
 /// reference is closed only once all threads have finished using it. It is
 /// recommended to consult the documentation of {@link ReferenceManager}
 /// implementations for their {@link #maybeRefresh()} semantics.
-pub trait ReferenceManager<T: ?Sized> {
+pub trait ReferenceManager<T: ?Sized, RL: RefreshListener> {
     fn base(&self) -> &ReferenceManagerBase<T>;
+
+    fn refresh_listener(&self) -> Option<&RL>;
 
     fn _swap_reference(&self, new_reference: Option<Arc<T>>, _l: &MutexGuard<()>) -> Result<()> {
         // let _l = base.lock.lock().unwrap();
@@ -109,22 +111,35 @@ pub trait ReferenceManager<T: ?Sized> {
     fn _do_maybe_refresh(&self, l: &MutexGuard<()>) -> Result<()> {
         // let _l = self.base().refresh_lock.lock()?;
 
+        let mut refreshed = false;
         let reference = self.acquire()?;
-        let res = self._exec_maybe_refresh(&reference, l);
-        let _ = self.release(reference.as_ref());
+        self.notify_refresh_listeners_before()?;
+        let res = self._exec_maybe_refresh(&reference, &mut refreshed, l);
+        if let Err(e) = self.release(reference.as_ref()) {
+            error!("release old reference failed by: {:?}", e);
+        }
+        if let Err(e) = self.notify_refresh_listeners_refreshed(refreshed) {
+            error!("notify refresh listeners refreshed: {:?}", e);
+        }
         if res.is_ok() {
             self.after_maybe_refresh()?;
         }
         res
     }
 
-    fn _exec_maybe_refresh(&self, reference: &Arc<T>, l: &MutexGuard<()>) -> Result<()> {
+    fn _exec_maybe_refresh(
+        &self,
+        reference: &Arc<T>,
+        refreshed: &mut bool,
+        l: &MutexGuard<()>,
+    ) -> Result<()> {
         if let Some(new_reference) = self.refresh_if_needed(reference)? {
             debug_assert_ne!(
                 new_reference.as_ref() as *const T,
                 reference.as_ref() as *const T
             );
             self._do_swap(new_reference, l)?;
+            *refreshed = true;
         }
         Ok(())
     }
@@ -162,7 +177,7 @@ pub trait ReferenceManager<T: ?Sized> {
     }
 
     fn maybe_refresh_blocking(&self) -> Result<()> {
-        let l = self.base().refresh_lock.lock().unwrap();
+        let l = self.base().refresh_lock.lock()?;
         self._do_maybe_refresh(&l)
     }
 
@@ -173,4 +188,30 @@ pub trait ReferenceManager<T: ?Sized> {
     fn release(&self, reference: &T) -> Result<()> {
         self.dec_ref(reference)
     }
+
+    fn notify_refresh_listeners_before(&self) -> Result<()> {
+        if let Some(rl) = self.refresh_listener() {
+            rl.before_refresh()
+        } else {
+            Ok(())
+        }
+    }
+
+    fn notify_refresh_listeners_refreshed(&self, refreshed: bool) -> Result<()> {
+        if let Some(rl) = self.refresh_listener() {
+            rl.after_refresh(refreshed)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+pub trait RefreshListener {
+    /// Called right before a refresh attempt starts.
+    fn before_refresh(&self) -> Result<()>;
+
+    /// Called after the attempted refresh; if the refresh did open a new
+    /// reference then didRefresh will be true and `acquire()` is guareeteed
+    /// to return the new reference
+    fn after_refresh(&self, refreshed: bool) -> Result<()>;
 }

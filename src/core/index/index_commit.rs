@@ -1,4 +1,3 @@
-use core::index::IndexWriter;
 use core::index::StandardDirectoryReader;
 use core::store::Directory;
 use error::Result;
@@ -42,10 +41,6 @@ pub trait IndexCommit {
     /// be called by its `IndexDeletionPolicy#onInit on_init()` or
     /// `IndexDeletionPolicy#onCommit on_commit()` methods.
     fn delete(&mut self) -> Result<()>;
-
-    fn delete1(&mut self, writer: &IndexWriter) -> Result<()> {
-        unimplemented!()
-    }
 
     /// Returns true if this commit should be deleted; this is only
     /// used by `IndexWriter` after invoking the `IndexDeletionPolicy`

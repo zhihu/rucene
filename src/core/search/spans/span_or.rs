@@ -1,4 +1,4 @@
-use core::index::{LeafReader, Term, TermContext};
+use core::index::{LeafReaderContext, Term, TermContext};
 use core::search::disi::DisiPriorityQueue;
 use core::search::explanation::Explanation;
 use core::search::searcher::IndexSearcher;
@@ -136,7 +136,7 @@ impl SpanWeight for SpanOrWeight {
 
     fn get_spans(
         &self,
-        reader: &LeafReader,
+        reader: &LeafReaderContext,
         required_postings: &PostingsFlag,
     ) -> Result<Option<Box<Spans>>> {
         let mut sub_spans = Vec::with_capacity(self.sub_weights.len());
@@ -166,8 +166,8 @@ impl SpanWeight for SpanOrWeight {
 }
 
 impl Weight for SpanOrWeight {
-    fn create_scorer(&self, leaf_reader: &LeafReader) -> Result<Box<Scorer>> {
-        self.do_create_scorer(leaf_reader)
+    fn create_scorer(&self, ctx: &LeafReaderContext) -> Result<Box<Scorer>> {
+        self.do_create_scorer(ctx)
     }
 
     fn query_type(&self) -> &'static str {
@@ -186,7 +186,7 @@ impl Weight for SpanOrWeight {
         true
     }
 
-    fn explain(&self, reader: &LeafReader, doc: DocId) -> Result<Explanation> {
+    fn explain(&self, reader: &LeafReaderContext, doc: DocId) -> Result<Explanation> {
         self.explain_span(reader, doc)
     }
 }

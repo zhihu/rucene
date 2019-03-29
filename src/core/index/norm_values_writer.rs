@@ -1,9 +1,9 @@
 use core::codec::NormsConsumer;
 use core::index::FieldInfo;
 use core::index::SegmentWriteState;
-use core::util::packed::{LongValuesIterator, PackedLongValuesIter};
+use core::util::packed::LongValuesIterator;
 use core::util::packed::{PackedLongValuesBuilder, PackedLongValuesBuilderType, DEFAULT_PAGE_SIZE};
-use core::util::packed_misc::{unsigned_bits_required, COMPACT, FAST};
+use core::util::packed_misc::COMPACT;
 use core::util::{DocId, Numeric, ReusableIterator};
 
 use error::Result;
@@ -28,19 +28,19 @@ impl NormValuesWriter {
     }
 
     pub fn add_value(&mut self, doc_id: DocId, value: i64) {
-        for i in self.pending.size()..doc_id as i64 {
+        for _ in self.pending.size()..doc_id as i64 {
             self.pending.add(MISSING);
         }
         self.pending.add(value);
     }
 
-    pub fn finish(&mut self, num_doc: i32) {}
+    pub fn finish(&mut self, _num_doc: i32) {}
 
     pub fn flush(&mut self, state: &SegmentWriteState, consumer: &mut NormsConsumer) -> Result<()> {
         let max_doc = state.segment_info.max_doc as usize;
         let values = self.pending.build();
         let mut iter = NumericIter::new(values.iterator(), max_doc, values.size() as usize);
-        consumer.add_norms_field(&self.field_info, &mut iter);
+        consumer.add_norms_field(&self.field_info, &mut iter)?;
         Ok(())
     }
 }

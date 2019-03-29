@@ -5,6 +5,7 @@ use core::index::flush_policy::FlushPolicy;
 use core::index::index_writer_config::IndexWriterConfig;
 use core::index::thread_doc_writer::DocumentsWriterPerThreadPool;
 use core::index::thread_doc_writer::{DocumentsWriterPerThread, LockedThreadState, ThreadState};
+use core::util::Volatile;
 use error::Result;
 
 use std::cmp::max;
@@ -12,7 +13,7 @@ use std::collections::{HashMap, VecDeque};
 use std::mem;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, ThreadId};
 use std::time::Duration;
 
@@ -32,7 +33,7 @@ pub struct DocumentsWriterFlushControl {
     hard_max_bytes_per_dwpt: u64,
     pub active_bytes: u64,
     flush_bytes: u64,
-    num_pending: usize,
+    num_pending: Volatile<usize>,
     num_docs_since_stalled: u32,
     // only with assert
     flush_deletes: AtomicBool,
@@ -73,7 +74,7 @@ impl DocumentsWriterFlushControl {
             hard_max_bytes_per_dwpt,
             active_bytes: 0,
             flush_bytes: 0,
-            num_pending: 0,
+            num_pending: Volatile::new(0),
             num_docs_since_stalled: 0,
             flush_deletes: AtomicBool::new(false),
             full_flush: AtomicBool::new(false),
@@ -132,8 +133,8 @@ impl DocumentsWriterFlushControl {
         is_update: bool,
     ) -> Result<Option<DocumentsWriterPerThread>> {
         let lock = Arc::clone(&self.lock);
-        let _l = lock.lock()?;
-        let res = self.process_after_document(per_thread, is_update);
+        let l = lock.lock()?;
+        let res = self.process_after_document(per_thread, is_update, &l);
         let stalled = self.update_stall_state();
         debug_assert!(self.assert_num_docs_since_stalled(stalled) && self.assert_memory());
         res
@@ -143,6 +144,7 @@ impl DocumentsWriterFlushControl {
         &mut self,
         per_thread: &mut ThreadState,
         is_update: bool,
+        lg: &MutexGuard<()>,
     ) -> Result<Option<DocumentsWriterPerThread>> {
         self.commit_per_thread_bytes(per_thread);
         if !per_thread.flush_pending() {
@@ -164,7 +166,7 @@ impl DocumentsWriterFlushControl {
         let flushing_dwpt = if self.is_full_flush() {
             if per_thread.flush_pending() {
                 self.checkout_and_block(per_thread);
-                self.next_pending_flush()
+                self.next_pending_flush(Some(lg))
             } else {
                 None
             }
@@ -269,14 +271,14 @@ impl DocumentsWriterFlushControl {
 
     pub fn abort_pending_flushes(&mut self) {
         let lock = Arc::clone(&self.lock);
-        let _l = lock.lock().unwrap();
+        let l = lock.lock().unwrap();
 
         let flush_queue = mem::replace(&mut self.flush_queue, VecDeque::with_capacity(0));
         for mut dwpt in flush_queue {
             self.documents_writer()
                 .subtract_flushed_num_docs(dwpt.num_docs_in_ram);
             dwpt.abort();
-            self.do_after_flush(dwpt);
+            self.do_after_flush(dwpt, Some(&l));
         }
 
         let blocked_flushes = mem::replace(&mut self.blocked_flushes, vec![]);
@@ -288,7 +290,7 @@ impl DocumentsWriterFlushControl {
             self.documents_writer()
                 .subtract_flushed_num_docs(blocked_flush.dwpt.num_docs_in_ram);
             blocked_flush.dwpt.abort();
-            self.do_after_flush(blocked_flush.dwpt);
+            self.do_after_flush(blocked_flush.dwpt, Some(&l));
         }
 
         self.flush_queue.clear();
@@ -309,9 +311,13 @@ impl DocumentsWriterFlushControl {
         true
     }
 
-    pub fn do_after_flush(&mut self, dwpt: DocumentsWriterPerThread) {
+    pub fn do_after_flush(&mut self, dwpt: DocumentsWriterPerThread, lg: Option<&MutexGuard<()>>) {
         let lock = Arc::clone(&self.lock);
-        let _l = lock.lock().unwrap();
+        let _l = if lg.is_none() {
+            Some(lock.lock().unwrap())
+        } else {
+            None
+        };
         debug_assert!(self.flushing_writers.contains_key(&dwpt.segment_info.name));
         let bytes = self.flushing_writers.remove(&dwpt.segment_info.name);
         self.flush_bytes -= bytes.unwrap();
@@ -352,18 +358,26 @@ impl DocumentsWriterFlushControl {
         self.stall_control.stalled
     }
 
-    pub fn next_pending_flush(&mut self) -> Option<DocumentsWriterPerThread> {
+    pub fn next_pending_flush(
+        &mut self,
+        lg: Option<&MutexGuard<()>>,
+    ) -> Option<DocumentsWriterPerThread> {
         let num_pending: usize;
         let full_flush: bool;
         {
             let lock = Arc::clone(&self.lock);
-            let _l = lock.lock().unwrap();
+            let _l = if lg.is_none() {
+                Some(lock.lock().unwrap())
+            } else {
+                None
+            };
+
             if let Some(dwpt) = self.flush_queue.pop_front() {
                 self.update_stall_state();
                 return Some(dwpt);
             }
             full_flush = self.full_flush.load(Ordering::Acquire);
-            num_pending = self.num_pending;
+            num_pending = self.num_pending.read();
         }
 
         if num_pending > 0 && !full_flush {
@@ -395,12 +409,8 @@ impl DocumentsWriterFlushControl {
             };
 
             if guard.inited()
-                && guard.dwpt().delete_queue.generation.load(Ordering::Acquire)
-                    != self
-                        .documents_writer()
-                        .delete_queue
-                        .generation
-                        .load(Ordering::Acquire)
+                && guard.dwpt().delete_queue.generation
+                    != self.documents_writer().delete_queue.generation
             {
                 // There is a flush-all in process and this DWPT is
                 // now stale -- enroll it for flush and try for
@@ -430,15 +440,12 @@ impl DocumentsWriterFlushControl {
                 + self.per_thread_pool().active_thread_state_count() as u64
                 + 2;
             let new_queue = Arc::new(DocumentsWriterDeleteQueue::with_generation(
-                self.documents_writer()
-                    .delete_queue
-                    .generation
-                    .load(Ordering::Acquire)
-                    + 1,
+                self.documents_writer().delete_queue.generation + 1,
                 seq_no + 1,
             ));
 
             flushing_queue = Arc::clone(&self.documents_writer().delete_queue);
+            flushing_queue.max_seq_no.set(seq_no + 1);
             self.documents_writer().delete_queue = new_queue;
         }
 
@@ -451,9 +458,7 @@ impl DocumentsWriterFlushControl {
                 continue;
             }
 
-            if guard.dwpt().delete_queue.generation.load(Ordering::Acquire)
-                != flushing_queue.generation.load(Ordering::Acquire)
-            {
+            if guard.dwpt().delete_queue.generation != flushing_queue.generation {
                 // this one is already a new DWPT
                 continue;
             }
@@ -467,13 +472,10 @@ impl DocumentsWriterFlushControl {
             // blocking indexing.
             let lock = Arc::clone(&self.lock);
             let _l = lock.lock().unwrap();
-            self.prune_blocked_queue(flushing_queue.generation.load(Ordering::Acquire));
+            self.prune_blocked_queue(flushing_queue.generation);
             debug_assert!(self.assert_blocked_flushes());
-            let full_flush_buffer =
-                mem::replace(&mut self.full_flush_buffer, Vec::with_capacity(0));
-            for full_flush in full_flush_buffer {
-                self.flush_queue.push_back(full_flush);
-            }
+            let full_flush_buffer = mem::replace(&mut self.full_flush_buffer, vec![]);
+            self.flush_queue.extend(full_flush_buffer);
             self.update_stall_state();
         }
         debug_assert!(self.assert_active_delete_queue());
@@ -486,12 +488,14 @@ impl DocumentsWriterFlushControl {
             let guard = state.lock().unwrap();
             debug_assert!(
                 !guard.inited()
-                    || guard.dwpt().delete_queue.generation.load(Ordering::Acquire)
-                        == self
-                            .documents_writer()
-                            .delete_queue
-                            .generation
-                            .load(Ordering::Acquire)
+                    || guard.dwpt().delete_queue.generation
+                        == self.documents_writer().delete_queue.generation
+            );
+            debug_assert!(
+                !guard.inited()
+                    || guard.dwpt().delete_queue.as_ref() as *const DocumentsWriterDeleteQueue
+                        == self.documents_writer().delete_queue.as_ref()
+                            as *const DocumentsWriterDeleteQueue
             );
         }
         true
@@ -500,15 +504,8 @@ impl DocumentsWriterFlushControl {
     fn assert_blocked_flushes(&self) -> bool {
         for blocked_flush in &self.blocked_flushes {
             debug_assert_eq!(
-                blocked_flush
-                    .dwpt
-                    .delete_queue
-                    .generation
-                    .load(Ordering::Acquire),
-                self.documents_writer()
-                    .delete_queue
-                    .generation
-                    .load(Ordering::Acquire)
+                blocked_flush.dwpt.delete_queue.generation,
+                self.documents_writer().delete_queue.generation
             );
         }
         true
@@ -521,11 +518,7 @@ impl DocumentsWriterFlushControl {
 
         if !self.blocked_flushes.is_empty() {
             debug_assert!(self.assert_blocked_flushes());
-            let gen = self
-                .documents_writer()
-                .delete_queue
-                .generation
-                .load(Ordering::Acquire);
+            let gen = self.documents_writer().delete_queue.generation;
             self.prune_blocked_queue(gen);
             debug_assert!(self.blocked_flushes.is_empty());
         }
@@ -563,9 +556,9 @@ impl DocumentsWriterFlushControl {
     /// Prunes the blockedQueue by removing all DWPT that are
     /// associated with the given flush queue.
     fn prune_blocked_queue(&mut self, flushing_generation: u64) {
-        let pruned = self.blocked_flushes.drain_filter(|bf| {
-            bf.dwpt.delete_queue.generation.load(Ordering::Acquire) == flushing_generation
-        });
+        let pruned = self
+            .blocked_flushes
+            .drain_filter(|bf| bf.dwpt.delete_queue.generation == flushing_generation);
         for blocked_flush in pruned {
             debug_assert!(!self
                 .flushing_writers
@@ -587,7 +580,7 @@ impl DocumentsWriterFlushControl {
             let bytes = per_thread.bytes_used;
             self.flush_bytes += bytes;
             self.active_bytes -= bytes;
-            self.num_pending += 1;
+            self.num_pending.update(|v| *v += 1);
             debug_assert!(self.assert_memory());
         }
         // don't assert on numDocs since we could hit an abort excp.
@@ -611,7 +604,7 @@ impl DocumentsWriterFlushControl {
         let bytes = per_thread.bytes_used;
         let dwpt = self.per_thread_pool().reset(per_thread);
         debug_assert!(dwpt.is_some());
-        self.num_pending -= 1;
+        self.num_pending.update(|v| *v -= 1);
         self.blocked_flushes
             .push(BlockedFlush::new(dwpt.unwrap(), bytes));
     }
@@ -630,8 +623,7 @@ impl DocumentsWriterFlushControl {
 
             self.flushing_writers
                 .insert(dwpt.segment_info.name.clone(), bytes);
-            self.num_pending -= 1;
-
+            self.num_pending.update(|v| *v -= 1);
             Some(dwpt)
         } else {
             None

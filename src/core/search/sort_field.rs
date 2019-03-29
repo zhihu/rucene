@@ -45,7 +45,7 @@ pub enum SortFieldMissingValue {
     StringFirst,
 }
 
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq, Debug)]
 pub enum SortField {
     Simple(SimpleSortField),
     SortedNumeric(SortedNumericSortField),
@@ -154,12 +154,8 @@ impl SimpleSortField {
         self.is_reverse
     }
 
-    pub fn reverse(&self) -> i32 {
-        if self.is_reverse {
-            -1
-        } else {
-            1
-        }
+    pub fn set_missing_value(&mut self, value: Option<VariantValue>) {
+        self.missing_value = value;
     }
 
     pub fn get_comparator(
@@ -175,22 +171,12 @@ impl SimpleSortField {
             }
             _ => {
                 // debug_assert!(missing_value.is_some());
-                let missing_value = match self.field_type {
-                    SortFieldType::Double => {
-                        missing_value.unwrap_or(&VariantValue::Double(0.0)).clone()
-                    }
-                    SortFieldType::Int => missing_value.unwrap_or(&VariantValue::Int(0)).clone(),
-                    SortFieldType::Long => missing_value.unwrap_or(&VariantValue::Long(0)).clone(),
-                    SortFieldType::Float => {
-                        missing_value.unwrap_or(&VariantValue::Float(0.0)).clone()
-                    }
-                    _ => missing_value.unwrap().clone(),
-                };
+
                 Box::new(NumericDocValuesComparator::new(
                     num_hits,
                     self.field.clone(),
                     self.field_type,
-                    missing_value,
+                    missing_value.map(|v| v.clone()),
                     DefaultDocValuesSource::default(),
                 ))
             }
@@ -211,7 +197,7 @@ impl SimpleSortField {
 ///
 /// Like sorting by string, this also supports sorting missing values as first or last,
 /// via {@link #setMissingValue(Object)}.
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SortedNumericSortField {
     selector: SortedNumericSelectorType,
     real_type: SortFieldType,
@@ -255,14 +241,19 @@ impl SortedNumericSortField {
         num_hits: usize,
         missing_value: Option<&VariantValue>,
     ) -> Box<FieldComparator> {
-        debug_assert!(missing_value.is_some());
+        // debug_assert!(missing_value.is_some());
         Box::new(NumericDocValuesComparator::new(
             num_hits,
             self.raw_field.field.clone(),
-            self.raw_field.field_type,
-            missing_value.unwrap().clone(),
+            self.real_type,
+            missing_value.map(|v| v.clone()),
             SortedWrapperDocValuesSource::new(self.selector, self.real_type),
         ))
+    }
+
+    #[inline]
+    pub fn raw_field(&self) -> &SimpleSortField {
+        &self.raw_field
     }
 }
 

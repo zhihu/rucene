@@ -2,7 +2,7 @@ use std::any::Any;
 use std::f32;
 use std::fmt;
 
-use core::index::LeafReader;
+use core::index::LeafReaderContext;
 use core::search::explanation::Explanation;
 use core::search::searcher::IndexSearcher;
 use core::search::term_query::TermQuery;
@@ -72,7 +72,7 @@ impl BoostWeight {
 }
 
 impl Weight for BoostWeight {
-    fn create_scorer(&self, leaf_reader: &LeafReader) -> Result<Box<Scorer>> {
+    fn create_scorer(&self, leaf_reader: &LeafReaderContext) -> Result<Box<Scorer>> {
         self.weight.create_scorer(leaf_reader)
     }
 
@@ -96,7 +96,7 @@ impl Weight for BoostWeight {
         self.weight.needs_scores()
     }
 
-    fn explain(&self, reader: &LeafReader, doc: DocId) -> Result<Explanation> {
+    fn explain(&self, reader: &LeafReaderContext, doc: DocId) -> Result<Explanation> {
         self.weight.explain(reader, doc)
     }
 }

@@ -1,4 +1,4 @@
-use core::index::LeafReader;
+use core::index::LeafReaderContext;
 use core::search::collector::{Collector, LeafCollector, SearchCollector};
 use core::search::Scorer;
 use core::util::DocId;
@@ -17,9 +17,9 @@ impl<'a> ChainedCollector<'a> {
 }
 
 impl<'a> SearchCollector for ChainedCollector<'a> {
-    fn set_next_reader(&mut self, reader_ord: usize, reader: &LeafReader) -> Result<()> {
+    fn set_next_reader(&mut self, reader: &LeafReaderContext) -> Result<()> {
         for collector in &mut self.collectors {
-            collector.set_next_reader(reader_ord, reader)?;
+            collector.set_next_reader(reader)?;
         }
 
         Ok(())
@@ -29,7 +29,7 @@ impl<'a> SearchCollector for ChainedCollector<'a> {
         self.collectors.iter().all(|it| it.support_parallel())
     }
 
-    fn leaf_collector(&mut self, reader: &LeafReader) -> Result<Box<LeafCollector>> {
+    fn leaf_collector(&mut self, reader: &LeafReaderContext) -> Result<Box<LeafCollector>> {
         let mut leaf_collectors = Vec::with_capacity(self.collectors.len());
         for c in &mut self.collectors {
             leaf_collectors.push(c.leaf_collector(reader)?);

@@ -4,9 +4,7 @@ use core::index::delete_policy::KeepOnlyLastCommitDeletionPolicy;
 use core::index::merge_policy::{MergePolicy, TieredMergePolicy};
 use core::index::merge_scheduler::MergeScheduler;
 use core::index::merge_scheduler::SerialMergeScheduler;
-use core::search::bm25_similarity::BM25Similarity;
 use core::search::sort::Sort;
-use core::search::Similarity;
 
 use std::sync::Arc;
 

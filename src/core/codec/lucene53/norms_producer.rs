@@ -1,7 +1,5 @@
 use core::codec::codec_util;
-use core::codec::format::NormsFormat;
-use core::codec::lucene53::norms::{DATA_CODEC, DATA_EXTENSION, METADATA_CODEC, METADATA_EXTENSION,
-                                   VERSION_CURRENT, VERSION_START};
+use core::codec::lucene53::norms::{VERSION_CURRENT, VERSION_START};
 use core::codec::NormsProducer;
 use core::index::{segment_file_name, FieldInfo, FieldInfos, SegmentReadState};
 use core::index::{NumericDocValues, NumericDocValuesContext};
@@ -9,9 +7,8 @@ use core::store::IndexInput;
 use core::store::RandomAccessInput;
 use core::util::DocId;
 use error::ErrorKind::{CorruptIndex, IllegalArgument};
-use error::*;
+use error::Result;
 use std::collections::HashMap;
-use std::sync::Arc;
 
 #[derive(Debug)]
 struct NormsEntry {
@@ -21,7 +18,7 @@ struct NormsEntry {
 
 pub struct Lucene53NormsProducer {
     max_doc: DocId,
-    data: Arc<IndexInput>,
+    data: Box<IndexInput>,
     entries: HashMap<i32, NormsEntry>,
 }
 
@@ -40,25 +37,20 @@ impl Lucene53NormsProducer {
             meta_extension,
         );
 
-        let mut meta_version = -1;
-
         // read in the entries from the metadata file.
         let mut checksum_input = state
             .directory
             .open_checksum_input(&meta_name, &state.context)?;
-        let result: Result<i32> = codec_util::check_index_header(
+        let meta_version = codec_util::check_index_header(
             checksum_input.as_mut(),
             meta_codec,
             VERSION_START,
             VERSION_CURRENT,
             state.segment_info.get_id(),
             &state.segment_suffix,
-        );
+        )?;
         let mut entries = HashMap::new();
-        if let Ok(v) = result {
-            meta_version = v;
-            Self::read_fields(checksum_input.as_mut(), &state.field_infos, &mut entries)?;
-        }
+        Self::read_fields(checksum_input.as_mut(), &state.field_infos, &mut entries)?;
         codec_util::check_footer(checksum_input.as_mut())?;
 
         let data_name = segment_file_name(
@@ -87,7 +79,7 @@ impl Lucene53NormsProducer {
 
         Ok(Lucene53NormsProducer {
             max_doc,
-            data: Arc::from(data),
+            data,
             entries,
         })
     }
@@ -190,7 +182,7 @@ struct RandomAccessNumericDocValues<F>
 where
     F: Fn(&RandomAccessInput, DocId) -> Result<i64> + Send,
 {
-    input: Arc<RandomAccessInput>,
+    input: Box<RandomAccessInput>,
     consumer: F,
 }
 
@@ -199,10 +191,7 @@ where
     F: Fn(&RandomAccessInput, DocId) -> Result<i64> + Send,
 {
     fn new(input: Box<RandomAccessInput>, consumer: F) -> RandomAccessNumericDocValues<F> {
-        RandomAccessNumericDocValues {
-            input: Arc::from(input),
-            consumer,
-        }
+        RandomAccessNumericDocValues { input, consumer }
     }
 }
 

@@ -151,7 +151,7 @@ impl Directory for FSDirectory {
         &self,
         prefix: &str,
         suffix: &str,
-        ctx: &IOContext,
+        _ctx: &IOContext,
     ) -> Result<Box<IndexOutput>> {
         self.maybe_delete_pending_files()?;
 

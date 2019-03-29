@@ -1,9 +1,10 @@
 use core::{index::{IndexReader, IndexWriter, StandardDirectoryReader},
            search::searcher::{DefaultIndexSearcher, DefaultSimilarityProducer, IndexSearcher},
-           util::{ReferenceManager, ReferenceManagerBase}};
+           util::{ReferenceManager, ReferenceManagerBase, RefreshListener}};
 
 use error::Result;
 
+use std::ops::Deref;
 use std::sync::Arc;
 
 /// Utility class to safely share {@link IndexSearcher} instances across multiple
@@ -30,41 +31,53 @@ use std::sync::Arc;
 /// since it penalizes the unlucky queries that need to refresh. It's better to use
 /// a separate background thread, that periodically calls {@link #maybeRefresh}. Finally,
 /// be sure to call {@link #close} once you are done
-pub struct SearcherManager {
+pub struct SearcherManager<T> {
     searcher_factory: Box<SearcherFactory>,
-    manager_base: ReferenceManagerBase<ManagedIndexSearcher>,
+    pub manager_base: ReferenceManagerBase<ManagedIndexSearcher>,
+    refresh_listener: Option<T>,
 }
 
-impl SearcherManager {
+impl<T> SearcherManager<T> {
     pub fn from_writer(
         writer: &IndexWriter,
         apply_all_deletes: bool,
         write_all_deletes: bool,
         searcher_factory: Box<SearcherFactory>,
+        refresh_listener: Option<T>,
     ) -> Result<Self> {
         let reader = writer.get_reader(apply_all_deletes, write_all_deletes)?;
-        Self::new(reader, searcher_factory)
+        Self::new(reader, searcher_factory, refresh_listener)
     }
 
     pub fn new(
         reader: StandardDirectoryReader,
         searcher_factory: Box<SearcherFactory>,
+        refresh_listener: Option<T>,
     ) -> Result<Self> {
         let current = searcher_factory.new_searcher(Arc::new(reader))?;
         let manager_base = ReferenceManagerBase::new(Arc::new(current));
         Ok(SearcherManager {
             searcher_factory,
             manager_base,
+            refresh_listener,
         })
     }
 }
 
-impl ReferenceManager<ManagedIndexSearcher> for SearcherManager {
+impl<T, RL> ReferenceManager<ManagedIndexSearcher, RL> for SearcherManager<T>
+where
+    T: Deref<Target = RL>,
+    RL: RefreshListener,
+{
     fn base(&self) -> &ReferenceManagerBase<ManagedIndexSearcher> {
         &self.manager_base
     }
 
-    fn dec_ref(&self, reference: &ManagedIndexSearcher) -> Result<()> {
+    fn refresh_listener(&self) -> Option<&RL> {
+        self.refresh_listener.as_ref().map(|r| r.deref())
+    }
+
+    fn dec_ref(&self, _reference: &ManagedIndexSearcher) -> Result<()> {
         // reference.reader().dec_ref()
         Ok(())
     }
@@ -90,12 +103,12 @@ impl ReferenceManager<ManagedIndexSearcher> for SearcherManager {
         }
     }
 
-    fn try_inc_ref(&self, reference: &Arc<ManagedIndexSearcher>) -> Result<bool> {
+    fn try_inc_ref(&self, _reference: &Arc<ManagedIndexSearcher>) -> Result<bool> {
         // reference.reader().inc_ref()
         Ok(true)
     }
 
-    fn ref_count(&self, reference: &ManagedIndexSearcher) -> u32 {
+    fn ref_count(&self, _reference: &ManagedIndexSearcher) -> u32 {
         // TODO ?
         1
     }

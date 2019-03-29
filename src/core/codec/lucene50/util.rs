@@ -169,6 +169,7 @@ impl ForUtilInstance {
         decoded: &mut [i32],
     ) -> Result<()> {
         let num_bits = input.read_byte()? as usize;
+        debug_assert!(num_bits <= 32);
 
         if num_bits as i32 == ALL_VALUES_EQUAL {
             let value = input.read_vint()?;

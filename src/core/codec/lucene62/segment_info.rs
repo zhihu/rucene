@@ -232,20 +232,13 @@ impl SegmentInfoFormat for Lucene62SegmentInfoFormat {
         Ok(segment_info)
     }
 
-    fn write(
-        &self,
-        dir: &Directory,
-        info: &mut SegmentInfo,
-        created_files: &mut Vec<String>,
-        context: &IOContext,
-    ) -> Result<()> {
+    fn write(&self, dir: &Directory, info: &mut SegmentInfo, context: &IOContext) -> Result<()> {
         let file_name = segment_file_name(&info.name, "", SI_EXTENSION);
 
         let mut output = dir.create_output(&file_name, context)?;
         // Only add the file once we've successfully created it,
         // else IFD assert can trip:
         info.add_file(&file_name)?;
-        created_files.push(file_name.clone());
 
         codec_util::write_index_header(
             output.as_mut(),

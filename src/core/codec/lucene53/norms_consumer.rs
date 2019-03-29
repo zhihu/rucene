@@ -58,9 +58,9 @@ impl Lucene53NormsConsumer {
             max_doc,
         })
     }
-    fn add_constant(&mut self, constant: i64) {
-        self.meta.write_byte(0 as u8);
-        self.meta.write_long(constant);
+    fn add_constant(&mut self, constant: i64) -> Result<()> {
+        self.meta.write_byte(0 as u8)?;
+        self.meta.write_long(constant)
     }
 
     fn add_byte(
@@ -79,7 +79,7 @@ impl Lucene53NormsConsumer {
             8
         };
         self.meta.write_byte(len as u8)?;
-        self.meta.write_long(self.data.file_pointer());
+        self.meta.write_long(self.data.file_pointer())?;
         loop {
             if let Some(Ok(nv)) = values.next() {
                 match len {
@@ -104,7 +104,7 @@ impl NormsConsumer for Lucene53NormsConsumer {
         field_info: &FieldInfo,
         values: &mut ReusableIterator<Item = Result<Numeric>>,
     ) -> Result<()> {
-        self.meta.write_vint(field_info.number as i32);
+        self.meta.write_vint(field_info.number as i32)?;
         let mut min_value = i64::max_value();
         let mut max_value = i64::min_value();
         let mut count = 0;
@@ -128,9 +128,9 @@ impl NormsConsumer for Lucene53NormsConsumer {
             );
         }
         if min_value == max_value {
-            self.add_constant(min_value);
+            self.add_constant(min_value)?;
         } else {
-            self.add_byte(min_value, max_value, values);
+            self.add_byte(min_value, max_value, values)?;
         }
         Ok(())
     }

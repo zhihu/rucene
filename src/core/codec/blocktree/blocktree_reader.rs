@@ -13,7 +13,7 @@ use core::codec::blocktree::term_iter_frame::SegmentTermsIterFrame;
 use core::codec::codec_util;
 use core::codec::BlockTermState;
 use core::codec::FieldsProducer;
-use core::codec::{lucene50_decode_term, Lucene50PostingsReader, Lucene50PostingsReaderRef};
+use core::codec::{Lucene50PostingsReader, Lucene50PostingsReaderRef};
 use core::index::segment_file_name;
 use core::index::{FieldInfo, FieldInfoRef, Fields};
 use core::index::{IndexOptions, SegmentReadState};
@@ -344,8 +344,8 @@ impl BlockTreeTermsReader {
     }
 
     fn check_integrity(&self) -> Result<()> {
-        let input = (*self.terms_in).clone()?;
-        // codec_util::checksum_entire_file(input.as_mut())?;
+        //        let input = (*self.terms_in).clone()?;
+        //        codec_util::checksum_entire_file(input.as_mut())?;
         self.postings_reader.check_integrity()
     }
 }
@@ -1187,55 +1187,6 @@ impl<'a> SegmentTermIterator {
         self.eof = true;
     }
 
-    fn decode_meta_data(&mut self) -> Result<BlockTermState> {
-        let limit = if self.is_leaf_block {
-            self.next_ent
-        } else {
-            self.state.term_block_ord
-        };
-        let mut absolute = self.meta_data_upto == 0;
-        debug_assert!(limit > 0);
-
-        loop {
-            if self.meta_data_upto >= limit {
-                break;
-            }
-            // TODO: we could make "tiers" of metadata, ie,
-            // decode docFreq/totalTF but don't decode postings
-            // metadata; this way caller could get
-            // docFreq/totalTF w/o paying decode cost for
-            // postings
-
-            // TODO: if docFreq were bulk decoded we could
-            // just skipN here:
-
-            // stats
-            self.state.doc_freq = self.stats_reader.read_vint()?;
-            self.state.total_term_freq = match self.field_info.index_options {
-                IndexOptions::Docs => -1,
-                _ => i64::from(self.state.doc_freq) + self.stats_reader.read_vlong()?,
-            };
-            unsafe {
-                let ptr = self.longs.as_mut_ptr();
-                for i in 0..self.longs.len() {
-                    *ptr.offset(i as isize) = self.bytes_reader.read_vlong()?;
-                }
-            }
-            lucene50_decode_term(
-                &self.longs,
-                &mut self.bytes_reader,
-                self.field_info.as_ref(),
-                &mut self.state,
-                absolute,
-            )?;
-
-            self.meta_data_upto += 1;
-            absolute = false;
-        }
-        self.state.term_block_ord = self.meta_data_upto;
-        Ok(self.state.clone())
-    }
-
     fn push_frame_by_data(
         &mut self,
         arc: Option<FSTArc<ByteSequenceOutput>>,
@@ -1296,61 +1247,6 @@ impl<'a> SegmentTermIterator {
         debug_assert_eq!(self.stack[ord].ord, ord as isize);
         ord as usize
     }
-
-    // pub fn set_floor_data(&mut self) -> Result<()> {
-    // let field_reader = self.field_reader;
-    // let source = field_reader.root_code();
-    // let input = &mut self.scratch_reader;
-    // let (_, mut source) = source.split_at(input.position());
-    // self.floor_buffer.reload(&mut source);
-    // self.num_follow_floor_blocks = self.floor_buffer.read_vint()?;
-    // self.next_floor_label = self.floor_buffer.read_byte()? as i32;
-    // Ok(())
-    // }
-    //
-    // pub fn rewind(&mut self) -> Result<()> {
-    // Force reload:
-    // self.fp = self.fp_orig;
-    // self.next_ent = -1;
-    // self.has_terms = self.has_terms_orig;
-    // if self.is_floor {
-    // self.num_follow_floor_blocks = self.floor_buffer.read_vint()?;
-    // self.next_floor_label = self.floor_buffer.read_byte()? as i32 & 0xff;
-    // }
-    // Ok(())
-    // }
-    //
-    // fn load_frame(&mut self) -> Result<()> {
-    // {
-    // let field_reader = self.field_reader;
-    // let frame_data = field_reader.root_code();
-    // self.scratch_reader.reload_slice(frame_data)?;
-    // }
-    // let code = self.scratch_reader.read_vlong()?;
-    // let fp_seek = (code as u64 >> OUTPUT_FLAGS_NUM_BITS) as i64;
-    // self.has_terms = (code & OUTPUT_FLAGS_HAS_TERMS) != 0;
-    // self.has_terms_orig = self.has_terms;
-    // self.is_floor = (code & OUTPUT_FLAGS_IS_FLOOR) != 0;
-    // if self.is_floor {
-    // self.set_floor_data()?;
-    // }
-    // let length = 0;
-    // if self.fp_orig == fp_seek && self.next_ent != -1 {
-    // if self.ord > self.target_before_current_length {
-    // self.rewind();
-    // }
-    // assert!(length == self.prefix);
-    // } else {
-    // self.next_ent = -1;
-    // self.prefix = length;
-    // self.state.term_block_ord = 0;
-    // self.fp_orig = fp_seek;
-    // self.fp = fp_seek;
-    // self.last_sub_fp = -1;
-    // }
-    // Ok(())
-    // }
-    //
 
     fn scan_to_term(&mut self, target: &[u8], exact_only: bool) -> Result<SeekStatus> {
         if self.is_leaf_block {
@@ -1631,7 +1527,6 @@ impl<'a> SegmentTermIterator {
         self.term.resize(term_length, 0);
         self.term_len = term_length;
         let prefix = self.prefix as usize;
-        let suffix = self.suffix as usize;
         self.suffix_reader.seek(i64::from(self.start_byte_pos))?;
         self.suffix_reader
             .read_exact(&mut self.term[prefix..term_length])?;
@@ -1736,7 +1631,7 @@ impl<'a> SegmentTermIterator {
         } else {
             let cnt = index + 1 - self.arcs.len();
             self.arcs.reserve(cnt);
-            for i in self.arcs.len()..index {
+            for _i in self.arcs.len()..index {
                 self.arcs.push(FSTArc::empty());
             }
             self.arcs.push(arc);
@@ -2236,12 +2131,19 @@ impl TermIterator for SegmentTermIterator {
     }
 
     fn seek_exact_state(&mut self, text: &[u8], state: &TermState) -> Result<()> {
-        self.term.resize(text.len(), 0);
-        self.term.copy_from_slice(text);
-        self.term_len = text.len();
-        self.state = BlockTermState::deserialize(&state.serialize())?;
-        self.is_leaf_block = false;
-        self.meta_data_upto = self.state.term_block_ord;
+        self.clear_eof();
+
+        let st = state.as_any().downcast_ref::<BlockTermState>().unwrap();
+        if text != self.term() || !self.term_exists {
+            self.current_frame_ord = self.static_frame.ord;
+            self.static_frame.state.copy_from(st);
+            self.resize_term(text.len());
+            self.term.copy_from_slice(text);
+            self.static_frame.metadata_upto = self.static_frame.get_term_block_ord();
+            debug_assert!(self.static_frame.metadata_upto > 0);
+            self.valid_index_prefix = 0;
+        }
+
         Ok(())
     }
 
@@ -2255,14 +2157,14 @@ impl TermIterator for SegmentTermIterator {
 
     fn doc_freq(&mut self) -> Result<i32> {
         debug_assert!(!self.eof);
-        let state = self.decode_meta_data()?;
-        Ok(state.doc_freq)
+        self.current_frame().decode_metadata()?;
+        Ok(self.current_frame().state.doc_freq)
     }
 
     fn total_term_freq(&mut self) -> Result<i64> {
         debug_assert!(!self.eof);
-        let state = self.decode_meta_data()?;
-        Ok(state.total_term_freq)
+        self.current_frame().decode_metadata()?;
+        Ok(self.current_frame().state.total_term_freq)
     }
 
     fn postings(&mut self) -> Result<Box<PostingIterator>> {
@@ -2293,7 +2195,8 @@ impl TermIterator for SegmentTermIterator {
     }
 
     fn term_state(&mut self) -> Result<Box<TermState>> {
-        Ok(Box::new(self.decode_meta_data()?))
+        self.current_frame().decode_metadata()?;
+        Ok(Box::new(self.current_frame().state.clone()))
     }
 
     fn as_any(&self) -> &Any {

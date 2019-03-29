@@ -11,7 +11,6 @@ use core::index::doc_values_writer::{DocValuesWriter, DocValuesWriterEnum};
 use core::index::index_writer;
 use core::index::norm_values_writer::NormValuesWriter;
 use core::index::point_values_writer::PointValuesWriter;
-use core::index::postings_array::PostingsArray;
 use core::index::term_vector::TermVectorsConsumer;
 use core::index::terms_hash::{FreqProxTermsWriter, TermsHash};
 use core::index::terms_hash_per_field::{FreqProxTermsWriterPerField, TermsHashPerField};
@@ -31,7 +30,7 @@ use error::{ErrorKind, Result};
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::ptr;
 
 const MAX_FIELD_COUNT: usize = 65536;
@@ -247,11 +246,9 @@ impl DefaultIndexingChain {
 
     fn write_norms(&mut self, state: &SegmentWriteState) -> Result<()> {
         let max_doc = state.segment_info.max_doc;
-        let mut norms_consumer = None;
-
         if state.field_infos.has_norms {
             let norms_format = state.segment_info.codec().norms_format();
-            norms_consumer = Some(norms_format.norms_consumer(state)?);
+            let mut norms_consumer = norms_format.norms_consumer(state)?;
 
             for pf in &mut self.field_hash {
                 let name = pf.name.as_str();
@@ -263,7 +260,7 @@ impl DefaultIndexingChain {
                             pf.norms
                                 .as_mut()
                                 .unwrap()
-                                .flush(state, norms_consumer.as_mut().unwrap().as_mut())?;
+                                .flush(state, norms_consumer.as_mut())?;
                         }
                     }
                 }
@@ -294,9 +291,9 @@ impl DefaultIndexingChain {
             let idx = self.get_or_add_field(field.name(), field.field_type(), true)?;
             let first = self.field_hash[idx].field_gen != field_gen;
 
+            let ptr = self as *mut DefaultIndexingChain;
             unsafe {
-                let ptr = self as *mut DefaultIndexingChain;
-                self.field_hash[idx].invert(field, doc_state, first, &mut (*ptr))?;
+                self.field_hash[idx].invert(field, doc_state, first, &mut *ptr)?;
             }
 
             if first {
@@ -898,15 +895,6 @@ impl<T: TermsHashPerField> PerField<T> {
             // internal state of the terms hash is now
             // corrupt and should not be flushed to a
             // new segment:
-
-            let term = String::from_utf8(
-                token_stream
-                    .term_bytes_attribute()
-                    .get_bytes_ref()
-                    .bytes()
-                    .to_vec(),
-            )?;
-
             self.term_hash_per_field.as_mut().unwrap().add(
                 &mut self.invert_state,
                 token_stream.as_ref(),

@@ -16,6 +16,8 @@ pub trait TermState: Send + Sync {
     fn serialize(&self) -> Vec<u8>;
 
     fn clone_to(&self) -> Box<TermState>;
+
+    fn as_any(&self) -> &Any;
 }
 
 /// An ordinal based `TermState`
@@ -36,6 +38,10 @@ impl TermState for OrdTermState {
 
     fn clone_to(&self) -> Box<TermState> {
         Box::new(OrdTermState { ord: self.ord })
+    }
+
+    fn as_any(&self) -> &Any {
+        self
     }
 }
 

@@ -1,5 +1,5 @@
-use core::index::TermIterator;
-use core::index::{LeafReader, Term, TermContext};
+use core::index::{LeafReaderContext, TermIterator};
+use core::index::{Term, TermContext};
 use core::search::explanation::Explanation;
 use core::search::posting_iterator::PostingIterator;
 use core::search::searcher::IndexSearcher;
@@ -256,11 +256,11 @@ impl SpanWeight for SpanTermWeight {
 
     fn get_spans(
         &self,
-        reader: &LeafReader,
+        reader: &LeafReaderContext,
         required_postings: &PostingsFlag,
     ) -> Result<Option<Box<Spans>>> {
         if let Some(state) = self.term_context.get_term_state(reader) {
-            if let Some(terms) = reader.terms(self.term.field())? {
+            if let Some(terms) = reader.reader.terms(self.term.field())? {
                 if !terms.has_positions()? {
                     bail!(ErrorKind::IllegalState(format!(
                         "field '{}' was indexed without position data; cannot run SpanTermQuery \
@@ -291,8 +291,8 @@ impl SpanWeight for SpanTermWeight {
 }
 
 impl Weight for SpanTermWeight {
-    fn create_scorer(&self, leaf_reader: &LeafReader) -> Result<Box<Scorer>> {
-        self.do_create_scorer(leaf_reader)
+    fn create_scorer(&self, ctx: &LeafReaderContext) -> Result<Box<Scorer>> {
+        self.do_create_scorer(ctx)
     }
 
     fn query_type(&self) -> &'static str {
@@ -311,7 +311,7 @@ impl Weight for SpanTermWeight {
         true
     }
 
-    fn explain(&self, reader: &LeafReader, doc: DocId) -> Result<Explanation> {
+    fn explain(&self, reader: &LeafReaderContext, doc: DocId) -> Result<Explanation> {
         self.explain_span(reader, doc)
     }
 }

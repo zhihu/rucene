@@ -1,4 +1,4 @@
-use core::index::{LeafReader, Term, TermContext};
+use core::index::{LeafReaderContext, Term, TermContext};
 use core::search::explanation::Explanation;
 use core::search::searcher::IndexSearcher;
 use core::search::spans::span::{build_sim_weight, PostingsFlag};
@@ -127,7 +127,7 @@ impl SpanWeight for SpanBoostWeight {
 
     fn get_spans(
         &self,
-        reader: &LeafReader,
+        reader: &LeafReaderContext,
         required_postings: &PostingsFlag,
     ) -> Result<Option<Box<Spans>>> {
         self.weight.get_spans(reader, required_postings)
@@ -139,8 +139,8 @@ impl SpanWeight for SpanBoostWeight {
 }
 
 impl Weight for SpanBoostWeight {
-    fn create_scorer(&self, leaf_reader: &LeafReader) -> Result<Box<Scorer>> {
-        self.do_create_scorer(leaf_reader)
+    fn create_scorer(&self, leaf_ctx: &LeafReaderContext) -> Result<Box<Scorer>> {
+        self.do_create_scorer(leaf_ctx)
     }
 
     fn query_type(&self) -> &'static str {
@@ -160,7 +160,7 @@ impl Weight for SpanBoostWeight {
         true
     }
 
-    fn explain(&self, reader: &LeafReader, doc: DocId) -> Result<Explanation> {
+    fn explain(&self, reader: &LeafReaderContext, doc: DocId) -> Result<Explanation> {
         self.weight.explain_span(reader, doc)
     }
 }

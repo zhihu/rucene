@@ -128,8 +128,8 @@ impl MergeScheduler for SerialMergeScheduler {
     fn merge(
         &self,
         writer: &mut IndexWriter,
-        trigger: MergerTrigger,
-        new_merges_found: bool,
+        _trigger: MergerTrigger,
+        _new_merges_found: bool,
     ) -> Result<()> {
         loop {
             if let Some(ref mut merge) = writer.next_merge() {
