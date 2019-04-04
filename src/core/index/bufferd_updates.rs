@@ -21,6 +21,9 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::SystemTime;
 
+use core::index::IndexReader;
+use core::search::searcher::DefaultSimilarityProducer;
+use core::search::SimilarityProducer;
 use error::Result;
 
 // Rough logic: del docIDs are List<i32>.  Say list allocates ~2X size (2 * i32),
@@ -499,7 +502,8 @@ impl BufferedUpdatesStream {
         let mut del_count: u64 = 0;
         let mut rld = seg_state.rld.inner.lock()?;
         let reader = Arc::clone(rld.reader());
-        let mut searcher = DefaultIndexSearcher::new(reader.as_ref());
+        let mut searcher: DefaultIndexSearcher<_, Box<SimilarityProducer>> =
+            DefaultIndexSearcher::new(reader.as_ref());
         let query_cache: Arc<QueryCache> = Arc::new(NoCacheQueryCache::new());
         searcher.set_query_cache(query_cache);
         let reader = searcher.reader().leaves().remove(0);
