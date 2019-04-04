@@ -4,6 +4,7 @@ use core::{index::{IndexReader, IndexWriter, StandardDirectoryReader},
 
 use error::Result;
 
+use core::search::SimilarityProducer;
 use std::ops::Deref;
 use std::sync::Arc;
 
@@ -114,7 +115,7 @@ where
     }
 }
 
-pub type ManagedIndexSearcher = DefaultIndexSearcher<Arc<IndexReader>, DefaultSimilarityProducer>;
+pub type ManagedIndexSearcher = DefaultIndexSearcher<Arc<IndexReader>, Box<SimilarityProducer>>;
 
 pub trait SearcherFactory {
     fn new_searcher(&self, reader: Arc<IndexReader>) -> Result<ManagedIndexSearcher>;

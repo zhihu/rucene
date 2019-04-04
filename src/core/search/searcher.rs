@@ -129,7 +129,7 @@ pub trait IndexSearcher {
     fn explain(&self, query: &Query, doc: DocId) -> Result<Explanation>;
 }
 
-pub struct DefaultIndexSearcher<IR: AsRef<IndexReader>, SP: SimilarityProducer> {
+pub struct DefaultIndexSearcher<IR: AsRef<IndexReader>, SP: AsRef<SimilarityProducer>> {
     pub reader: IR,
     sim_producer: SP,
     query_cache: Arc<QueryCache>,
@@ -140,11 +140,11 @@ pub struct DefaultIndexSearcher<IR: AsRef<IndexReader>, SP: SimilarityProducer> 
     thread_pool: Option<ThreadPool<DefaultContext>>,
 }
 
-unsafe impl<IR: AsRef<IndexReader> + Send, SP: SimilarityProducer> Send
+unsafe impl<IR: AsRef<IndexReader> + Send, SP: AsRef<SimilarityProducer>> Send
     for DefaultIndexSearcher<IR, SP>
 {
 }
-unsafe impl<IR: AsRef<IndexReader> + Sync, SP: SimilarityProducer> Sync
+unsafe impl<IR: AsRef<IndexReader> + Sync, SP: AsRef<SimilarityProducer>> Sync
     for DefaultIndexSearcher<IR, SP>
 {
 }
@@ -152,7 +152,7 @@ unsafe impl<IR: AsRef<IndexReader> + Sync, SP: SimilarityProducer> Sync
 impl<IR, SP> Drop for DefaultIndexSearcher<IR, SP>
 where
     IR: AsRef<IndexReader>,
-    SP: SimilarityProducer,
+    SP: AsRef<SimilarityProducer>,
 {
     fn drop(&mut self) {
         if let Some(ref mut pool) = self.thread_pool {
@@ -161,18 +161,21 @@ where
     }
 }
 
-impl<IR: AsRef<IndexReader>> DefaultIndexSearcher<IR, DefaultSimilarityProducer> {
-    pub fn new(reader: IR) -> DefaultIndexSearcher<IR, DefaultSimilarityProducer> {
-        Self::with_similarity(reader, DefaultSimilarityProducer {})
+impl<IR: AsRef<IndexReader>> DefaultIndexSearcher<IR, Box<SimilarityProducer>> {
+    pub fn new(reader: IR) -> DefaultIndexSearcher<IR, Box<SimilarityProducer>> {
+        let default_sim_producer = Box::new(DefaultSimilarityProducer {});
+        Self::with_similarity(reader, default_sim_producer)
     }
 }
 
-impl<IR, SP> DefaultIndexSearcher<IR, SP>
+impl<IR> DefaultIndexSearcher<IR, Box<SimilarityProducer>>
 where
     IR: AsRef<IndexReader>,
-    SP: SimilarityProducer,
 {
-    pub fn with_similarity(reader: IR, sim_producer: SP) -> DefaultIndexSearcher<IR, SP> {
+    pub fn with_similarity(
+        reader: IR,
+        sim_producer: Box<SimilarityProducer>,
+    ) -> DefaultIndexSearcher<IR, Box<SimilarityProducer>> {
         DefaultIndexSearcher {
             reader,
             sim_producer,
@@ -232,10 +235,9 @@ where
     }
 }
 
-impl<IR, SP> IndexSearcher for DefaultIndexSearcher<IR, SP>
+impl<IR> IndexSearcher for DefaultIndexSearcher<IR, Box<SimilarityProducer>>
 where
     IR: AsRef<IndexReader>,
-    SP: SimilarityProducer,
 {
     #[inline]
     fn reader(&self) -> &IndexReader {

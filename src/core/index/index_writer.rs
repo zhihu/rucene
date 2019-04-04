@@ -448,6 +448,7 @@ impl IndexWriter {
         // done opening the directory reader!
         let reader = self.do_get_reader(apply_all_deletes, write_all_deletes, &mut any_changes)?;
         {
+            any_changes = true;
             if any_changes {
                 self.maybe_merge(MergerTrigger::FullFlush, None)?;
                 // TODO if this failed, we must close the reader
@@ -1844,7 +1845,7 @@ impl IndexWriter {
         unsafe {
             let (seq_no, changed) = (*writer).doc_writer.update_documents(docs, term)?;
             if changed {
-                (*writer).process_events(true, false)?;
+                (*writer).process_events(false, false)?;
             }
 
             Ok(seq_no)
@@ -1919,7 +1920,7 @@ impl IndexWriter {
         unsafe {
             let (seq_no, changed) = (*writer).doc_writer.update_document(doc, term)?;
             if changed {
-                (*writer).process_events(true, false)?;
+                (*writer).process_events(false, false)?;
             }
 
             Ok(seq_no)
