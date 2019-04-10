@@ -591,6 +591,7 @@ impl DocConsumer for DefaultIndexingChain {
         // How many indexed field names we've seen (collapses
         // multiple field instances by the same name):
         let mut field_count = 0;
+        self.fields.clear();
         let field_gen = self.next_field_gen;
         self.next_field_gen += 1;
 
