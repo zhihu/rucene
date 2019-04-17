@@ -448,7 +448,6 @@ impl IndexWriter {
         // done opening the directory reader!
         let reader = self.do_get_reader(apply_all_deletes, write_all_deletes, &mut any_changes)?;
         {
-            any_changes = true;
             if any_changes {
                 self.maybe_merge(MergerTrigger::FullFlush, None)?;
                 // TODO if this failed, we must close the reader
