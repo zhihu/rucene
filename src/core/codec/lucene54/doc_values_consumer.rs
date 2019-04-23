@@ -298,7 +298,7 @@ impl Lucene54DocValuesConsumer {
                         self.meta.write_byte(1)?;
                         values.reset();
                         let predicate = |nv: &Result<Numeric>| match nv {
-                            Err(_) => true,
+                            Err(_) => false,
                             Ok(v) => !v.is_null() && v.long_value() != -1,
                         };
                         let mut values_filter = ReusableIterFilter::new(values, predicate);

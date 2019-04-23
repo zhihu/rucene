@@ -137,7 +137,7 @@ pub struct DefaultIndexSearcher<IR: AsRef<IndexReader>, SP: AsRef<SimilarityProd
     cache_policy: Arc<QueryCachingPolicy>,
     collection_statistics: RwLock<HashMap<String, CollectionStatistics>>,
     pub term_contexts: RwLock<HashMap<String, Arc<TermContext>>>,
-    thread_pool: Option<ThreadPool<DefaultContext>>,
+    thread_pool: Option<Arc<ThreadPool<DefaultContext>>>,
 }
 
 unsafe impl<IR: AsRef<IndexReader> + Send, SP: AsRef<SimilarityProducer>> Send
@@ -147,18 +147,6 @@ unsafe impl<IR: AsRef<IndexReader> + Send, SP: AsRef<SimilarityProducer>> Send
 unsafe impl<IR: AsRef<IndexReader> + Sync, SP: AsRef<SimilarityProducer>> Sync
     for DefaultIndexSearcher<IR, SP>
 {
-}
-
-impl<IR, SP> Drop for DefaultIndexSearcher<IR, SP>
-where
-    IR: AsRef<IndexReader>,
-    SP: AsRef<SimilarityProducer>,
-{
-    fn drop(&mut self) {
-        if let Some(ref mut pool) = self.thread_pool {
-            let _ = pool.stop();
-        }
-    }
 }
 
 impl<IR: AsRef<IndexReader>> DefaultIndexSearcher<IR, Box<SimilarityProducer>> {
@@ -193,8 +181,12 @@ where
             let thread_pool = ThreadPoolBuilder::with_default_factory("search".into())
                 .thread_count(num_threads)
                 .build();
-            self.thread_pool = Some(thread_pool);
+            self.thread_pool = Some(Arc::new(thread_pool));
         }
+    }
+
+    pub fn set_thread_pool(&mut self, pool: Arc<ThreadPool<DefaultContext>>) {
+        self.thread_pool = Some(pool);
     }
 
     pub fn set_query_cache(&mut self, cache: Arc<QueryCache>) {
