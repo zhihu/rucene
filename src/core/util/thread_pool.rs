@@ -154,7 +154,7 @@ struct ScheduleState<Ctx> {
 /// Each task would be pushed into the pool, and when a thread
 /// is ready to process a task, it will get a task from the pool
 /// according to the `ScheduleQueue` provided in initialization.
-pub struct ThreadPool<Ctx> {
+pub struct ThreadPool<Ctx: Context + 'static> {
     state: Arc<(Mutex<ScheduleState<Ctx>>, Condvar)>,
     threads: Vec<JoinHandle<()>>,
     task_count: Arc<AtomicUsize>,
@@ -244,6 +244,14 @@ where
             return Err(err_msg);
         }
         Ok(())
+    }
+}
+
+impl<Ctx: Context + 'static> Drop for ThreadPool<Ctx> {
+    fn drop(&mut self) {
+        if let Err(e) = self.stop() {
+            error!("stop thread failed with: {:?}", e);
+        }
     }
 }
 
