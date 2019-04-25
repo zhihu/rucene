@@ -24,7 +24,7 @@ pub trait SortedSetDocValues: Send + Sync {
     fn lookup_term(&self, key: &[u8]) -> Result<i64> {
         let mut low = 0_i64;
         let mut high = self.get_value_count() as i64 - 1;
-        while low < high {
+        while low <= high {
             let mid = low + (high - low) / 2;
             let term = self.lookup_ord(mid)?;
             let cmp = bit_util::bcompare(&term, key);
@@ -227,7 +227,7 @@ impl AddressedRandomAccessOrdsInner {
             _ => {
                 let mut low = 0_i64;
                 let mut high = self.value_count as i64 - 1;
-                while low < high {
+                while low <= high {
                     let mid = low + (high - low) / 2;
                     let term = self.lookup_ord(mid)?;
                     let cmp = bit_util::bcompare(&term, key);
@@ -406,7 +406,7 @@ impl TabledRandomAccessOrdsInner {
             _ => {
                 let mut low = 0_i64;
                 let mut high = self.value_count as i64 - 1;
-                while low < high {
+                while low <= high {
                     let mid = low + (high - low) / 2;
                     let term = self.lookup_ord(mid)?;
                     let cmp = bit_util::bcompare(&term, key);
