@@ -1487,7 +1487,7 @@ impl IndexWriter {
                 file_name_from_generation(
                     INDEX_FILE_PENDING_SEGMENTS,
                     "",
-                    to_sync.generation as u64
+                    to_sync.generation as u64,
                 )
             );
 
@@ -3106,7 +3106,7 @@ impl ReaderPool {
 
         debug_assert!(ptr::eq(
             info.info.directory.as_ref(),
-            self.writer().directory_orig.as_ref()
+            self.writer().directory_orig.as_ref(),
         ));
 
         self.reader_map
@@ -3128,7 +3128,7 @@ impl ReaderPool {
 
         debug_assert!(ptr::eq(
             info.info.directory.as_ref(),
-            self.writer().directory_orig.as_ref()
+            self.writer().directory_orig.as_ref(),
         ));
 
         if !self.reader_map.lock()?.contains_key(&info.info.name) {
