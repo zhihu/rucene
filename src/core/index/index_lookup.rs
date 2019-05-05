@@ -193,7 +193,12 @@ impl LeafIndexFieldTerm {
                 freq,
             })
         } else {
-            bail!("Terms for field '{}' must not be none!", identifier.field());
+            bail!(
+                "Terms {} for doc {} - field '{}' must not be none!",
+                term,
+                doc_id,
+                field_name
+            );
         }
     }
 

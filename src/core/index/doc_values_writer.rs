@@ -529,6 +529,7 @@ impl DocValuesWriter for SortedDocValuesWriter {
             ord_map[idx] = ord as i32;
         }
 
+        self.pending.build();
         let mut values_iter = SortedValuesIterator::new(&self.hash.ids, value_count, &self.hash);
         let mut ords_iter =
             SortedOrdsIterator::new(&ord_map, max_doc, PackedLongValuesIter::new(&self.pending));

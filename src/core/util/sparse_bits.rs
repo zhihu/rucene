@@ -12,9 +12,11 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 #[derive(Clone)]
 struct SparseBitsContext {
     // index of doc_id in doc_ids
-    index: i64, // mutable
+    index: i64,
+    // mutable
     // doc_id at index
-    doc_id: i64, // mutable
+    doc_id: i64,
+    // mutable
     // doc_id at (index + 1)
     next_doc_id: i64, // mutable
 }
@@ -151,17 +153,34 @@ impl SparseBits {
         doc_id: i64,
     ) -> Result<()> {
         if ctx.doc_id > doc_id || ctx.next_doc_id <= doc_id {
-            bail!(IllegalState("internal error".to_owned()));
+            bail!(
+                "internal error a {} {} {}",
+                doc_id,
+                ctx.doc_id,
+                ctx.next_doc_id
+            );
         }
         if !((ctx.index == -1 && ctx.doc_id == -1)
             || ctx.doc_id == self.doc_ids.get64(ctx.index)?)
         {
-            bail!(IllegalState("internal error".to_owned()));
+            bail!(
+                "internal error b {} {} {}",
+                ctx.index,
+                ctx.doc_id,
+                self.doc_ids.get64(ctx.index)?
+            );
         }
         if !((next_index == self.doc_ids_length && ctx.next_doc_id == self.max_doc)
             || ctx.next_doc_id == self.doc_ids.get64(next_index)?)
         {
-            bail!(IllegalState("internal error".to_owned()));
+            bail!(
+                "internal error c {} {} {} {} {}",
+                next_index,
+                self.doc_ids_length,
+                ctx.next_doc_id,
+                self.max_doc,
+                self.doc_ids.get64(next_index)?
+            );
         }
         Ok(())
     }

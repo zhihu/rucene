@@ -1,6 +1,5 @@
 use core::index::doc_id_merger::{doc_id_merger_of, DocIdMergerEnum};
 use core::index::doc_id_merger::{DocIdMerger, DocIdMergerSub, DocIdMergerSubBase};
-use core::index::OrdinalMap;
 use core::index::SortedNumericDocValuesRef;
 use core::index::{AcceptStatus, FilteredTermIterBase, FilteredTermIterator, TermIterator};
 use core::index::{BinaryDocValuesRef, EmptyBinaryDocValues};
@@ -10,6 +9,7 @@ use core::index::{EmptySortedNumericDocValues, SortedNumericDocValuesContext};
 use core::index::{EmptySortedSetDocValues, SortedSetDocValuesRef, NO_MORE_ORDS};
 use core::index::{FieldInfo, Fields, MergeState, ReaderSlice};
 use core::index::{LiveDocsDocMap, MappedMultiFields, MultiFields};
+use core::index::{NumericDocValuesContext, OrdinalMap};
 use core::search::NO_MORE_DOCS;
 use core::util::bkd::LongBitSet;
 use core::util::byte_ref::BytesRef;
@@ -357,11 +357,15 @@ pub trait DocValuesConsumer {
         let map = OrdinalMap::build(live_terms, weights, COMPACT)?;
 
         // step 3: add field
+        let mut values_iter = SortedSetDocValuesMergeBytesIter::new(&map, to_merge);
+        let mut ord_counts_iter = SortedSetDocValuesOrdCountIter::new(to_merge, merge_state, &map)?;
+        let mut ords_iter = SortedSetDocValuesMergeOrdIter::new(to_merge, merge_state, &map)?;
+
         self.add_sorted_set_field(
             field_info,
-            &mut SortedSetDocValuesMergeBytesIter::new(&map, to_merge),
-            &mut SortedSetDocValuesOrdCountIter::new(to_merge, merge_state, &map)?,
-            &mut SortedSetDocValuesMergeOrdIter::new(to_merge, merge_state, &map)?,
+            &mut values_iter,
+            &mut ord_counts_iter,
+            &mut ords_iter,
         )
     }
 
@@ -371,11 +375,10 @@ pub trait DocValuesConsumer {
         merge_state: &MergeState,
         to_merge: &[SortedNumericDocValuesRef],
     ) -> Result<()> {
-        self.add_sorted_numeric_field(
-            field_info,
-            &mut SortedNumericDocValuesIter::new(to_merge, merge_state)?,
-            &mut SortedNumericDocValuesCountIter::new(to_merge, merge_state)?,
-        )
+        let mut values_iter = SortedNumericDocValuesIter::new(to_merge, merge_state)?;
+        let mut doc_counts_iter = SortedNumericDocValuesCountIter::new(to_merge, merge_state)?;
+
+        self.add_sorted_numeric_field(field_info, &mut values_iter, &mut doc_counts_iter)
     }
 }
 
@@ -529,12 +532,14 @@ impl<'a> NumericDocValuesMergeIter<'a> {
     fn set_next(&mut self) -> Result<bool> {
         if let Some(sub) = self.doc_id_merger.next()? {
             self.next_is_set = true;
-            let next_value = sub.values.get(sub.doc_id)?;
+            let ctx = sub.ctx.take();
+            let (next_value, ctx) = sub.values.get_with_ctx(ctx, sub.doc_id)?;
             self.next_value = if next_value != 0 || sub.docs_with_field.get(sub.doc_id as usize)? {
                 Numeric::Long(next_value)
             } else {
                 Numeric::Null
             };
+            sub.ctx = ctx;
             Ok(true)
         } else {
             Ok(false)
@@ -582,6 +587,7 @@ struct NumericDocValuesSub {
     doc_id: i32,
     max_doc: i32,
     base: DocIdMergerSubBase,
+    ctx: NumericDocValuesContext,
 }
 
 impl NumericDocValuesSub {
@@ -598,6 +604,7 @@ impl NumericDocValuesSub {
             doc_id: -1,
             max_doc,
             base,
+            ctx: None,
         }
     }
 }
@@ -1229,7 +1236,6 @@ struct SortedNumericDocValuesCountIter<'a> {
     doc_id_merger: DocIdMergerEnum<SortedNumericDocValuesSub>,
     next_value: u32,
     next_is_set: bool,
-    ctx: Option<SortedNumericDocValuesContext>,
 }
 
 impl<'a> SortedNumericDocValuesCountIter<'a> {
@@ -1249,18 +1255,16 @@ impl<'a> SortedNumericDocValuesCountIter<'a> {
             doc_id_merger,
             next_value: 0,
             next_is_set: false,
-            ctx: None,
         })
     }
 
     fn set_next(&mut self) -> Result<bool> {
         if let Some(sub) = self.doc_id_merger.next()? {
-            self.next_is_set = true;
-            let mut ctx = mem::replace(&mut self.ctx, None);
+            let mut ctx = sub.ctx.take();
             let new_ctx = sub.values.set_document(ctx, sub.doc_id)?;
             self.next_value = sub.values.count(&new_ctx) as u32;
             self.next_is_set = true;
-            self.ctx = Some(new_ctx);
+            sub.ctx = Some(new_ctx);
             Ok(true)
         } else {
             Ok(false)
@@ -1313,7 +1317,6 @@ struct SortedNumericDocValuesIter<'a> {
     value_upto: usize,
     value_length: usize,
     current: *mut SortedNumericDocValuesSub,
-    current_ctx: Option<SortedNumericDocValuesContext>,
 }
 
 impl<'a> SortedNumericDocValuesIter<'a> {
@@ -1336,7 +1339,6 @@ impl<'a> SortedNumericDocValuesIter<'a> {
             value_upto: 0,
             value_length: 0,
             current: ptr::null_mut(),
-            current_ctx: None,
         })
     }
 
@@ -1347,7 +1349,7 @@ impl<'a> SortedNumericDocValuesIter<'a> {
                 let value = unsafe {
                     (*self.current)
                         .values
-                        .value_at(&self.current_ctx.as_ref().unwrap(), self.value_upto)?
+                        .value_at((*self.current).ctx.as_ref().unwrap(), self.value_upto)?
                 };
                 self.next_value = Numeric::Long(value);
                 self.value_upto += 1;
@@ -1356,11 +1358,11 @@ impl<'a> SortedNumericDocValuesIter<'a> {
             }
 
             if let Some(sub) = self.doc_id_merger.next()? {
-                let current_ctx = mem::replace(&mut self.current_ctx, None);
+                let current_ctx = sub.ctx.take();
                 let ctx = sub.values.set_document(current_ctx, sub.doc_id)?;
                 self.value_upto = 0;
                 self.value_length = sub.values.count(&ctx);
-                self.current_ctx = Some(ctx);
+                sub.ctx = Some(ctx);
                 self.current = sub;
             } else {
                 self.current = ptr::null_mut();
@@ -1414,6 +1416,7 @@ struct SortedNumericDocValuesSub {
     doc_id: DocId,
     max_doc: i32,
     base: DocIdMergerSubBase,
+    ctx: Option<SortedNumericDocValuesContext>,
 }
 
 impl SortedNumericDocValuesSub {
@@ -1424,6 +1427,7 @@ impl SortedNumericDocValuesSub {
             base,
             max_doc,
             doc_id: -1,
+            ctx: None,
         }
     }
 }
