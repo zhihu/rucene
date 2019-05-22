@@ -1,14 +1,17 @@
 use core::analysis::TokenStream;
-use core::codec::TermVectorsWriter;
+use core::codec::{Codec, TermVectorsFormat, TermVectorsWriter, TermVectorsWriterEnum};
 use core::index::byte_slice_reader::ByteSliceReader;
+use core::index::merge_policy::MergePolicy;
+use core::index::merge_scheduler::MergeScheduler;
 use core::index::postings_array::{ParallelPostingsArray, PostingsArray};
 use core::index::terms_hash::{TermsHash, TermsHashBase};
 use core::index::terms_hash_per_field::{TermsHashPerField, TermsHashPerFieldBase};
 use core::index::thread_doc_writer::DocumentsWriterPerThread;
-use core::index::{FieldInfo, FieldInfosBuilder, FieldInvertState, FieldNumbersRef};
-use core::index::{Fieldable, IndexOptions, SegmentWriteState};
-use core::store::{FlushInfo, IOContext};
-use core::util::byte_ref::BytesRef;
+use core::index::{
+    FieldInfo, FieldInfosBuilder, FieldInvertState, FieldNumbersRef, Fieldable, IndexOptions,
+    SegmentWriteState,
+};
+use core::store::{Directory, FlushInfo, IOContext};
 use core::util::DocId;
 
 use error::{ErrorKind, Result};
@@ -17,30 +20,40 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::ptr;
 
-pub struct TermVectorsConsumer {
+pub struct TermVectorsConsumer<
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+> {
     pub base: TermsHashBase,
     // format: Box<TermVectorsFormat>,
     // directory: DirectoryRc,
     // segment_info: SegmentInfo,
-    writer: Option<Box<TermVectorsWriter>>,
-    flush_term: BytesRef,
+    writer: Option<TermVectorsWriterEnum<D::IndexOutput>>,
     vector_slice_reader_pos: ByteSliceReader,
     vector_slice_reader_off: ByteSliceReader,
     has_vectors: bool,
     pub num_vector_fields: u32,
     last_doc_id: DocId,
-    doc_writer: *const DocumentsWriterPerThread,
-    pub per_fields: Vec<*mut TermVectorsConsumerPerField>,
+    doc_writer: *const DocumentsWriterPerThread<D, C, MS, MP>,
+    pub per_fields: Vec<*mut TermVectorsConsumerPerField<D, C, MS, MP>>,
     pub inited: bool,
 }
 
-impl Default for TermVectorsConsumer {
-    fn default() -> Self {
+impl<D, C, MS, MP> TermVectorsConsumer<D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
+    // only used for init
+    pub fn new_default() -> Self {
         let base = TermsHashBase::default();
         TermVectorsConsumer {
             base,
             writer: None,
-            flush_term: BytesRef::default(),
             vector_slice_reader_off: ByteSliceReader::default(),
             vector_slice_reader_pos: ByteSliceReader::default(),
             has_vectors: false,
@@ -51,15 +64,11 @@ impl Default for TermVectorsConsumer {
             inited: false,
         }
     }
-}
-
-impl TermVectorsConsumer {
-    pub fn new(doc_writer: &mut DocumentsWriterPerThread) -> Self {
+    pub fn new(doc_writer: &mut DocumentsWriterPerThread<D, C, MS, MP>) -> Self {
         let base = TermsHashBase::new(doc_writer, false);
         TermVectorsConsumer {
             base,
             writer: None,
-            flush_term: BytesRef::default(),
             vector_slice_reader_off: ByteSliceReader::default(),
             vector_slice_reader_pos: ByteSliceReader::default(),
             has_vectors: false,
@@ -76,8 +85,9 @@ impl TermVectorsConsumer {
         self.inited = true;
     }
 
-    pub fn terms_writer(&mut self) -> &mut TermVectorsWriter {
-        self.writer.as_mut().unwrap().as_mut()
+    pub fn terms_writer(&mut self) -> &mut TermVectorsWriterEnum<D::IndexOutput> {
+        debug_assert!(self.writer.is_some());
+        self.writer.as_mut().unwrap()
     }
 
     fn init_term_vectors_writer(&mut self) -> Result<()> {
@@ -89,7 +99,7 @@ impl TermVectorsConsumer {
                 doc_writer.bytes_used() as u64,
             ));
             self.writer = Some(doc_writer.codec().term_vectors_format().tv_writer(
-                doc_writer.directory.clone(),
+                &*doc_writer.directory,
                 &doc_writer.segment_info,
                 &context,
             )?);
@@ -114,10 +124,10 @@ impl TermVectorsConsumer {
         Ok(())
     }
 
-    fn do_flush(
+    fn do_flush<DW: Directory>(
         &mut self,
-        _field_to_flush: BTreeMap<&str, &TermVectorsConsumerPerField>,
-        state: &mut SegmentWriteState,
+        _field_to_flush: BTreeMap<&str, &TermVectorsConsumerPerField<D, C, MS, MP>>,
+        state: &mut SegmentWriteState<D, DW, C>,
     ) -> Result<()> {
         if self.writer.is_some() {
             let num_docs = state.segment_info.max_doc;
@@ -137,17 +147,23 @@ impl TermVectorsConsumer {
         self.num_vector_fields = 0;
     }
 
-    fn add_field_to_flush(&mut self, field_to_flush: &TermVectorsConsumerPerField) {
+    fn add_field_to_flush(&mut self, field_to_flush: &TermVectorsConsumerPerField<D, C, MS, MP>) {
         self.per_fields.push(
-            field_to_flush as *const TermVectorsConsumerPerField
-                as *mut TermVectorsConsumerPerField,
+            field_to_flush as *const TermVectorsConsumerPerField<D, C, MS, MP>
+                as *mut TermVectorsConsumerPerField<D, C, MS, MP>,
         );
         self.num_vector_fields += 1;
     }
 }
 
-impl TermsHash for TermVectorsConsumer {
-    type PerField = TermVectorsConsumerPerField;
+impl<D, C, MS, MP> TermsHash<D, C> for TermVectorsConsumer<D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
+    type PerField = TermVectorsConsumerPerField<D, C, MS, MP>;
 
     fn base(&self) -> &TermsHashBase {
         &self.base
@@ -161,14 +177,14 @@ impl TermsHash for TermVectorsConsumer {
         &mut self,
         _field_invert_state: &FieldInvertState,
         field_info: &FieldInfo,
-    ) -> TermVectorsConsumerPerField {
+    ) -> TermVectorsConsumerPerField<D, C, MS, MP> {
         TermVectorsConsumerPerField::new(self, field_info.clone())
     }
 
-    fn flush(
+    fn flush<DW: Directory>(
         &mut self,
-        field_to_flush: BTreeMap<&str, &TermVectorsConsumerPerField>,
-        state: &mut SegmentWriteState,
+        field_to_flush: BTreeMap<&str, &TermVectorsConsumerPerField<D, C, MS, MP>>,
+        state: &mut SegmentWriteState<D, DW, C>,
     ) -> Result<()> {
         let res = self.do_flush(field_to_flush, state);
         self.writer = None;
@@ -202,7 +218,7 @@ impl TermsHash for TermVectorsConsumer {
         let mut pf_idxs: BTreeMap<String, usize> = BTreeMap::new();
         for i in 0..self.num_vector_fields as usize {
             unsafe {
-                let pf: &TermVectorsConsumerPerField = &(*self.per_fields[i]);
+                let pf: &TermVectorsConsumerPerField<D, C, MS, MP> = &(*self.per_fields[i]);
                 pf_idxs.insert(pf.base().field_info.name.clone(), i);
             }
         }
@@ -219,9 +235,10 @@ impl TermsHash for TermVectorsConsumer {
             writer.start_document(self.num_vector_fields as usize)?;
             for (_, i) in pf_idxs {
                 unsafe {
-                    let pf: &mut TermVectorsConsumerPerField = &mut (*self.per_fields[i]);
+                    let pf: &mut TermVectorsConsumerPerField<D, C, MS, MP> =
+                        &mut (*self.per_fields[i]);
                     pf.finish_document(
-                        writer.as_mut(),
+                        writer,
                         &mut self.vector_slice_reader_pos,
                         &mut self.vector_slice_reader_off,
                         field_infos,
@@ -241,7 +258,12 @@ impl TermsHash for TermVectorsConsumer {
     }
 }
 
-pub struct TermVectorsConsumerPerField {
+pub struct TermVectorsConsumerPerField<
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+> {
     base: TermsHashPerFieldBase<TermVectorPostingsArray>,
     do_vectors: bool,
     do_vector_positions: bool,
@@ -250,11 +272,16 @@ pub struct TermVectorsConsumerPerField {
     has_payloads: bool,
     // if enabled, and we actually saw any for this field
     inited: bool,
-    parent: *mut TermVectorsConsumer,
+    parent: *mut TermVectorsConsumer<D, C, MS, MP>,
 }
 
-impl TermVectorsConsumerPerField {
-    pub fn new(terms_writer: &mut TermVectorsConsumer, field_info: FieldInfo) -> Self {
+impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy>
+    TermVectorsConsumerPerField<D, C, MS, MP>
+{
+    pub fn new(
+        terms_writer: &mut TermVectorsConsumer<D, C, MS, MP>,
+        field_info: FieldInfo,
+    ) -> Self {
         let base = TermsHashPerFieldBase::new(
             2,
             &mut terms_writer.base,
@@ -274,13 +301,13 @@ impl TermVectorsConsumerPerField {
         }
     }
 
-    fn term_vectors_writer(&self) -> &mut TermVectorsConsumer {
+    fn term_vectors_writer(&self) -> &mut TermVectorsConsumer<D, C, MS, MP> {
         unsafe { &mut *self.parent }
     }
 
-    fn finish_document(
+    fn finish_document<T: TermVectorsWriter>(
         &mut self,
-        tv: &mut TermVectorsWriter,
+        tv: &mut T,
         pos_reader: &mut ByteSliceReader,
         off_reader: &mut ByteSliceReader,
         field_infos: &mut FieldInfosBuilder<FieldNumbersRef>,
@@ -377,7 +404,9 @@ impl TermVectorsConsumerPerField {
     }
 }
 
-impl TermsHashPerField for TermVectorsConsumerPerField {
+impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy> TermsHashPerField
+    for TermVectorsConsumerPerField<D, C, MS, MP>
+{
     type P = TermVectorPostingsArray;
 
     fn base(&self) -> &TermsHashPerFieldBase<TermVectorPostingsArray> {
@@ -400,7 +429,7 @@ impl TermsHashPerField for TermVectorsConsumerPerField {
     fn start(
         &mut self,
         _field_state: &FieldInvertState,
-        field: &Fieldable,
+        field: &impl Fieldable,
         first: bool,
     ) -> Result<bool> {
         debug_assert!(self.inited);
@@ -531,21 +560,30 @@ impl TermsHashPerField for TermVectorsConsumerPerField {
     }
 }
 
-impl Eq for TermVectorsConsumerPerField {}
+impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy> Eq
+    for TermVectorsConsumerPerField<D, C, MS, MP>
+{
+}
 
-impl PartialEq for TermVectorsConsumerPerField {
+impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy> PartialEq
+    for TermVectorsConsumerPerField<D, C, MS, MP>
+{
     fn eq(&self, other: &Self) -> bool {
         self.base.field_info.name.eq(&other.base.field_info.name)
     }
 }
 
-impl Ord for TermVectorsConsumerPerField {
+impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy> Ord
+    for TermVectorsConsumerPerField<D, C, MS, MP>
+{
     fn cmp(&self, other: &Self) -> Ordering {
         self.base.field_info.name.cmp(&other.base.field_info.name)
     }
 }
 
-impl PartialOrd for TermVectorsConsumerPerField {
+impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy> PartialOrd
+    for TermVectorsConsumerPerField<D, C, MS, MP>
+{
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }

@@ -2,9 +2,12 @@ use std::borrow::Borrow;
 use std::cmp::min;
 use std::collections::HashMap;
 
+use core::codec::Codec;
 use core::doc::StoredField;
-use core::highlight::{BoundaryScanner, DefaultEncoder, Encoder, FieldFragList, FragmentsBuilder,
-                      SimpleBoundaryScanner, SubInfo, Toffs, WeightedFragInfo};
+use core::highlight::{
+    BoundaryScanner, DefaultEncoder, Encoder, FieldFragList, FragmentsBuilder,
+    SimpleBoundaryScanner, SubInfo, Toffs, WeightedFragInfo,
+};
 use core::index::{Fieldable, IndexReader};
 use core::util::DocId;
 
@@ -14,7 +17,7 @@ pub struct BaseFragmentsBuilder {
     pre_tags: Vec<String>,
     post_tags: Vec<String>,
     multi_valued_separator: char,
-    boundary_scanner: Box<BoundaryScanner>,
+    boundary_scanner: Box<dyn BoundaryScanner>,
     pub discrete_multi_value_highlighting: bool,
 }
 
@@ -22,7 +25,7 @@ impl BaseFragmentsBuilder {
     pub fn new(
         pre_tags: Option<&[String]>,
         post_tags: Option<&[String]>,
-        boundary_scanner: Option<Box<BoundaryScanner>>,
+        boundary_scanner: Option<Box<dyn BoundaryScanner>>,
     ) -> BaseFragmentsBuilder {
         BaseFragmentsBuilder {
             pre_tags: pre_tags.map_or(vec!["<b>".to_owned()], |x| x.to_vec()),
@@ -34,9 +37,9 @@ impl BaseFragmentsBuilder {
         }
     }
 
-    fn fields(
+    fn fields<C: Codec>(
         &self,
-        reader: &IndexReader,
+        reader: &IndexReader<Codec = C>,
         doc_id: DocId,
         field_name: &str,
     ) -> Result<Vec<StoredField>> {
@@ -333,9 +336,9 @@ impl BaseFragmentsBuilder {
 }
 
 impl FragmentsBuilder for BaseFragmentsBuilder {
-    fn create_fragments(
+    fn create_fragments<C: Codec>(
         &self,
-        reader: &IndexReader,
+        reader: &IndexReader<Codec = C>,
         doc_id: DocId,
         field_name: &str,
         field_frag_list: &mut FieldFragList,

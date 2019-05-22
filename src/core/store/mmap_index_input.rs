@@ -215,7 +215,7 @@ impl MmapIndexInput {
 }
 
 impl IndexInput for MmapIndexInput {
-    fn clone(&self) -> Result<Box<IndexInput>> {
+    fn clone(&self) -> Result<Box<dyn IndexInput>> {
         Ok(Box::new(Clone::clone(self)))
     }
 
@@ -241,22 +241,18 @@ impl IndexInput for MmapIndexInput {
         self.end - self.start
     }
 
-    fn random_access_slice(&self, offset: i64, length: i64) -> Result<Box<RandomAccessInput>> {
+    fn random_access_slice(&self, offset: i64, length: i64) -> Result<Box<dyn RandomAccessInput>> {
         let boxed = self.slice_impl("RandomAccessSlice", offset, length)?;
         Ok(Box::new(boxed))
     }
 
-    fn slice(&self, description: &str, offset: i64, length: i64) -> Result<Box<IndexInput>> {
+    fn slice(&self, description: &str, offset: i64, length: i64) -> Result<Box<dyn IndexInput>> {
         let boxed = self.slice_impl(description, offset, length)?;
         Ok(Box::new(boxed))
     }
 
     fn name(&self) -> &str {
         "MmapIndexInput" // hard-coded
-    }
-
-    fn as_data_input(&mut self) -> &mut DataInput {
-        self
     }
 }
 

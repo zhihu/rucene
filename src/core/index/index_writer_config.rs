@@ -1,5 +1,4 @@
-use core::codec::{Codec, Lucene62Codec};
-use core::index::delete_policy::IndexDeletionPolicy;
+use core::codec::{Codec, CodecEnum, Lucene62Codec};
 use core::index::delete_policy::KeepOnlyLastCommitDeletionPolicy;
 use core::index::merge_policy::{MergePolicy, TieredMergePolicy};
 use core::index::merge_scheduler::MergeScheduler;
@@ -22,42 +21,52 @@ use std::sync::Arc;
 /// </pre>
 ///
 /// @see IndexWriter#getConfig()
-pub struct IndexWriterConfig {
+pub struct IndexWriterConfig<C: Codec, MS: MergeScheduler, MP: MergePolicy> {
     pub ram_buffer_size_mb: Option<f64>,
     pub use_compound_file: bool,
     pub max_buffered_delete_terms: Option<u32>,
     pub max_buffered_docs: Option<u32>,
-    pub merge_policy: Box<MergePolicy>,
+    pub merge_policy: MP,
+    pub merge_scheduler: MS,
     pub index_sort: Option<Sort>,
     /// True if readers should be pooled.
     pub reader_pooling: bool,
     pub open_mode: OpenMode,
     pub per_thread_hard_limit_mb: u32,
-    pub codec: Arc<Codec>,
+    pub codec: Arc<C>,
     pub commit_on_close: bool,
     // pub similarity: Box<Similarity>,
 }
 
-impl Default for IndexWriterConfig {
+impl Default for IndexWriterConfig<CodecEnum, SerialMergeScheduler, TieredMergePolicy> {
     fn default() -> Self {
+        Self::new(
+            Arc::new(CodecEnum::Lucene62(Lucene62Codec::default())),
+            SerialMergeScheduler {},
+            TieredMergePolicy::default(),
+        )
+    }
+}
+
+impl<C: Codec, MS: MergeScheduler, MP: MergePolicy> IndexWriterConfig<C, MS, MP> {
+    pub fn new(codec: Arc<C>, merge_scheduler: MS, merge_policy: MP) -> Self {
         IndexWriterConfig {
             ram_buffer_size_mb: None,
             use_compound_file: true,
             max_buffered_delete_terms: None,
             max_buffered_docs: None,
-            merge_policy: Box::new(TieredMergePolicy::default()),
+            merge_policy,
+            merge_scheduler,
             index_sort: None,
             reader_pooling: true,
             open_mode: OpenMode::CreateOrAppend,
             per_thread_hard_limit_mb: DEFAULT_RAM_PER_THREAD_HARD_LIMIT_MB,
-            codec: Arc::new(Lucene62Codec::default()),
+            codec,
             commit_on_close: true,
             // similarity: Box::new(BM25Similarity::default()),
         }
     }
-}
 
-impl IndexWriterConfig {
     pub fn ram_buffer_size_mb(&self) -> f64 {
         let res = self.ram_buffer_size_mb.unwrap_or(0.0);
         debug_assert!(res >= 0.0);
@@ -89,8 +98,8 @@ impl IndexWriterConfig {
         self.max_buffered_docs.is_some()
     }
 
-    pub fn merge_policy(&self) -> &MergePolicy {
-        self.merge_policy.as_ref()
+    pub fn merge_policy(&self) -> &MP {
+        &self.merge_policy
     }
 
     pub fn index_sort(&self) -> Option<&Sort> {
@@ -101,15 +110,15 @@ impl IndexWriterConfig {
         self.per_thread_hard_limit_mb as u64 * 1024 * 1024
     }
 
-    pub fn index_deletion_policy(&self) -> Box<IndexDeletionPolicy> {
-        Box::new(KeepOnlyLastCommitDeletionPolicy::default())
+    pub fn index_deletion_policy(&self) -> KeepOnlyLastCommitDeletionPolicy {
+        KeepOnlyLastCommitDeletionPolicy::default()
     }
 
-    pub fn merge_scheduler(&self) -> Box<MergeScheduler> {
-        Box::new(SerialMergeScheduler {})
+    pub fn merge_scheduler(&self) -> MS {
+        self.merge_scheduler.clone()
     }
 
-    pub fn codec(&self) -> &Codec {
+    pub fn codec(&self) -> &C {
         self.codec.as_ref()
     }
 

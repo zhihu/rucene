@@ -16,7 +16,8 @@ pub use self::stored_fields_writer::*;
 
 mod matching_reader;
 
-use error::*;
+use error::Result;
+
 use std;
 use std::cmp::min;
 use std::io::{Read, Write};
@@ -25,8 +26,11 @@ use flate2::read::{DeflateDecoder, DeflateEncoder};
 use flate2::Compression;
 
 use core::store::{DataInput, DataOutput};
-use core::util::packed_misc::{get_mutable_by_ratio, rshift_32, unsigned_bits_required};
-use core::util::packed_misc::{Mutable, OffsetAndLength, DEFAULT as DEFAULT_COMPRESSION_RATIO};
+use core::util::bit_util::{BitsRequired, UnsignedShift};
+use core::util::packed_misc::{
+    get_mutable_by_ratio, Mutable, MutableEnum, OffsetAndLength, Reader,
+    DEFAULT as DEFAULT_COMPRESSION_RATIO,
+};
 
 const MEMORY_USAGE: i32 = 14;
 const MIN_MATCH: i32 = 4; // minimum length of a match
@@ -44,7 +48,7 @@ pub struct LZ4;
 
 impl LZ4 {
     fn hash(i: i32, hash_bits: i32) -> i32 {
-        rshift_32((i as i64 * -1_640_531_535i64) as i32, 32 - hash_bits) as i32
+        ((i as i64 * -1_640_531_535i64) as i32).unsigned_shift((32 - hash_bits) as usize)
     }
 
     #[allow(dead_code)]
@@ -99,7 +103,7 @@ impl LZ4 {
         let mut dest_off = dest_off;
         loop {
             let token = i32::from(compressed.read_byte()?) & 0xff;
-            let mut literal_len = rshift_32(token, 4);
+            let mut literal_len = token.unsigned_shift(4);
 
             if literal_len != 0 {
                 if literal_len == 0x0f {
@@ -257,8 +261,7 @@ impl LZ4 {
                     let h = LZ4::hash(v, hash_log) as usize;
                     refer = off + hash_table.get(h) as usize;
                     debug_assert!(
-                        unsigned_bits_required((off_cur - off) as i64)
-                            <= hash_table.get_bits_per_value()
+                        (off_cur - off).bits_required() as i32 <= hash_table.get_bits_per_value()
                     );
                     hash_table.set(h, (off_cur - off) as i64);
                     if off_cur - refer < MAX_DISTANCE as usize && LZ4::read_int(bytes, refer) == v {
@@ -291,7 +294,7 @@ impl LZ4 {
 
 pub struct LZ4HashTable {
     hash_log: i32,
-    hash_table: Option<Box<Mutable>>,
+    hash_table: Option<MutableEnum>,
 }
 
 impl Default for LZ4HashTable {
@@ -305,15 +308,15 @@ impl Default for LZ4HashTable {
 
 impl LZ4HashTable {
     pub fn reset(&mut self, len: i32) {
-        let bits_per_offset = unsigned_bits_required(i64::from(len - LAST_LITERALS));
-        let bits_per_offset_log = 32i32 - (bits_per_offset - 1).leading_zeros() as i32;
+        let bits_per_offset = (len - LAST_LITERALS).bits_required() as i32;
+        let bits_per_offset_log = 32 - (bits_per_offset - 1).leading_zeros() as i32;
         self.hash_log = MEMORY_USAGE + 3 - bits_per_offset_log;
         if self.hash_table.is_none()
             || self.hash_table.as_ref().unwrap().size() < (1 << self.hash_log) as usize
             || self.hash_table.as_ref().unwrap().get_bits_per_value() < bits_per_offset
         {
             self.hash_table = Some(get_mutable_by_ratio(
-                1 << self.hash_log,
+                1usize << self.hash_log,
                 bits_per_offset,
                 DEFAULT_COMPRESSION_RATIO,
             ));
@@ -394,12 +397,12 @@ impl LZ4HashTable {
 //}
 
 pub trait Compress {
-    fn compress<R: DataOutput + ?Sized>(
+    fn compress(
         &mut self,
         bytes: &[u8],
         off: usize,
         len: usize,
-        out: &mut R,
+        out: &mut impl DataOutput,
     ) -> Result<()>;
 }
 
@@ -416,12 +419,12 @@ impl Default for LZ4FastCompressor {
 }
 
 impl Compress for LZ4FastCompressor {
-    fn compress<R: DataOutput + ?Sized>(
+    fn compress(
         &mut self,
         bytes: &[u8],
         off: usize,
         len: usize,
-        out: &mut R,
+        out: &mut impl DataOutput,
     ) -> Result<()> {
         LZ4::compress(bytes, off, len, out, &mut self.ht)
     }
@@ -521,12 +524,12 @@ impl DeflateCompressor {
 }
 
 impl Compress for DeflateCompressor {
-    fn compress<R: DataOutput + ?Sized>(
+    fn compress(
         &mut self,
         bytes: &[u8],
         off: usize,
         len: usize,
-        out: &mut R,
+        out: &mut impl DataOutput,
     ) -> Result<()> {
         let mut total = 0usize;
         let mut finish = false;
@@ -552,7 +555,7 @@ impl Compress for DeflateCompressor {
 }
 
 /// A decompressor.
-pub trait Decompress: Send + Sync + Clone {
+pub trait Decompress: Clone {
     /// Decompress bytes that were stored between offsets <code>offset</code> and
     /// <code>offset+length</code> in the original stream from the compressed
     /// stream <code>in</code> to <code>bytes</code>. After returning, the length
@@ -712,12 +715,12 @@ pub enum Compressor {
 }
 
 impl Compress for Compressor {
-    fn compress<R: DataOutput + ?Sized>(
+    fn compress(
         &mut self,
         bytes: &[u8],
         off: usize,
         len: usize,
-        out: &mut R,
+        out: &mut impl DataOutput,
     ) -> Result<()> {
         match *self {
             Compressor::LZ4Fast(ref mut c) => c.compress(bytes, off, len, out),

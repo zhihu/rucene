@@ -1,16 +1,14 @@
 use core::util::array::fill_slice;
 use core::util::array::over_size;
 use core::util::byte_block_pool::ByteBlockPool;
-use core::util::byte_block_pool::{BYTE_BLOCK_MASK, BYTE_BLOCK_SHIFT, BYTE_BLOCK_SIZE};
-use core::util::byte_ref::BytesRef;
 use core::util::counter::{Count, Counter};
 use core::util::math;
 use core::util::sorter::{MSBRadixSorter, MSBSorter, Sorter};
+use core::util::BytesRef;
 
 use fasthash::murmur3;
 
 use std::cmp::Ordering;
-use std::ptr;
 
 pub const DEFAULT_CAPACITY: usize = 16;
 
@@ -26,7 +24,6 @@ pub const DEFAULT_CAPACITY: usize = 16;
 /// The internal storage is limited to 2GB total byte storage.
 pub struct BytesRefHash {
     pub pool: *mut ByteBlockPool,
-    scratch1: Vec<u8>,
     // TODO BytesRef
     hash_size: usize,
     hash_half_size: usize,
@@ -34,25 +31,9 @@ pub struct BytesRefHash {
     count: usize,
     last_count: isize,
     pub ids: Vec<i32>,
-    pub bytes_start_array: Box<BytesStartArray>,
+    pub bytes_start_array: Box<dyn BytesStartArray>,
     /* bytes_start: Vec<usize>,  // bytes_start_array.bytes()
      * bytes_used: Counter,     // bytes_start_array.bytes_used() */
-}
-//
-impl Default for BytesRefHash {
-    fn default() -> Self {
-        BytesRefHash {
-            pool: ptr::null_mut(),
-            scratch1: Vec::with_capacity(0),
-            hash_size: 2,
-            hash_half_size: 1,
-            hash_mask: 1,
-            count: 0,
-            last_count: -1,
-            ids: vec![-1; 1],
-            bytes_start_array: Box::new(DirectByteStartArray::with_size(0)),
-        }
-    }
 }
 
 impl BytesRefHash {
@@ -67,11 +48,10 @@ impl BytesRefHash {
     pub fn new(
         pool: &mut ByteBlockPool,
         capacity: usize,
-        bytes_start_array: Box<BytesStartArray>,
+        bytes_start_array: Box<dyn BytesStartArray>,
     ) -> Self {
         BytesRefHash {
             pool,
-            scratch1: vec![],
             hash_size: capacity,
             hash_half_size: capacity >> 1,
             hash_mask: capacity - 1,
@@ -124,7 +104,7 @@ impl BytesRefHash {
     pub fn sort(&mut self) {
         self.compact();
         let count = self.count as i32;
-        let sorter = BytesRefStringMSBSorter { bytes_hash: self };
+        let sorter = BytesRefStringMSBSorter::new(self);
         let mut msb_sorter = MSBRadixSorter::new(i32::max_value(), sorter);
         msb_sorter.sort(0, count);
     }
@@ -191,8 +171,8 @@ impl BytesRefHash {
         if e == -1 {
             // new entry
             let len2 = 2 + bytes.len();
-            if len2 + self.byte_pool().byte_upto > BYTE_BLOCK_SIZE {
-                assert!(len2 < BYTE_BLOCK_SIZE);
+            if len2 + self.byte_pool().byte_upto > ByteBlockPool::BYTE_BLOCK_SIZE {
+                assert!(len2 < ByteBlockPool::BYTE_BLOCK_SIZE);
                 // this length check already done in the caller func
                 //                if len2 > BYTE_BLOCK_SIZE {
                 // bail!("bytes can be at most: {}, got: {}", BYTE_BLOCK_SIZE -
@@ -321,8 +301,8 @@ impl BytesRefHash {
             if e0 != -1 {
                 let mut code = if hash_on_data {
                     let off = self.bytes_start_array.bytes_mut()[e0 as usize] as usize;
-                    let start = off & BYTE_BLOCK_MASK;
-                    let bytes_idx = off >> BYTE_BLOCK_SHIFT;
+                    let start = off & ByteBlockPool::BYTE_BLOCK_MASK;
+                    let bytes_idx = off >> ByteBlockPool::BYTE_BLOCK_SHIFT;
                     let (len, pos) = if self.byte_pool().buffers[bytes_idx][start] & 0x80 == 0 {
                         (
                             self.byte_pool().buffers[bytes_idx][start] as usize,

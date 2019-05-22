@@ -110,7 +110,7 @@ impl IndexedContext {
 
     pub fn set(&mut self, key: usize, value: VariantValue) -> Option<VariantValue> {
         if key < self.ctx.len() {
-            unsafe { mem::replace(self.ctx.get_unchecked_mut(key), Some(value)) }
+            mem::replace(&mut self.ctx[key], Some(value))
         } else {
             self.ctx.resize(key + 1, None);
             self.ctx[key] = Some(value);

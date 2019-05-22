@@ -1,15 +1,17 @@
-use error::*;
+use error::{ErrorKind, Result};
 use std::fmt;
 
+use core::codec::Codec;
 use core::doc::{DoublePoint, FloatPoint, IntPoint, LongPoint};
 use core::index::{IntersectVisitor, PointValues, Relation};
 use core::index::{LeafReader, LeafReaderContext};
 use core::search::explanation::Explanation;
 use core::search::match_all::{AllDocsIterator, ConstantScoreScorer};
-use core::search::searcher::IndexSearcher;
+use core::search::searcher::SearchPlanBuilder;
 use core::search::term_query::TermQuery;
 use core::search::{DocIdSet, Query, Scorer, Weight};
-use core::search::{EmptyDocIterator, MatchNoDocScorer};
+use core::search::{DocIterator, EmptyDocIterator};
+use core::util::doc_id_set::{DocIdSetDocIterEnum, DocIdSetEnum};
 use core::util::{DocId, DocIdSetBuilder};
 
 #[derive(Copy, Clone)]
@@ -103,8 +105,12 @@ impl PointRangeQuery {
 
 pub const POINT_RANGE: &str = "point_range";
 
-impl Query for PointRangeQuery {
-    fn create_weight(&self, _searcher: &IndexSearcher, _needs_scores: bool) -> Result<Box<Weight>> {
+impl<C: Codec> Query<C> for PointRangeQuery {
+    fn create_weight(
+        &self,
+        _searcher: &dyn SearchPlanBuilder<C>,
+        _needs_scores: bool,
+    ) -> Result<Box<dyn Weight<C>>> {
         Ok(Box::new(PointRangeWeight::new(
             self.field.clone(),
             self.num_dims,
@@ -178,11 +184,11 @@ impl PointRangeWeight {
         }
     }
 
-    fn build_matching_doc_set(
+    fn build_matching_doc_set<R: LeafReader + ?Sized>(
         &self,
-        reader: &LeafReader,
-        values: &PointValues,
-    ) -> Result<Box<DocIdSet>> {
+        reader: &R,
+        values: &impl PointValues,
+    ) -> Result<DocIdSetEnum> {
         let mut result = DocIdSetBuilder::from_values(reader.max_doc(), values, &self.field)?;
         {
             let mut visitor = PointRangeIntersectVisitor::new(&mut result, self);
@@ -193,8 +199,11 @@ impl PointRangeWeight {
     }
 }
 
-impl Weight for PointRangeWeight {
-    fn create_scorer(&self, leaf_reader_ctx: &LeafReaderContext) -> Result<Box<Scorer>> {
+impl<C: Codec> Weight<C> for PointRangeWeight {
+    fn create_scorer(
+        &self,
+        leaf_reader_ctx: &LeafReaderContext<'_, C>,
+    ) -> Result<Option<Box<dyn Scorer>>> {
         let leaf_reader = leaf_reader_ctx.reader;
         if let Some(ref values) = leaf_reader.point_values() {
             if let Some(field_info) = leaf_reader.field_info(&self.field) {
@@ -231,26 +240,26 @@ impl Weight for PointRangeWeight {
                 }
 
                 let iterator = if all_docs_match {
-                    Box::new(AllDocsIterator::new(leaf_reader.max_doc()))
+                    PointDocIterEnum::All(AllDocsIterator::new(leaf_reader.max_doc()))
                 } else {
-                    let iterator = self
-                        .build_matching_doc_set(leaf_reader, values.as_ref())?
-                        .iterator()?;
-                    if iterator.is_some() {
-                        iterator.unwrap()
+                    if let Some(iter) = self
+                        .build_matching_doc_set(leaf_reader, values)?
+                        .iterator()?
+                    {
+                        PointDocIterEnum::DocSet(iter)
                     } else {
-                        Box::new(EmptyDocIterator::default())
+                        PointDocIterEnum::None(EmptyDocIterator::default())
                     }
                 };
                 let cost = iterator.cost();
-                return Ok(Box::new(ConstantScoreScorer::new(
+                return Ok(Some(Box::new(ConstantScoreScorer::new(
                     self.weight,
                     iterator,
                     cost,
-                )));
+                ))));
             }
         }
-        Ok(Box::new(MatchNoDocScorer::default()))
+        Ok(None)
     }
 
     fn query_type(&self) -> &'static str {
@@ -270,7 +279,7 @@ impl Weight for PointRangeWeight {
         false
     }
 
-    fn explain(&self, _reader: &LeafReaderContext, _doc: DocId) -> Result<Explanation> {
+    fn explain(&self, _reader: &LeafReaderContext<'_, C>, _doc: DocId) -> Result<Explanation> {
         unimplemented!()
     }
 }
@@ -358,5 +367,85 @@ impl<'a> IntersectVisitor for PointRangeIntersectVisitor<'a> {
 
     fn grow(&mut self, count: usize) {
         self.doc_id_set_builder.grow(count)
+    }
+}
+
+enum PointDocIterEnum {
+    DocSet(DocIdSetDocIterEnum),
+    All(AllDocsIterator),
+    None(EmptyDocIterator),
+}
+
+impl DocIterator for PointDocIterEnum {
+    fn doc_id(&self) -> DocId {
+        match self {
+            PointDocIterEnum::DocSet(i) => i.doc_id(),
+            PointDocIterEnum::All(i) => i.doc_id(),
+            PointDocIterEnum::None(i) => i.doc_id(),
+        }
+    }
+
+    fn next(&mut self) -> Result<DocId> {
+        match self {
+            PointDocIterEnum::DocSet(i) => i.next(),
+            PointDocIterEnum::All(i) => i.next(),
+            PointDocIterEnum::None(i) => i.next(),
+        }
+    }
+
+    fn advance(&mut self, target: i32) -> Result<DocId> {
+        match self {
+            PointDocIterEnum::DocSet(i) => i.advance(target),
+            PointDocIterEnum::All(i) => i.advance(target),
+            PointDocIterEnum::None(i) => i.advance(target),
+        }
+    }
+
+    fn slow_advance(&mut self, target: i32) -> Result<DocId> {
+        match self {
+            PointDocIterEnum::DocSet(i) => i.slow_advance(target),
+            PointDocIterEnum::All(i) => i.slow_advance(target),
+            PointDocIterEnum::None(i) => i.slow_advance(target),
+        }
+    }
+
+    fn cost(&self) -> usize {
+        match self {
+            PointDocIterEnum::DocSet(i) => i.cost(),
+            PointDocIterEnum::All(i) => i.cost(),
+            PointDocIterEnum::None(i) => i.cost(),
+        }
+    }
+
+    fn matches(&mut self) -> Result<bool> {
+        match self {
+            PointDocIterEnum::DocSet(i) => i.matches(),
+            PointDocIterEnum::All(i) => i.matches(),
+            PointDocIterEnum::None(i) => i.matches(),
+        }
+    }
+
+    fn match_cost(&self) -> f32 {
+        match self {
+            PointDocIterEnum::DocSet(i) => i.match_cost(),
+            PointDocIterEnum::All(i) => i.match_cost(),
+            PointDocIterEnum::None(i) => i.match_cost(),
+        }
+    }
+
+    fn approximate_next(&mut self) -> Result<DocId> {
+        match self {
+            PointDocIterEnum::DocSet(i) => i.approximate_next(),
+            PointDocIterEnum::All(i) => i.approximate_next(),
+            PointDocIterEnum::None(i) => i.approximate_next(),
+        }
+    }
+
+    fn approximate_advance(&mut self, target: i32) -> Result<DocId> {
+        match self {
+            PointDocIterEnum::DocSet(i) => i.approximate_advance(target),
+            PointDocIterEnum::All(i) => i.approximate_advance(target),
+            PointDocIterEnum::None(i) => i.approximate_advance(target),
+        }
     }
 }

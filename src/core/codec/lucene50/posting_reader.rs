@@ -1,19 +1,18 @@
-use core::codec::codec_util;
 use core::codec::lucene50::posting_format::BLOCK_SIZE;
 use core::codec::lucene50::skip_reader::*;
 use core::codec::lucene50::util::*;
 use core::codec::BlockTermState;
+use core::codec::{codec_util, Codec};
 use core::index::FieldInfo;
 use core::index::{segment_file_name, SegmentReadState};
 use core::search::posting_iterator::*;
 use core::search::*;
-use core::store::{DataInput, IndexInput};
+use core::store::{DataInput, Directory, IndexInput};
 use core::util::bit_util::UnsignedShift;
 use core::util::DocId;
 
-use error::*;
+use error::{ErrorKind::IllegalState, Result};
 
-use std::any::Any;
 use std::sync::Arc;
 
 /// Filename extension for document number, frequencies, and skip data.
@@ -41,7 +40,7 @@ pub const PAY_CODEC: &str = "Lucene50PostingsWriterPay";
 const VERSION_START: i32 = 0;
 pub const VERSION_CURRENT: i32 = VERSION_START;
 
-fn clone_option_index_input(input: &Option<Box<IndexInput>>) -> Result<Box<IndexInput>> {
+fn clone_option_index_input(input: &Option<Box<dyn IndexInput>>) -> Result<Box<dyn IndexInput>> {
     debug_assert!(input.is_some());
     (*input.as_ref().unwrap()).clone()
 }
@@ -51,21 +50,23 @@ fn clone_option_index_input(input: &Option<Box<IndexInput>>) -> Result<Box<Index
 ///
 /// @lucene.experimental
 pub struct Lucene50PostingsReader {
-    doc_in: Box<IndexInput>,
-    pos_in: Option<Box<IndexInput>>,
-    pay_in: Option<Box<IndexInput>>,
+    doc_in: Box<dyn IndexInput>,
+    pos_in: Option<Box<dyn IndexInput>>,
+    pay_in: Option<Box<dyn IndexInput>>,
     pub version: i32,
     pub for_util: ForUtil,
 }
 
 impl Lucene50PostingsReader {
-    fn clone_pos_in(&self) -> Result<Box<IndexInput>> {
+    fn clone_pos_in(&self) -> Result<Box<dyn IndexInput>> {
         clone_option_index_input(&self.pos_in)
     }
-    fn clone_pay_in(&self) -> Result<Box<IndexInput>> {
+    fn clone_pay_in(&self) -> Result<Box<dyn IndexInput>> {
         clone_option_index_input(&self.pay_in)
     }
-    pub fn open(state: &SegmentReadState) -> Result<Lucene50PostingsReader> {
+    pub fn open<D: Directory, DW: Directory, C: Codec>(
+        state: &SegmentReadState<'_, D, DW, C>,
+    ) -> Result<Lucene50PostingsReader> {
         let doc_name = segment_file_name(
             &state.segment_info.name,
             &state.segment_suffix,
@@ -130,7 +131,11 @@ impl Lucene50PostingsReader {
         })
     }
 
-    pub fn init(&self, terms_in: &mut IndexInput, state: &SegmentReadState) -> Result<()> {
+    pub fn init<D: Directory, DW: Directory, C: Codec>(
+        &self,
+        terms_in: &mut dyn IndexInput,
+        state: &SegmentReadState<'_, D, DW, C>,
+    ) -> Result<()> {
         codec_util::check_index_header(
             terms_in,
             TERMS_CODEC,
@@ -141,11 +146,10 @@ impl Lucene50PostingsReader {
         )?;
         let index_block_size = terms_in.read_vint()?;
         if index_block_size != BLOCK_SIZE {
-            bail!(
+            bail!(IllegalState(format!(
                 "index-time BLOCK_SIZE ({}) != read-time BLOCK_SIZE ({})",
-                index_block_size,
-                BLOCK_SIZE
-            )
+                index_block_size, BLOCK_SIZE
+            )))
         } else {
             Ok(())
         }
@@ -160,10 +164,8 @@ impl Lucene50PostingsReader {
         &self,
         field_info: &FieldInfo,
         state: &BlockTermState,
-        flags: i16,
-        segment: Arc<String>,
-        term: &[u8],
-    ) -> Result<Box<PostingIterator>> {
+        flags: u16,
+    ) -> Result<Lucene50PostingIterEnum> {
         let options = &field_info.index_options;
         let index_has_positions = options.has_positions();
         let index_has_offsets = options.has_offsets();
@@ -171,36 +173,35 @@ impl Lucene50PostingsReader {
 
         Ok(
             if !index_has_positions
-                || !posting_feature_requested(flags, POSTING_ITERATOR_FLAG_POSITIONS)
+                || !PostingIteratorFlags::feature_requested(flags, PostingIteratorFlags::POSITIONS)
             {
-                Box::new(BlockDocIterator::new(
+                Lucene50PostingIterEnum::Doc(BlockDocIterator::new(
                     self.doc_in.clone()?,
                     field_info,
                     state,
                     flags,
                     self.for_util.clone(),
-                    segment,
-                    term,
                 )?)
             } else if (!index_has_offsets
-                || !posting_feature_requested(flags, POSTING_ITERATOR_FLAG_OFFSETS))
+                || !PostingIteratorFlags::feature_requested(flags, PostingIteratorFlags::OFFSETS))
                 && (!index_has_payloads
-                    || !posting_feature_requested(flags, POSTING_ITERATOR_FLAG_PAYLOADS))
+                    || !PostingIteratorFlags::feature_requested(
+                        flags,
+                        PostingIteratorFlags::PAYLOADS,
+                    ))
             {
-                Box::new(BlockPostingIterator::new(
+                Lucene50PostingIterEnum::Posting(BlockPostingIterator::new(
                     self.doc_in.clone()?,
                     self.clone_pos_in()?,
                     field_info,
                     state,
                     flags,
                     self.for_util.clone(),
-                    segment,
-                    term,
                 )?)
             } else {
                 debug_assert!(self.pos_in.is_some());
                 debug_assert!(self.pay_in.is_some());
-                Box::new(EverythingIterator::new(
+                Lucene50PostingIterEnum::Everything(EverythingIterator::new(
                     self.doc_in.clone()?,
                     self.clone_pos_in()?,
                     self.clone_pay_in()?,
@@ -208,8 +209,6 @@ impl Lucene50PostingsReader {
                     state,
                     flags,
                     self.for_util.clone(),
-                    segment,
-                    term,
                 )?)
             },
         )
@@ -277,7 +276,7 @@ pub fn lucene50_decode_term<T: DataInput + ?Sized>(
 }
 
 fn read_vint_block(
-    doc_in: &mut IndexInput,
+    doc_in: &mut dyn IndexInput,
     doc_buffer: &mut [i32],
     freq_buffer: &mut [i32],
     num: i32,
@@ -314,9 +313,9 @@ pub struct BlockDocIterator {
     pub skipper: Option<Lucene50SkipReader>,
     skipped: bool,
 
-    start_doc_in: Box<IndexInput>,
+    start_doc_in: Box<dyn IndexInput>,
 
-    doc_in: Option<Box<IndexInput>>,
+    doc_in: Option<Box<dyn IndexInput>>,
     index_has_freq: bool,
     index_has_pos: bool,
     pub index_has_offsets: bool,
@@ -353,23 +352,17 @@ pub struct BlockDocIterator {
     singleton_doc_id: DocId,
 
     for_util: ForUtil,
-
-    segment: Arc<String>,
-    term: Vec<u8>,
 }
 
 impl BlockDocIterator {
     pub fn new(
-        start_doc_in: Box<IndexInput>,
+        start_doc_in: Box<dyn IndexInput>,
         field_info: &FieldInfo,
         term_state: &BlockTermState,
-        flags: i16,
+        flags: u16,
         for_util: ForUtil,
-        segment: Arc<String>,
-        term: &[u8],
     ) -> Result<BlockDocIterator> {
         let options = &field_info.index_options;
-        let term = term.into();
         let mut iterator = BlockDocIterator {
             encoded: vec![0 as u8; MAX_ENCODED_SIZE],
             start_doc_in,
@@ -395,14 +388,12 @@ impl BlockDocIterator {
             index_has_offsets: options.has_offsets(),
             index_has_payloads: field_info.has_store_payloads,
             for_util,
-            segment,
-            term,
         };
         iterator.reset(term_state, flags)?;
         Ok(iterator)
     }
 
-    pub fn reset(&mut self, term_state: &BlockTermState, flags: i16) -> Result<()> {
+    pub fn reset(&mut self, term_state: &BlockTermState, flags: u16) -> Result<()> {
         self.doc_freq = term_state.doc_freq;
         self.total_term_freq = if self.index_has_freq {
             term_state.total_term_freq
@@ -424,7 +415,8 @@ impl BlockDocIterator {
         }
 
         self.doc = -1;
-        self.needs_freq = posting_feature_requested(flags, POSTING_ITERATOR_FLAG_FREQS);
+        self.needs_freq =
+            PostingIteratorFlags::feature_requested(flags, PostingIteratorFlags::FREQS);
         if !self.index_has_freq || !self.needs_freq {
             self.freq_buffer.iter_mut().map(|x| *x = 1).count();
         }
@@ -475,63 +467,9 @@ impl BlockDocIterator {
         self.doc_buffer_upto = 0;
         Ok(())
     }
-
-    fn clone(&self) -> Result<Self> {
-        let doc_in = match self.doc_in {
-            Some(ref doc_in) => Some((*doc_in).clone()?),
-            _ => None,
-        };
-        let skipper = match self.skipper {
-            Some(ref skipper) => Some((*skipper).clone_reader()?),
-            _ => None,
-        };
-        Ok(BlockDocIterator {
-            encoded: self.encoded.clone(),
-            doc_delta_buffer: self.doc_delta_buffer.clone(),
-            freq_buffer: self.freq_buffer.clone(),
-
-            doc_buffer_upto: self.doc_buffer_upto,
-
-            skipper,
-            skipped: self.skipped,
-
-            start_doc_in: self.start_doc_in.clone()?,
-
-            doc_in,
-            index_has_freq: self.index_has_freq,
-            index_has_pos: self.index_has_pos,
-            index_has_offsets: self.index_has_offsets,
-            index_has_payloads: self.index_has_payloads,
-
-            doc_freq: self.doc_freq,
-            total_term_freq: self.total_term_freq,
-            doc_upto: self.doc_upto,
-            doc: self.doc,
-            accum: self.accum,
-            freq: self.freq,
-
-            doc_term_start_fp: self.doc_term_start_fp,
-
-            skip_offset: self.skip_offset,
-
-            next_skip_doc: self.next_skip_doc,
-
-            needs_freq: self.needs_freq,
-            singleton_doc_id: self.singleton_doc_id,
-
-            for_util: self.for_util.clone(),
-
-            segment: self.segment.clone(),
-            term: self.term.clone(),
-        })
-    }
 }
 
 impl PostingIterator for BlockDocIterator {
-    fn clone_as_doc_iterator(&self) -> Result<Box<DocIterator>> {
-        Ok(Box::new(self.clone()?))
-    }
-
     fn freq(&self) -> Result<i32> {
         debug_assert!(self.freq > 0);
         Ok(self.freq)
@@ -551,10 +489,6 @@ impl PostingIterator for BlockDocIterator {
 
     fn payload(&self) -> Result<Payload> {
         Ok(Payload::new())
-    }
-
-    fn as_any_mut(&mut self) -> &mut Any {
-        self
     }
 }
 
@@ -680,12 +614,11 @@ pub struct BlockPostingIterator {
     pub skipper: Option<Lucene50SkipReader>,
     skipped: bool,
 
-    start_doc_in: Box<IndexInput>,
+    start_doc_in: Box<dyn IndexInput>,
 
-    doc_in: Option<Box<IndexInput>>,
-    pos_in: Box<IndexInput>,
+    doc_in: Option<Box<dyn IndexInput>>,
+    pos_in: Box<dyn IndexInput>,
 
-    index_has_freq: bool,
     index_has_pos: bool,
     index_has_offsets: bool,
     index_has_payloads: bool,
@@ -739,22 +672,16 @@ pub struct BlockPostingIterator {
     singleton_doc_id: i32,
 
     for_util: ForUtil,
-
-    segment: Arc<String>,
-    term: Vec<u8>,
 }
 
 impl BlockPostingIterator {
-    #[allow(too_many_arguments)]
     pub fn new(
-        start_doc_in: Box<IndexInput>,
-        pos_in: Box<IndexInput>,
+        start_doc_in: Box<dyn IndexInput>,
+        pos_in: Box<dyn IndexInput>,
         field_info: &FieldInfo,
         term_state: &BlockTermState,
-        _flags: i16,
+        _flags: u16,
         for_util: ForUtil,
-        segment: Arc<String>,
-        term: &[u8],
     ) -> Result<BlockPostingIterator> {
         let options = &field_info.index_options;
         let mut iterator = BlockPostingIterator {
@@ -785,13 +712,10 @@ impl BlockPostingIterator {
             skip_offset: 0,
             next_skip_doc: 0,
             singleton_doc_id: 0,
-            index_has_freq: options.has_freqs(),
             index_has_pos: options.has_positions(),
             index_has_offsets: options.has_offsets(),
             index_has_payloads: field_info.has_store_payloads,
             for_util,
-            segment,
-            term: term.into(),
         };
         iterator.reset(term_state)?;
         Ok(iterator)
@@ -932,60 +856,9 @@ impl BlockPostingIterator {
         self.position = 0;
         Ok(())
     }
-
-    fn clone(&self) -> Result<Self> {
-        let doc_in = match self.doc_in {
-            Some(ref doc_in) => Some((*doc_in).clone()?),
-            _ => None,
-        };
-        let skipper = match self.skipper {
-            Some(ref skipper) => Some((*skipper).clone_reader()?),
-            _ => None,
-        };
-        Ok(BlockPostingIterator {
-            encoded: self.encoded.clone(),
-            doc_delta_buffer: self.doc_delta_buffer.clone(),
-            freq_buffer: self.freq_buffer.clone(),
-            pos_delta_buffer: self.pos_delta_buffer.clone(),
-            doc_buffer_upto: self.doc_buffer_upto,
-            pos_buffer_upto: self.pos_buffer_upto,
-            skipper,
-            skipped: self.skipped,
-            start_doc_in: self.start_doc_in.clone()?,
-            doc_in,
-            pos_in: self.pos_in.clone()?,
-            index_has_freq: self.index_has_freq,
-            index_has_pos: self.index_has_pos,
-            index_has_offsets: self.index_has_offsets,
-            index_has_payloads: self.index_has_payloads,
-            doc_freq: self.doc_freq,
-            total_term_freq: self.total_term_freq,
-            doc_upto: self.doc_upto,
-            doc: self.doc,
-            accum: self.accum,
-            freq: self.freq,
-            position: self.position,
-            pos_pending_count: self.pos_pending_count,
-            pos_pending_fp: self.pos_pending_fp,
-            doc_term_start_fp: self.doc_term_start_fp,
-            pos_term_start_fp: self.pos_term_start_fp,
-            pay_term_start_fp: self.pay_term_start_fp,
-            last_pos_block_fp: self.last_pos_block_fp,
-            skip_offset: self.skip_offset,
-            next_skip_doc: self.next_skip_doc,
-            singleton_doc_id: self.singleton_doc_id,
-            for_util: self.for_util.clone(),
-            segment: Arc::clone(&self.segment),
-            term: self.term.clone(),
-        })
-    }
 }
 
 impl PostingIterator for BlockPostingIterator {
-    fn clone_as_doc_iterator(&self) -> Result<Box<DocIterator>> {
-        Ok(Box::new(self.clone()?))
-    }
-
     fn freq(&self) -> Result<i32> {
         Ok(self.freq)
     }
@@ -1025,10 +898,6 @@ impl PostingIterator for BlockPostingIterator {
 
     fn payload(&self) -> Result<Payload> {
         Ok(Payload::new())
-    }
-
-    fn as_any_mut(&mut self) -> &mut Any {
-        self
     }
 }
 
@@ -1169,11 +1038,11 @@ pub struct EverythingIterator {
     skipper: Option<Lucene50SkipReader>,
     skipped: bool,
 
-    start_doc_in: Box<IndexInput>,
+    start_doc_in: Box<dyn IndexInput>,
 
-    doc_in: Option<Box<IndexInput>>,
-    pos_in: Box<IndexInput>,
-    pay_in: Box<IndexInput>,
+    doc_in: Option<Box<dyn IndexInput>>,
+    pos_in: Box<dyn IndexInput>,
+    pay_in: Box<dyn IndexInput>,
     payload: Option<Vec<u8>>,
 
     index_has_offsets: bool,
@@ -1235,23 +1104,18 @@ pub struct EverythingIterator {
     singleton_doc_id: i32,
     // docid when there is a single pulsed posting, otherwise -1
     for_util: ForUtil,
-
-    segment: Arc<String>,
-    term: Vec<u8>,
 }
 
 impl<'a> EverythingIterator {
-    #[allow(too_many_arguments)]
+    //#[allow(too_many_arguments)]
     pub fn new(
-        start_doc_in: Box<IndexInput>,
-        pos_in: Box<IndexInput>,
-        pay_in: Box<IndexInput>,
+        start_doc_in: Box<dyn IndexInput>,
+        pos_in: Box<dyn IndexInput>,
+        pay_in: Box<dyn IndexInput>,
         field_info: &FieldInfo,
         term_state: &BlockTermState,
-        flags: i16,
+        flags: u16,
         for_util: ForUtil,
-        segment: Arc<String>,
-        term: &[u8],
     ) -> Result<EverythingIterator> {
         let encoded = vec![0 as u8; MAX_ENCODED_SIZE];
         let index_has_offsets = field_info.index_options.has_offsets();
@@ -1328,8 +1192,6 @@ impl<'a> EverythingIterator {
             skipped: false,
             total_term_freq: 0,
             for_util,
-            segment,
-            term: term.into(),
         };
 
         iterator.reset(term_state, flags)?;
@@ -1386,12 +1248,6 @@ impl<'a> EverythingIterator {
     pub fn last_start_offset(&self) -> i32 {
         self.last_start_offset
     }
-    pub fn start_offset(&self) -> i32 {
-        self.start_offset
-    }
-    pub fn end_offset(&self) -> i32 {
-        self.end_offset
-    }
 
     pub fn doc_buffer_upto(&self) -> i32 {
         self.doc_buffer_upto
@@ -1405,13 +1261,6 @@ impl<'a> EverythingIterator {
     }
     pub fn skipped(&self) -> bool {
         self.skipped
-    }
-
-    pub fn payload(&self) -> Option<&[u8]> {
-        match self.payload {
-            Some(ref payload) => Some(&payload),
-            None => None,
-        }
     }
 
     pub fn is_index_has_offsets(&self) -> bool {
@@ -1486,7 +1335,7 @@ impl<'a> EverythingIterator {
         self.singleton_doc_id
     }
 
-    pub fn reset(&mut self, term_state: &BlockTermState, flags: i16) -> Result<()> {
+    pub fn reset(&mut self, term_state: &BlockTermState, flags: u16) -> Result<()> {
         self.doc_freq = term_state.doc_freq;
         self.doc_term_start_fp = term_state.doc_start_fp;
         self.pos_term_start_fp = term_state.pos_start_fp;
@@ -1514,8 +1363,10 @@ impl<'a> EverythingIterator {
             self.last_pos_block_fp = self.pos_term_start_fp + term_state.last_pos_block_offset;
         }
 
-        self.needs_offsets = posting_feature_requested(flags, POSTING_ITERATOR_FLAG_OFFSETS);
-        self.needs_payloads = posting_feature_requested(flags, POSTING_ITERATOR_FLAG_PAYLOADS);
+        self.needs_offsets =
+            PostingIteratorFlags::feature_requested(flags, PostingIteratorFlags::OFFSETS);
+        self.needs_payloads =
+            PostingIteratorFlags::feature_requested(flags, PostingIteratorFlags::PAYLOADS);
 
         self.doc = -1;
         self.accum = 0;
@@ -1722,10 +1573,6 @@ impl<'a> EverythingIterator {
         }
     }
 
-    pub fn cost(&self) -> i64 {
-        i64::from(self.doc_freq)
-    }
-
     pub fn check_integrity(&self) -> Result<()> {
         //        if let Some(ref doc_in) = self.doc_in {
         //            codec_util::checksum_entire_file(doc_in.as_ref())?;
@@ -1735,72 +1582,9 @@ impl<'a> EverythingIterator {
         //        codec_util::checksum_entire_file(self.pay_in.as_ref())?;
         Ok(())
     }
-
-    fn clone(&self) -> Result<Self> {
-        let doc_in = match self.doc_in {
-            Some(ref doc_in) => Some((*doc_in).clone()?),
-            _ => None,
-        };
-        let skipper = match self.skipper {
-            Some(ref skipper) => Some((*skipper).clone_reader()?),
-            _ => None,
-        };
-        Ok(EverythingIterator {
-            encoded: self.encoded.clone(),
-            doc_delta_buffer: self.doc_delta_buffer.clone(),
-            freq_buffer: self.freq_buffer.clone(),
-            pos_delta_buffer: self.pos_delta_buffer.clone(),
-            payload_length_buffer: self.payload_length_buffer.clone(),
-            offset_start_delta_buffer: self.offset_start_delta_buffer.clone(),
-            offset_length_buffer: self.offset_length_buffer.clone(),
-            payload_bytes: self.payload_bytes.clone(),
-            payload_byte_upto: self.payload_byte_upto,
-            payload_length: self.payload_length,
-            last_start_offset: self.last_start_offset,
-            start_offset: self.start_offset,
-            end_offset: self.end_offset,
-            doc_buffer_upto: self.doc_buffer_upto,
-            pos_buffer_upto: self.pos_buffer_upto,
-            skipper,
-            skipped: self.skipped,
-            start_doc_in: self.start_doc_in.clone()?,
-            doc_in,
-            pos_in: self.pos_in.clone()?,
-            pay_in: self.pay_in.clone()?,
-            payload: self.payload.clone(),
-            index_has_offsets: self.index_has_offsets,
-            index_has_payloads: self.index_has_payloads,
-            doc_freq: self.doc_freq,
-            total_term_freq: self.total_term_freq,
-            doc_upto: self.doc_upto,
-            doc: self.doc,
-            accum: self.accum,
-            freq: self.freq,
-            position: self.position,
-            pos_pending_count: self.pos_pending_count,
-            pos_pending_fp: self.pos_pending_fp,
-            pay_pending_fp: self.pay_pending_fp,
-            doc_term_start_fp: self.doc_term_start_fp,
-            pos_term_start_fp: self.pos_term_start_fp,
-            pay_term_start_fp: self.pay_term_start_fp,
-            last_pos_block_fp: self.last_pos_block_fp,
-            skip_offset: self.skip_offset,
-            next_skip_doc: self.next_skip_doc,
-            needs_offsets: self.needs_offsets,
-            needs_payloads: self.needs_payloads,
-            singleton_doc_id: self.singleton_doc_id,
-            for_util: self.for_util.clone(),
-            segment: self.segment.clone(),
-            term: self.term.clone(),
-        })
-    }
 }
 
 impl PostingIterator for EverythingIterator {
-    fn clone_as_doc_iterator(&self) -> Result<Box<DocIterator>> {
-        Ok(Box::new(self.clone()?))
-    }
-
     fn freq(&self) -> Result<i32> {
         Ok(self.freq)
     }
@@ -1875,10 +1659,6 @@ impl PostingIterator for EverythingIterator {
             debug_assert!(self.payload.is_some());
             self.payload.as_ref().unwrap().clone()
         })
-    }
-
-    fn as_any_mut(&mut self) -> &mut Any {
-        self
     }
 }
 
@@ -1989,5 +1769,127 @@ impl DocIterator for EverythingIterator {
 
     fn cost(&self) -> usize {
         self.doc_freq as usize
+    }
+}
+
+pub enum Lucene50PostingIterEnum {
+    Doc(BlockDocIterator),
+    Posting(BlockPostingIterator),
+    Everything(EverythingIterator),
+}
+
+impl PostingIterator for Lucene50PostingIterEnum {
+    fn freq(&self) -> Result<i32> {
+        match self {
+            Lucene50PostingIterEnum::Doc(i) => i.freq(),
+            Lucene50PostingIterEnum::Posting(i) => i.freq(),
+            Lucene50PostingIterEnum::Everything(i) => i.freq(),
+        }
+    }
+
+    fn next_position(&mut self) -> Result<i32> {
+        match self {
+            Lucene50PostingIterEnum::Doc(i) => i.next_position(),
+            Lucene50PostingIterEnum::Posting(i) => i.next_position(),
+            Lucene50PostingIterEnum::Everything(i) => i.next_position(),
+        }
+    }
+
+    fn start_offset(&self) -> Result<i32> {
+        match self {
+            Lucene50PostingIterEnum::Doc(i) => i.start_offset(),
+            Lucene50PostingIterEnum::Posting(i) => i.start_offset(),
+            Lucene50PostingIterEnum::Everything(i) => i.start_offset(),
+        }
+    }
+
+    fn end_offset(&self) -> Result<i32> {
+        match self {
+            Lucene50PostingIterEnum::Doc(i) => i.end_offset(),
+            Lucene50PostingIterEnum::Posting(i) => i.end_offset(),
+            Lucene50PostingIterEnum::Everything(i) => i.end_offset(),
+        }
+    }
+
+    fn payload(&self) -> Result<Payload> {
+        match self {
+            Lucene50PostingIterEnum::Doc(i) => i.payload(),
+            Lucene50PostingIterEnum::Posting(i) => i.payload(),
+            Lucene50PostingIterEnum::Everything(i) => i.payload(),
+        }
+    }
+}
+
+impl DocIterator for Lucene50PostingIterEnum {
+    fn doc_id(&self) -> DocId {
+        match self {
+            Lucene50PostingIterEnum::Doc(i) => i.doc_id(),
+            Lucene50PostingIterEnum::Posting(i) => i.doc_id(),
+            Lucene50PostingIterEnum::Everything(i) => i.doc_id(),
+        }
+    }
+
+    fn next(&mut self) -> Result<DocId> {
+        match self {
+            Lucene50PostingIterEnum::Doc(i) => i.next(),
+            Lucene50PostingIterEnum::Posting(i) => i.next(),
+            Lucene50PostingIterEnum::Everything(i) => i.next(),
+        }
+    }
+
+    fn advance(&mut self, target: i32) -> Result<DocId> {
+        match self {
+            Lucene50PostingIterEnum::Doc(i) => i.advance(target),
+            Lucene50PostingIterEnum::Posting(i) => i.advance(target),
+            Lucene50PostingIterEnum::Everything(i) => i.advance(target),
+        }
+    }
+
+    fn slow_advance(&mut self, target: i32) -> Result<DocId> {
+        match self {
+            Lucene50PostingIterEnum::Doc(i) => i.slow_advance(target),
+            Lucene50PostingIterEnum::Posting(i) => i.slow_advance(target),
+            Lucene50PostingIterEnum::Everything(i) => i.slow_advance(target),
+        }
+    }
+
+    fn cost(&self) -> usize {
+        match self {
+            Lucene50PostingIterEnum::Doc(i) => i.cost(),
+            Lucene50PostingIterEnum::Posting(i) => i.cost(),
+            Lucene50PostingIterEnum::Everything(i) => i.cost(),
+        }
+    }
+
+    fn matches(&mut self) -> Result<bool> {
+        match self {
+            Lucene50PostingIterEnum::Doc(i) => i.matches(),
+            Lucene50PostingIterEnum::Posting(i) => i.matches(),
+            Lucene50PostingIterEnum::Everything(i) => i.matches(),
+        }
+    }
+
+    fn match_cost(&self) -> f32 {
+        match self {
+            Lucene50PostingIterEnum::Doc(i) => i.match_cost(),
+            Lucene50PostingIterEnum::Posting(i) => i.match_cost(),
+            Lucene50PostingIterEnum::Everything(i) => i.match_cost(),
+        }
+    }
+
+    fn approximate_next(&mut self) -> Result<DocId> {
+        match self {
+            Lucene50PostingIterEnum::Doc(i) => i.approximate_next(),
+            Lucene50PostingIterEnum::Posting(i) => i.approximate_next(),
+            Lucene50PostingIterEnum::Everything(i) => i.approximate_next(),
+        }
+    }
+
+    fn approximate_advance(&mut self, target: i32) -> Result<DocId> {
+        match self {
+            Lucene50PostingIterEnum::Doc(i) => i.approximate_advance(target),
+            Lucene50PostingIterEnum::Posting(i) => i.approximate_advance(target),
+            Lucene50PostingIterEnum::Everything(i) => i.approximate_advance(target),
+        }
     }
 }

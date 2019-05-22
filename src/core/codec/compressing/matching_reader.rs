@@ -1,4 +1,6 @@
+use core::codec::Codec;
 use core::index::MergeState;
+use core::store::Directory;
 
 /// Computes which segments have identical field name to number mappings,
 /// which allows stored fields and term vectors in this codec to be bulk-merged.
@@ -11,7 +13,7 @@ pub struct MatchingReaders {
 }
 
 impl MatchingReaders {
-    pub fn new(merge_state: &MergeState) -> Self {
+    pub fn new<D: Directory, C: Codec>(merge_state: &MergeState<D, C>) -> Self {
         // If the i'th reader is a SegmentReader and has
         // identical fieldName -> number mapping, then this
         // array will be non-null at position i:

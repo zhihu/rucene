@@ -6,9 +6,10 @@ use std::sync::{Arc, Mutex, Weak};
 
 use memmap::Mmap;
 
+use core::store::fs_index_output::FSIndexOutput;
 use core::store::lock::LockFactory;
-use core::store::{Directory, FSDirectory, IOContext, Lock};
-use core::store::{IndexInput, IndexOutput, MmapIndexInput, ReadOnlySource};
+use core::store::{Directory, FSDirectory, IOContext};
+use core::store::{IndexInput, MmapIndexInput, ReadOnlySource};
 use error::Result;
 
 #[derive(Default, Clone, Debug)]
@@ -91,18 +92,18 @@ impl MmapCache {
     }
 }
 
-pub struct MmapDirectory {
-    directory: FSDirectory,
+pub struct MmapDirectory<LF: LockFactory> {
+    directory: FSDirectory<LF>,
     pub preload: bool,
     mmap_cache: Arc<Mutex<MmapCache>>,
 }
 
-impl MmapDirectory {
+impl<LF: LockFactory> MmapDirectory<LF> {
     pub fn new<T: AsRef<Path>>(
         directory: &T,
-        lock_factory: Box<LockFactory>,
+        lock_factory: LF,
         _max_chunk_size: u32,
-    ) -> Result<MmapDirectory> {
+    ) -> Result<MmapDirectory<LF>> {
         let directory = FSDirectory::new(directory, lock_factory)?;
         Ok(MmapDirectory {
             directory,
@@ -112,7 +113,11 @@ impl MmapDirectory {
     }
 }
 
-impl Directory for MmapDirectory {
+impl<LF: LockFactory> Directory for MmapDirectory<LF> {
+    type LK = LF::LK;
+    type IndexOutput = FSIndexOutput;
+    type TempOutput = FSIndexOutput;
+
     fn list_all(&self) -> Result<Vec<String>> {
         self.directory.list_all()
     }
@@ -121,11 +126,11 @@ impl Directory for MmapDirectory {
         self.directory.file_length(name)
     }
 
-    fn create_output(&self, name: &str, context: &IOContext) -> Result<Box<IndexOutput>> {
+    fn create_output(&self, name: &str, context: &IOContext) -> Result<Self::IndexOutput> {
         self.directory.create_output(name, context)
     }
 
-    fn open_input(&self, name: &str, _ctx: &IOContext) -> Result<Box<IndexInput>> {
+    fn open_input(&self, name: &str, _ctx: &IOContext) -> Result<Box<dyn IndexInput>> {
         let full_path = self.directory.resolve(name);
         let mut mmap_cache = self.mmap_cache.lock()?;
         let boxed = mmap_cache
@@ -136,7 +141,7 @@ impl Directory for MmapDirectory {
         Ok(Box::new(boxed))
     }
 
-    fn obtain_lock(&self, name: &str) -> Result<Box<Lock>> {
+    fn obtain_lock(&self, name: &str) -> Result<Self::LK> {
         self.directory.obtain_lock(name)
     }
 
@@ -145,7 +150,7 @@ impl Directory for MmapDirectory {
         prefix: &str,
         suffix: &str,
         ctx: &IOContext,
-    ) -> Result<Box<IndexOutput>> {
+    ) -> Result<Self::TempOutput> {
         self.directory.create_temp_output(prefix, suffix, ctx)
     }
 
@@ -171,15 +176,10 @@ impl Directory for MmapDirectory {
     }
 }
 
-unsafe impl Send for MmapDirectory {}
+// unsafe impl<LF: LockFactory> Send for MmapDirectory<LF> {}
+// unsafe impl<LF: LockFactory> Sync for MmapDirectory<LF> {}
 
-unsafe impl Sync for MmapDirectory {}
-
-impl Drop for MmapDirectory {
-    fn drop(&mut self) {}
-}
-
-impl fmt::Display for MmapDirectory {
+impl<LF: LockFactory> fmt::Display for MmapDirectory<LF> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "MmapDirectory({})", self.directory)
     }

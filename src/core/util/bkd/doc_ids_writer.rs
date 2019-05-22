@@ -1,26 +1,39 @@
-use error::*;
+use error::{ErrorKind::UnsupportedOperation, Result};
 
 use core::index::IntersectVisitor;
 use core::store::{DataOutput, IndexInput};
 use core::util::bit_util::UnsignedShift;
 use core::util::DocId;
 
+use std::borrow::Cow;
+
 pub struct DocIdsWriter;
 
 impl DocIdsWriter {
     /// Read {@code count} integers into {@code docIDs}.
-    pub fn read_ints(input: &mut IndexInput, count: usize, doc_ids: &mut [DocId]) -> Result<()> {
+    pub fn read_ints(
+        input: &mut dyn IndexInput,
+        count: usize,
+        doc_ids: &mut [DocId],
+    ) -> Result<()> {
         let bpv = input.read_byte()?;
 
         match bpv {
             0 => DocIdsWriter::read_delta_vints(input, count, doc_ids),
             32 => DocIdsWriter::read_ints32(input, count, doc_ids),
             24 => DocIdsWriter::read_ints24(input, count, doc_ids),
-            _ => bail!("Unsupported number of bits per value: {}", bpv),
+            _ => bail!(UnsupportedOperation(Cow::Owned(format!(
+                "Unsupported number of bits per value: {}",
+                bpv
+            )))),
         }
     }
 
-    fn read_delta_vints(input: &mut IndexInput, count: usize, doc_ids: &mut [DocId]) -> Result<()> {
+    fn read_delta_vints(
+        input: &mut dyn IndexInput,
+        count: usize,
+        doc_ids: &mut [DocId],
+    ) -> Result<()> {
         let mut doc = 0;
         for id in doc_ids.iter_mut().take(count) {
             doc += input.read_vint()?;
@@ -30,7 +43,11 @@ impl DocIdsWriter {
         Ok(())
     }
 
-    pub fn read_ints32(input: &mut IndexInput, count: usize, doc_ids: &mut [DocId]) -> Result<()> {
+    pub fn read_ints32(
+        input: &mut dyn IndexInput,
+        count: usize,
+        doc_ids: &mut [DocId],
+    ) -> Result<()> {
         for id in doc_ids.iter_mut().take(count) {
             *id = input.read_int()?;
         }
@@ -38,7 +55,7 @@ impl DocIdsWriter {
         Ok(())
     }
 
-    fn read_ints24(input: &mut IndexInput, count: usize, doc_ids: &mut [DocId]) -> Result<()> {
+    fn read_ints24(input: &mut dyn IndexInput, count: usize, doc_ids: &mut [DocId]) -> Result<()> {
         let mut i = 0usize;
 
         while i + 7 < count {
@@ -70,9 +87,9 @@ impl DocIdsWriter {
     /// Read {@code count} integers and feed the result directly to {@link
     /// IntersectVisitor#visit(int)}.
     pub fn read_ints_with_visitor(
-        input: &mut IndexInput,
+        input: &mut dyn IndexInput,
         count: usize,
-        visitor: &mut IntersectVisitor,
+        visitor: &mut impl IntersectVisitor,
     ) -> Result<()> {
         let bpv = input.read_byte()?;
 
@@ -80,14 +97,17 @@ impl DocIdsWriter {
             0 => DocIdsWriter::read_delta_vints_with_visitor(input, count, visitor),
             32 => DocIdsWriter::read_ints32_with_visitor(input, count, visitor),
             24 => DocIdsWriter::read_ints24_with_visitor(input, count, visitor),
-            _ => bail!("Unsupported number of bits per value: {}", bpv),
+            _ => bail!(UnsupportedOperation(Cow::Owned(format!(
+                "Unsupported number of bits per value: {}",
+                bpv
+            )))),
         }
     }
 
     fn read_delta_vints_with_visitor(
-        input: &mut IndexInput,
+        input: &mut dyn IndexInput,
         count: usize,
-        visitor: &mut IntersectVisitor,
+        visitor: &mut impl IntersectVisitor,
     ) -> Result<()> {
         let mut doc = 0;
         for _ in 0..count {
@@ -99,9 +119,9 @@ impl DocIdsWriter {
     }
 
     pub fn read_ints32_with_visitor(
-        input: &mut IndexInput,
+        input: &mut dyn IndexInput,
         count: usize,
-        visitor: &mut IntersectVisitor,
+        visitor: &mut impl IntersectVisitor,
     ) -> Result<()> {
         for _ in 0..count {
             visitor.visit(input.read_vint()?)?;
@@ -111,9 +131,9 @@ impl DocIdsWriter {
     }
 
     fn read_ints24_with_visitor(
-        input: &mut IndexInput,
+        input: &mut dyn IndexInput,
         count: usize,
-        visitor: &mut IntersectVisitor,
+        visitor: &mut impl IntersectVisitor,
     ) -> Result<()> {
         let mut i = 0;
 
@@ -144,7 +164,7 @@ impl DocIdsWriter {
     }
 
     pub fn write_doc_ids(
-        out: &mut DataOutput,
+        out: &mut impl DataOutput,
         doc_ids: &[DocId],
         start: usize,
         count: usize,

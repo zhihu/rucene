@@ -1,11 +1,13 @@
-use core::index::delete_policy::IndexDeletionPolicy;
+use core::codec::Codec;
+use core::index::delete_policy::{IndexDeletionPolicy, KeepOnlyLastCommitDeletionPolicy};
 use core::index::index_commit::IndexCommit;
 use core::index::index_writer::INDEX_WRITE_LOCK_NAME;
-use core::index::SegmentInfos;
-use core::index::{parse_generation, parse_segment_name};
-use core::index::{CODEC_FILE_PATTERN, INDEX_FILE_SEGMENTS};
-use core::index::{INDEX_FILE_OLD_SEGMENT_GEN, INDEX_FILE_PENDING_SEGMENTS};
-use core::store::{Directory, DirectoryRc};
+use core::index::{
+    generation_from_segments_file_name, parse_generation, parse_segment_name, SegmentInfos,
+    CODEC_FILE_PATTERN, INDEX_FILE_OLD_SEGMENT_GEN, INDEX_FILE_PENDING_SEGMENTS,
+    INDEX_FILE_SEGMENTS,
+};
+use core::store::{Directory, LockValidatingDirectoryWrapper};
 
 use regex::Regex;
 use std::cmp::{max, Ordering};
@@ -51,7 +53,7 @@ use error::{ErrorKind, Result};
 /// Note that you must hold the write.lock before
 /// instantiating this class.  It opens segments_N file(s)
 /// directly with no retry logic.
-pub struct IndexFileDeleter {
+pub struct IndexFileDeleter<D: Directory, C: Codec> {
     /// Reference count for all files in the index. Counts
     /// how many existing commits reference a file.
     ref_counts: Arc<RwLock<HashMap<String, RefCount>>>,
@@ -60,24 +62,24 @@ pub struct IndexFileDeleter {
     /// delete policy (KeepOnlyLastCommitDeletionPolicy). Other policies
     /// may leave commit points live for longer in which case this list
     /// would be longer than 1.
-    commits: Vec<CommitPoint>,
+    commits: Vec<CommitPoint<D>>,
     /// Holds files we had inc_ref'd from the previous non-commit checkpoint:
     last_files: Vec<String>,
     /// Commits that the IndexDeletionPolicy have decided to delete:
-    commits_to_delete: Vec<CommitPoint>,
-    directory_orig: DirectoryRc,
-    directory: DirectoryRc,
-    policy: Box<IndexDeletionPolicy>,
+    commits_to_delete: Vec<CommitPoint<D>>,
+    directory_orig: Arc<D>,
+    directory: Arc<LockValidatingDirectoryWrapper<D>>,
+    policy: KeepOnlyLastCommitDeletionPolicy,
     pub starting_commit_deleted: bool,
-    last_segment_infos: Option<SegmentInfos>,
+    last_segment_infos: Option<SegmentInfos<D, C>>,
     inited: bool,
 }
 
-impl IndexFileDeleter {
+impl<D: Directory, C: Codec> IndexFileDeleter<D, C> {
     pub fn new(
-        directory_orig: DirectoryRc,
-        directory: DirectoryRc,
-        policy: Box<IndexDeletionPolicy>,
+        directory_orig: Arc<D>,
+        directory: Arc<LockValidatingDirectoryWrapper<D>>,
+        // policy: Box<IndexDeletionPolicy>,
     ) -> Self {
         IndexFileDeleter {
             ref_counts: Arc::new(RwLock::new(HashMap::new())),
@@ -86,7 +88,7 @@ impl IndexFileDeleter {
             commits_to_delete: vec![],
             directory_orig,
             directory,
-            policy,
+            policy: KeepOnlyLastCommitDeletionPolicy {},
             starting_commit_deleted: false,
             last_segment_infos: None,
             inited: false,
@@ -96,7 +98,7 @@ impl IndexFileDeleter {
     pub fn init(
         &mut self,
         files: &[String],
-        segment_infos: &mut SegmentInfos,
+        segment_infos: &mut SegmentInfos<D, C>,
         initial_index_exists: bool,
         is_reader_init: bool,
     ) -> Result<()> {
@@ -208,7 +210,7 @@ impl IndexFileDeleter {
         // Finally, give policy a chance to remove things on
         // startup:
         {
-            let mut commits: Vec<&mut IndexCommit> = Vec::with_capacity(self.commits.len());
+            let mut commits: Vec<&mut IndexCommit<D>> = Vec::with_capacity(self.commits.len());
             for i in &mut self.commits {
                 commits.push(i);
             }
@@ -230,7 +232,7 @@ impl IndexFileDeleter {
     /// Set all gens beyond what we currently see in the directory, to avoid double-write
     /// in cases where the previous IndexWriter did not gracefully close/rollback (e.g.
     /// os/machine crashed or lost power).
-    fn inflate_gens(infos: &mut SegmentInfos, files: Vec<&str>) -> Result<()> {
+    fn inflate_gens(infos: &mut SegmentInfos<D, C>, files: Vec<&str>) -> Result<()> {
         let mut max_segment_gen = i64::min_value();
         let mut max_segment_name = i32::min_value();
 
@@ -247,12 +249,12 @@ impl IndexFileDeleter {
             } else if filename.starts_with(INDEX_FILE_SEGMENTS) {
                 // trash file: we have to handle this since we allow anything
                 // starting with 'segments' here
-                if let Ok(gen) = SegmentInfos::generation_from_segments_file_name(filename) {
+                if let Ok(gen) = generation_from_segments_file_name(filename) {
                     max_segment_gen = max(gen, max_segment_gen);
                 }
             } else if filename.starts_with(INDEX_FILE_PENDING_SEGMENTS) {
                 // the first 8 bytes is "pending_", so the slice operation is safe
-                if let Ok(gen) = SegmentInfos::generation_from_segments_file_name(&filename[8..]) {
+                if let Ok(gen) = generation_from_segments_file_name(&filename[8..]) {
                     max_segment_gen = max(gen, max_segment_gen);
                 }
             } else {
@@ -318,7 +320,11 @@ impl IndexFileDeleter {
     /// If this is a commit, we also call the policy to give it
     /// a chance to remove other commits.  If any commits are
     /// removed, we decref their files as well.
-    pub fn checkpoint(&mut self, segment_infos: &SegmentInfos, is_commit: bool) -> Result<()> {
+    pub fn checkpoint(
+        &mut self,
+        segment_infos: &SegmentInfos<D, C>,
+        is_commit: bool,
+    ) -> Result<()> {
         // incref the files:
         self.inc_ref_by_segment(segment_infos, is_commit);
 
@@ -333,7 +339,7 @@ impl IndexFileDeleter {
 
             // Tell policy so it can remove commits:
             {
-                let mut commits: Vec<&mut IndexCommit> = Vec::with_capacity(self.commits.len());
+                let mut commits: Vec<&mut IndexCommit<D>> = Vec::with_capacity(self.commits.len());
                 for i in &mut self.commits {
                     i.commits_to_delete = &mut self.commits_to_delete;
                     commits.push(i);
@@ -369,7 +375,7 @@ impl IndexFileDeleter {
         }
     }
 
-    pub fn inc_ref_by_segment(&self, segment_infos: &SegmentInfos, is_commit: bool) {
+    pub fn inc_ref_by_segment(&self, segment_infos: &SegmentInfos<D, C>, is_commit: bool) {
         // If this is a commit point, also incRef the
         // segments_N file:
         self.inc_ref_files(&segment_infos.files(is_commit));
@@ -391,7 +397,7 @@ impl IndexFileDeleter {
             .inc_ref();
     }
 
-    pub fn dec_ref_by_segment(&self, segment_infos: &SegmentInfos) -> Result<()> {
+    pub fn dec_ref_by_segment(&self, segment_infos: &SegmentInfos<D, C>) -> Result<()> {
         self.dec_ref_batch((&segment_infos.files(false)).into_iter())
     }
 
@@ -475,8 +481,6 @@ impl IndexFileDeleter {
         I: Iterator<Item = &'a String>,
         T: IntoIterator<Item = &'a String, IntoIter = I>,
     {
-        // self.ensure_open()?;
-
         // We make two passes, first deleting any segments_N files, second
         // deleting the rest.  We do this so that if we throw exc or JVM
         // crashes during deletions, even when not on Windows, we don't
@@ -523,11 +527,6 @@ impl IndexFileDeleter {
         });
 
         self.delete_files(filtered)
-    }
-
-    fn ensure_open(&self) -> Result<()> {
-        // TODO
-        Ok(())
     }
 
     /// Writer calls this when it has hit an error and had to
@@ -615,24 +614,23 @@ impl fmt::Debug for RefCount {
 /// Holds details for each commit point. This class is also passed to
 /// the deletion policy. Note: this class has a natural ordering that
 /// is inconsistent with equals.
-#[derive(Clone)]
-struct CommitPoint {
+struct CommitPoint<D: Directory> {
     files: HashSet<String>,
     segments_file_name: String,
     deleted: bool,
-    directory_orig: DirectoryRc,
+    directory_orig: Arc<D>,
     // refer the commit_to_delete in IndexFileDeleter
-    commits_to_delete: *mut Vec<CommitPoint>,
+    commits_to_delete: *mut Vec<CommitPoint<D>>,
     generation: i64,
     user_data: HashMap<String, String>,
     segment_count: usize,
 }
 
-impl CommitPoint {
-    fn new(
-        commits_to_delete: *mut Vec<CommitPoint>,
-        directory_orig: DirectoryRc,
-        segment_infos: &SegmentInfos,
+impl<D: Directory> CommitPoint<D> {
+    fn new<C: Codec>(
+        commits_to_delete: *mut Vec<CommitPoint<D>>,
+        directory_orig: Arc<D>,
+        segment_infos: &SegmentInfos<D, C>,
     ) -> Self {
         CommitPoint {
             files: segment_infos.files(true),
@@ -647,7 +645,7 @@ impl CommitPoint {
     }
 }
 
-impl IndexCommit for CommitPoint {
+impl<D: Directory> IndexCommit<D> for CommitPoint<D> {
     fn segments_file_name(&self) -> &str {
         &self.segments_file_name
     }
@@ -656,7 +654,7 @@ impl IndexCommit for CommitPoint {
         Ok(&self.files)
     }
 
-    fn directory(&self) -> &Directory {
+    fn directory(&self) -> &D {
         self.directory_orig.as_ref()
     }
 
@@ -688,7 +686,22 @@ impl IndexCommit for CommitPoint {
     }
 }
 
-impl Ord for CommitPoint {
+impl<D: Directory> Clone for CommitPoint<D> {
+    fn clone(&self) -> Self {
+        CommitPoint {
+            files: self.files.clone(),
+            segments_file_name: self.segments_file_name.clone(),
+            deleted: self.deleted,
+            directory_orig: Arc::clone(&self.directory_orig),
+            commits_to_delete: self.commits_to_delete,
+            generation: self.generation,
+            user_data: self.user_data.clone(),
+            segment_count: self.segment_count,
+        }
+    }
+}
+
+impl<D: Directory> Ord for CommitPoint<D> {
     fn cmp(&self, other: &Self) -> Ordering {
         debug_assert!(ptr::eq(
             self.directory_orig.as_ref(),
@@ -699,15 +712,15 @@ impl Ord for CommitPoint {
     }
 }
 
-impl PartialOrd for CommitPoint {
+impl<D: Directory> PartialOrd for CommitPoint<D> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Eq for CommitPoint {}
+impl<D: Directory> Eq for CommitPoint<D> {}
 
-impl PartialEq for CommitPoint {
+impl<D: Directory> PartialEq for CommitPoint<D> {
     fn eq(&self, other: &Self) -> bool {
         ptr::eq(self.directory_orig.as_ref(), other.directory_orig.as_ref())
             && self.generation == other.generation

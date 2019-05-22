@@ -4,12 +4,13 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::mem;
 
+use core::util::bit_util::BitsRequired;
 use core::util::fst::bytes_store::StoreBytesReader;
 use core::util::fst::fst_reader::{CompiledAddress, InputType};
 use core::util::fst::{BytesReader, Output, OutputFactory, FST};
 use core::util::ints_ref::{IntsRef, IntsRefBuilder};
-use core::util::packed::{PagedGrowableWriter, PagedMutable};
-use core::util::packed_misc::{unsigned_bits_required, COMPACT};
+use core::util::packed::{PagedGrowableWriter, PagedMutableWriter};
+use core::util::packed_misc::COMPACT;
 use core::util::LongValues;
 
 use error::Result;
@@ -657,7 +658,7 @@ impl<F: OutputFactory> NodeHash<F> {
         let new_table = PagedGrowableWriter::new(
             2 * old_size,
             1 << 30,
-            unsigned_bits_required(self.count as i64),
+            self.count.bits_required() as i32,
             COMPACT,
         );
         self.mask = new_table.size() - 1;

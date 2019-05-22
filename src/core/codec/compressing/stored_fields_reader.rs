@@ -1,4 +1,7 @@
-use error::Result;
+use error::{
+    ErrorKind::{CorruptIndex, IllegalArgument, UnexpectedEOF},
+    Result,
+};
 
 use std::any::Any;
 use std::boxed::Box;
@@ -12,17 +15,18 @@ use core::codec::compressing::CompressingStoredFieldsWriter;
 use core::codec::compressing::{CompressionMode, Decompress, Decompressor};
 use core::codec::format::StoredFieldsFormat;
 use core::codec::reader::StoredFieldsReader;
-use core::codec::writer::StoredFieldsWriter;
+use core::codec::writer::StoredFieldsWriterEnum;
+use core::codec::Codec;
 use core::index::{segment_file_name, SegmentInfo};
 use core::index::{FieldInfo, FieldInfos};
 use core::index::{Status as VisitStatus, StoredFieldVisitor};
 use core::store::ByteArrayDataInput;
-use core::store::DirectoryRc;
-use core::store::{ChecksumIndexInput, DataInput, IOContext, IndexInput};
+use core::store::Directory;
+use core::store::{DataInput, IOContext, IndexInput};
 use core::util::bit_util::{UnsignedShift, ZigZagEncoding};
-use core::util::byte_ref::BytesRef;
 use core::util::packed_misc::{get_reader_iterator_no_header, get_reader_no_header};
-use core::util::packed_misc::{Format, OffsetAndLength, Reader, ReaderIterator};
+use core::util::packed_misc::{Format, OffsetAndLength, Reader, ReaderEnum, ReaderIterator};
+use core::util::BytesRef;
 use core::util::DocId;
 
 /// Extension of stored fields file
@@ -44,7 +48,7 @@ pub const NUMERIC_FLOAT: i32 = 0x03;
 pub const NUMERIC_LONG: i32 = 0x04;
 pub const NUMERIC_DOUBLE: i32 = 0x05;
 
-pub const TYPE_BITS: i32 = 3; // unsigned_bits_required(NUMERIC_DOUBLE)
+pub const TYPE_BITS: i32 = 3; // NUMERIC_DOUBLE.bits_required()
 pub const TYPE_MASK: i32 = 7; // 3 bits max value, PackedInts.maxValue(TYPE_BITS)
 
 // -0 isn't compressed
@@ -90,41 +94,50 @@ impl CompressingStoredFieldsFormat {
 }
 
 impl StoredFieldsFormat for CompressingStoredFieldsFormat {
-    fn fields_reader(
+    type Reader = CompressingStoredFieldsReader;
+    fn fields_reader<D: Directory, DW: Directory, C: Codec>(
         &self,
-        directory: DirectoryRc,
-        si: &SegmentInfo,
-        fi: Arc<FieldInfos>,
-        context: &IOContext,
-    ) -> Result<Box<StoredFieldsReader>> {
-        Ok(Box::new(CompressingStoredFieldsReader::new(
-            &directory,
-            si,
-            &self.segment_suffix,
-            &fi,
-            context,
-            &self.format_name,
-            self.compression_mode.clone(),
-        )?))
-    }
-
-    fn fields_writer(
-        &self,
-        directory: DirectoryRc,
-        si: &mut SegmentInfo,
-        ioctx: &IOContext,
-    ) -> Result<Box<StoredFieldsWriter>> {
-        Ok(Box::new(CompressingStoredFieldsWriter::new(
+        directory: &DW,
+        si: &SegmentInfo<D, C>,
+        field_info: Arc<FieldInfos>,
+        io_ctx: &IOContext,
+    ) -> Result<Self::Reader> {
+        CompressingStoredFieldsReader::new(
             directory,
             si,
             &self.segment_suffix,
-            ioctx,
+            field_info,
+            io_ctx,
             &self.format_name,
-            self.compression_mode,
-            self.chunk_size as usize,
-            self.max_docs_per_chunk as usize,
-            self.block_size as usize,
-        )?))
+            self.compression_mode.clone(),
+        )
+    }
+
+    fn fields_writer<D, DW, C>(
+        &self,
+        directory: Arc<DW>,
+        si: &mut SegmentInfo<D, C>,
+        ioctx: &IOContext,
+    ) -> Result<StoredFieldsWriterEnum<DW::IndexOutput>>
+    where
+        D: Directory,
+        DW: Directory,
+        DW::IndexOutput: 'static,
+        C: Codec,
+    {
+        Ok(StoredFieldsWriterEnum::Compressing(
+            CompressingStoredFieldsWriter::new(
+                directory,
+                si,
+                &self.segment_suffix,
+                ioctx,
+                &self.format_name,
+                self.compression_mode,
+                self.chunk_size as usize,
+                self.max_docs_per_chunk as usize,
+                self.block_size as usize,
+            )?,
+        ))
     }
 }
 
@@ -134,18 +147,18 @@ pub struct CompressingStoredFieldsIndexReader {
     start_pointers: Vec<i64>,
     avg_chunk_docs: Vec<i32>,
     avg_chunk_sizes: Vec<i64>,
-    doc_bases_deltas: Vec<Box<Reader>>,
+    doc_bases_deltas: Vec<ReaderEnum>,
     // delta from the avg
-    start_pointers_deltas: Vec<Box<Reader>>,
+    start_pointers_deltas: Vec<ReaderEnum>,
     // delta from the avg
 }
 
 impl CompressingStoredFieldsIndexReader {
     // It is the responsibility of the caller to close fieldsIndexIn after this constructor
     // has been called
-    pub fn new<T: IndexInput + ?Sized>(
+    pub fn new<T: IndexInput + ?Sized, D: Directory, C: Codec>(
         fields_index_in: &mut T,
-        si: &SegmentInfo,
+        si: &SegmentInfo<D, C>,
     ) -> Result<CompressingStoredFieldsIndexReader> {
         let mut doc_bases = Vec::new();
         let mut start_pointers = Vec::new();
@@ -167,7 +180,10 @@ impl CompressingStoredFieldsIndexReader {
             avg_chunk_docs.push(fields_index_in.read_vint()?);
             let bits_per_doc_base = fields_index_in.read_vint()?;
             if bits_per_doc_base > 32 {
-                bail!("Corrupted bitsPerDocBase: {}", bits_per_doc_base);
+                bail!(CorruptIndex(format!(
+                    "bits_per_doc_base: {}",
+                    bits_per_doc_base
+                )));
             }
             doc_bases_deltas.push(get_reader_no_header(
                 fields_index_in,
@@ -182,7 +198,10 @@ impl CompressingStoredFieldsIndexReader {
             avg_chunk_sizes.push(fields_index_in.read_vlong()?);
             let bits_per_start_pointer = fields_index_in.read_vint()?;
             if bits_per_start_pointer > 64 {
-                bail!("Corrupted bitsPerStartPointer: {}", bits_per_start_pointer);
+                bail!(CorruptIndex(format!(
+                    "bits_per_start_pointer: {}",
+                    bits_per_start_pointer
+                )));
             }
             start_pointers_deltas.push(get_reader_no_header(
                 fields_index_in,
@@ -260,9 +279,6 @@ impl CompressingStoredFieldsIndexReader {
         let relative_chunk = self.relative_chunk(block, doc_id - self.doc_bases[block])?;
         Ok(self.start_pointers[block] + self.relative_start_pointer(block, relative_chunk))
     }
-
-    //    pub fn clone(&self) -> CompressingStoredFieldsIndexReader {
-    //    }
 }
 
 pub struct CompressingStoredFieldsReader {
@@ -270,7 +286,7 @@ pub struct CompressingStoredFieldsReader {
     field_infos: Arc<FieldInfos>,
     pub index_reader: Arc<CompressingStoredFieldsIndexReader>,
     pub max_pointer: i64,
-    pub fields_stream: Box<IndexInput>,
+    pub fields_stream: Box<dyn IndexInput>,
     pub chunk_size: i32,
     pub packed_ints_version: i32,
     pub compression_mode: CompressionMode,
@@ -297,27 +313,22 @@ pub struct CompressingStoredFieldsReader {
     // current decompressed byte length for filed `bytes`
 }
 
-unsafe impl Send for CompressingStoredFieldsReader {}
-
-unsafe impl Sync for CompressingStoredFieldsReader {}
-
 impl CompressingStoredFieldsReader {
-    pub fn new(
-        dir: &DirectoryRc,
-        si: &SegmentInfo,
+    pub fn new<D: Directory, DW: Directory, C: Codec>(
+        dir: &DW,
+        si: &SegmentInfo<D, C>,
         segment_suffix: &str,
-        field_infos: &Arc<FieldInfos>,
+        field_infos: Arc<FieldInfos>,
         context: &IOContext,
         format_name: &str,
         compression_mode: CompressionMode,
     ) -> Result<CompressingStoredFieldsReader> {
         // load the index into memory
         let index_name = segment_file_name(&si.name, segment_suffix, STORED_FIELDS_INDEX_EXTENSION);
-        let mut index_stream: Box<ChecksumIndexInput> =
-            dir.open_checksum_input(&index_name, context)?;
+        let mut index_stream = dir.open_checksum_input(&index_name, context)?;
         let codec_name_idx = String::from(format_name) + CODEC_SFX_IDX;
         let version = check_index_header(
-            index_stream.as_mut(),
+            &mut index_stream,
             &codec_name_idx,
             VERSION_START,
             VERSION_CURRENT,
@@ -328,9 +339,9 @@ impl CompressingStoredFieldsReader {
             index_header_length(&codec_name_idx, segment_suffix),
             index_stream.file_pointer() as usize
         );
-        let index_reader = CompressingStoredFieldsIndexReader::new(index_stream.as_mut(), si)?;
+        let index_reader = CompressingStoredFieldsIndexReader::new(&mut index_stream, si)?;
         let max_pointer = index_stream.read_vlong()?;
-        check_footer(index_stream.as_mut())?;
+        check_footer(&mut index_stream)?;
 
         let fields_stream_fn = segment_file_name(&si.name, segment_suffix, STORED_FIELDS_EXTENSION);
         let mut fields_stream = dir.open_input(&fields_stream_fn, context)?;
@@ -344,12 +355,10 @@ impl CompressingStoredFieldsReader {
             segment_suffix,
         )?;
         if version != fields_version {
-            bail!(
-                "CorruptIndexException: Version mismatch between stored fields index and data: {} \
-                 != {}",
-                version,
-                fields_version
-            );
+            bail!(CorruptIndex(format!(
+                "Version mismatch between stored fields index and data: {} != {}",
+                version, fields_version
+            )));
         }
         debug_assert_eq!(
             index_header_length(&codec_name_dat, segment_suffix),
@@ -366,11 +375,10 @@ impl CompressingStoredFieldsReader {
             num_chunks = fields_stream.read_vlong()?;
             num_dirty_chunks = fields_stream.read_vlong()?;
             if num_dirty_chunks > num_chunks {
-                bail!(
-                    "CorruptIndexException: invalid chunk counts: dirty={}, total={}",
-                    num_dirty_chunks,
-                    num_chunks
-                );
+                bail!(CorruptIndex(format!(
+                    "invalid chunk counts: dirty={}, total={}",
+                    num_dirty_chunks, num_chunks
+                )));
             }
         }
 
@@ -379,7 +387,7 @@ impl CompressingStoredFieldsReader {
         let decompressor = compression_mode.new_decompressor();
         Ok(CompressingStoredFieldsReader {
             version,
-            field_infos: field_infos.clone(),
+            field_infos,
             index_reader: Arc::new(index_reader),
             max_pointer,
             fields_stream,
@@ -446,9 +454,9 @@ impl CompressingStoredFieldsReader {
         })
     }
 
-    fn read_field(
-        input: &mut DataInput,
-        visitor: &mut StoredFieldVisitor,
+    fn read_field<V: StoredFieldVisitor + ?Sized>(
+        input: &mut impl DataInput,
+        visitor: &mut V,
         info: &FieldInfo,
         bits: i32,
     ) -> Result<()> {
@@ -486,7 +494,7 @@ impl CompressingStoredFieldsReader {
 
     /// Reads a float in a variable-length format.  Reads between one and
     /// five bytes. Small integral values typically take fewer bytes.
-    fn read_zfloat(input: &mut DataInput) -> Result<f32> {
+    fn read_zfloat(input: &mut impl DataInput) -> Result<f32> {
         let b = i32::from(input.read_byte()?) & 0xffi32;
         if b == 0xff {
             // negative value
@@ -504,7 +512,7 @@ impl CompressingStoredFieldsReader {
 
     /// Reads a double in a variable-length format.  Reads between one and
     /// nine bytes. Small integral values typically take fewer bytes.
-    fn read_zdouble(input: &mut DataInput) -> Result<f64> {
+    fn read_zdouble(input: &mut impl DataInput) -> Result<f64> {
         let b = i32::from(input.read_byte()?) & 0xffi32;
         if b == 0xff {
             // negative value
@@ -523,7 +531,7 @@ impl CompressingStoredFieldsReader {
 
     /// Reads a long in a variable-length format.  Reads between one andCorePropLo
     /// nine bytes. Small values typically take fewer bytes.
-    fn read_tlong(input: &mut DataInput) -> Result<i64> {
+    fn read_tlong(input: &mut impl DataInput) -> Result<i64> {
         let header = i32::from(input.read_byte()?) & 0xff;
 
         let mut bits = i64::from(header) & 0x1fi64;
@@ -552,7 +560,7 @@ impl CompressingStoredFieldsReader {
         Ok(l)
     }
 
-    fn skip_field(input: &mut DataInput, bits: i32) -> Result<()> {
+    fn skip_field(input: &mut impl DataInput, bits: i32) -> Result<()> {
         match bits & TYPE_MASK {
             BYTE_ARR | STRING => {
                 let length = input.read_vint()?;
@@ -593,13 +601,10 @@ impl CompressingStoredFieldsReader {
         debug_assert!(token >= 0);
         self.chunk_docs = token.unsigned_shift(1usize) as usize;
         if !self.contains(doc_id) || self.doc_base + self.chunk_docs as i32 > self.num_docs {
-            bail!(
-                "Corrupted: docID={}, docBase={}, chunkDocs={}, numDocs={}",
-                doc_id,
-                self.doc_base,
-                self.chunk_docs,
-                self.num_docs
-            );
+            bail!(CorruptIndex(format!(
+                "doc_id={}, doc_base={}, chunk_docs={}, num_docs={}",
+                doc_id, self.doc_base, self.chunk_docs, self.num_docs
+            )));
         }
 
         self.sliced = (token & 1) != 0;
@@ -619,7 +624,10 @@ impl CompressingStoredFieldsReader {
                     self.num_stored_fields[i] = value;
                 }
             } else if bits_per_stored_fields > 31 {
-                bail!("bitsPerStoredFields={}", bits_per_stored_fields);
+                bail!(CorruptIndex(format!(
+                    "bits_per_stored_fields={}",
+                    bits_per_stored_fields
+                )));
             } else {
                 let mut it = get_reader_iterator_no_header(
                     Format::Packed,
@@ -642,8 +650,6 @@ impl CompressingStoredFieldsReader {
                 for i in 0..self.chunk_docs {
                     self.offsets[1 + i] = (1 + i as i32) * length;
                 }
-            } else if bits_per_length > 31 {
-                bail!("bitsPerLength={}", bits_per_length);
             } else {
                 let mut it = get_reader_iterator_no_header(
                     Format::Packed,
@@ -667,7 +673,10 @@ impl CompressingStoredFieldsReader {
                 let stored_fields = self.num_stored_fields[i];
 
                 if (len == 0) != (stored_fields == 0) {
-                    bail!("length={}, numStoredFields={}", len, stored_fields);
+                    bail!(CorruptIndex(format!(
+                        "length={}, num_stored_fields={}",
+                        len, stored_fields
+                    )));
                 }
             }
         }
@@ -712,11 +721,10 @@ impl CompressingStoredFieldsReader {
                 )?;
             }
             if self.bytes_position.1 != total_length as usize {
-                bail!(
-                    "CorruptIndex: expected chunk size = {}, got {}",
-                    total_length,
-                    self.bytes_position.1
-                );
+                bail!(CorruptIndex(format!(
+                    "expected chunk size = {}, got {}",
+                    total_length, self.bytes_position.1
+                )));
             }
         }
 
@@ -737,7 +745,7 @@ impl CompressingStoredFieldsReader {
     /// to be contained in the current block.
     fn do_get_document(&mut self, doc_id: DocId) -> Result<()> {
         if !self.contains(doc_id) {
-            bail!("document failed. docid={}", doc_id)
+            bail!(IllegalArgument(format!("doc {} don't exist", doc_id)));
         }
 
         let index = (doc_id - self.doc_base) as usize;
@@ -790,7 +798,7 @@ impl CompressingStoredFieldsReader {
     fn fill_buffer(&mut self) -> Result<()> {
         debug_assert!(self.current_doc.decompressed <= self.current_doc.length);
         if self.current_doc.decompressed == self.current_doc.length {
-            bail!("End of file!");
+            bail!(UnexpectedEOF("".into()));
         }
 
         let to_decompress = min(
@@ -843,7 +851,11 @@ impl CompressingStoredFieldsReader {
         })
     }
 
-    fn do_visit_document(&mut self, doc_id: DocId, visitor: &mut StoredFieldVisitor) -> Result<()> {
+    fn do_visit_document<V: StoredFieldVisitor + ?Sized>(
+        &mut self,
+        doc_id: DocId,
+        visitor: &mut V,
+    ) -> Result<()> {
         self.document(doc_id)?;
 
         for field_idx in 0..self.current_doc.num_stored_fields {
@@ -878,7 +890,7 @@ impl CompressingStoredFieldsReader {
 }
 
 impl StoredFieldsReader for CompressingStoredFieldsReader {
-    fn visit_document(&self, doc_id: DocId, visitor: &mut StoredFieldVisitor) -> Result<()> {
+    fn visit_document(&self, doc_id: DocId, visitor: &mut dyn StoredFieldVisitor) -> Result<()> {
         self.clone()?.do_visit_document(doc_id, visitor)
     }
 
@@ -886,8 +898,8 @@ impl StoredFieldsReader for CompressingStoredFieldsReader {
         self.do_visit_document(doc_id, visitor)
     }
 
-    fn get_merge_instance(&self) -> Result<Box<StoredFieldsReader>> {
-        Ok(Box::new(self.copy_for_merge()?))
+    fn get_merge_instance(&self) -> Result<Self> {
+        self.copy_for_merge()
     }
 
     fn as_any(&self) -> &Any {

@@ -145,7 +145,7 @@ pub trait TokenStream: Debug {
         None
     }
 
-    fn term_bytes_attribute_mut(&mut self) -> &mut TermToBytesRefAttribute;
+    fn term_bytes_attribute_mut(&mut self) -> &mut dyn TermToBytesRefAttribute;
 
-    fn term_bytes_attribute(&self) -> &TermToBytesRefAttribute;
+    fn term_bytes_attribute(&self) -> &dyn TermToBytesRefAttribute;
 }

@@ -1,17 +1,16 @@
-use error::*;
-use std::boxed::Box;
+use error::Result;
+
 use std::collections::HashMap;
 use std::fmt;
 
-use core::index::LeafReaderContext;
-use core::index::{Term, TermState};
-use core::index::{POSTINGS_FREQS, POSTINGS_NONE};
+use core::codec::{Codec, CodecPostingIterator, CodecTermState};
+use core::index::{LeafReaderContext, Term};
 use core::search::explanation::Explanation;
-use core::search::posting_iterator::{EmptyPostingIterator, PostingIterator};
-use core::search::searcher::IndexSearcher;
-use core::search::statistics::*;
+use core::search::posting_iterator::{PostingIterator, PostingIteratorFlags};
+use core::search::searcher::SearchPlanBuilder;
+use core::search::statistics::{CollectionStatistics, TermStatistics};
 use core::search::term_scorer::TermScorer;
-use core::search::{Query, Scorer, SimWeight, Similarity, Weight};
+use core::search::{DocIterator, Query, Scorer, SimWeight, Similarity, Weight};
 use core::util::{DocId, KeyedContext};
 
 pub const TERM: &str = "term";
@@ -30,11 +29,14 @@ impl TermQuery {
     }
 }
 
-impl Query for TermQuery {
-    fn create_weight(&self, searcher: &IndexSearcher, needs_scores: bool) -> Result<Box<Weight>> {
-        let reader = searcher.reader();
+impl<C: Codec> Query<C> for TermQuery {
+    fn create_weight(
+        &self,
+        searcher: &dyn SearchPlanBuilder<C>,
+        needs_scores: bool,
+    ) -> Result<Box<dyn Weight<C>>> {
         let term_context = searcher.term_state(&self.term)?;
-        let max_doc = i64::from(reader.max_doc());
+        let max_doc = i64::from(searcher.max_doc());
         let (term_stats, collection_stats) = if needs_scores {
             (
                 vec![searcher.term_statistics(self.term.clone(), term_context.as_ref())],
@@ -88,24 +90,24 @@ impl fmt::Display for TermQuery {
     }
 }
 
-pub struct TermWeight {
+pub struct TermWeight<C: Codec> {
     term: Term,
     boost: f32,
-    similarity: Box<Similarity>,
-    sim_weight: Box<SimWeight>,
+    similarity: Box<dyn Similarity<C>>,
+    sim_weight: Box<dyn SimWeight<C>>,
     needs_scores: bool,
-    term_states: HashMap<DocId, Box<TermState>>,
+    term_states: HashMap<DocId, CodecTermState<C>>,
 }
 
-impl TermWeight {
+impl<C: Codec> TermWeight<C> {
     pub fn new(
         term: Term,
-        term_states: HashMap<DocId, Box<TermState>>,
+        term_states: HashMap<DocId, CodecTermState<C>>,
         boost: f32,
-        similarity: Box<Similarity>,
-        sim_weight: Box<SimWeight>,
+        similarity: Box<dyn Similarity<C>>,
+        sim_weight: Box<dyn SimWeight<C>>,
         needs_scores: bool,
-    ) -> TermWeight {
+    ) -> TermWeight<C> {
         TermWeight {
             term,
             boost,
@@ -118,35 +120,38 @@ impl TermWeight {
 
     fn create_postings_iterator(
         &self,
-        reader: &LeafReaderContext,
+        reader: &LeafReaderContext<'_, C>,
         flags: i32,
-    ) -> Result<Box<PostingIterator>> {
+    ) -> Result<Option<CodecPostingIterator<C>>> {
         if let Some(state) = self.term_states.get(&reader.doc_base) {
-            reader
-                .reader
-                .postings_from_state(&self.term, state.as_ref(), flags)
+            reader.reader.postings_from_state(&self.term, &state, flags)
         } else {
-            Ok(Box::new(EmptyPostingIterator::default()))
+            Ok(None)
         }
     }
 }
 
-impl Weight for TermWeight {
-    fn create_scorer(&self, reader_context: &LeafReaderContext) -> Result<Box<Scorer>> {
+impl<C: Codec> Weight<C> for TermWeight<C> {
+    fn create_scorer(
+        &self,
+        reader_context: &LeafReaderContext<'_, C>,
+    ) -> Result<Option<Box<dyn Scorer>>> {
         let _norms = reader_context.reader.norm_values(&self.term.field);
         let sim_scorer = self.sim_weight.sim_scorer(reader_context.reader)?;
 
         let flags = if self.needs_scores {
-            POSTINGS_FREQS
+            PostingIteratorFlags::FREQS
         } else {
-            POSTINGS_NONE
+            PostingIteratorFlags::NONE
         };
 
-        Ok(Box::new(TermScorer::new(
-            sim_scorer,
-            self.create_postings_iterator(reader_context, i32::from(flags))?,
-            self.boost,
-        )))
+        if let Some(postings) = self.create_postings_iterator(reader_context, i32::from(flags))? {
+            Ok(Some(Box::new(TermScorer::new(
+                sim_scorer, postings, self.boost,
+            ))))
+        } else {
+            Ok(None)
+        }
     }
 
     fn query_type(&self) -> &'static str {
@@ -165,42 +170,44 @@ impl Weight for TermWeight {
         self.needs_scores
     }
 
-    fn explain(&self, reader: &LeafReaderContext, doc: DocId) -> Result<Explanation> {
+    fn explain(&self, reader: &LeafReaderContext<'_, C>, doc: DocId) -> Result<Explanation> {
         let flags = if self.needs_scores {
-            POSTINGS_FREQS
+            PostingIteratorFlags::FREQS
         } else {
-            POSTINGS_NONE
+            PostingIteratorFlags::NONE
         };
 
-        let mut postings_iterator = self.create_postings_iterator(reader, i32::from(flags))?;
-        let new_doc = postings_iterator.advance(doc)?;
-        if new_doc == doc {
-            let freq = postings_iterator.freq()? as f32;
+        if let Some(mut postings_iterator) =
+            self.create_postings_iterator(reader, i32::from(flags))?
+        {
+            let new_doc = postings_iterator.advance(doc)?;
+            if new_doc == doc {
+                let freq = postings_iterator.freq()? as f32;
 
-            let freq_expl = Explanation::new(true, freq, format!("termFreq={}", freq), vec![]);
-            let score_expl = self.sim_weight.explain(reader.reader, doc, freq_expl)?;
+                let freq_expl = Explanation::new(true, freq, format!("termFreq={}", freq), vec![]);
+                let score_expl = self.sim_weight.explain(reader.reader, doc, freq_expl)?;
 
-            Ok(Explanation::new(
-                true,
-                score_expl.value(),
-                format!(
-                    "weight({} in {}) [{}], result of:",
-                    self, doc, self.similarity
-                ),
-                vec![score_expl],
-            ))
-        } else {
-            Ok(Explanation::new(
-                false,
-                0f32,
-                "no matching term".to_string(),
-                vec![],
-            ))
+                return Ok(Explanation::new(
+                    true,
+                    score_expl.value(),
+                    format!(
+                        "weight({} in {}) [{}], result of:",
+                        self, doc, self.similarity
+                    ),
+                    vec![score_expl],
+                ));
+            }
         }
+        Ok(Explanation::new(
+            false,
+            0f32,
+            "no matching term".to_string(),
+            vec![],
+        ))
     }
 }
 
-impl fmt::Display for TermWeight {
+impl<C: Codec> fmt::Display for TermWeight<C> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,

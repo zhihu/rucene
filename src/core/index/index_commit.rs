@@ -1,5 +1,4 @@
-use core::index::StandardDirectoryReader;
-use core::store::Directory;
+// use core::index::StandardDirectoryReader;
 use error::Result;
 
 use std::collections::{HashMap, HashSet};
@@ -19,7 +18,7 @@ use std::collections::{HashMap, HashSet};
 /// later index commit point would have a larger N.
 // TODO: this is now a poor name, because this class also represents a
 // point-in-time view from an NRT reader
-pub trait IndexCommit {
+pub trait IndexCommit<D> {
     /// Get the segments file (`segments_N`) associated with this commit point
     fn segments_file_name(&self) -> &str;
 
@@ -27,7 +26,7 @@ pub trait IndexCommit {
     fn file_names(&self) -> Result<&HashSet<String>>;
 
     /// Return the `Directory` for the index
-    fn directory(&self) -> &Directory;
+    fn directory(&self) -> &D;
 
     /// Delete this commit point.  This only applies when using
     /// the commit point in the context of IndexWriter's
@@ -57,9 +56,9 @@ pub trait IndexCommit {
     /// Map is (String -> String)
     fn user_data(&self) -> &HashMap<String, String>;
 
-    /// package-private API for IndexWriter to init from a commit-point pulled from
-    /// an NRT or non-NRT reader.
-    fn reader(&self) -> Option<&StandardDirectoryReader> {
-        None
-    }
+    // package-private API for IndexWriter to init from a commit-point pulled from
+    // an NRT or non-NRT reader.
+    //    fn reader(&self) -> Option<&StandardDirectoryReader> {
+    //        None
+    //    }
 }

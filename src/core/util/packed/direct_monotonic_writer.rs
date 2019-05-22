@@ -1,14 +1,17 @@
 use core::store::IndexOutput;
 use core::util::packed::DirectWriter;
 
-use error::*;
+use error::{
+    ErrorKind::{IllegalArgument, IllegalState},
+    Result,
+};
 
 pub const MIN_BLOCK_SHIFT: i32 = 3;
 pub const MAX_BLOCK_SHIFT: i32 = 30;
 
-pub struct DirectMonotonicWriter<'a, 'b> {
-    meta: &'a mut IndexOutput,
-    data: &'b mut IndexOutput,
+pub struct DirectMonotonicWriter<'a, O: IndexOutput> {
+    meta: &'a mut O,
+    data: &'a mut O,
     num_values: usize,
     base_data_pointer: i64,
     buffer: Vec<i64>,
@@ -18,15 +21,18 @@ pub struct DirectMonotonicWriter<'a, 'b> {
     previous: i64,
 }
 
-impl<'a, 'b> DirectMonotonicWriter<'a, 'b> {
+impl<'a, O: IndexOutput> DirectMonotonicWriter<'a, O> {
     pub fn new(
-        meta: &'a mut IndexOutput,
-        data: &'b mut IndexOutput,
+        meta: &'a mut O,
+        data: &'a mut O,
         num_values: i64,
         block_shift: i32,
-    ) -> Result<DirectMonotonicWriter<'a, 'b>> {
+    ) -> Result<DirectMonotonicWriter<'a, O>> {
         if block_shift < MIN_BLOCK_SHIFT || block_shift > MAX_BLOCK_SHIFT {
-            bail!("blockShift must be in [3-30], got {}", block_shift);
+            bail!(IllegalArgument(format!(
+                "block_shift must be in [3-30], got {}",
+                block_shift
+            )));
         }
 
         let base_data_pointer = data.file_pointer();
@@ -46,7 +52,10 @@ impl<'a, 'b> DirectMonotonicWriter<'a, 'b> {
 
     pub fn add(&mut self, v: i64) -> Result<()> {
         if v < self.previous {
-            bail!("Values do not come in order: {}, {}", self.previous, v);
+            bail!(IllegalArgument(format!(
+                "Values do not come in order: {}, {}",
+                self.previous, v
+            )));
         }
 
         if self.buffer_size == self.buffer.len() {
@@ -62,15 +71,14 @@ impl<'a, 'b> DirectMonotonicWriter<'a, 'b> {
 
     pub fn finish(&mut self) -> Result<()> {
         if self.count != self.num_values {
-            bail!(
+            bail!(IllegalState(format!(
                 "Wrong number of values added, expected: {}, got: {}",
-                self.num_values,
-                self.count
-            );
+                self.num_values, self.count
+            )));
         }
 
         if self.finished {
-            bail!("#finish has been called already");
+            bail!(IllegalState("#finish has been called already".into()));
         }
 
         if self.buffer_size > 0 {
@@ -83,11 +91,11 @@ impl<'a, 'b> DirectMonotonicWriter<'a, 'b> {
     }
 
     pub fn get_instance(
-        meta: &'a mut IndexOutput,
-        data: &'b mut IndexOutput,
+        meta: &'a mut O,
+        data: &'a mut O,
         num_values: i64,
         block_shift: i32,
-    ) -> Result<DirectMonotonicWriter<'a, 'b>> {
+    ) -> Result<DirectMonotonicWriter<'a, O>> {
         DirectMonotonicWriter::new(meta, data, num_values, block_shift)
     }
 
@@ -123,7 +131,7 @@ impl<'a, 'b> DirectMonotonicWriter<'a, 'b> {
         if max_delta == 0 {
             self.meta.write_byte(0u8)?;
         } else {
-            let bits_required = DirectWriter::unsigned_bits_required(max_delta);
+            let bits_required = DirectWriter::<O>::unsigned_bits_required(max_delta);
             let mut writer =
                 DirectWriter::get_instance(self.data, self.buffer_size as i64, bits_required)?;
             for i in 0..self.buffer_size {

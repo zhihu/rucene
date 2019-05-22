@@ -1,39 +1,42 @@
 use std::any::Any;
 use std::fmt;
 
+use core::codec::Codec;
 use core::index::LeafReaderContext;
 use core::search::conjunction::ConjunctionScorer;
 use core::search::disjunction::DisjunctionSumScorer;
 use core::search::explanation::Explanation;
 use core::search::match_all::ConstantScoreQuery;
 use core::search::req_opt::ReqOptScorer;
-use core::search::searcher::IndexSearcher;
+use core::search::searcher::SearchPlanBuilder;
 use core::search::term_query::TermQuery;
 use core::search::{Query, Scorer, Weight};
 use core::util::DocId;
-use error::*;
+use error::{ErrorKind::IllegalArgument, Result};
 
-pub struct BooleanQuery {
-    must_queries: Vec<Box<Query>>,
-    should_queries: Vec<Box<Query>>,
-    filter_queries: Vec<Box<Query>>,
+pub struct BooleanQuery<C: Codec> {
+    must_queries: Vec<Box<dyn Query<C>>>,
+    should_queries: Vec<Box<dyn Query<C>>>,
+    filter_queries: Vec<Box<dyn Query<C>>>,
     minimum_should_match: i32,
 }
 
 pub const BOOLEAN: &str = "boolean";
 
-impl BooleanQuery {
+impl<C: Codec> BooleanQuery<C> {
     pub fn build(
-        musts: Vec<Box<Query>>,
-        shoulds: Vec<Box<Query>>,
-        filters: Vec<Box<Query>>,
-    ) -> Result<Box<Query>> {
+        musts: Vec<Box<dyn Query<C>>>,
+        shoulds: Vec<Box<dyn Query<C>>>,
+        filters: Vec<Box<dyn Query<C>>>,
+    ) -> Result<Box<dyn Query<C>>> {
         let minimum_should_match = if musts.is_empty() { 1 } else { 0 };
         let mut musts = musts;
         let mut shoulds = shoulds;
         let mut filters = filters;
         if musts.len() + shoulds.len() + filters.len() == 0 {
-            bail!("boolean query should at least contain one inner query!");
+            bail!(IllegalArgument(
+                "boolean query should at least contain one inner query!".into()
+            ));
         }
         if musts.len() + shoulds.len() + filters.len() == 1 {
             let query = if musts.len() == 1 {
@@ -53,14 +56,18 @@ impl BooleanQuery {
         }))
     }
 
-    fn queries_to_str(&self, queries: &[Box<Query>]) -> String {
+    fn queries_to_str(&self, queries: &[Box<dyn Query<C>>]) -> String {
         let query_strs: Vec<String> = queries.iter().map(|q| format!("{}", q)).collect();
         query_strs.join(", ")
     }
 }
 
-impl Query for BooleanQuery {
-    fn create_weight(&self, searcher: &IndexSearcher, needs_scores: bool) -> Result<Box<Weight>> {
+impl<C: Codec> Query<C> for BooleanQuery<C> {
+    fn create_weight(
+        &self,
+        searcher: &dyn SearchPlanBuilder<C>,
+        needs_scores: bool,
+    ) -> Result<Box<dyn Weight<C>>> {
         let mut must_weights =
             Vec::with_capacity(self.must_queries.len() + self.filter_queries.len());
         for q in &self.must_queries {
@@ -108,7 +115,7 @@ impl Query for BooleanQuery {
     }
 }
 
-impl fmt::Display for BooleanQuery {
+impl<C: Codec> fmt::Display for BooleanQuery<C> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let must_str = self.queries_to_str(&self.must_queries);
         let should_str = self.queries_to_str(&self.should_queries);
@@ -121,20 +128,20 @@ impl fmt::Display for BooleanQuery {
     }
 }
 
-pub struct BooleanWeight {
-    must_weights: Vec<Box<Weight>>,
-    should_weights: Vec<Box<Weight>>,
+pub struct BooleanWeight<C: Codec> {
+    must_weights: Vec<Box<dyn Weight<C>>>,
+    should_weights: Vec<Box<dyn Weight<C>>>,
     #[allow(dead_code)]
     minimum_should_match: i32,
     needs_scores: bool,
 }
 
-impl BooleanWeight {
+impl<C: Codec> BooleanWeight<C> {
     pub fn new(
-        musts: Vec<Box<Weight>>,
-        shoulds: Vec<Box<Weight>>,
+        musts: Vec<Box<dyn Weight<C>>>,
+        shoulds: Vec<Box<dyn Weight<C>>>,
         needs_scores: bool,
-    ) -> BooleanWeight {
+    ) -> BooleanWeight<C> {
         let minimum_should_match = if musts.is_empty() { 1 } else { 0 };
         BooleanWeight {
             must_weights: musts,
@@ -144,28 +151,26 @@ impl BooleanWeight {
         }
     }
 
-    fn build_scorers(
-        &self,
-        weights: &[Box<Weight>],
-        leaf_reader: &LeafReaderContext,
-    ) -> Result<Vec<Box<Scorer>>> {
-        let mut result = Vec::with_capacity(weights.len());
-        for weight in weights {
-            result.push(weight.create_scorer(leaf_reader)?)
-        }
-        Ok(result)
-    }
-
-    fn weights_to_str(&self, weights: &[Box<Weight>]) -> String {
+    fn weights_to_str(&self, weights: &[Box<dyn Weight<C>>]) -> String {
         let weight_strs: Vec<String> = weights.iter().map(|q| format!("{}", q)).collect();
         weight_strs.join(", ")
     }
 }
 
-impl Weight for BooleanWeight {
-    fn create_scorer(&self, leaf_reader: &LeafReaderContext) -> Result<Box<Scorer>> {
-        let must_scorer: Option<Box<Scorer>> = if !self.must_weights.is_empty() {
-            let mut scorers = self.build_scorers(&self.must_weights, leaf_reader)?;
+impl<C: Codec> Weight<C> for BooleanWeight<C> {
+    fn create_scorer(
+        &self,
+        leaf_reader: &LeafReaderContext<'_, C>,
+    ) -> Result<Option<Box<dyn Scorer>>> {
+        let must_scorer: Option<Box<dyn Scorer>> = if !self.must_weights.is_empty() {
+            let mut scorers = vec![];
+            for weight in &self.must_weights {
+                if let Some(scorer) = weight.create_scorer(leaf_reader)? {
+                    scorers.push(scorer);
+                } else {
+                    return Ok(None);
+                }
+            }
             if scorers.len() > 1 {
                 Some(Box::new(ConjunctionScorer::new(scorers)))
             } else {
@@ -174,26 +179,32 @@ impl Weight for BooleanWeight {
         } else {
             None
         };
-        let should_scorer: Option<Box<Scorer>> = if !self.should_weights.is_empty() {
-            let mut scorers = self.build_scorers(&self.should_weights, leaf_reader)?;
-            if scorers.len() > 1 {
-                Some(Box::new(DisjunctionSumScorer::new(scorers)))
+        let should_scorer: Option<Box<dyn Scorer>> = {
+            let mut scorers = vec![];
+            for weight in &self.should_weights {
+                if let Some(scorer) = weight.create_scorer(leaf_reader)? {
+                    scorers.push(scorer);
+                }
+            }
+            match scorers.len() {
+                0 => None,
+                1 => Some(scorers.remove(0)),
+                _ => Some(Box::new(DisjunctionSumScorer::new(scorers))),
+            }
+        };
+
+        if let Some(must) = must_scorer {
+            if let Some(should) = should_scorer {
+                Ok(Some(Box::new(ReqOptScorer::new(must, should))))
             } else {
-                Some(scorers.remove(0))
+                Ok(Some(must))
             }
         } else {
-            None
-        };
-        debug_assert!(must_scorer.is_some() || should_scorer.is_some());
-        if must_scorer.is_none() {
-            Ok(should_scorer.unwrap())
-        } else if should_scorer.is_none() {
-            Ok(must_scorer.unwrap())
-        } else {
-            Ok(Box::new(ReqOptScorer::new(
-                must_scorer.unwrap(),
-                should_scorer.unwrap(),
-            )))
+            if let Some(should) = should_scorer {
+                Ok(Some(should))
+            } else {
+                Ok(None)
+            }
         }
     }
 
@@ -224,7 +235,7 @@ impl Weight for BooleanWeight {
         self.needs_scores
     }
 
-    fn explain(&self, reader: &LeafReaderContext, doc: DocId) -> Result<Explanation> {
+    fn explain(&self, reader: &LeafReaderContext<'_, C>, doc: DocId) -> Result<Explanation> {
         let mut coord = 0;
         let mut max_coord = 0;
         let mut sum = 0.0f32;
@@ -317,7 +328,7 @@ impl Weight for BooleanWeight {
     }
 }
 
-impl fmt::Display for BooleanWeight {
+impl<C: Codec> fmt::Display for BooleanWeight<C> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let must_str = self.weights_to_str(&self.must_weights);
         let should_str = self.weights_to_str(&self.should_weights);

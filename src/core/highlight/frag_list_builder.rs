@@ -1,6 +1,7 @@
-use core::highlight::{FieldFragList, FieldPhraseList, FragListBuilder, SimpleFieldFragList,
-                      WeightedPhraseInfo};
-use error::*;
+use core::highlight::{
+    FieldFragList, FieldPhraseList, FragListBuilder, SimpleFieldFragList, WeightedPhraseInfo,
+};
+use error::Result;
 
 use std::cmp::max;
 use std::i32;
@@ -130,7 +131,7 @@ impl FragListBuilder for SimpleFragListBuilder {
         &self,
         field_phrase_list: &FieldPhraseList,
         frag_char_size: i32,
-    ) -> Result<Box<FieldFragList>> {
+    ) -> Result<Box<dyn FieldFragList>> {
         let mut field_frag_list = SimpleFieldFragList::default();
         self.base_builder.create_field_frag_list(
             &mut field_frag_list,
@@ -155,7 +156,7 @@ impl FragListBuilder for SingleFragListBuilder {
         &self,
         field_phrase_list: &FieldPhraseList,
         _frag_char_size: i32,
-    ) -> Result<Box<FieldFragList>> {
+    ) -> Result<Box<dyn FieldFragList>> {
         let mut ffl = SimpleFieldFragList::default();
 
         if !field_phrase_list.phrase_list.is_empty() {

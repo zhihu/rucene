@@ -1,15 +1,19 @@
-use core::codec::{BoxedPointsReader, MutablePointsReader, PointsReader, PointsWriter};
+use core::codec::{
+    Codec, MergePointsReader, MutablePointsReader, PointsReader, PointsReaderEnum, PointsWriter,
+};
+use core::index::merge_policy::MergePolicy;
+use core::index::merge_scheduler::MergeScheduler;
 use core::index::thread_doc_writer::DocumentsWriterPerThread;
 use core::index::FieldInfo;
 use core::index::IntersectVisitor;
 use core::index::PointValues;
 use core::index::SegmentWriteState;
 use core::util::byte_block_pool::{ByteBlockAllocator, ByteBlockPool};
-use core::util::byte_ref::BytesRef;
-use core::util::DocId;
+use core::util::{BytesRef, DocId};
 
 use error::Result;
 
+use core::store::Directory;
 use std::any::Any;
 
 pub struct PointValuesWriter {
@@ -23,8 +27,8 @@ pub struct PointValuesWriter {
 }
 
 impl PointValuesWriter {
-    pub fn new(
-        doc_writer: &mut DocumentsWriterPerThread,
+    pub fn new<D: Directory, C: Codec, MS: MergeScheduler, MP: MergePolicy>(
+        doc_writer: &mut DocumentsWriterPerThread<D, C, MS, MP>,
         field_info: &FieldInfo,
     ) -> PointValuesWriter {
         let bytes = unsafe { ByteBlockPool::new(doc_writer.byte_block_allocator.copy_unsafe()) };
@@ -67,9 +71,14 @@ impl PointValuesWriter {
         Ok(())
     }
 
-    pub fn flush(&mut self, _state: &SegmentWriteState, writer: &mut PointsWriter) -> Result<()> {
-        let reader: Box<MutablePointsReader> = Box::new(TempMutablePointsReader::new(self));
-        writer.write_field(&self.field_info, BoxedPointsReader::Mutable(reader))
+    pub fn flush<D: Directory, C: Codec, DW: Directory, W: PointsWriter>(
+        &mut self,
+        _state: &SegmentWriteState<D, DW, C>,
+        writer: &mut W,
+    ) -> Result<()> {
+        let reader: PointsReaderEnum<MergePointsReader<C>, TempMutablePointsReader> =
+            PointsReaderEnum::Mutable(TempMutablePointsReader::new(self));
+        writer.write_field(&self.field_info, reader)
     }
 }
 
@@ -95,7 +104,7 @@ impl TempMutablePointsReader {
 }
 
 impl PointValues for TempMutablePointsReader {
-    fn intersect(&self, field_name: &str, visitor: &mut IntersectVisitor) -> Result<()> {
+    fn intersect(&self, field_name: &str, visitor: &mut impl IntersectVisitor) -> Result<()> {
         let point_values_writer = self.point_values_writer();
 
         if field_name != &point_values_writer.field_info.name {
@@ -195,14 +204,10 @@ impl MutablePointsReader for TempMutablePointsReader {
         self.ords.swap(i as usize, j as usize);
     }
 
-    fn clone(&self) -> Box<MutablePointsReader> {
-        Box::new(TempMutablePointsReader {
+    fn clone(&self) -> Self {
+        TempMutablePointsReader {
             point_values_writer: self.point_values_writer,
             ords: self.ords.clone(),
-        })
+        }
     }
 }
-
-unsafe impl Sync for TempMutablePointsReader {}
-
-unsafe impl Send for TempMutablePointsReader {}

@@ -1,7 +1,8 @@
+use core::codec::Codec;
 use core::index::LeafReaderContext;
 use core::search::disi::*;
 use core::search::explanation::Explanation;
-use core::search::searcher::IndexSearcher;
+use core::search::searcher::SearchPlanBuilder;
 use core::search::term_query::TermQuery;
 use core::search::{two_phase_next, DocIterator, Query, Scorer, Weight};
 use core::util::DocId;
@@ -11,15 +12,15 @@ use error::Result;
 use std::f32;
 use std::fmt;
 
-pub struct DisjunctionSumScorer {
-    sub_scorers: DisiPriorityQueue<Scorer>,
+pub struct DisjunctionSumScorer<T: Scorer> {
+    sub_scorers: DisiPriorityQueue<T>,
     cost: usize,
     support_two_phase: bool,
     two_phase_match_cost: f32,
 }
 
-impl DisjunctionSumScorer {
-    pub fn new(children: Vec<Box<Scorer>>) -> DisjunctionSumScorer {
+impl<T: Scorer> DisjunctionSumScorer<T> {
+    pub fn new(children: Vec<T>) -> DisjunctionSumScorer<T> {
         assert!(children.len() > 1);
 
         let cost = children.iter().map(|w| w.cost()).sum();
@@ -39,12 +40,13 @@ impl DisjunctionSumScorer {
     }
 }
 
-impl DisjunctionScorer for DisjunctionSumScorer {
-    fn sub_scorers(&self) -> &DisiPriorityQueue<Scorer> {
+impl<T: Scorer> DisjunctionScorer for DisjunctionSumScorer<T> {
+    type Scorer = T;
+    fn sub_scorers(&self) -> &DisiPriorityQueue<T> {
         &self.sub_scorers
     }
 
-    fn sub_scorers_mut(&mut self) -> &mut DisiPriorityQueue<Scorer> {
+    fn sub_scorers_mut(&mut self) -> &mut DisiPriorityQueue<T> {
         &mut self.sub_scorers
     }
 
@@ -61,7 +63,7 @@ impl DisjunctionScorer for DisjunctionSumScorer {
     }
 }
 
-impl Scorer for DisjunctionSumScorer {
+impl<T: Scorer> Scorer for DisjunctionSumScorer<T> {
     fn score(&mut self) -> Result<f32> {
         let mut score: f32 = 0.0;
         self.foreach_top_scorer(|scorer| {
@@ -75,9 +77,10 @@ impl Scorer for DisjunctionSumScorer {
 }
 
 pub trait DisjunctionScorer {
-    fn sub_scorers(&self) -> &DisiPriorityQueue<Scorer>;
+    type Scorer: Scorer;
+    fn sub_scorers(&self) -> &DisiPriorityQueue<Self::Scorer>;
 
-    fn sub_scorers_mut(&mut self) -> &mut DisiPriorityQueue<Scorer>;
+    fn sub_scorers_mut(&mut self) -> &mut DisiPriorityQueue<Self::Scorer>;
 
     fn two_phase_match_cost(&self) -> f32;
 
@@ -88,7 +91,7 @@ pub trait DisjunctionScorer {
     /// for each of the list of scorers which are on the current doc.
     fn foreach_top_scorer<F>(&mut self, mut f: F) -> Result<()>
     where
-        F: FnMut(&mut DisiWrapper<Scorer>) -> Result<bool>,
+        F: FnMut(&mut DisiWrapper<Self::Scorer>) -> Result<bool>,
     {
         let mut disi = Some(self.sub_scorers().top_list());
         while let Some(scorer) = disi {
@@ -101,9 +104,10 @@ pub trait DisjunctionScorer {
     }
 }
 
-impl<T> DocIterator for T
+impl<T, S> DocIterator for T
 where
-    T: DisjunctionScorer + Scorer,
+    T: DisjunctionScorer<Scorer = S> + Scorer,
+    S: Scorer,
 {
     fn doc_id(&self) -> DocId {
         self.sub_scorers().peek().doc()
@@ -186,15 +190,18 @@ where
 /// the best of those multiple fields, without confusing this with the better case of two different
 /// terms in the multiple fields.
 
-pub struct DisjunctionMaxQuery {
-    pub disjuncts: Vec<Box<Query>>,
+pub struct DisjunctionMaxQuery<C: Codec> {
+    pub disjuncts: Vec<Box<dyn Query<C>>>,
     /// Multiple of the non-max disjunction scores added into our final score.
     /// Non-zero values support tie-breaking.
     pub tie_breaker_multiplier: f32,
 }
 
-impl DisjunctionMaxQuery {
-    pub fn build(disjuncts: Vec<Box<Query>>, tie_breaker_multiplier: f32) -> Result<Box<Query>> {
+impl<C: Codec> DisjunctionMaxQuery<C> {
+    pub fn build(
+        disjuncts: Vec<Box<dyn Query<C>>>,
+        tie_breaker_multiplier: f32,
+    ) -> Result<Box<dyn Query<C>>> {
         let mut disjuncts = disjuncts;
         if disjuncts.is_empty() {
             bail!(IllegalArgument(
@@ -213,8 +220,12 @@ impl DisjunctionMaxQuery {
 
 pub const DISJUNCTION_MAX: &str = "dismax";
 
-impl Query for DisjunctionMaxQuery {
-    fn create_weight(&self, searcher: &IndexSearcher, needs_scores: bool) -> Result<Box<Weight>> {
+impl<C: Codec> Query<C> for DisjunctionMaxQuery<C> {
+    fn create_weight(
+        &self,
+        searcher: &dyn SearchPlanBuilder<C>,
+        needs_scores: bool,
+    ) -> Result<Box<dyn Weight<C>>> {
         let mut weights = Vec::with_capacity(self.disjuncts.len());
         for q in &self.disjuncts {
             weights.push(q.create_weight(searcher, needs_scores)?);
@@ -244,7 +255,7 @@ impl Query for DisjunctionMaxQuery {
     }
 }
 
-impl fmt::Display for DisjunctionMaxQuery {
+impl<C: Codec> fmt::Display for DisjunctionMaxQuery<C> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let queries: Vec<String> = self.disjuncts.iter().map(|q| format!("{}", q)).collect();
         write!(
@@ -261,18 +272,18 @@ impl fmt::Display for DisjunctionMaxQuery {
 ///
 /// <p>NOTE: this API and implementation is subject to
 /// change suddenly in the next release.</p>
-pub struct DisjunctionMaxWeight {
-    weights: Vec<Box<Weight>>,
+pub struct DisjunctionMaxWeight<C: Codec> {
+    weights: Vec<Box<dyn Weight<C>>>,
     tie_breaker_multiplier: f32,
     needs_scores: bool,
 }
 
-impl DisjunctionMaxWeight {
+impl<C: Codec> DisjunctionMaxWeight<C> {
     pub fn new(
-        weights: Vec<Box<Weight>>,
+        weights: Vec<Box<dyn Weight<C>>>,
         tie_breaker_multiplier: f32,
         needs_scores: bool,
-    ) -> DisjunctionMaxWeight {
+    ) -> DisjunctionMaxWeight<C> {
         DisjunctionMaxWeight {
             weights,
             tie_breaker_multiplier,
@@ -281,16 +292,25 @@ impl DisjunctionMaxWeight {
     }
 }
 
-impl Weight for DisjunctionMaxWeight {
-    fn create_scorer(&self, reader_context: &LeafReaderContext) -> Result<Box<Scorer>> {
+impl<C: Codec> Weight<C> for DisjunctionMaxWeight<C> {
+    fn create_scorer(
+        &self,
+        reader_context: &LeafReaderContext<'_, C>,
+    ) -> Result<Option<Box<dyn Scorer>>> {
         let mut scorers = Vec::with_capacity(self.weights.len());
         for w in &self.weights {
-            scorers.push(w.create_scorer(reader_context)?);
+            if let Some(scorer) = w.create_scorer(reader_context)? {
+                scorers.push(scorer);
+            }
         }
-        Ok(Box::new(DisjunctionMaxScorer::new(
-            scorers,
-            self.tie_breaker_multiplier,
-        )))
+        match scorers.len() {
+            0 => Ok(None),
+            1 => Ok(scorers.pop()),
+            _ => Ok(Some(Box::new(DisjunctionMaxScorer::new(
+                scorers,
+                self.tie_breaker_multiplier,
+            )))),
+        }
     }
 
     fn query_type(&self) -> &'static str {
@@ -318,7 +338,7 @@ impl Weight for DisjunctionMaxWeight {
         self.needs_scores
     }
 
-    fn explain(&self, reader: &LeafReaderContext, doc: DocId) -> Result<Explanation> {
+    fn explain(&self, reader: &LeafReaderContext<'_, C>, doc: DocId) -> Result<Explanation> {
         let mut matched = false;
         let mut max = f32::NEG_INFINITY;
         let mut sum = 0.0f32;
@@ -359,7 +379,7 @@ impl Weight for DisjunctionMaxWeight {
     }
 }
 
-impl fmt::Display for DisjunctionMaxWeight {
+impl<C: Codec> fmt::Display for DisjunctionMaxWeight<C> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let weights: Vec<String> = self.weights.iter().map(|q| format!("{}", q)).collect();
         write!(
@@ -372,16 +392,16 @@ impl fmt::Display for DisjunctionMaxWeight {
     }
 }
 
-pub struct DisjunctionMaxScorer {
-    sub_scorers: DisiPriorityQueue<Scorer>,
+pub struct DisjunctionMaxScorer<T: Scorer> {
+    sub_scorers: DisiPriorityQueue<T>,
     cost: usize,
     support_two_phase: bool,
     two_phase_match_cost: f32,
     tie_breaker_multiplier: f32,
 }
 
-impl DisjunctionMaxScorer {
-    pub fn new(children: Vec<Box<Scorer>>, tie_breaker_multiplier: f32) -> DisjunctionMaxScorer {
+impl<T: Scorer> DisjunctionMaxScorer<T> {
+    pub fn new(children: Vec<T>, tie_breaker_multiplier: f32) -> DisjunctionMaxScorer<T> {
         assert!(children.len() > 1);
 
         let cost = children.iter().map(|w| w.cost()).sum();
@@ -402,7 +422,7 @@ impl DisjunctionMaxScorer {
     }
 }
 
-impl Scorer for DisjunctionMaxScorer {
+impl<T: Scorer> Scorer for DisjunctionMaxScorer<T> {
     fn score(&mut self) -> Result<f32> {
         let mut score_sum = 0.0f32;
         let mut score_max = f32::NEG_INFINITY;
@@ -420,12 +440,13 @@ impl Scorer for DisjunctionMaxScorer {
     }
 }
 
-impl DisjunctionScorer for DisjunctionMaxScorer {
-    fn sub_scorers(&self) -> &DisiPriorityQueue<Scorer> {
+impl<T: Scorer> DisjunctionScorer for DisjunctionMaxScorer<T> {
+    type Scorer = T;
+    fn sub_scorers(&self) -> &DisiPriorityQueue<T> {
         &self.sub_scorers
     }
 
-    fn sub_scorers_mut(&mut self) -> &mut DisiPriorityQueue<Scorer> {
+    fn sub_scorers_mut(&mut self) -> &mut DisiPriorityQueue<T> {
         &mut self.sub_scorers
     }
 
@@ -491,22 +512,23 @@ mod tests {
         assert!((two_phase.score().unwrap() - 15.0) < ::std::f32::EPSILON);
     }
 
-    fn create_disjunction_scorer() -> DisjunctionSumScorer {
+    fn create_disjunction_scorer() -> DisjunctionSumScorer<MockSimpleScorer<MockDocIterator>> {
         let s1 = create_mock_scorer(vec![1, 2, 3, 4, 5]);
         let s2 = create_mock_scorer(vec![2, 5]);
         let s3 = create_mock_scorer(vec![2, 3, 4, 5]);
 
-        let scorers: Vec<Box<Scorer>> = vec![s1, s2, s3];
-
+        let scorers = vec![s1, s2, s3];
         DisjunctionSumScorer::new(scorers)
     }
 
-    fn create_disjunction_two_phase_scorer() -> DisjunctionSumScorer {
+    fn create_disjunction_two_phase_scorer() -> DisjunctionSumScorer<Box<dyn Scorer>> {
         let s1 = create_mock_scorer(vec![1, 2, 3, 5, 6, 7, 8]);
         let s2 = create_mock_scorer(vec![2, 3, 5, 7, 8]);
         let s3 = create_mock_two_phase_scorer(vec![1, 2, 3, 4, 5, 6, 7], vec![1, 2, 4, 5]);
         let s4 = create_mock_two_phase_scorer(vec![1, 2, 3, 4, 5, 6, 7], vec![2, 4]);
 
-        DisjunctionSumScorer::new(vec![s1, s2, s3, s4])
+        let scorers: Vec<Box<dyn Scorer>> =
+            vec![Box::new(s1), Box::new(s2), Box::new(s3), Box::new(s4)];
+        DisjunctionSumScorer::new(scorers)
     }
 }

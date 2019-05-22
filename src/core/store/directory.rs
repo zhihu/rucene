@@ -3,9 +3,9 @@ use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use core::store::{BufferedChecksumIndexInput, ChecksumIndexInput, IndexInput, IndexOutput};
+use core::store::{BufferedChecksumIndexInput, DataOutput, IndexInput, IndexOutput};
 use core::store::{FlushInfo, Lock, MergeInfo};
-use error::*;
+use error::Result;
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum IOContext {
@@ -16,6 +16,8 @@ pub enum IOContext {
 }
 
 impl IOContext {
+    pub const READ: IOContext = IOContext::Read(false);
+    pub const READ_ONCE: IOContext = IOContext::Read(true);
     pub fn is_merge(&self) -> bool {
         match self {
             IOContext::Merge(_) => true,
@@ -24,10 +26,10 @@ impl IOContext {
     }
 }
 
-pub const IO_CONTEXT_READONCE: IOContext = IOContext::Read(true);
-pub const IO_CONTEXT_READ: IOContext = IOContext::Read(false);
-
-pub trait Directory: Drop + fmt::Display + Send + Sync {
+pub trait Directory: fmt::Display {
+    type LK: Lock;
+    type IndexOutput: IndexOutput;
+    type TempOutput: IndexOutput;
     /// Returns an array of strings, one for each entry in the directory, in sorted (UTF16,
     /// java's String.compare) order.
     fn list_all(&self) -> Result<Vec<String>>;
@@ -38,13 +40,17 @@ pub trait Directory: Drop + fmt::Display + Send + Sync {
 
     /// Creates a new, empty file in the directory with the given name.
     /// Returns a stream writing this file.
-    fn create_output(&self, name: &str, context: &IOContext) -> Result<Box<IndexOutput>>;
+    fn create_output(&self, name: &str, context: &IOContext) -> Result<Self::IndexOutput>;
 
-    fn open_input(&self, name: &str, ctx: &IOContext) -> Result<Box<IndexInput>>;
+    fn open_input(&self, name: &str, ctx: &IOContext) -> Result<Box<dyn IndexInput>>;
 
-    fn open_checksum_input(&self, name: &str, ctx: &IOContext) -> Result<Box<ChecksumIndexInput>> {
+    fn open_checksum_input(
+        &self,
+        name: &str,
+        ctx: &IOContext,
+    ) -> Result<BufferedChecksumIndexInput> {
         let input = self.open_input(name, ctx)?;
-        Ok(Box::new(BufferedChecksumIndexInput::new(input)))
+        Ok(BufferedChecksumIndexInput::new(input))
     }
 
     /// Returns an obtained {@link Lock}.
@@ -52,14 +58,14 @@ pub trait Directory: Drop + fmt::Display + Send + Sync {
     /// @throws LockObtainFailedException (optional specific exception) if the lock could
     ///         not be obtained because it is currently held elsewhere.
     /// @throws IOException if any i/o error occurs attempting to gain the lock
-    fn obtain_lock(&self, name: &str) -> Result<Box<Lock>>;
+    fn obtain_lock(&self, name: &str) -> Result<Self::LK>;
 
     fn create_temp_output(
         &self,
         prefix: &str,
         suffix: &str,
         ctx: &IOContext,
-    ) -> Result<Box<IndexOutput>>;
+    ) -> Result<Self::TempOutput>;
 
     fn delete_file(&self, name: &str) -> Result<()>;
 
@@ -79,13 +85,19 @@ pub trait Directory: Drop + fmt::Display + Send + Sync {
 
     fn rename(&self, source: &str, dest: &str) -> Result<()>;
 
-    fn copy_from(&self, from: DirectoryRc, src: &str, dest: &str, ctx: &IOContext) -> Result<()> {
+    fn copy_from<D: Directory>(
+        &self,
+        from: Arc<D>,
+        src: &str,
+        dest: &str,
+        ctx: &IOContext,
+    ) -> Result<()> {
         let mut _success = false;
         let mut is = from.open_input(src, ctx)?;
         let mut os = self.create_output(dest, ctx)?;
 
         let length = is.len();
-        os.copy_bytes(is.as_data_input(), length as usize)?;
+        os.copy_bytes(is.as_mut(), length as usize)?;
 
         _success = true;
 
@@ -105,22 +117,24 @@ pub trait Directory: Drop + fmt::Display + Send + Sync {
     }
 }
 
-pub type DirectoryRc = Arc<Directory>;
-
 /// This struct makes a best-effort check that a provided
 /// `Lock` is valid before any destructive filesystem operation.
-pub struct LockValidatingDirectoryWrapper {
-    dir: DirectoryRc,
-    write_lock: Arc<Lock>,
+pub struct LockValidatingDirectoryWrapper<D: Directory> {
+    dir: Arc<D>,
+    write_lock: Arc<D::LK>,
 }
 
-impl LockValidatingDirectoryWrapper {
-    pub fn new(dir: DirectoryRc, write_lock: Arc<Lock>) -> Self {
+impl<D: Directory> LockValidatingDirectoryWrapper<D> {
+    pub fn new(dir: Arc<D>, write_lock: Arc<D::LK>) -> Self {
         LockValidatingDirectoryWrapper { dir, write_lock }
     }
 }
 
-impl Directory for LockValidatingDirectoryWrapper {
+impl<D: Directory> Directory for LockValidatingDirectoryWrapper<D> {
+    type LK = D::LK;
+    type IndexOutput = D::IndexOutput;
+    type TempOutput = D::TempOutput;
+
     fn list_all(&self) -> Result<Vec<String>> {
         self.dir.list_all()
     }
@@ -129,16 +143,16 @@ impl Directory for LockValidatingDirectoryWrapper {
         self.dir.file_length(name)
     }
 
-    fn create_output(&self, name: &str, context: &IOContext) -> Result<Box<IndexOutput>> {
+    fn create_output(&self, name: &str, context: &IOContext) -> Result<Self::IndexOutput> {
         self.write_lock.ensure_valid()?;
         self.dir.create_output(name, context)
     }
 
-    fn open_input(&self, name: &str, ctx: &IOContext) -> Result<Box<IndexInput>> {
+    fn open_input(&self, name: &str, ctx: &IOContext) -> Result<Box<dyn IndexInput>> {
         self.dir.open_input(name, ctx)
     }
 
-    fn obtain_lock(&self, name: &str) -> Result<Box<Lock>> {
+    fn obtain_lock(&self, name: &str) -> Result<Self::LK> {
         self.dir.obtain_lock(name)
     }
 
@@ -147,7 +161,7 @@ impl Directory for LockValidatingDirectoryWrapper {
         prefix: &str,
         suffix: &str,
         ctx: &IOContext,
-    ) -> Result<Box<IndexOutput>> {
+    ) -> Result<Self::TempOutput> {
         self.dir.create_temp_output(prefix, suffix, ctx)
     }
 
@@ -171,18 +185,20 @@ impl Directory for LockValidatingDirectoryWrapper {
         self.dir.rename(source, dest)
     }
 
-    fn copy_from(&self, from: DirectoryRc, src: &str, dest: &str, ctx: &IOContext) -> Result<()> {
+    fn copy_from<D1: Directory>(
+        &self,
+        from: Arc<D1>,
+        src: &str,
+        dest: &str,
+        ctx: &IOContext,
+    ) -> Result<()> {
         self.write_lock.ensure_valid()?;
         self.dir.copy_from(from, src, dest, ctx)
     }
 }
 
-impl fmt::Display for LockValidatingDirectoryWrapper {
+impl<D: Directory> fmt::Display for LockValidatingDirectoryWrapper<D> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "LockValidatingDirectoryWrapper({})", self.dir.as_ref())
     }
-}
-
-impl Drop for LockValidatingDirectoryWrapper {
-    fn drop(&mut self) {}
 }

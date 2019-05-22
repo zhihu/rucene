@@ -1,11 +1,9 @@
 use core::index::term::{OrdTermState, SeekStatus, TermIterator, TermState};
 use core::index::SortedDocValues;
-use core::search::posting_iterator::PostingIterator;
+use core::search::posting_iterator::EmptyPostingIterator;
 
 use error::ErrorKind::UnsupportedOperation;
 use error::Result;
-
-use std::any::Any;
 
 /// Implements a `TermIterator` wrapping a provided `SortedDocValues`
 pub struct SortedDocValuesTermIterator<T: SortedDocValues + 'static> {
@@ -26,6 +24,8 @@ impl<T: SortedDocValues + 'static> SortedDocValuesTermIterator<T> {
 }
 
 impl<T: SortedDocValues + 'static> TermIterator for SortedDocValuesTermIterator<T> {
+    type Postings = EmptyPostingIterator;
+    type TermState = OrdTermState;
     fn next(&mut self) -> Result<Option<Vec<u8>>> {
         self.current_ord += 1;
         if self.current_ord >= self.values.get_value_count() as i32 {
@@ -35,6 +35,17 @@ impl<T: SortedDocValues + 'static> TermIterator for SortedDocValuesTermIterator<
             let bytes = self.values.lookup_ord(self.current_ord)?;
             self.scratch = bytes.to_vec();
             Ok(Some(self.scratch.clone()))
+        }
+    }
+
+    fn seek_exact(&mut self, text: &[u8]) -> Result<bool> {
+        let ord = self.values.lookup_term(text)?;
+        if ord >= 0 {
+            self.current_ord = ord;
+            self.scratch = text.to_vec();
+            Ok(true)
+        } else {
+            Ok(false)
         }
     }
 
@@ -57,17 +68,6 @@ impl<T: SortedDocValues + 'static> TermIterator for SortedDocValuesTermIterator<
         }
     }
 
-    fn seek_exact(&mut self, text: &[u8]) -> Result<bool> {
-        let ord = self.values.lookup_term(text)?;
-        if ord >= 0 {
-            self.current_ord = ord;
-            self.scratch = text.to_vec();
-            Ok(true)
-        } else {
-            Ok(false)
-        }
-    }
-
     fn seek_exact_ord(&mut self, ord: i64) -> Result<()> {
         assert!(ord >= 0 && ord < self.values.get_value_count() as i64);
         self.current_ord = ord as i32;
@@ -76,7 +76,7 @@ impl<T: SortedDocValues + 'static> TermIterator for SortedDocValuesTermIterator<
         Ok(())
     }
 
-    fn seek_exact_state(&mut self, _text: &[u8], state: &TermState) -> Result<()> {
+    fn seek_exact_state(&mut self, _text: &[u8], state: &Self::TermState) -> Result<()> {
         self.seek_exact_ord(state.ord())
     }
 
@@ -98,20 +98,16 @@ impl<T: SortedDocValues + 'static> TermIterator for SortedDocValuesTermIterator<
         Ok(-1)
     }
 
-    fn postings_with_flags(&mut self, _flags: i16) -> Result<Box<PostingIterator>> {
+    fn postings_with_flags(&mut self, _flags: u16) -> Result<Self::Postings> {
         bail!(UnsupportedOperation(
             "postings_with_flags unsupported for SortedDocValuesTermIterator".into()
         ))
     }
 
-    fn term_state(&mut self) -> Result<Box<TermState>> {
+    fn term_state(&mut self) -> Result<Self::TermState> {
         let state = OrdTermState {
             ord: i64::from(self.current_ord),
         };
-        Ok(Box::new(state))
-    }
-
-    fn as_any(&self) -> &Any {
-        self
+        Ok(state)
     }
 }

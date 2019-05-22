@@ -18,7 +18,7 @@ pub fn fsync(path: &Path, is_dir: bool) -> Result<()> {
 }
 
 /// Deletes all given files, suppressing all Errors.
-pub fn delete_files_ignoring_errors(dir: &Directory, files: &[String]) {
+pub fn delete_files_ignoring_errors<D: Directory>(dir: &D, files: &[String]) {
     for name in files {
         if let Err(e) = dir.delete_file(name.as_ref()) {
             warn!("delete file '{}' failed by '{:?}'", name, e);
@@ -26,7 +26,7 @@ pub fn delete_files_ignoring_errors(dir: &Directory, files: &[String]) {
     }
 }
 
-pub fn delete_file_ignoring_error(dir: &Directory, file: &str) {
+pub fn delete_file_ignoring_error<D: Directory>(dir: &D, file: &str) {
     if let Err(e) = dir.delete_file(file) {
         warn!("delete file '{}' failed by '{:?}'", file, e);
     }

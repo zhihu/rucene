@@ -1,4 +1,4 @@
-use error::*;
+use error::{ErrorKind::IllegalArgument, Result};
 use std::cmp::Ordering;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
@@ -24,7 +24,10 @@ impl IndexOptions {
             "freqs" => IndexOptions::DocsAndFreqs,
             "docs" => IndexOptions::Docs,
             _ => {
-                bail!("failed to parse index option [{}]", options);
+                bail!(IllegalArgument(format!(
+                    "failed to parse index option [{}]",
+                    options
+                )));
             }
         };
         Ok(res)

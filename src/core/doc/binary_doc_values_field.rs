@@ -1,11 +1,9 @@
 use std::ops::Deref;
 
 use core::analysis::TokenStream;
-use core::doc::BinaryTokenStream;
-use core::doc::{Field, FieldType, BINARY_DOC_VALUES_FIELD_TYPE};
+use core::doc::{BinaryTokenStream, Field, FieldType, BINARY_DOC_VALUES_FIELD_TYPE};
 use core::index::Fieldable;
-use core::util::byte_ref::BytesRef;
-use core::util::{Numeric, VariantValue};
+use core::util::{BytesRef, Numeric, VariantValue};
 
 use error::Result;
 
@@ -43,7 +41,7 @@ impl Fieldable for BinaryDocValuesField {
         self.field.fields_data()
     }
 
-    fn token_stream(&mut self) -> Result<Box<TokenStream>> {
+    fn token_stream(&mut self) -> Result<Box<dyn TokenStream>> {
         if let VariantValue::Binary(ref v) = self.fields_data().unwrap() {
             Ok(Box::new(BinaryTokenStream::new(BytesRef::new(v.as_ref()))))
         } else {

@@ -1,8 +1,8 @@
 use core::store::DataOutput;
+use core::util::bit_util::BitsRequired;
 use core::util::packed::monotonic_block_packed_reader::MonotonicBlockPackedReader;
-use core::util::packed::packed_misc::unsigned_bits_required;
 use core::util::packed::{AbstractBlockPackedWriter, BaseBlockPackedWriter};
-use error::*;
+use error::Result;
 
 pub struct MonotonicBlockPackedWriter {
     base_writer: BaseBlockPackedWriter,
@@ -17,7 +17,7 @@ impl MonotonicBlockPackedWriter {
 }
 
 impl AbstractBlockPackedWriter for MonotonicBlockPackedWriter {
-    fn add(&mut self, l: i64, out: &mut DataOutput) -> Result<()> {
+    fn add(&mut self, l: i64, out: &mut impl DataOutput) -> Result<()> {
         debug_assert!(l >= 0);
         self.base_writer.check_not_finished()?;
         if self.base_writer.off == self.base_writer.values.len() {
@@ -29,7 +29,7 @@ impl AbstractBlockPackedWriter for MonotonicBlockPackedWriter {
         Ok(())
     }
 
-    fn finish(&mut self, out: &mut DataOutput) -> Result<()> {
+    fn finish(&mut self, out: &mut impl DataOutput) -> Result<()> {
         self.base_writer.check_not_finished()?;
         if self.base_writer.off > 0 {
             self.flush(out)?;
@@ -38,7 +38,7 @@ impl AbstractBlockPackedWriter for MonotonicBlockPackedWriter {
         Ok(())
     }
 
-    fn flush(&mut self, out: &mut DataOutput) -> Result<()> {
+    fn flush(&mut self, out: &mut impl DataOutput) -> Result<()> {
         debug_assert!(self.base_writer.off > 0);
         let avg = if self.base_writer.off == 1 {
             0f32
@@ -67,7 +67,7 @@ impl AbstractBlockPackedWriter for MonotonicBlockPackedWriter {
         if max_delta == 0 {
             out.write_vint(0)?;
         } else {
-            let bits_required = unsigned_bits_required(max_delta);
+            let bits_required = max_delta.bits_required() as i32;
             out.write_vint(bits_required)?;
             self.base_writer.write_values(bits_required, out)?;
         }

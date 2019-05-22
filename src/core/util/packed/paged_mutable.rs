@@ -1,7 +1,9 @@
 use core::index::{NumericDocValues, NumericDocValuesContext};
-use core::util::packed::packed_misc::{check_block_size, copy_by_buf, num_blocks};
-use core::util::packed::packed_misc::{get_mutable_by_format, Format, FormatAndBits,
-                                      GrowableWriter, Mutable};
+use core::store::DataOutput;
+use core::util::packed::packed_misc::{
+    check_block_size, copy_by_buf, get_mutable_by_format, num_blocks, Format, FormatAndBits,
+    GrowableWriter, Mutable, MutableEnum, Reader,
+};
 use core::util::LongValues;
 use std::cmp::min;
 
@@ -14,7 +16,7 @@ pub struct PagedMutableBase {
     pub size: usize,
     pub page_shift: usize,
     pub page_mask: usize,
-    pub sub_mutables: Vec<Box<Mutable>>,
+    pub sub_mutables: Vec<PagedMutableEnum>,
     pub bits_per_value: i32,
 }
 
@@ -53,7 +55,7 @@ impl PagedMutableBase {
     }
 }
 
-pub trait PagedMutable: LongValues + Sized {
+pub trait PagedMutableWriter: LongValues + Sized {
     fn paged_mutable_base(&self) -> &PagedMutableBase;
 
     fn paged_mutable_base_mut(&mut self) -> &mut PagedMutableBase;
@@ -76,7 +78,7 @@ pub trait PagedMutable: LongValues + Sized {
         }
     }
 
-    fn new_mutable(&self, value_count: usize, bits_per_value: i32) -> Box<Mutable>;
+    fn new_mutable(&self, value_count: usize, bits_per_value: i32) -> PagedMutableEnum;
 
     fn set(&mut self, index: usize, value: i64) {
         debug_assert!(index < self.paged_mutable_base().size);
@@ -119,9 +121,9 @@ pub trait PagedMutable: LongValues + Sized {
                     self.paged_mutable_base().sub_mutables[i].size(),
                 );
                 copy_by_buf(
-                    self.paged_mutable_base().sub_mutables[i].as_ref(),
+                    &self.paged_mutable_base().sub_mutables[i],
                     0,
-                    copy.paged_mutable_base_mut().sub_mutables[i].as_mut(),
+                    &mut copy.paged_mutable_base_mut().sub_mutables[i],
                     0,
                     copy_length,
                     &mut copy_buffer,
@@ -142,6 +144,85 @@ pub trait PagedMutable: LongValues + Sized {
 
     fn grow(&self) -> Self {
         self.grow_by_size(self.paged_mutable_base().size + 1)
+    }
+}
+
+pub enum PagedMutableEnum {
+    Growable(GrowableWriter),
+    Raw(MutableEnum),
+}
+
+impl Mutable for PagedMutableEnum {
+    fn get_bits_per_value(&self) -> i32 {
+        match self {
+            PagedMutableEnum::Growable(m) => m.get_bits_per_value(),
+            PagedMutableEnum::Raw(m) => m.get_bits_per_value(),
+        }
+    }
+
+    fn set(&mut self, index: usize, value: i64) {
+        match self {
+            PagedMutableEnum::Growable(m) => m.set(index, value),
+            PagedMutableEnum::Raw(m) => m.set(index, value),
+        }
+    }
+
+    fn bulk_set(&mut self, index: usize, arr: &[i64], off: usize, len: usize) -> usize {
+        match self {
+            PagedMutableEnum::Growable(m) => m.bulk_set(index, arr, off, len),
+            PagedMutableEnum::Raw(m) => m.bulk_set(index, arr, off, len),
+        }
+    }
+
+    fn fill(&mut self, from: usize, to: usize, val: i64) {
+        match self {
+            PagedMutableEnum::Growable(m) => m.fill(from, to, val),
+            PagedMutableEnum::Raw(m) => m.fill(from, to, val),
+        }
+    }
+
+    fn clear(&mut self) {
+        match self {
+            PagedMutableEnum::Growable(m) => m.clear(),
+            PagedMutableEnum::Raw(m) => m.clear(),
+        }
+    }
+
+    fn save(&self, out: &mut impl DataOutput) -> Result<()> {
+        match self {
+            PagedMutableEnum::Growable(m) => m.save(out),
+            PagedMutableEnum::Raw(m) => m.save(out),
+        }
+    }
+
+    fn get_format(&self) -> Format {
+        match self {
+            PagedMutableEnum::Growable(m) => m.get_format(),
+            PagedMutableEnum::Raw(m) => m.get_format(),
+        }
+    }
+}
+
+impl Reader for PagedMutableEnum {
+    fn get(&self, doc_id: usize) -> i64 {
+        match self {
+            PagedMutableEnum::Growable(m) => m.get(doc_id),
+            PagedMutableEnum::Raw(m) => m.get(doc_id),
+        }
+    }
+
+    fn bulk_get(&self, index: usize, output: &mut [i64], len: usize) -> usize {
+        match self {
+            PagedMutableEnum::Growable(m) => m.bulk_get(index, output, len),
+            PagedMutableEnum::Raw(m) => m.bulk_get(index, output, len),
+        }
+    }
+
+    fn size(&self) -> usize {
+        match self {
+            PagedMutableEnum::Growable(m) => m.size(),
+            PagedMutableEnum::Raw(m) => m.size(),
+        }
     }
 }
 
@@ -195,7 +276,7 @@ impl PagedMutableHugeWriter {
     }
 }
 
-impl PagedMutable for PagedMutableHugeWriter {
+impl PagedMutableWriter for PagedMutableHugeWriter {
     fn paged_mutable_base(&self) -> &PagedMutableBase {
         &self.base
     }
@@ -204,13 +285,13 @@ impl PagedMutable for PagedMutableHugeWriter {
         &mut self.base
     }
 
-    fn new_mutable(&self, value_count: usize, bits_per_value: i32) -> Box<Mutable> {
+    fn new_mutable(&self, value_count: usize, bits_per_value: i32) -> PagedMutableEnum {
         debug_assert!(self.base.bits_per_value >= bits_per_value);
-        get_mutable_by_format(
+        PagedMutableEnum::Raw(get_mutable_by_format(
             value_count,
             self.paged_mutable_base().bits_per_value,
             self.format,
-        )
+        ))
     }
 
     fn new_unfilled_copy(&self, new_size: usize) -> Self {
@@ -299,7 +380,7 @@ impl PagedGrowableWriter {
     }
 }
 
-impl PagedMutable for PagedGrowableWriter {
+impl PagedMutableWriter for PagedGrowableWriter {
     fn paged_mutable_base(&self) -> &PagedMutableBase {
         &self.base
     }
@@ -308,8 +389,8 @@ impl PagedMutable for PagedGrowableWriter {
         &mut self.base
     }
 
-    fn new_mutable(&self, value_count: usize, bits_per_value: i32) -> Box<Mutable> {
-        Box::new(GrowableWriter::new(
+    fn new_mutable(&self, value_count: usize, bits_per_value: i32) -> PagedMutableEnum {
+        PagedMutableEnum::Growable(GrowableWriter::new(
             bits_per_value,
             value_count,
             self.acceptable_overhead_ratio,

@@ -17,7 +17,7 @@ struct SkipBuffer {
 }
 
 impl SkipBuffer {
-    fn new(input: &mut IndexInput, length: i32) -> Result<SkipBuffer> {
+    fn new(input: &mut dyn IndexInput, length: i32) -> Result<SkipBuffer> {
         let mut data = vec![0; length as usize];
         let pointer = input.file_pointer();
         input.read_exact(&mut data)?;
@@ -32,7 +32,7 @@ impl SkipBuffer {
 impl DataInput for SkipBuffer {}
 
 impl IndexInput for SkipBuffer {
-    fn clone(&self) -> Result<Box<IndexInput>> {
+    fn clone(&self) -> Result<Box<dyn IndexInput>> {
         Ok(Box::new(SkipBuffer {
             data: self.data.clone(),
             pointer: self.pointer,
@@ -57,12 +57,12 @@ impl IndexInput for SkipBuffer {
         "SkipBuffer"
     }
 
-    fn random_access_slice(&self, _offset: i64, _length: i64) -> Result<Box<RandomAccessInput>> {
+    fn random_access_slice(
+        &self,
+        _offset: i64,
+        _length: i64,
+    ) -> Result<Box<dyn RandomAccessInput>> {
         unimplemented!()
-    }
-
-    fn as_data_input(&mut self) -> &mut DataInput {
-        self
     }
 }
 
@@ -124,7 +124,7 @@ pub struct Lucene50SkipReader {
     doc_count: i32,
 
     /// skip_stream for each level.
-    skip_stream: Vec<Option<Box<IndexInput>>>,
+    skip_stream: Vec<Option<Box<dyn IndexInput>>>,
 
     /// The start pointer of each skip level.
     skip_pointer: Vec<i64>,
@@ -209,7 +209,7 @@ impl Lucene50SkipReader {
     }
 
     pub fn new(
-        skip_stream: Box<IndexInput>,
+        skip_stream: Box<dyn IndexInput>,
         max_skip_levels: usize,
         has_pos: bool,
         has_offsets: bool,
@@ -527,7 +527,7 @@ impl Lucene50SkipReader {
         Ok(true)
     }
 
-    fn stream(&mut self, id: usize) -> Result<&mut IndexInput> {
+    fn stream(&mut self, id: usize) -> Result<&mut dyn IndexInput> {
         debug_assert!(id < self.skip_stream.len());
         Ok(self.skip_stream[id].as_mut().unwrap().as_mut())
     }

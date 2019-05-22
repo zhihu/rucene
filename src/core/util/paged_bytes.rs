@@ -1,8 +1,12 @@
 use core::store::{DataInput, DataOutput, IndexInput};
-use core::util::byte_ref::BytesRef;
-use error::*;
-use std::io;
-use std::io::{Read, Write};
+use core::util::BytesRef;
+
+use error::{
+    ErrorKind::{IllegalArgument, IllegalState},
+    Result,
+};
+
+use std::io::{self, Read, Write};
 
 pub struct PagedBytes {
     block_size: usize,
@@ -45,7 +49,7 @@ impl PagedBytes {
         self.up_to = 0;
     }
 
-    pub fn copy(&mut self, input: &mut IndexInput, byte_cnt: i64) -> Result<()> {
+    pub fn copy(&mut self, input: &mut dyn IndexInput, byte_cnt: i64) -> Result<()> {
         let mut byte_cnt = byte_cnt as usize;
         while byte_cnt > 0 {
             let mut left = self.block_size - self.up_to;
@@ -69,7 +73,7 @@ impl PagedBytes {
 
     pub fn freeze(&mut self, trim: bool) -> Result<()> {
         if self.frozen {
-            bail!("already frozen");
+            bail!(IllegalState("already frozen".into()));
         }
 
         if trim && self.up_to < self.block_size {
@@ -93,16 +97,19 @@ impl PagedBytes {
     /// TODO: this really needs to be refactored into fieldcacheimpl!
     pub fn copy_using_length_prefix(&mut self, bytes: &BytesRef) -> Result<i64> {
         if bytes.len() >= 32768 {
-            bail!("max length is 32767 (got {})", bytes.len());
+            bail!(IllegalArgument(format!(
+                "max length is 32767 (got {})",
+                bytes.len()
+            )));
         }
 
         if self.up_to + bytes.len() + 2 > self.block_size {
             if bytes.len() + 2 > self.block_size {
-                bail!(
+                bail!(IllegalArgument(format!(
                     "block size {} is too small to store length {} bytes",
                     self.block_size,
                     bytes.len()
-                );
+                )));
             }
 
             self.add_block();
@@ -136,7 +143,9 @@ impl PagedBytes {
 
     pub fn get_input(&self) -> Result<PagedBytesDataInput> {
         if !self.frozen {
-            bail!("must call freeze() before getDataInput");
+            bail!(IllegalState(
+                "must call freeze() before getDataInput".into()
+            ));
         }
 
         Ok(PagedBytesDataInput::new(self))
@@ -144,7 +153,9 @@ impl PagedBytes {
 
     pub fn get_output(&mut self) -> Result<PagedBytesDataOutput> {
         if self.frozen {
-            bail!("must call freeze() before getDataInput");
+            bail!(IllegalState(
+                "must call freeze() before getDataInput".into()
+            ));
         }
 
         Ok(PagedBytesDataOutput::new(self))
@@ -169,10 +180,6 @@ impl PagedBytesDataInput {
     fn next_block(&mut self) {
         self.current_block_index += 1;
         self.current_block_up_to = 0;
-    }
-
-    pub fn as_data_input(&mut self) -> &mut DataInput {
-        self
     }
 }
 
@@ -238,10 +245,6 @@ impl PagedBytesDataOutput {
     pub fn get_position(&self) -> i64 {
         let paged_bytes = unsafe { &(*self.paged_bytes) };
         paged_bytes.get_pointer()
-    }
-
-    pub fn as_data_output(&mut self) -> &mut DataOutput {
-        self
     }
 }
 

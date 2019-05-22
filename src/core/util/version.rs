@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 use std::str::FromStr;
 use std::string::ToString;
 
-use error::*;
+use error::{ErrorKind::IllegalArgument, Result};
 /// Use by certain classes to match version compatibility
 /// across releases of Lucene.
 ///
@@ -42,10 +42,10 @@ impl Version {
     pub fn with_string(version: &str) -> Result<Version> {
         let splited: Vec<&str> = version.split('.').collect();
         if splited.len() < 2 {
-            bail!(
-                "Parse Error: Version is not in form major.minor.bugfix(.prerelease) (got: {})",
+            bail!(IllegalArgument(format!(
+                "Version is not in form major.minor.bugfix(.prerelease) (got: {})",
                 version
-            );
+            )));
         }
         let major = i32::from_str(splited[0])?;
         let minor = i32::from_str(splited[1])?;
@@ -69,10 +69,10 @@ impl Version {
             "LUCENE_CURRENT" => Ok(VERSION_LATEST),
             _ => {
                 if !version.starts_with("LUCENE_") {
-                    bail!(
-                        "Parse Error: Version is not starts with LUCENE_ (got: {})",
+                    bail!(IllegalArgument(format!(
+                        "Version is not starts with LUCENE_ (got: {})",
                         version
-                    );
+                    )));
                 }
 
                 let v = version.replace("LUCENE_", "").replace("_", ".");
@@ -117,28 +117,29 @@ impl Version {
         // NOTE: do not enforce major version so we remain future proof, except to
         // make sure it fits in the 8 bits we encode it into:
         if major > 255 || major < 0 {
-            bail!("Illegal Argument: Illegal major version: {}", major);
+            bail!(IllegalArgument(format!("Illegal major version: {}", major)));
         }
         if minor > 255 || minor < 0 {
-            bail!("Illegal Argument: Illegal minor version: {}", minor);
+            bail!(IllegalArgument(format!("Illegal minor version: {}", minor)));
         }
         if bugfix > 255 || bugfix < 0 {
-            bail!("Illegal Argument: Illegal bugfix version: {}", bugfix);
+            bail!(IllegalArgument(format!(
+                "Illegal bugfix version: {}",
+                bugfix
+            )));
         }
         if prerelease > 2 || prerelease < 0 {
-            bail!(
-                "Illegal Argument: Illegal prerelease version: {}",
+            bail!(IllegalArgument(format!(
+                "Illegal pre-release version: {}",
                 prerelease
-            );
+            )));
         }
         if prerelease != 0 && (minor != 0 || bugfix != 0) {
-            bail!(
-                "Illegal Argument: Prerelease version only supported with major release (got \
-                 prerelease: {}, minor: {}, bugfix: {}",
-                prerelease,
-                minor,
-                bugfix
-            );
+            bail!(IllegalArgument(format!(
+                "pre-release version only supported with major release (got pre-release: {}, \
+                 minor: {}, bugfix: {}",
+                prerelease, minor, bugfix
+            )));
         }
 
         let version = Version {

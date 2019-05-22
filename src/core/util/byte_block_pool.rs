@@ -1,25 +1,4 @@
-use core::util::byte_ref::{BytesRef, BytesRefBuilder};
-use core::util::fill_slice;
-use core::util::{Count, Counter};
-
-pub const BYTE_BLOCK_SHIFT: usize = 15;
-pub const BYTE_BLOCK_SIZE: usize = 1 << BYTE_BLOCK_SHIFT;
-pub const BYTE_BLOCK_MASK: usize = BYTE_BLOCK_SIZE - 1;
-
-// Size of each slice.  These arrays should be at most 16
-// elements (index is encoded with 4 bits).  First array
-// is just a compact way to encode X+1 with a max.  Second
-// array is the length of each slice, ie first slice is 5
-// bytes, next slice is 14 bytes, etc.
-
-/// An array holding the offset into the {@link ByteBlockPool#LEVEL_SIZE_ARRAY}
-/// to quickly navigate to the next slice level.
-pub const NEXT_LEVEL_ARRAY: [usize; 10] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 9];
-
-/// An array holding the level sizes for byte slices.
-pub const LEVEL_SIZE_ARRAY: [usize; 10] = [5, 14, 20, 30, 40, 40, 80, 80, 120, 120];
-
-pub const FIRST_LEVEL_SIZE: usize = LEVEL_SIZE_ARRAY[0];
+use core::util::{byte_ref::BytesRef, fill_slice, Count, Counter};
 
 /// Class that Posting and PostingVector use to write byte
 /// streams into shared fixed-size byte[] arrays.  The idea
@@ -46,7 +25,7 @@ pub struct ByteBlockPool {
     pub byte_upto: usize,
     /// Current head offset
     pub byte_offset: isize,
-    allocator: Box<ByteBlockAllocator>,
+    allocator: Box<dyn ByteBlockAllocator>,
 }
 
 impl Default for ByteBlockPool {
@@ -58,15 +37,36 @@ impl Default for ByteBlockPool {
         ByteBlockPool {
             buffers,
             buffer_upto: -1,
-            byte_upto: BYTE_BLOCK_SIZE,
-            byte_offset: -(BYTE_BLOCK_SIZE as isize),
+            byte_upto: Self::BYTE_BLOCK_SIZE,
+            byte_offset: -(Self::BYTE_BLOCK_SIZE as isize),
             allocator: Box::new(DirectAllocator::default()),
         }
     }
 }
 
 impl ByteBlockPool {
-    pub fn new(allocator: Box<ByteBlockAllocator>) -> Self {
+    pub const BYTE_BLOCK_SHIFT: usize = 15;
+    pub const BYTE_BLOCK_SIZE: usize = 1 << Self::BYTE_BLOCK_SHIFT;
+    pub const BYTE_BLOCK_MASK: usize = Self::BYTE_BLOCK_SIZE - 1;
+
+    // Size of each slice.  These arrays should be at most 16
+    // elements (index is encoded with 4 bits).  First array
+    // is just a compact way to encode X+1 with a max.  Second
+    // array is the length of each slice, ie first slice is 5
+    // bytes, next slice is 14 bytes, etc.
+
+    /// An array holding the offset into the {@link ByteBlockPool#LEVEL_SIZE_ARRAY}
+    /// to quickly navigate to the next slice level.
+    pub const NEXT_LEVEL_ARRAY: [usize; 10] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 9];
+
+    /// An array holding the level sizes for byte slices.
+    pub const LEVEL_SIZE_ARRAY: [usize; 10] = [5, 14, 20, 30, 40, 40, 80, 80, 120, 120];
+
+    pub const FIRST_LEVEL_SIZE: usize = Self::LEVEL_SIZE_ARRAY[0];
+}
+
+impl ByteBlockPool {
+    pub fn new(allocator: Box<dyn ByteBlockAllocator>) -> Self {
         let mut buffers = Vec::with_capacity(10);
         for _ in 0..10 {
             buffers.push(vec![]);
@@ -74,8 +74,8 @@ impl ByteBlockPool {
         ByteBlockPool {
             buffers,
             buffer_upto: -1,
-            byte_upto: BYTE_BLOCK_SIZE,
-            byte_offset: -(BYTE_BLOCK_SIZE as isize),
+            byte_upto: Self::BYTE_BLOCK_SIZE,
+            byte_offset: -(Self::BYTE_BLOCK_SIZE as isize),
             allocator,
         }
     }
@@ -114,8 +114,8 @@ impl ByteBlockPool {
                 self.byte_offset = 0;
             } else {
                 self.buffer_upto = -1;
-                self.byte_upto = BYTE_BLOCK_SIZE;
-                self.byte_offset = -(BYTE_BLOCK_SIZE as isize);
+                self.byte_upto = Self::BYTE_BLOCK_SIZE;
+                self.byte_offset = -(Self::BYTE_BLOCK_SIZE as isize);
             }
         }
     }
@@ -139,12 +139,12 @@ impl ByteBlockPool {
         self.buffer_upto += 1;
 
         self.byte_upto = 0;
-        self.byte_offset += BYTE_BLOCK_SIZE as isize;
+        self.byte_offset += Self::BYTE_BLOCK_SIZE as isize;
     }
 
     /// Allocates a new slice with the given size.
     pub fn new_slice(&mut self, size: usize) -> usize {
-        if self.byte_upto > BYTE_BLOCK_SIZE - size {
+        if self.byte_upto > Self::BYTE_BLOCK_SIZE - size {
             self.next_buffer();
         }
         let upto = self.byte_upto;
@@ -157,11 +157,11 @@ impl ByteBlockPool {
     /// returns the slices offset in the pool.
     pub fn alloc_slice(&mut self, slice_index: usize, upto: usize) -> usize {
         let level = self.buffers[slice_index][upto] & 15;
-        let new_level = NEXT_LEVEL_ARRAY[level as usize];
-        let new_size = LEVEL_SIZE_ARRAY[new_level];
+        let new_level = Self::NEXT_LEVEL_ARRAY[level as usize];
+        let new_size = Self::LEVEL_SIZE_ARRAY[new_level];
 
         // Maybe allocate another block
-        if self.byte_upto > BYTE_BLOCK_SIZE - new_size {
+        if self.byte_upto > Self::BYTE_BLOCK_SIZE - new_size {
             self.next_buffer();
         }
 
@@ -187,34 +187,11 @@ impl ByteBlockPool {
         new_upto + 3
     }
 
-    /// Fill the provided {@link BytesRef} with the bytes at the specified offset/length slice.
-    /// This will avoid copying the bytes, if the slice fits into a single block; otherwise, it uses
-    /// the provided {@link BytesRefBuilder} to copy bytes over.
-    fn set_bytes_ref_exact(
-        &mut self,
-        builder: &mut BytesRefBuilder,
-        offset: usize,
-        length: usize,
-    ) -> BytesRef {
-        let buffer_index = offset >> BYTE_BLOCK_SHIFT;
-
-        let pos = offset & BYTE_BLOCK_MASK;
-        if pos + length <= BYTE_BLOCK_SIZE {
-            // common case where the slice lives in a single block:
-            // just reference the buffer directly without copying
-            BytesRef::new(&self.buffers[buffer_index][pos..pos + length])
-        } else {
-            builder.grow(length);
-            self.read_bytes(offset, builder.bytes_mut(), 0, length);
-            BytesRef::new(&builder.buffer[0..length])
-        }
-    }
-
     // Fill in a BytesRef from term's length & bytes encoded in
     // byte block
     pub fn set_bytes_ref(&self, text_start: usize) -> BytesRef {
-        let bytes: &[u8] = &self.buffers[text_start >> BYTE_BLOCK_SHIFT];
-        let pos = text_start & BYTE_BLOCK_MASK;
+        let bytes: &[u8] = &self.buffers[text_start >> Self::BYTE_BLOCK_SHIFT];
+        let pos = text_start & Self::BYTE_BLOCK_MASK;
 
         let offset: usize;
         let length: usize;
@@ -238,9 +215,9 @@ impl ByteBlockPool {
 
         let mut bytes_offset = off;
         let mut bytes_length = length;
-        let mut buffer_index = offset >> BYTE_BLOCK_SHIFT;
-        let mut pos = offset & BYTE_BLOCK_MASK;
-        let overflow = (pos + length) as isize - BYTE_BLOCK_SIZE as isize;
+        let mut buffer_index = offset >> Self::BYTE_BLOCK_SHIFT;
+        let mut pos = offset & Self::BYTE_BLOCK_MASK;
+        let overflow = (pos + length) as isize - Self::BYTE_BLOCK_SIZE as isize;
         loop {
             if overflow <= 0 {
                 bytes[bytes_offset..bytes_offset + bytes_length]
@@ -266,13 +243,13 @@ impl ByteBlockPool {
         let mut offset = 0;
         loop {
             let start = self.byte_upto;
-            if length + self.byte_upto <= BYTE_BLOCK_SIZE {
+            if length + self.byte_upto <= Self::BYTE_BLOCK_SIZE {
                 self.current_buffer()[start..start + bytes.len()]
                     .copy_from_slice(&bytes.bytes()[offset..offset + length]);
                 self.byte_upto += length;
                 break;
             } else {
-                let bytes_copy = BYTE_BLOCK_SIZE - self.byte_upto;
+                let bytes_copy = Self::BYTE_BLOCK_SIZE - self.byte_upto;
                 if bytes_copy > 0 {
                     self.current_buffer()[start..start + bytes_copy].copy_from_slice(bytes.bytes());
                     debug_assert!(bytes_copy > 0);
@@ -297,8 +274,8 @@ impl ByteBlockPool {
 
     /// Read a single byte at the given offset
     pub fn read_byte(&self, offset: usize) -> u8 {
-        let buffer_index = offset >> BYTE_BLOCK_SHIFT;
-        let pos = offset & BYTE_BLOCK_MASK;
+        let buffer_index = offset >> Self::BYTE_BLOCK_SHIFT;
+        let pos = offset & Self::BYTE_BLOCK_MASK;
         self.buffers[buffer_index][pos]
     }
 }
@@ -313,7 +290,7 @@ pub trait ByteBlockAllocator {
         vec![0u8; self.block_size()]
     }
 
-    unsafe fn copy_unsafe(&self) -> Box<ByteBlockAllocator>;
+    unsafe fn copy_unsafe(&self) -> Box<dyn ByteBlockAllocator>;
 }
 
 pub struct DirectAllocator {
@@ -328,7 +305,7 @@ impl DirectAllocator {
 
 impl Default for DirectAllocator {
     fn default() -> Self {
-        Self::new(BYTE_BLOCK_SIZE)
+        Self::new(ByteBlockPool::BYTE_BLOCK_SIZE)
     }
 }
 
@@ -339,7 +316,7 @@ impl ByteBlockAllocator for DirectAllocator {
 
     fn recycle_byte_blocks(&mut self, _blocks: &mut [Vec<u8>], _start: usize, _end: usize) {}
 
-    unsafe fn copy_unsafe(&self) -> Box<ByteBlockAllocator> {
+    unsafe fn copy_unsafe(&self) -> Box<dyn ByteBlockAllocator> {
         Box::new(DirectAllocator::new(self.block_size))
     }
 }
@@ -353,7 +330,7 @@ pub struct DirectTrackingAllocator {
 impl DirectTrackingAllocator {
     pub fn new(bytes_used: Counter) -> Self {
         DirectTrackingAllocator {
-            block_size: BYTE_BLOCK_SIZE,
+            block_size: ByteBlockPool::BYTE_BLOCK_SIZE,
             bytes_used,
         }
     }
@@ -377,7 +354,7 @@ impl ByteBlockAllocator for DirectTrackingAllocator {
         vec![0u8; self.block_size]
     }
 
-    unsafe fn copy_unsafe(&self) -> Box<ByteBlockAllocator> {
+    unsafe fn copy_unsafe(&self) -> Box<dyn ByteBlockAllocator> {
         Box::new(DirectTrackingAllocator {
             block_size: self.block_size,
             bytes_used: self.bytes_used.shallow_copy(),

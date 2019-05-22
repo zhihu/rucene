@@ -1,7 +1,10 @@
+use core::codec::{Codec, CodecEnum, CodecPostingIterator, CodecTermState};
 use core::index::{LeafReaderContext, Term, TermContext};
 use core::search::explanation::Explanation;
-use core::search::searcher::IndexSearcher;
-use core::search::spans::span::{build_sim_weight, PostingsFlag, NO_MORE_POSITIONS};
+use core::search::searcher::SearchPlanBuilder;
+use core::search::spans::span::{
+    build_sim_weight, PostingsFlag, SpanQueryEnum, SpanWeightEnum, SpansEnum, NO_MORE_POSITIONS,
+};
 use core::search::spans::span::{term_contexts, ConjunctionSpanBase, ConjunctionSpans};
 use core::search::spans::span::{SpanCollector, SpanQuery, SpanWeight, Spans};
 use core::search::term_query::TermQuery;
@@ -10,16 +13,19 @@ use core::util::{DocId, KeyedContext, BM25_SIMILARITY_IDF};
 
 use error::{ErrorKind, Result};
 
+use core::search::posting_iterator::PostingIterator;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::collections::HashMap;
 use std::fmt;
+use std::mem;
+use std::ptr;
 use std::sync::Arc;
 
 pub struct SpanNearQueryBuilder {
     ordered: bool,
     field: String,
-    clauses: Vec<Box<SpanQuery>>,
+    clauses: Vec<SpanQueryEnum>,
     slop: i32,
 }
 
@@ -33,11 +39,11 @@ impl SpanNearQueryBuilder {
         }
     }
 
-    pub fn add_clause(mut self, clause: Box<SpanQuery>) -> Result<Self> {
-        if clause.field() != self.field {
+    pub fn add_clause(mut self, clause: SpanQueryEnum) -> Result<Self> {
+        if SpanQuery::<CodecEnum>::field(&clause) != self.field {
             bail!(ErrorKind::IllegalArgument(format!(
                 "clause field is '{}' not equal with field '{}'",
-                clause.field(),
+                SpanQuery::<CodecEnum>::field(&clause),
                 &self.field
             )));
         }
@@ -51,8 +57,10 @@ impl SpanNearQueryBuilder {
                 "Gaps can only be added to ordered near queries".into()
             ));
         }
-        self.clauses
-            .push(Box::new(SpanGapQuery::new(self.field.clone(), width)));
+        self.clauses.push(SpanQueryEnum::Gap(SpanGapQuery::new(
+            self.field.clone(),
+            width,
+        )));
         Ok(self)
     }
 
@@ -69,27 +77,29 @@ impl SpanNearQueryBuilder {
 const SPAN_NEAR_QUERY: &str = "span_near";
 
 pub struct SpanNearQuery {
-    clauses: Vec<Box<SpanQuery>>,
+    clauses: Vec<SpanQueryEnum>,
     slop: i32,
     in_order: bool,
     field: String,
 }
 
 impl SpanNearQuery {
-    pub fn new(clauses: Vec<Box<SpanQuery>>, slop: i32, in_order: bool) -> Result<Self> {
+    pub fn new(clauses: Vec<SpanQueryEnum>, slop: i32, in_order: bool) -> Result<Self> {
         if clauses.len() < 2 {
             bail!(ErrorKind::IllegalArgument(
                 "clauses length must not be smaller than 2!".into()
             ));
         }
         for i in 0..clauses.len() - 1 {
-            if clauses[i].field() != clauses[i + 1].field() {
+            if SpanQuery::<CodecEnum>::field(&clauses[i])
+                != SpanQuery::<CodecEnum>::field(&clauses[i + 1])
+            {
                 bail!(ErrorKind::IllegalArgument(
                     "Clauses must have same field.".into()
                 ));
             }
         }
-        let field = clauses[0].field().to_string();
+        let field = SpanQuery::<CodecEnum>::field(&clauses[0]).to_string();
         Ok(SpanNearQuery {
             clauses,
             slop,
@@ -115,16 +125,16 @@ impl SpanNearQuery {
         }
     }
 
-    fn span_near_weight(
+    fn span_near_weight<C: Codec>(
         &self,
-        searcher: &IndexSearcher,
+        searcher: &dyn SearchPlanBuilder<C>,
         needs_scores: bool,
-    ) -> Result<SpanNearWeight> {
+    ) -> Result<SpanNearWeight<C>> {
         let mut sub_weights = Vec::with_capacity(self.clauses.len());
         let mut ctx = None;
         for clause in &self.clauses {
             sub_weights.push(clause.span_weight(searcher, needs_scores)?);
-            ctx = Self::merge_idf_ctx(ctx, clause.ctx());
+            ctx = Self::merge_idf_ctx(ctx, SpanQuery::<C>::ctx(clause));
         }
         let term_contexts = if needs_scores {
             term_contexts(&sub_weights)
@@ -135,19 +145,28 @@ impl SpanNearQuery {
     }
 }
 
-impl SpanQuery for SpanNearQuery {
+impl<C: Codec> SpanQuery<C> for SpanNearQuery {
+    type Weight = SpanNearWeight<C>;
+
+    fn span_weight(
+        &self,
+        searcher: &dyn SearchPlanBuilder<C>,
+        needs_scores: bool,
+    ) -> Result<Self::Weight> {
+        self.span_near_weight(searcher, needs_scores)
+    }
+
     fn field(&self) -> &str {
         &self.field
     }
-
-    fn span_weight(&self, searcher: &IndexSearcher, needs_scores: bool) -> Result<Box<SpanWeight>> {
-        let weight = self.span_near_weight(searcher, needs_scores)?;
-        Ok(Box::new(weight))
-    }
 }
 
-impl Query for SpanNearQuery {
-    fn create_weight(&self, searcher: &IndexSearcher, needs_scores: bool) -> Result<Box<Weight>> {
+impl<C: Codec> Query<C> for SpanNearQuery {
+    fn create_weight(
+        &self,
+        searcher: &dyn SearchPlanBuilder<C>,
+        needs_scores: bool,
+    ) -> Result<Box<dyn Weight<C>>> {
         let weight = self.span_near_weight(searcher, needs_scores)?;
         Ok(Box::new(weight))
     }
@@ -155,7 +174,7 @@ impl Query for SpanNearQuery {
     fn extract_terms(&self) -> Vec<TermQuery> {
         self.clauses
             .iter()
-            .flat_map(|c| c.extract_terms())
+            .flat_map(|c| Query::<C>::extract_terms(c))
             .collect()
     }
 
@@ -182,24 +201,24 @@ impl fmt::Display for SpanNearQuery {
     }
 }
 
-pub struct SpanNearWeight {
+pub struct SpanNearWeight<C: Codec> {
     field: String,
     in_order: bool,
     slop: i32,
-    sim_weight: Option<Box<SimWeight>>,
-    sub_weights: Vec<Box<SpanWeight>>,
+    sim_weight: Option<Box<dyn SimWeight<C>>>,
+    sub_weights: Vec<SpanWeightEnum<C>>,
 }
 
-impl SpanNearWeight {
-    pub fn new(
+impl<C: Codec> SpanNearWeight<C> {
+    pub fn new<IS: SearchPlanBuilder<C> + ?Sized>(
         query: &SpanNearQuery,
-        sub_weights: Vec<Box<SpanWeight>>,
-        searcher: &IndexSearcher,
-        terms: HashMap<Term, Arc<TermContext>>,
+        sub_weights: Vec<SpanWeightEnum<C>>,
+        searcher: &IS,
+        terms: HashMap<Term, Arc<TermContext<CodecTermState<C>>>>,
         ctx: Option<KeyedContext>,
     ) -> Result<Self> {
-        let field = query.field().to_string();
-        let sim_weight = build_sim_weight(query.field(), searcher, terms, ctx)?;
+        let field = SpanQuery::<C>::field(query).to_string();
+        let sim_weight = build_sim_weight(&field, searcher, terms, ctx)?;
         Ok(SpanNearWeight {
             field,
             sim_weight,
@@ -210,12 +229,12 @@ impl SpanNearWeight {
     }
 }
 
-impl SpanWeight for SpanNearWeight {
-    fn sim_weight(&self) -> Option<&SimWeight> {
+impl<C: Codec> SpanWeight<C> for SpanNearWeight<C> {
+    fn sim_weight(&self) -> Option<&SimWeight<C>> {
         self.sim_weight.as_ref().map(|x| &**x)
     }
 
-    fn sim_weight_mut(&mut self) -> Option<&mut SimWeight> {
+    fn sim_weight_mut(&mut self) -> Option<&mut SimWeight<C>> {
         if let Some(ref mut sim_weight) = self.sim_weight {
             Some(sim_weight.as_mut())
         } else {
@@ -225,9 +244,9 @@ impl SpanWeight for SpanNearWeight {
 
     fn get_spans(
         &self,
-        ctx: &LeafReaderContext,
+        ctx: &LeafReaderContext<'_, C>,
         required_postings: &PostingsFlag,
-    ) -> Result<Option<Box<Spans>>> {
+    ) -> Result<Option<SpansEnum<CodecPostingIterator<C>>>> {
         if ctx.reader.terms(&self.field)?.is_some() {
             let mut sub_spans = Vec::with_capacity(self.sub_weights.len());
             for w in &self.sub_weights {
@@ -240,23 +259,30 @@ impl SpanWeight for SpanNearWeight {
             }
             // all near_spans require at least two sub_spans
             if self.in_order {
-                return Ok(Some(Box::new(NearSpansOrdered::new(self.slop, sub_spans)?)));
+                return Ok(Some(SpansEnum::NearOrdered(NearSpansOrdered::new(
+                    self.slop, sub_spans,
+                )?)));
             } else {
-                return Ok(Some(NearSpansUnordered::new(self.slop, sub_spans)?));
+                return Ok(Some(SpansEnum::NearUnordered(NearSpansUnordered::new(
+                    self.slop, sub_spans,
+                )?)));
             }
         }
         Ok(None)
     }
 
-    fn extract_term_contexts(&self, contexts: &mut HashMap<Term, Arc<TermContext>>) {
+    fn extract_term_contexts(
+        &self,
+        contexts: &mut HashMap<Term, Arc<TermContext<CodecTermState<C>>>>,
+    ) {
         for weight in &self.sub_weights {
             weight.extract_term_contexts(contexts)
         }
     }
 }
 
-impl Weight for SpanNearWeight {
-    fn create_scorer(&self, ctx: &LeafReaderContext) -> Result<Box<Scorer>> {
+impl<C: Codec> Weight<C> for SpanNearWeight<C> {
+    fn create_scorer(&self, ctx: &LeafReaderContext<'_, C>) -> Result<Option<Box<dyn Scorer>>> {
         self.do_create_scorer(ctx)
     }
 
@@ -276,12 +302,12 @@ impl Weight for SpanNearWeight {
         true
     }
 
-    fn explain(&self, reader: &LeafReaderContext, doc: DocId) -> Result<Explanation> {
+    fn explain(&self, reader: &LeafReaderContext<'_, C>, doc: DocId) -> Result<Explanation> {
         self.explain_span(reader, doc)
     }
 }
 
-impl fmt::Display for SpanNearWeight {
+impl<C: Codec> fmt::Display for SpanNearWeight<C> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let weights = {
             let query_strs: Vec<String> =
@@ -296,23 +322,24 @@ impl fmt::Display for SpanNearWeight {
     }
 }
 
-struct NearSpansUnordered {
-    conjunction_span: ConjunctionSpanBase,
-    sub_span_cells: Vec<SpansCell>,
+pub struct NearSpansUnordered<P: PostingIterator> {
+    conjunction_span: ConjunctionSpanBase<P>,
+    sub_span_cells: Vec<SpansCell<P>>,
     allowed_slop: i32,
-    span_position_queue: BinaryHeap<SpansCellElement>,
+    span_position_queue: BinaryHeap<SpansCellElement<P>>,
     total_span_length: i32,
     max_end_position_cell_idx: usize,
 }
 
-impl NearSpansUnordered {
+impl<P: PostingIterator> NearSpansUnordered<P> {
     #[allow(explicit_counter_loop)]
     // TODO return Box<> to make sure the span_cell's pointer to parent won't change
-    pub fn new(allowed_slop: i32, sub_spans: Vec<Box<Spans>>) -> Result<Box<NearSpansUnordered>> {
-        let mut sub_spans = sub_spans;
-        let conjunction_span = ConjunctionSpanBase::new(&mut sub_spans)?;
+    pub fn new(
+        allowed_slop: i32,
+        sub_spans: Vec<SpansEnum<P>>,
+    ) -> Result<Box<NearSpansUnordered<P>>> {
         let mut res = Box::new(NearSpansUnordered {
-            conjunction_span,
+            conjunction_span: unsafe { mem::uninitialized() },
             sub_span_cells: Vec::with_capacity(sub_spans.len()),
             allowed_slop,
             span_position_queue: BinaryHeap::with_capacity(sub_spans.len()),
@@ -321,9 +348,21 @@ impl NearSpansUnordered {
         });
         let mut index = 0usize;
         for spans in sub_spans {
-            let span_cell = SpansCell::new(res.as_mut() as *mut NearSpansUnordered, spans, index);
+            let span_cell =
+                SpansCell::new(res.as_mut() as *mut NearSpansUnordered<P>, spans, index);
             index += 1;
             res.sub_span_cells.push(span_cell);
+        }
+        let conjunction_span = {
+            let spans: Vec<_> = res
+                .sub_span_cells
+                .iter_mut()
+                .map(|s| &mut s.spans)
+                .collect();
+            ConjunctionSpanBase::new(spans)?
+        };
+        unsafe {
+            ptr::write(&mut res.conjunction_span, conjunction_span);
         }
         res.single_cell_to_positions_queue();
         Ok(res)
@@ -357,17 +396,17 @@ impl NearSpansUnordered {
             <= self.allowed_slop
     }
 
-    fn min_cell(&self) -> &SpansCell {
+    fn min_cell(&self) -> &SpansCell<P> {
         self.span_position_queue.peek().unwrap().spans()
     }
 }
 
-impl ConjunctionSpans for NearSpansUnordered {
-    fn conjunction_span_base(&self) -> &ConjunctionSpanBase {
+impl<P: PostingIterator> ConjunctionSpans<P> for NearSpansUnordered<P> {
+    fn conjunction_span_base(&self) -> &ConjunctionSpanBase<P> {
         &self.conjunction_span
     }
 
-    fn conjunction_span_base_mut(&mut self) -> &mut ConjunctionSpanBase {
+    fn conjunction_span_base_mut(&mut self) -> &mut ConjunctionSpanBase<P> {
         &mut self.conjunction_span
     }
 
@@ -391,7 +430,7 @@ impl ConjunctionSpans for NearSpansUnordered {
     }
 }
 
-impl Spans for NearSpansUnordered {
+impl<P: PostingIterator> Spans for NearSpansUnordered<P> {
     fn next_start_position(&mut self) -> Result<i32> {
         if self.conjunction_span.first_in_current_doc {
             self.conjunction_span.first_in_current_doc = false;
@@ -450,7 +489,7 @@ impl Spans for NearSpansUnordered {
             - self.min_cell().start_position()
     }
 
-    fn collect(&mut self, collector: &mut SpanCollector) -> Result<()> {
+    fn collect(&mut self, collector: &mut impl SpanCollector) -> Result<()> {
         for cell in &mut self.sub_span_cells {
             cell.collect(collector)?;
         }
@@ -467,22 +506,20 @@ impl Spans for NearSpansUnordered {
     }
 }
 
-conjunction_span_doc_iter!(NearSpansUnordered);
+conjunction_span_doc_iter!(NearSpansUnordered<P: PostingIterator>);
 
-struct SpansCell {
-    parent: *mut NearSpansUnordered,
-    spans: Box<Spans>,
+pub(crate) struct SpansCell<P: PostingIterator> {
+    parent: *mut NearSpansUnordered<P>,
+    spans: SpansEnum<P>,
     index: usize,
     // index of this span in parent's `sub_span_cells` vec
     span_length: i32,
 }
 
-unsafe impl Send for SpansCell {}
+unsafe impl<P: PostingIterator> Send for SpansCell<P> {}
 
-unsafe impl Sync for SpansCell {}
-
-impl SpansCell {
-    pub fn new(parent: *mut NearSpansUnordered, spans: Box<Spans>, index: usize) -> Self {
+impl<P: PostingIterator> SpansCell<P> {
+    pub fn new(parent: *mut NearSpansUnordered<P>, spans: SpansEnum<P>, index: usize) -> Self {
         SpansCell {
             parent,
             spans,
@@ -519,7 +556,7 @@ impl SpansCell {
     }
 }
 
-impl Spans for SpansCell {
+impl<P: PostingIterator> Spans for SpansCell<P> {
     fn next_start_position(&mut self) -> Result<i32> {
         let res = self.spans.next_start_position()?;
         if res != NO_MORE_POSITIONS {
@@ -541,7 +578,7 @@ impl Spans for SpansCell {
         self.spans.width()
     }
 
-    fn collect(&mut self, collector: &mut SpanCollector) -> Result<()> {
+    fn collect(&mut self, collector: &mut impl SpanCollector) -> Result<()> {
         self.spans.collect(collector)
     }
 
@@ -555,7 +592,7 @@ impl Spans for SpansCell {
     }
 }
 
-impl DocIterator for SpansCell {
+impl<P: PostingIterator> DocIterator for SpansCell<P> {
     fn doc_id(&self) -> i32 {
         self.spans.doc_id()
     }
@@ -574,39 +611,37 @@ impl DocIterator for SpansCell {
 }
 
 // ref of `SpansCell` in PriorityQueue
-struct SpansCellElement {
-    spans: *mut SpansCell,
+struct SpansCellElement<P: PostingIterator> {
+    spans: *mut SpansCell<P>,
 }
 
-unsafe impl Send for SpansCellElement {}
+unsafe impl<P: PostingIterator> Send for SpansCellElement<P> {}
 
-unsafe impl Sync for SpansCellElement {}
-
-impl SpansCellElement {
-    fn new(span: &mut SpansCell) -> Self {
+impl<P: PostingIterator> SpansCellElement<P> {
+    fn new(span: &mut SpansCell<P>) -> Self {
         SpansCellElement {
-            spans: span as *mut SpansCell,
+            spans: span as *mut SpansCell<P>,
         }
     }
 
-    fn spans(&self) -> &SpansCell {
+    fn spans(&self) -> &SpansCell<P> {
         unsafe { &*self.spans }
     }
 
-    fn spans_mut(&mut self) -> &mut SpansCell {
+    fn spans_mut(&mut self) -> &mut SpansCell<P> {
         unsafe { &mut *self.spans }
     }
 }
 
-impl Eq for SpansCellElement {}
+impl<P: PostingIterator> Eq for SpansCellElement<P> {}
 
-impl PartialEq for SpansCellElement {
-    fn eq(&self, other: &SpansCellElement) -> bool {
+impl<P: PostingIterator> PartialEq for SpansCellElement<P> {
+    fn eq(&self, other: &SpansCellElement<P>) -> bool {
         unsafe { (*self.spans).index.eq(&(*other.spans).index) }
     }
 }
 
-impl Ord for SpansCellElement {
+impl<P: PostingIterator> Ord for SpansCellElement<P> {
     fn cmp(&self, other: &Self) -> Ordering {
         // reversed ordering for priority queue
         unsafe {
@@ -624,8 +659,8 @@ impl Ord for SpansCellElement {
     }
 }
 
-impl PartialOrd for SpansCellElement {
-    fn partial_cmp(&self, other: &SpansCellElement) -> Option<Ordering> {
+impl<P: PostingIterator> PartialOrd for SpansCellElement<P> {
+    fn partial_cmp(&self, other: &SpansCellElement<P>) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
@@ -650,18 +685,17 @@ impl PartialOrd for SpansCellElement {
 ///
 /// Expert:
 /// Only public for subclassing.  Most implementations should not need this class
-pub struct NearSpansOrdered {
-    conjunction_span: ConjunctionSpanBase,
-    sub_spans: Vec<Box<Spans>>,
+pub struct NearSpansOrdered<P: PostingIterator> {
+    conjunction_span: ConjunctionSpanBase<P>,
+    sub_spans: Vec<SpansEnum<P>>,
     match_start: i32,
     match_end: i32,
     match_width: i32,
     allowed_slop: i32,
 }
 
-impl NearSpansOrdered {
-    pub fn new(allowed_slop: i32, sub_spans: Vec<Box<Spans>>) -> Result<Self> {
-        let mut sub_spans = sub_spans;
+impl<P: PostingIterator> NearSpansOrdered<P> {
+    pub fn new(allowed_slop: i32, mut sub_spans: Vec<SpansEnum<P>>) -> Result<Self> {
         let conjunction_span = ConjunctionSpanBase::new(&mut sub_spans)?;
         Ok(NearSpansOrdered {
             conjunction_span,
@@ -705,12 +739,12 @@ impl NearSpansOrdered {
     }
 }
 
-impl ConjunctionSpans for NearSpansOrdered {
-    fn conjunction_span_base(&self) -> &ConjunctionSpanBase {
+impl<P: PostingIterator> ConjunctionSpans<P> for NearSpansOrdered<P> {
+    fn conjunction_span_base(&self) -> &ConjunctionSpanBase<P> {
         &self.conjunction_span
     }
 
-    fn conjunction_span_base_mut(&mut self) -> &mut ConjunctionSpanBase {
+    fn conjunction_span_base_mut(&mut self) -> &mut ConjunctionSpanBase<P> {
         &mut self.conjunction_span
     }
 
@@ -729,7 +763,7 @@ impl ConjunctionSpans for NearSpansOrdered {
     }
 }
 
-impl Spans for NearSpansOrdered {
+impl<P: PostingIterator> Spans for NearSpansOrdered<P> {
     fn next_start_position(&mut self) -> Result<i32> {
         if self.conjunction_span.first_in_current_doc {
             self.conjunction_span.first_in_current_doc = false;
@@ -768,7 +802,7 @@ impl Spans for NearSpansOrdered {
         self.match_width
     }
 
-    fn collect(&mut self, collector: &mut SpanCollector) -> Result<()> {
+    fn collect(&mut self, collector: &mut impl SpanCollector) -> Result<()> {
         for span in &mut self.sub_spans {
             span.collect(collector)?;
         }
@@ -784,7 +818,7 @@ impl Spans for NearSpansOrdered {
     }
 }
 
-conjunction_span_doc_iter!(NearSpansOrdered);
+conjunction_span_doc_iter!(NearSpansOrdered<P: PostingIterator>);
 
 const SPAN_GAP_QUERY: &str = "span_gap";
 
@@ -799,8 +833,12 @@ impl SpanGapQuery {
     }
 }
 
-impl Query for SpanGapQuery {
-    fn create_weight(&self, searcher: &IndexSearcher, _needs_scores: bool) -> Result<Box<Weight>> {
+impl<C: Codec> Query<C> for SpanGapQuery {
+    fn create_weight(
+        &self,
+        searcher: &dyn SearchPlanBuilder<C>,
+        _needs_scores: bool,
+    ) -> Result<Box<dyn Weight<C>>> {
         let weight = SpanGapWeight::new(self, searcher, self.width)?;
         Ok(Box::new(weight))
     }
@@ -818,18 +856,19 @@ impl Query for SpanGapQuery {
     }
 }
 
-impl SpanQuery for SpanGapQuery {
-    fn field(&self) -> &str {
-        &self.field
-    }
+impl<C: Codec> SpanQuery<C> for SpanGapQuery {
+    type Weight = SpanGapWeight<C>;
 
     fn span_weight(
         &self,
-        searcher: &IndexSearcher,
+        searcher: &dyn SearchPlanBuilder<C>,
         _needs_scores: bool,
-    ) -> Result<Box<SpanWeight>> {
-        let weight = SpanGapWeight::new(self, searcher, self.width)?;
-        Ok(Box::new(weight))
+    ) -> Result<Self::Weight> {
+        SpanGapWeight::new(self, searcher, self.width)
+    }
+
+    fn field(&self) -> &str {
+        &self.field
     }
 }
 
@@ -843,44 +882,55 @@ impl fmt::Display for SpanGapQuery {
     }
 }
 
-struct SpanGapWeight {
+pub struct SpanGapWeight<C: Codec> {
     width: i32,
-    sim_weight: Option<Box<SimWeight>>,
+    sim_weight: Option<Box<dyn SimWeight<C>>>,
 }
 
-impl SpanGapWeight {
-    pub fn new(query: &SpanGapQuery, searcher: &IndexSearcher, width: i32) -> Result<Self> {
-        let sim_weight = build_sim_weight(query.field(), searcher, HashMap::new(), None)?;
+impl<C: Codec> SpanGapWeight<C> {
+    pub fn new<IS: SearchPlanBuilder<C> + ?Sized>(
+        query: &SpanGapQuery,
+        searcher: &IS,
+        width: i32,
+    ) -> Result<Self> {
+        let sim_weight =
+            build_sim_weight(SpanQuery::<C>::field(query), searcher, HashMap::new(), None)?;
         Ok(SpanGapWeight { width, sim_weight })
     }
 }
 
-impl SpanWeight for SpanGapWeight {
-    fn sim_weight(&self) -> Option<&SimWeight> {
+impl<C: Codec> SpanWeight<C> for SpanGapWeight<C> {
+    fn sim_weight(&self) -> Option<&SimWeight<C>> {
         self.sim_weight.as_ref().map(|x| &**x)
     }
 
-    fn sim_weight_mut(&mut self) -> Option<&mut SimWeight> {
+    fn sim_weight_mut(&mut self) -> Option<&mut SimWeight<C>> {
         if let Some(ref mut sim_weight) = self.sim_weight {
             Some(sim_weight.as_mut())
         } else {
             None
         }
+        // lifetime mismatch
+        // self.sim_weight.as_mut().map(|x| &mut **x)
     }
 
     fn get_spans(
         &self,
-        _reader: &LeafReaderContext,
+        _reader: &LeafReaderContext<'_, C>,
         _required_postings: &PostingsFlag,
-    ) -> Result<Option<Box<Spans>>> {
-        Ok(Some(Box::new(GapSpans::new(self.width))))
+    ) -> Result<Option<SpansEnum<CodecPostingIterator<C>>>> {
+        Ok(Some(SpansEnum::Gap(GapSpans::new(self.width))))
     }
 
-    fn extract_term_contexts(&self, _contexts: &mut HashMap<Term, Arc<TermContext>>) {}
+    fn extract_term_contexts(
+        &self,
+        _contexts: &mut HashMap<Term, Arc<TermContext<CodecTermState<C>>>>,
+    ) {
+    }
 }
 
-impl Weight for SpanGapWeight {
-    fn create_scorer(&self, ctx: &LeafReaderContext) -> Result<Box<Scorer>> {
+impl<C: Codec> Weight<C> for SpanGapWeight<C> {
+    fn create_scorer(&self, ctx: &LeafReaderContext<'_, C>) -> Result<Option<Box<dyn Scorer>>> {
         self.do_create_scorer(ctx)
     }
 
@@ -906,18 +956,18 @@ impl Weight for SpanGapWeight {
         false
     }
 
-    fn explain(&self, reader: &LeafReaderContext, doc: DocId) -> Result<Explanation> {
+    fn explain(&self, reader: &LeafReaderContext<'_, C>, doc: DocId) -> Result<Explanation> {
         self.explain_span(reader, doc)
     }
 }
 
-impl fmt::Display for SpanGapWeight {
+impl<C: Codec> fmt::Display for SpanGapWeight<C> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "SpanGapWeight(width: {})", self.width)
     }
 }
 
-struct GapSpans {
+pub struct GapSpans {
     doc: DocId,
     pos: i32,
     width: i32,
@@ -955,7 +1005,7 @@ impl Spans for GapSpans {
         self.width
     }
 
-    fn collect(&mut self, _collector: &mut SpanCollector) -> Result<()> {
+    fn collect(&mut self, _collector: &mut impl SpanCollector) -> Result<()> {
         Ok(())
     }
 

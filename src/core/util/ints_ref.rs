@@ -1,4 +1,4 @@
-use error::*;
+use error::{ErrorKind, Result};
 use std::cmp::{min, Ord, Ordering, PartialOrd};
 use std::hash::{Hash, Hasher};
 

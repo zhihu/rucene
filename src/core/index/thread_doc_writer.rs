@@ -1,26 +1,34 @@
-use core::codec::Codec;
-use core::index::bufferd_updates::{self, BufferedUpdates, FrozenBufferedUpdates};
-use core::index::doc_consumer::{DefaultIndexingChain, DocConsumer};
-use core::index::doc_writer_delete_queue::{DeleteSlice, DocumentsWriterDeleteQueue};
-use core::index::index_writer::IndexWriter;
-use core::index::index_writer::INDEX_MAX_DOCS;
-use core::index::index_writer_config::IndexWriterConfig;
-use core::index::{FieldInfos, FieldInfosBuilder, FieldNumbers, FieldNumbersRef, Fieldable};
-use core::index::{SegmentCommitInfo, SegmentInfo, SegmentWriteState, Term};
-use core::store::{DirectoryRc, FlushInfo, IOContext, TrackingDirectoryWrapper};
-use core::util::byte_block_pool::DirectTrackingAllocator;
-use core::util::int_block_pool::{IntAllocator, INT_BLOCK_SIZE};
-use core::util::string_util::random_id;
-use core::util::BitsRef;
-use core::util::DocId;
-use core::util::{Count, Counter, VERSION_LATEST};
+use core::{
+    codec::{Codec, LiveDocsFormat, SegmentInfoFormat},
+    index::{
+        bufferd_updates::{self, BufferedUpdates, FrozenBufferedUpdates},
+        doc_consumer::{DefaultIndexingChain, DocConsumer},
+        doc_writer_delete_queue::{DeleteSlice, DocumentsWriterDeleteQueue},
+        index_writer::{IndexWriterInner, INDEX_MAX_DOCS},
+        index_writer_config::IndexWriterConfig,
+        merge_policy::MergePolicy,
+        merge_scheduler::MergeScheduler,
+        FieldInfos, FieldInfosBuilder, FieldNumbers, FieldNumbersRef, Fieldable, SegmentCommitInfo,
+        SegmentInfo, SegmentWriteState, Term,
+    },
+    store::{
+        Directory, FlushInfo, IOContext, LockValidatingDirectoryWrapper, TrackingDirectoryWrapper,
+    },
+    util::{
+        bit_set::BitSet,
+        byte_block_pool::DirectTrackingAllocator,
+        int_block_pool::{IntAllocator, INT_BLOCK_SIZE},
+        string_util::random_id,
+        BitsRef, Count, Counter, DocId, VERSION_LATEST,
+    },
+};
 
 use std::collections::{HashMap, HashSet};
-use std::mem;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::time::SystemTime;
 
+use core::util::Volatile;
 use error::ErrorKind::IllegalArgument;
 use error::Result;
 
@@ -28,7 +36,7 @@ pub struct DocState {
     // analyzer: Analyzer,  // TODO, current Analyzer is not implemented
     // pub similarity: Option<Box<Similarity>>,
     pub doc_id: DocId,
-    // pub doc: Vec<Box<Fieldable>>,
+    // pub doc: Vec<Box<dyn Fieldable>>,
 }
 
 impl DocState {
@@ -43,50 +51,67 @@ impl DocState {
     }
 }
 
-pub struct DocumentsWriterPerThread {
+pub struct DocumentsWriterPerThread<
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+> {
     // we should use TrackingDirectoryWrapper instead
-    pub directory: DirectoryRc,
-    pub directory_orig: DirectoryRc,
+    pub directory: Arc<
+        TrackingDirectoryWrapper<
+            LockValidatingDirectoryWrapper<D>,
+            Arc<LockValidatingDirectoryWrapper<D>>,
+        >,
+    >,
+    pub directory_orig: Arc<D>,
     pub doc_state: DocState,
-    pub consumer: DefaultIndexingChain,
+    pub consumer: DefaultIndexingChain<D, C, MS, MP>,
     pub bytes_used: Counter,
-    pending_updates: BufferedUpdates,
-    pub segment_info: SegmentInfo,
+    pending_updates: BufferedUpdates<C>,
+    pub segment_info: SegmentInfo<D, C>,
     // current segment we are working on
     aborted: bool,
     // true if we aborted
     pub num_docs_in_ram: u32,
-    pub delete_queue: Arc<DocumentsWriterDeleteQueue>,
+    pub delete_queue: Arc<DocumentsWriterDeleteQueue<C>>,
     // pointer to DocumentsWriter.delete_queue
-    delete_slice: DeleteSlice,
+    delete_slice: DeleteSlice<C>,
     pub byte_block_allocator: DirectTrackingAllocator,
-    pub int_block_allocator: Box<IntAllocator>,
+    pub int_block_allocator: Box<dyn IntAllocator>,
     pending_num_docs: Arc<AtomicI64>,
-    index_writer_config: Arc<IndexWriterConfig>,
+    index_writer_config: Arc<IndexWriterConfig<C, MS, MP>>,
     // enable_test_points: bool,
-    index_writer: *mut IndexWriter,
+    index_writer: Weak<IndexWriterInner<D, C, MS, MP>>,
     pub files_to_delete: HashSet<String>,
     inited: bool,
 }
 
-impl DocumentsWriterPerThread {
-    pub fn new(
-        index_writer: &mut IndexWriter,
+impl<D, C, MS, MP> DocumentsWriterPerThread<D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
+    pub(crate) fn new(
+        index_writer: Weak<IndexWriterInner<D, C, MS, MP>>,
         segment_name: String,
-        directory_orig: DirectoryRc,
-        dir: DirectoryRc,
-        index_writer_config: Arc<IndexWriterConfig>,
-        delete_queue: Arc<DocumentsWriterDeleteQueue>,
+        directory_orig: Arc<D>,
+        dir: Arc<LockValidatingDirectoryWrapper<D>>,
+        index_writer_config: Arc<IndexWriterConfig<C, MS, MP>>,
+        delete_queue: Arc<DocumentsWriterDeleteQueue<C>>,
         pending_num_docs: Arc<AtomicI64>,
     ) -> Result<Self> {
         let directory = Arc::new(TrackingDirectoryWrapper::new(dir));
+        let writer = index_writer.upgrade().unwrap();
         let segment_info = SegmentInfo::new(
             VERSION_LATEST.clone(),
             &segment_name,
             -1,
             Arc::clone(&directory_orig),
             false,
-            Some(Arc::clone(&index_writer.config.codec)),
+            Some(Arc::clone(&writer.config.codec)),
             HashMap::new(),
             random_id(),
             HashMap::new(),
@@ -118,7 +143,7 @@ impl DocumentsWriterPerThread {
         })
     }
 
-    pub fn init(&mut self, field_numbers: &mut FieldNumbers, codec: Arc<Codec>) {
+    pub fn init(&mut self, field_numbers: Arc<FieldNumbers>, codec: Arc<C>) {
         let field_infos = FieldInfosBuilder::new(FieldNumbersRef::new(field_numbers));
         self.byte_block_allocator =
             DirectTrackingAllocator::new(unsafe { self.bytes_used.shallow_copy() });
@@ -132,7 +157,11 @@ impl DocumentsWriterPerThread {
         self.inited = true;
     }
 
-    pub fn codec(&self) -> &Codec {
+    fn index_writer(&self) -> Arc<IndexWriterInner<D, C, MS, MP>> {
+        self.index_writer.upgrade().unwrap()
+    }
+
+    pub fn codec(&self) -> &C {
         self.index_writer_config.codec()
     }
 
@@ -153,13 +182,12 @@ impl DocumentsWriterPerThread {
         Ok(())
     }
 
-    pub fn update_document(
+    pub fn update_document<F: Fieldable>(
         &mut self,
-        doc: Vec<Box<Fieldable>>,
+        mut doc: Vec<F>,
         del_term: Option<Term>,
     ) -> Result<u64> {
         // debug_assert!(self.inited);
-        let mut doc = doc;
         self.reserve_one_doc()?;
         // self.doc_state.doc = doc;
         self.doc_state.doc_id = self.num_docs_in_ram as i32;
@@ -186,9 +214,9 @@ impl DocumentsWriterPerThread {
         self.finish_document(del_term)
     }
 
-    pub fn update_documents(
+    pub fn update_documents<F: Fieldable>(
         &mut self,
-        docs: Vec<Vec<Box<Fieldable>>>,
+        docs: Vec<Vec<F>>,
         del_term: Option<Term>,
     ) -> Result<u64> {
         // debug_assert!(self.inited);
@@ -210,9 +238,9 @@ impl DocumentsWriterPerThread {
         res
     }
 
-    fn do_update_documents(
+    fn do_update_documents<F: Fieldable>(
         &mut self,
-        docs: Vec<Vec<Box<Fieldable>>>,
+        docs: Vec<Vec<F>>,
         del_term: Option<Term>,
         doc_count: &mut i32,
         all_docs_indexed: &mut bool,
@@ -319,7 +347,7 @@ impl DocumentsWriterPerThread {
     // Prepares this DWPT for flushing. This method will freeze and return the
     // `DocumentsWriterDeleteQueue`s global buffer and apply all pending deletes
     // to this DWPT
-    pub fn prepare_flush(&mut self) -> Result<FrozenBufferedUpdates> {
+    pub fn prepare_flush(&mut self) -> Result<FrozenBufferedUpdates<C>> {
         debug_assert!(self.inited);
         debug_assert!(self.num_docs_in_ram > 0);
 
@@ -335,7 +363,7 @@ impl DocumentsWriterPerThread {
     }
 
     /// Flush all pending docs to a new segment
-    pub fn flush(&mut self) -> Result<Option<FlushedSegment>> {
+    pub fn flush(&mut self) -> Result<Option<FlushedSegment<D, C>>> {
         debug_assert!(self.inited);
         debug_assert!(self.num_docs_in_ram > 0);
         debug_assert!(self.delete_slice.is_empty());
@@ -365,10 +393,7 @@ impl DocumentsWriterPerThread {
                 .new_live_docs(self.num_docs_in_ram as usize)?;
             let docs_len = self.pending_updates.deleted_doc_ids.len();
             for del_doc_id in self.pending_updates.deleted_doc_ids.drain(..) {
-                flush_state
-                    .live_docs
-                    .as_bit_set_mut()
-                    .clear(del_doc_id as usize);
+                flush_state.live_docs.clear(del_doc_id as usize);
             }
             flush_state.del_count_on_flush = docs_len as u32;
             self.pending_updates.bytes_used.fetch_sub(
@@ -393,9 +418,12 @@ impl DocumentsWriterPerThread {
         res
     }
 
-    fn do_flush(&mut self, mut flush_state: SegmentWriteState) -> Result<Option<FlushedSegment>> {
+    fn do_flush<DW: Directory + 'static>(
+        &mut self,
+        mut flush_state: SegmentWriteState<D, DW, C>,
+    ) -> Result<Option<FlushedSegment<D, C>>> {
         let t0 = SystemTime::now();
-        let doc_writer = self as *mut DocumentsWriterPerThread;
+        let doc_writer = self as *mut DocumentsWriterPerThread<D, C, MS, MP>;
 
         // re-init
         self.consumer.reset_doc_writer(doc_writer);
@@ -426,7 +454,7 @@ impl DocumentsWriterPerThread {
                 Arc::new(segment_info_per_commit),
                 flush_state.field_infos,
                 segment_deletes,
-                Arc::from(flush_state.live_docs),
+                Arc::new(flush_state.live_docs),
                 flush_state.del_count_on_flush,
             )
         };
@@ -439,7 +467,7 @@ impl DocumentsWriterPerThread {
         Ok(Some(fs))
     }
 
-    fn seal_flushed_segment(&mut self, flushed_segment: &mut FlushedSegment) -> Result<()> {
+    fn seal_flushed_segment(&mut self, flushed_segment: &mut FlushedSegment<D, C>) -> Result<()> {
         // set_diagnostics(&mut flushed_segment.segment_info.info, index_writer::SOURCE_FLUSH);
 
         let flush_info = FlushInfo::new(
@@ -452,13 +480,12 @@ impl DocumentsWriterPerThread {
             let original_files = flushed_segment.segment_info.info.files().clone();
             // TODO: like addIndexes, we are relying on createCompoundFile to successfully
             // cleanup...
-            let dir = TrackingDirectoryWrapper::new(&self.directory);
-            unsafe {
-                // flushed_segment has no other reference, so Arc::get_mut is safe
-                let segment_info = Arc::get_mut(&mut flushed_segment.segment_info).unwrap();
-                (*self.index_writer).create_compound_file(&dir, &mut segment_info.info, ctx)?;
-                segment_info.info.set_use_compound_file();
-            }
+            let dir = TrackingDirectoryWrapper::new(self.directory.as_ref());
+            // flushed_segment has no other reference, so Arc::get_mut is safe
+            let segment_info = Arc::get_mut(&mut flushed_segment.segment_info).unwrap();
+            self.index_writer()
+                .create_compound_file(&dir, &mut segment_info.info, ctx)?;
+            segment_info.info.set_use_compound_file();
             self.files_to_delete.extend(original_files);
         }
 
@@ -469,7 +496,7 @@ impl DocumentsWriterPerThread {
         {
             let segment_info = Arc::get_mut(&mut flushed_segment.segment_info).unwrap();
             self.codec().segment_info_format().write(
-                self.directory.as_ref(),
+                &self.directory,
                 &mut segment_info.info,
                 ctx,
             )?;
@@ -525,19 +552,19 @@ impl DocumentsWriterPerThread {
     }
 }
 
-pub struct FlushedSegment {
-    pub segment_info: Arc<SegmentCommitInfo>,
+pub struct FlushedSegment<D: Directory, C: Codec> {
+    pub segment_info: Arc<SegmentCommitInfo<D, C>>,
     pub field_infos: FieldInfos,
-    pub segment_updates: Option<FrozenBufferedUpdates>,
+    pub segment_updates: Option<FrozenBufferedUpdates<C>>,
     pub live_docs: BitsRef,
     pub del_count: u32,
 }
 
-impl FlushedSegment {
+impl<D: Directory, C: Codec> FlushedSegment<D, C> {
     pub fn new(
-        segment_info: Arc<SegmentCommitInfo>,
+        segment_info: Arc<SegmentCommitInfo<D, C>>,
         field_infos: FieldInfos,
-        buffered_updates: Option<&mut BufferedUpdates>,
+        buffered_updates: Option<&mut BufferedUpdates<C>>,
         live_docs: BitsRef,
         del_count: u32,
     ) -> Self {
@@ -569,77 +596,103 @@ impl FlushedSegment {
 /// Once a `DocumentsWriterPerThread` is selected for flush the thread pool
 /// is reusing the flushing `DocumentsWriterPerThread`s ThreadState with a
 /// new `DocumentsWriterPerThread` instance.
-pub struct DocumentsWriterPerThreadPool {
-    lock: Arc<Mutex<()>>,
+pub struct DocumentsWriterPerThreadPool<
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+> {
+    inner: Mutex<DWPTPoolInner<D, C, MS, MP>>,
+    aborted: Volatile<bool>,
     cond: Condvar,
-    pub thread_states: Vec<Arc<Mutex<ThreadState>>>,
-    free_list: Vec<usize>,
-    // valid thread_state index in `self.thread_states`
-    aborted: bool,
 }
 
-impl DocumentsWriterPerThreadPool {
+struct DWPTPoolInner<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy> {
+    thread_states: Vec<Arc<Mutex<ThreadState<D, C, MS, MP>>>>,
+    // valid thread_state index in `self.thread_states`
+    free_list: Vec<usize>,
+}
+
+impl<D, C, MS, MP> DocumentsWriterPerThreadPool<D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
     pub fn new() -> Self {
-        DocumentsWriterPerThreadPool {
-            lock: Arc::new(Mutex::new(())),
-            cond: Condvar::new(),
+        let inner = DWPTPoolInner {
             thread_states: vec![],
             free_list: vec![],
-            aborted: false,
+        };
+        DocumentsWriterPerThreadPool {
+            inner: Mutex::new(inner),
+            aborted: Volatile::new(false),
+            cond: Condvar::new(),
         }
     }
 
     /// Returns the active number of `ThreadState` instances.
     pub fn active_thread_state_count(&self) -> usize {
-        let _l = self.lock.lock().unwrap();
-        self.thread_states.len()
+        self.inner.lock().unwrap().thread_states.len()
     }
 
-    pub fn set_abort(&mut self) {
-        let _l = self.lock.lock().unwrap();
-        self.aborted = true;
+    pub fn get_thread_state(&self, i: usize) -> Arc<Mutex<ThreadState<D, C, MS, MP>>> {
+        let guard = self.inner.lock().unwrap();
+        debug_assert!(i < guard.thread_states.len());
+        Arc::clone(&guard.thread_states[i])
     }
 
-    fn clear_abort(&mut self) {
-        let _l = self.lock.lock().unwrap();
-        self.aborted = false;
+    pub fn set_abort(&self) {
+        let _l = self.inner.lock().unwrap();
+        self.aborted.write(true);
+    }
+
+    #[allow(dead_code)]
+    fn clear_abort(&self) {
+        let _guard = self.inner.lock().unwrap();
+        self.aborted.write(false);
         self.cond.notify_all();
     }
 
     /// Returns a new `ThreadState` iff any new state is available other `None`
     /// NOTE: the returned `ThreadState` is already locked iff non-None
-    #[allow(needless_lifetimes)]
-    fn new_thread_state(&mut self, lock: MutexGuard<()>) -> Result<LockedThreadState> {
-        let mut l = lock;
-        while self.aborted {
+    fn new_thread_state(
+        &self,
+        guard: MutexGuard<'_, DWPTPoolInner<D, C, MS, MP>>,
+    ) -> Result<LockedThreadState<D, C, MS, MP>> {
+        let mut l = guard;
+        while self.aborted.read() {
             l = self.cond.wait(l)?;
         }
 
         let thread_state = Arc::new(Mutex::new(ThreadState::new(None)));
-        self.thread_states.push(thread_state);
-        let idx = self.thread_states.len() - 1;
+        l.thread_states.push(thread_state);
+        let idx = l.thread_states.len() - 1;
 
         Ok(LockedThreadState::new(
-            Arc::clone(&self.thread_states[idx]),
+            Arc::clone(&l.thread_states[idx]),
             idx,
         ))
     }
 
-    pub fn reset(&self, thread_state: &mut ThreadState) -> Option<DocumentsWriterPerThread> {
+    pub fn reset(
+        &self,
+        thread_state: &mut ThreadState<D, C, MS, MP>,
+    ) -> Option<DocumentsWriterPerThread<D, C, MS, MP>> {
         thread_state.reset()
     }
 
-    pub fn recycle(&self, _dwpt: DocumentsWriterPerThread) {
+    pub fn recycle(&self, _dwpt: DocumentsWriterPerThread<D, C, MS, MP>) {
         // do nothing
     }
 
     /// this method is used by DocumentsWriter/FlushControl to obtain a ThreadState
     /// to do an indexing operation (add/update_document).
-    pub fn get_and_lock(&mut self) -> Result<LockedThreadState> {
-        let lock = Arc::clone(&self.lock);
-        let l = lock.lock().unwrap();
-        if let Some(mut idx) = self.free_list.pop() {
-            if self.thread_states[idx].lock().unwrap().dwpt.is_none() {
+    pub fn get_and_lock(&self) -> Result<LockedThreadState<D, C, MS, MP>> {
+        let mut guard = self.inner.lock().unwrap();
+        if let Some(mut idx) = guard.free_list.pop() {
+            if guard.thread_states[idx].lock().unwrap().dwpt.is_none() {
                 // This thread-state is not initialized, e.g. it
                 // was just flushed. See if we can instead find
                 // another free thread state that already has docs
@@ -648,12 +701,12 @@ impl DocumentsWriterPerThreadPool {
                 // indefinitely buffered, tying up RAM.  This
                 // will instead get those thread states flushed,
                 // freeing up RAM for larger segment flushes:
-                for i in 0..self.free_list.len() {
-                    let new_idx = self.free_list[i];
-                    if self.thread_states[new_idx].lock().unwrap().dwpt.is_some() {
+                for i in 0..guard.free_list.len() {
+                    let new_idx = guard.free_list[i];
+                    if guard.thread_states[new_idx].lock().unwrap().dwpt.is_some() {
                         // Use this one instead, and swap it with
                         // the un-initialized one:
-                        self.free_list[i] = idx;
+                        guard.free_list[i] = idx;
                         idx = new_idx;
                         break;
                     }
@@ -661,28 +714,28 @@ impl DocumentsWriterPerThreadPool {
             }
 
             Ok(LockedThreadState::new(
-                Arc::clone(&self.thread_states[idx]),
+                Arc::clone(&guard.thread_states[idx]),
                 idx,
             ))
         } else {
-            self.new_thread_state(l)
+            self.new_thread_state(guard)
         }
     }
 
-    pub fn release(&mut self, state: LockedThreadState) {
-        let lock = Arc::clone(&self.lock);
-        let _l = lock.lock().unwrap();
-        debug_assert!(!self.free_list.contains(&state.index));
-        self.free_list.push(state.index);
+    pub fn release(&self, state: LockedThreadState<D, C, MS, MP>) {
+        let mut guard = self.inner.lock().unwrap();
+        debug_assert!(!guard.free_list.contains(&state.index));
+        guard.free_list.push(state.index);
         // In case any thread is waiting, wake one of them up since we just
         // released a thread state; notify() should be sufficient but we do
         // notifyAll defensively:
         self.cond.notify_all();
     }
 
-    pub fn locked_state(&self, idx: usize) -> LockedThreadState {
-        debug_assert!(idx < self.thread_states.len());
-        LockedThreadState::new(Arc::clone(&self.thread_states[idx]), idx)
+    pub fn locked_state(&self, idx: usize) -> LockedThreadState<D, C, MS, MP> {
+        let guard = self.inner.lock().unwrap();
+        debug_assert!(idx < guard.thread_states.len());
+        LockedThreadState::new(Arc::clone(&guard.thread_states[idx]), idx)
     }
 }
 
@@ -696,8 +749,8 @@ impl DocumentsWriterPerThreadPool {
 /// and release the lock in a finally block via `ThreadState#unlock()`
 /// before accessing the state.
 /// NOTE: this struct should always be used under a Mutex
-pub struct ThreadState {
-    pub dwpt: Option<DocumentsWriterPerThread>,
+pub struct ThreadState<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy> {
+    pub dwpt: Option<DocumentsWriterPerThread<D, C, MS, MP>>,
     // TODO this should really be part of DocumentsWriterFlushControl
     // write access guarded by DocumentsWriterFlushControl
     pub flush_pending: AtomicBool,
@@ -708,8 +761,14 @@ pub struct ThreadState {
     last_seq_no: AtomicU64,
 }
 
-impl ThreadState {
-    fn new(dwpt: Option<DocumentsWriterPerThread>) -> Self {
+impl<D, C, MS, MP> ThreadState<D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
+    fn new(dwpt: Option<DocumentsWriterPerThread<D, C, MS, MP>>) -> Self {
         ThreadState {
             dwpt,
             flush_pending: AtomicBool::new(false),
@@ -718,22 +777,26 @@ impl ThreadState {
         }
     }
 
-    pub fn dwpt(&self) -> &DocumentsWriterPerThread {
+    pub fn dwpt(&self) -> &DocumentsWriterPerThread<D, C, MS, MP> {
         debug_assert!(self.dwpt.is_some());
         self.dwpt.as_ref().unwrap()
     }
 
-    pub fn dwpt_mut(&mut self) -> &mut DocumentsWriterPerThread {
+    pub fn dwpt_mut(&mut self) -> &mut DocumentsWriterPerThread<D, C, MS, MP> {
         debug_assert!(self.dwpt.is_some());
         self.dwpt.as_mut().unwrap()
+    }
+
+    pub fn bytes_used(&self) -> u64 {
+        self.bytes_used
     }
 
     pub fn flush_pending(&self) -> bool {
         self.flush_pending.load(Ordering::Acquire)
     }
 
-    fn reset(&mut self) -> Option<DocumentsWriterPerThread> {
-        let dwpt = mem::replace(&mut self.dwpt, None);
+    fn reset(&mut self) -> Option<DocumentsWriterPerThread<D, C, MS, MP>> {
+        let dwpt = self.dwpt.take();
         self.bytes_used = 0;
         self.flush_pending.store(false, Ordering::Release);
         dwpt
@@ -752,14 +815,21 @@ impl ThreadState {
     }
 }
 
-pub struct LockedThreadState {
-    pub state: Arc<Mutex<ThreadState>>,
+pub struct LockedThreadState<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy>
+{
+    pub state: Arc<Mutex<ThreadState<D, C, MS, MP>>>,
     index: usize,
     // index of this state in  DocumentsWriterPerThreadPool.thread_states
 }
 
-impl LockedThreadState {
-    pub fn new(state: Arc<Mutex<ThreadState>>, index: usize) -> Self {
+impl<D, C, MS, MP> LockedThreadState<D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
+    pub fn new(state: Arc<Mutex<ThreadState<D, C, MS, MP>>>, index: usize) -> Self {
         LockedThreadState { state, index }
     }
 }
@@ -794,7 +864,7 @@ impl IntAllocator for IntBlockAllocator {
         b
     }
 
-    fn shallow_copy(&mut self) -> Box<IntAllocator> {
+    fn shallow_copy(&mut self) -> Box<dyn IntAllocator> {
         Box::new(IntBlockAllocator::new(unsafe {
             self.bytes_used.shallow_copy()
         }))

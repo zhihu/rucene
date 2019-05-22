@@ -1,14 +1,11 @@
-use core::codec::FieldsProducerRef;
-use core::index::Term;
+use core::index::{Fields, Term, TermIterator, Terms};
 use core::search::posting_iterator::*;
-use core::search::{DocIterator, Payload, NO_MORE_DOCS};
+use core::search::{Payload, NO_MORE_DOCS};
 use core::util::DocId;
 
-use error::Result;
+use error::{ErrorKind::IllegalState, Result};
 
-use std::any::Any;
 use std::collections::hash_map::HashMap;
-use std::sync::Arc;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TermPosition {
@@ -59,87 +56,15 @@ impl TermPosition {
     }
 }
 
-#[derive(Clone)]
-pub struct EmptyPostingIterator {
-    doc_id: DocId,
-}
-
-impl Default for EmptyPostingIterator {
-    fn default() -> Self {
-        EmptyPostingIterator::new()
-    }
-}
-
-impl EmptyPostingIterator {
-    pub fn new() -> EmptyPostingIterator {
-        EmptyPostingIterator { doc_id: -1 }
-    }
-}
-
-impl DocIterator for EmptyPostingIterator {
-    fn doc_id(&self) -> DocId {
-        self.doc_id
-    }
-
-    fn next(&mut self) -> Result<DocId> {
-        self.doc_id = NO_MORE_DOCS;
-        Ok(NO_MORE_DOCS)
-    }
-
-    fn advance(&mut self, _target: DocId) -> Result<DocId> {
-        self.doc_id = NO_MORE_DOCS;
-        Ok(NO_MORE_DOCS)
-    }
-
-    fn cost(&self) -> usize {
-        0usize
-    }
-}
-
-impl PostingIterator for EmptyPostingIterator {
-    fn clone_as_doc_iterator(&self) -> Result<Box<DocIterator>> {
-        unimplemented!()
-    }
-
-    fn freq(&self) -> Result<i32> {
-        Ok(1)
-    }
-
-    fn next_position(&mut self) -> Result<i32> {
-        Ok(-1)
-    }
-
-    fn start_offset(&self) -> Result<i32> {
-        Ok(-1)
-    }
-
-    fn end_offset(&self) -> Result<i32> {
-        Ok(-1)
-    }
-
-    fn payload(&self) -> Result<Payload> {
-        Ok(Payload::new())
-    }
-
-    fn as_any_mut(&mut self) -> &mut Any {
-        self
-    }
-}
-
 pub const FLAG_OFFSETS: i32 = 2;
 pub const FLAG_PAYLOADS: i32 = 4;
 pub const FLAG_FREQUENCIES: i32 = 8;
 pub const FLAG_POSITIONS: i32 = 16;
 pub const FLAG_CACHE: i32 = 32;
 
-pub type LeafIndexFieldRef = LeafIndexField;
-pub type LeafIndexFieldTermRef = LeafIndexFieldTerm;
-
-///
-// Holds all information on a particular term in a field.
-//
-pub struct LeafIndexFieldTerm {
-    postings: Box<PostingIterator>,
+/// Holds all information on a particular term in a field.
+pub struct LeafIndexFieldTerm<T: PostingIterator> {
+    postings: Option<T>,
     flags: i32,
     iterator: LeafPositionIterator,
     #[allow(dead_code)]
@@ -147,37 +72,34 @@ pub struct LeafIndexFieldTerm {
     freq: i32,
 }
 
-impl LeafIndexFieldTerm {
-    pub fn new(
+impl<T: PostingIterator> LeafIndexFieldTerm<T> {
+    pub fn new<TI: TermIterator<Postings = T>, Tm: Terms<Iterator = TI>, F: Fields<Terms = Tm>>(
         term: &str,
         field_name: &str,
         flags: i32,
         doc_id: DocId,
-        fields: &FieldsProducerRef,
-    ) -> Result<LeafIndexFieldTerm> {
+        fields: &F,
+    ) -> Result<Self> {
         let identifier = Term::new(field_name.to_string(), term.as_bytes().to_vec());
 
         if let Some(terms) = fields.terms(identifier.field())? {
             let mut terms_iterator = terms.iterator()?;
-            let lucene_flags = LeafIndexFieldTerm::convert_to_lucene_flags(flags);
+            let lucene_flags = convert_to_lucene_flags(flags);
 
-            let mut postings = if terms_iterator
-                .as_mut()
-                .seek_exact(identifier.bytes.as_slice())?
-            {
-                terms_iterator.postings_with_flags(lucene_flags)?
+            let (postings, freq) = if terms_iterator.seek_exact(identifier.bytes.as_slice())? {
+                let mut posting = terms_iterator.postings_with_flags(lucene_flags)?;
+                let mut current_doc_pos = posting.doc_id();
+                if current_doc_pos < doc_id {
+                    current_doc_pos = posting.advance(doc_id)?;
+                }
+                let freq = if current_doc_pos == doc_id {
+                    posting.freq()?
+                } else {
+                    0
+                };
+                (Some(posting), freq)
             } else {
-                Box::new(EmptyPostingIterator::new())
-            };
-
-            let mut current_doc_pos = postings.doc_id();
-            if current_doc_pos < doc_id {
-                current_doc_pos = postings.advance(doc_id)?;
-            }
-            let freq = if current_doc_pos == doc_id {
-                postings.freq()?
-            } else {
-                0
+                (None, 0)
             };
 
             let mut iterator = LeafPositionIterator::new();
@@ -193,44 +115,32 @@ impl LeafIndexFieldTerm {
                 freq,
             })
         } else {
-            bail!(
+            bail!(IllegalState(format!(
                 "Terms {} for doc {} - field '{}' must not be none!",
-                term,
-                doc_id,
-                field_name
-            );
+                term, doc_id, field_name
+            )));
         }
-    }
-
-    pub fn convert_to_lucene_flags(flags: i32) -> i16 {
-        let mut lucene_pos_flags = POSTING_ITERATOR_FLAG_NONE;
-        if (flags & FLAG_FREQUENCIES) > 0 {
-            lucene_pos_flags |= POSTING_ITERATOR_FLAG_FREQS;
-        }
-        if (flags & FLAG_POSITIONS) > 0 {
-            lucene_pos_flags |= POSTING_ITERATOR_FLAG_POSITIONS;
-        }
-        if (flags & FLAG_PAYLOADS) > 0 {
-            lucene_pos_flags |= POSTING_ITERATOR_FLAG_PAYLOADS;
-        }
-        if (flags & FLAG_OFFSETS) > 0 {
-            lucene_pos_flags |= POSTING_ITERATOR_FLAG_OFFSETS;
-        }
-
-        lucene_pos_flags
     }
 
     pub fn tf(&self) -> i32 {
         self.freq
     }
 
-    pub fn set_document(&mut self, doc_id: i32) -> Result<()> {
-        let mut current_doc_pos = self.postings.doc_id();
-        if current_doc_pos < doc_id {
-            current_doc_pos = self.postings.advance(doc_id)?;
+    fn current_doc(&self) -> DocId {
+        if let Some(ref postings) = self.postings {
+            postings.doc_id()
+        } else {
+            NO_MORE_DOCS
         }
-        if current_doc_pos == doc_id {
-            self.freq = self.postings.freq()?;
+    }
+
+    pub fn set_document(&mut self, doc_id: i32) -> Result<()> {
+        let mut current_doc_pos = self.current_doc();
+        if current_doc_pos < doc_id {
+            current_doc_pos = self.postings.as_mut().unwrap().advance(doc_id)?;
+        }
+        if current_doc_pos == doc_id && doc_id < NO_MORE_DOCS {
+            self.freq = self.postings.as_ref().unwrap().freq()?;
         } else {
             self.freq = 0;
         }
@@ -255,11 +165,20 @@ impl LeafIndexFieldTerm {
     }
 
     pub fn next_pos(&mut self) -> Result<TermPosition> {
-        let term_pos = TermPosition {
-            position: self.postings.next_position()?,
-            start_offset: self.postings.start_offset()?,
-            end_offset: self.postings.end_offset()?,
-            payload: self.postings.payload()?,
+        let term_pos = if let Some(ref mut postings) = self.postings {
+            TermPosition {
+                position: postings.next_position()?,
+                start_offset: postings.start_offset()?,
+                end_offset: postings.end_offset()?,
+                payload: postings.payload()?,
+            }
+        } else {
+            TermPosition {
+                position: -1,
+                start_offset: -1,
+                end_offset: -1,
+                payload: Vec::with_capacity(0),
+            }
         };
 
         self.iterator.current_pos += 1;
@@ -286,6 +205,24 @@ impl LeafIndexFieldTerm {
     }
 }
 
+fn convert_to_lucene_flags(flags: i32) -> u16 {
+    let mut lucene_pos_flags = PostingIteratorFlags::NONE;
+    if (flags & FLAG_FREQUENCIES) > 0 {
+        lucene_pos_flags |= PostingIteratorFlags::FREQS;
+    }
+    if (flags & FLAG_POSITIONS) > 0 {
+        lucene_pos_flags |= PostingIteratorFlags::POSITIONS;
+    }
+    if (flags & FLAG_PAYLOADS) > 0 {
+        lucene_pos_flags |= PostingIteratorFlags::PAYLOADS;
+    }
+    if (flags & FLAG_OFFSETS) > 0 {
+        lucene_pos_flags |= PostingIteratorFlags::OFFSETS;
+    }
+
+    lucene_pos_flags
+}
+
 pub struct LeafPositionIterator {
     resetted: bool,
     freq: i32,
@@ -308,18 +245,20 @@ impl LeafPositionIterator {
     }
 }
 
-pub struct LeafIndexField {
-    terms: HashMap<String, LeafIndexFieldTermRef>,
+pub struct LeafIndexField<T: Fields> {
+    terms: HashMap<
+        String,
+        LeafIndexFieldTerm<<<T::Terms as Terms>::Iterator as TermIterator>::Postings>,
+    >,
     field_name: String,
     doc_id: DocId,
-    fields: FieldsProducerRef,
+    fields: T,
 }
-
 ///
 // Script interface to all information regarding a field.
 //
-impl LeafIndexField {
-    pub fn new(field_name: &str, doc_id: DocId, fields: FieldsProducerRef) -> LeafIndexField {
+impl<T: Fields + Clone> LeafIndexField<T> {
+    pub fn new(field_name: &str, doc_id: DocId, fields: T) -> Self {
         LeafIndexField {
             terms: HashMap::new(),
             field_name: String::from(field_name),
@@ -328,7 +267,11 @@ impl LeafIndexField {
         }
     }
 
-    pub fn get(&mut self, key: &str) -> Result<&mut LeafIndexFieldTermRef> {
+    pub fn get(
+        &mut self,
+        key: &str,
+    ) -> Result<&mut LeafIndexFieldTerm<<<T::Terms as Terms>::Iterator as TermIterator>::Postings>>
+    {
         self.get_with_flags(key, FLAG_FREQUENCIES)
     }
 
@@ -340,13 +283,17 @@ impl LeafIndexField {
     // advance which terms are requested, we could provide an array which the
     // user could then iterate over.
     //
-    pub fn get_with_flags(&mut self, key: &str, flags: i32) -> Result<&mut LeafIndexFieldTermRef> {
+    pub fn get_with_flags(
+        &mut self,
+        key: &str,
+        flags: i32,
+    ) -> Result<&mut LeafIndexFieldTerm<<<T::Terms as Terms>::Iterator as TermIterator>::Postings>>
+    {
         if !self.terms.contains_key(key) {
             let index_field_term =
                 LeafIndexFieldTerm::new(key, &self.field_name, flags, self.doc_id, &self.fields)?;
             index_field_term.validate_flags(flags)?;
-            let index_field_term_ref = index_field_term;
-            self.terms.insert(String::from(key), index_field_term_ref);
+            self.terms.insert(String::from(key), index_field_term);
         }
         let index_field_term_ref = self.terms.get_mut(key).unwrap();
         index_field_term_ref.validate_flags(flags)?;
@@ -361,10 +308,10 @@ impl LeafIndexField {
     }
 }
 
-pub struct LeafIndexLookup {
-    pub fields: FieldsProducerRef,
+pub struct LeafIndexLookup<T: Fields> {
+    pub fields: T,
     pub doc_id: DocId,
-    index_fields: HashMap<String, LeafIndexFieldRef>,
+    index_fields: HashMap<String, LeafIndexField<T>>,
     #[allow(dead_code)]
     num_docs: i32,
     #[allow(dead_code)]
@@ -373,8 +320,8 @@ pub struct LeafIndexLookup {
     num_deleted_docs: i32,
 }
 
-impl LeafIndexLookup {
-    pub fn new(fields: FieldsProducerRef) -> LeafIndexLookup {
+impl<T: Fields + Clone> LeafIndexLookup<T> {
+    pub fn new(fields: T) -> LeafIndexLookup<T> {
         LeafIndexLookup {
             fields,
             doc_id: -1,
@@ -418,11 +365,10 @@ impl LeafIndexLookup {
     // advance which terms are requested, we could provide an array which the
     // user could then iterate over.
     //
-    pub fn get(&mut self, key: &str) -> &mut LeafIndexFieldRef {
+    pub fn get(&mut self, key: &str) -> &mut LeafIndexField<T> {
         if !self.index_fields.contains_key(key) {
-            let index_field = LeafIndexField::new(key, self.doc_id, Arc::clone(&self.fields));
-            let index_field_ref = index_field;
-            self.index_fields.insert(String::from(key), index_field_ref);
+            let index_field = LeafIndexField::new(key, self.doc_id, self.fields.clone());
+            self.index_fields.insert(String::from(key), index_field);
         }
         self.index_fields.get_mut(key).unwrap()
     }

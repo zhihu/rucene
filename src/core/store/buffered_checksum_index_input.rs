@@ -11,13 +11,13 @@ use crc::{crc32, Hasher32};
 use std::io::Read;
 
 pub struct BufferedChecksumIndexInput {
-    index_input: Box<IndexInput>,
+    index_input: Box<dyn IndexInput>,
     digest: crc32::Digest,
     name: String,
 }
 
 impl BufferedChecksumIndexInput {
-    pub fn new(index_input: Box<IndexInput>) -> BufferedChecksumIndexInput {
+    pub fn new(index_input: Box<dyn IndexInput>) -> BufferedChecksumIndexInput {
         let digest = crc32::Digest::new_with_initial(crc32::IEEE, 0u32);
         let name = String::from(index_input.name());
         BufferedChecksumIndexInput {
@@ -45,7 +45,7 @@ impl Read for BufferedChecksumIndexInput {
 }
 
 impl IndexInput for BufferedChecksumIndexInput {
-    fn clone(&self) -> Result<Box<IndexInput>> {
+    fn clone(&self) -> Result<Box<dyn IndexInput>> {
         Ok(Box::new(Self {
             index_input: self.index_input.clone()?,
             digest: crc32::Digest::new_with_initial(crc32::IEEE, self.digest.sum32()),
@@ -76,11 +76,11 @@ impl IndexInput for BufferedChecksumIndexInput {
         &self.name
     }
 
-    fn random_access_slice(&self, _offset: i64, _length: i64) -> Result<Box<RandomAccessInput>> {
+    fn random_access_slice(
+        &self,
+        _offset: i64,
+        _length: i64,
+    ) -> Result<Box<dyn RandomAccessInput>> {
         unimplemented!()
-    }
-
-    fn as_data_input(&mut self) -> &mut DataInput {
-        self
     }
 }

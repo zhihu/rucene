@@ -1,7 +1,10 @@
+use core::codec::Codec;
 use core::search::point_range::{PointRangeQuery, PointValueType};
 use core::search::Query;
 use core::util::numeric;
-use error::*;
+
+use error::Result;
+
 use num_traits::float::Float;
 
 /// An indexed {@code float} field for fast range filters.  If you also
@@ -58,7 +61,7 @@ impl FloatPoint {
     }
 
     /// Create a query for matching an exact float value.
-    pub fn new_exact_query(field: String, value: f32) -> Result<Box<Query>> {
+    pub fn new_exact_query<C: Codec>(field: String, value: f32) -> Result<Box<dyn Query<C>>> {
         FloatPoint::new_range_query(field, value, value)
     }
 
@@ -66,16 +69,20 @@ impl FloatPoint {
     /// Ranges are inclusive. For exclusive ranges, pass {@link #next_up(f32) nextUp(lower)}
     /// or {@link #next_down(f32) next_down(upper)}.
     /// Range comparisons are consistent with {@link f32#compareTo(Float)}.
-    pub fn new_range_query(field: String, lower: f32, upper: f32) -> Result<Box<Query>> {
+    pub fn new_range_query<C: Codec>(
+        field: String,
+        lower: f32,
+        upper: f32,
+    ) -> Result<Box<dyn Query<C>>> {
         FloatPoint::new_multi_range_query(field, &[lower], &[upper])
     }
 
     /// Create a range query for n-dimensional float values.
-    pub fn new_multi_range_query(
+    pub fn new_multi_range_query<C: Codec>(
         field: String,
         lower: &[f32],
         upper: &[f32],
-    ) -> Result<Box<Query>> {
+    ) -> Result<Box<dyn Query<C>>> {
         Ok(Box::new(PointRangeQuery::new(
             field,
             FloatPoint::pack(lower),
@@ -165,21 +172,25 @@ impl DoublePoint {
     }
 
     /// Create a query for matching an exact double value.
-    pub fn new_exact_query(field: String, value: f64) -> Result<Box<Query>> {
+    pub fn new_exact_query<C: Codec>(field: String, value: f64) -> Result<Box<dyn Query<C>>> {
         DoublePoint::new_range_query(field, value, value)
     }
 
     /// Create a range query for double values.
-    pub fn new_range_query(field: String, lower: f64, upper: f64) -> Result<Box<Query>> {
+    pub fn new_range_query<C: Codec>(
+        field: String,
+        lower: f64,
+        upper: f64,
+    ) -> Result<Box<dyn Query<C>>> {
         DoublePoint::new_multi_range_query(field, &[lower], &[upper])
     }
 
     /// Create a range query for n-dimensional double values.
-    pub fn new_multi_range_query(
+    pub fn new_multi_range_query<C: Codec>(
         field: String,
         lower: &[f64],
         upper: &[f64],
-    ) -> Result<Box<Query>> {
+    ) -> Result<Box<dyn Query<C>>> {
         Ok(Box::new(PointRangeQuery::new(
             field,
             DoublePoint::pack(lower),
@@ -210,19 +221,23 @@ impl IntPoint {
         numeric::sortable_bytes2int(value)
     }
 
-    pub fn new_exact_query(field: String, value: i32) -> Result<Box<Query>> {
+    pub fn new_exact_query<C: Codec>(field: String, value: i32) -> Result<Box<dyn Query<C>>> {
         IntPoint::new_range_query(field, value, value)
     }
 
-    pub fn new_range_query(field: String, lower: i32, upper: i32) -> Result<Box<Query>> {
+    pub fn new_range_query<C: Codec>(
+        field: String,
+        lower: i32,
+        upper: i32,
+    ) -> Result<Box<dyn Query<C>>> {
         IntPoint::new_multi_range_query(field, &[lower], &[upper])
     }
 
-    pub fn new_multi_range_query(
+    pub fn new_multi_range_query<C: Codec>(
         field: String,
         lower: &[i32],
         upper: &[i32],
-    ) -> Result<Box<Query>> {
+    ) -> Result<Box<dyn Query<C>>> {
         Ok(Box::new(PointRangeQuery::new(
             field,
             IntPoint::pack(lower),
@@ -253,19 +268,23 @@ impl LongPoint {
         numeric::sortable_bytes2long(value)
     }
 
-    pub fn new_exact_query(field: String, value: i64) -> Result<Box<Query>> {
+    pub fn new_exact_query<C: Codec>(field: String, value: i64) -> Result<Box<dyn Query<C>>> {
         LongPoint::new_range_query(field, value, value)
     }
 
-    pub fn new_range_query(field: String, lower: i64, upper: i64) -> Result<Box<Query>> {
+    pub fn new_range_query<C: Codec>(
+        field: String,
+        lower: i64,
+        upper: i64,
+    ) -> Result<Box<dyn Query<C>>> {
         LongPoint::new_multi_range_query(field, &[lower], &[upper])
     }
 
-    pub fn new_multi_range_query(
+    pub fn new_multi_range_query<C: Codec>(
         field: String,
         lower: &[i64],
         upper: &[i64],
-    ) -> Result<Box<Query>> {
+    ) -> Result<Box<dyn Query<C>>> {
         Ok(Box::new(PointRangeQuery::new(
             field,
             LongPoint::pack(lower),

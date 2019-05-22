@@ -4,9 +4,7 @@ use core::search::{DocIterator, NO_MORE_DOCS};
 use core::util::bit_util::{self, UnsignedShift};
 use core::util::{Bits, BitsContext, BitsRef};
 
-use error::*;
-
-pub type ImmutableBitSetRef = Arc<ImmutableBitSet>;
+use error::{ErrorKind, Result};
 
 pub trait ImmutableBitSet: Bits {
     /// Return the number of bits that are set.

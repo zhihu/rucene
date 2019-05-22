@@ -1,39 +1,37 @@
 use core::codec::codec_util;
 use core::codec::consumer::{is_single_valued, singleton_view};
-use core::codec::lucene54::{doc_values, NumberType};
-use core::codec::DocValuesConsumer;
+use core::codec::lucene54::{Lucene54DocValuesFormat, NumberType};
+use core::codec::{Codec, DocValuesConsumer};
 use core::index::{segment_file_name, FieldInfo, SegmentWriteState};
-use core::store::RAMOutputStream;
 use core::store::{DataOutput, IndexOutput};
-use core::util::byte_ref::BytesRef;
+use core::store::{Directory, RAMOutputStream};
 use core::util::math;
 use core::util::numeric::Numeric;
 use core::util::packed::{AbstractBlockPackedWriter, MonotonicBlockPackedWriter};
 use core::util::packed::{DirectMonotonicWriter, DirectWriter};
 use core::util::packed_misc::VERSION_CURRENT as PACKED_VERSION_CURRENT;
 use core::util::string_util::{bytes_difference, sort_key_length};
-use core::util::PagedBytes;
-use core::util::ReusableIterator;
+use core::util::{BytesRef, PagedBytes, ReusableIterator};
 
 use error::Result;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
-pub struct Lucene54DocValuesConsumer {
-    data: Box<IndexOutput>,
-    meta: Box<IndexOutput>,
+pub struct Lucene54DocValuesConsumer<O: IndexOutput> {
+    data: O,
+    meta: O,
     max_doc: i32,
 }
 
-impl Lucene54DocValuesConsumer {
-    pub fn new(
-        state: &SegmentWriteState,
+impl<O: IndexOutput> Lucene54DocValuesConsumer<O> {
+    pub fn new<D: Directory, DW: Directory<IndexOutput = O>, C: Codec>(
+        state: &SegmentWriteState<D, DW, C>,
         data_codec: &str,
         data_extension: &str,
         meta_codec: &str,
         meta_extension: &str,
-    ) -> Result<Lucene54DocValuesConsumer> {
+    ) -> Result<Self> {
         let data_name = segment_file_name(
             &state.segment_info.name,
             &state.segment_suffix,
@@ -41,9 +39,9 @@ impl Lucene54DocValuesConsumer {
         );
         let mut data = state.directory.create_output(&data_name, &state.context)?;
         codec_util::write_index_header(
-            data.as_mut(),
+            &mut data,
             data_codec,
-            doc_values::VERSION_CURRENT,
+            Lucene54DocValuesFormat::VERSION_CURRENT,
             state.segment_info.get_id(),
             &state.segment_suffix,
         )?;
@@ -55,9 +53,9 @@ impl Lucene54DocValuesConsumer {
         );
         let mut meta = state.directory.create_output(&meta_name, &state.context)?;
         codec_util::write_index_header(
-            meta.as_mut(),
+            &mut meta,
             meta_codec,
-            doc_values::VERSION_CURRENT,
+            Lucene54DocValuesFormat::VERSION_CURRENT,
             state.segment_info.get_id(),
             &state.segment_suffix,
         )?;
@@ -70,11 +68,17 @@ impl Lucene54DocValuesConsumer {
             max_doc,
         })
     }
+}
 
+impl<O: IndexOutput> Lucene54DocValuesConsumer<O> {
+    // due to this method will call self recursively in some situation with the parameter
+    // values wrapped in `ReusableIterFilter`, so if we have to use trait object instead of
+    // generic to avoid infinite type resolve like
+    // ReusableIterFilter<ReusableIterFilter<ReusableIterFilter<..., P>, P>
     fn add_numeric(
         &mut self,
         field_info: &FieldInfo,
-        values: &mut ReusableIterator<Item = Result<Numeric>>,
+        values: &mut dyn ReusableIterator<Item = Result<Numeric>>,
         number_type: NumberType,
     ) -> Result<()> {
         let mut count = 0i64;
@@ -153,9 +157,9 @@ impl Lucene54DocValuesConsumer {
 
         debug_assert!(count > 0);
         let delta = max_value.wrapping_sub(min_value);
-        let delta_bits_required = DirectWriter::unsigned_bits_required(delta);
+        let delta_bits_required = DirectWriter::<O>::unsigned_bits_required(delta);
         let table_bits_required = if let Some(ref unique_values) = unique_values {
-            DirectWriter::bits_required((unique_values.len() - 1) as i64)
+            DirectWriter::<O>::bits_required((unique_values.len() - 1) as i64)
         } else {
             i32::max_value()
         };
@@ -174,29 +178,29 @@ impl Lucene54DocValuesConsumer {
                     && zero_count == missing_count))
         {
             // either one unique value C or two unique values: "missing" and C
-            doc_values::CONST_COMPRESSED
+            Lucene54DocValuesFormat::CONST_COMPRESSED
         } else if sparse && count >= 1024 {
             // require at least 1024 docs to avoid flipping back and forth when doing NRT search
-            doc_values::SPARSE_COMPRESSED
+            Lucene54DocValuesFormat::SPARSE_COMPRESSED
         } else if unique_values.is_some() && table_bits_required < delta_bits_required {
-            doc_values::TABLE_COMPRESSED
+            Lucene54DocValuesFormat::TABLE_COMPRESSED
         } else if gcd != 0 && gcd != 1 {
             let gcd_delta: i64 = (max_value.wrapping_sub(min_value)) / gcd;
-            let gcd_bits_required = DirectWriter::unsigned_bits_required(gcd_delta);
+            let gcd_bits_required = DirectWriter::<O>::unsigned_bits_required(gcd_delta);
 
             if gcd_bits_required < delta_bits_required {
-                doc_values::GCD_COMPRESSED
+                Lucene54DocValuesFormat::GCD_COMPRESSED
             } else {
-                doc_values::DELTA_COMPRESSED
+                Lucene54DocValuesFormat::DELTA_COMPRESSED
             }
         } else {
-            doc_values::DELTA_COMPRESSED
+            Lucene54DocValuesFormat::DELTA_COMPRESSED
         };
 
         self.meta.write_vint(field_info.number as i32)?;
-        self.meta.write_byte(doc_values::NUMERIC)?;
+        self.meta.write_byte(Lucene54DocValuesFormat::NUMERIC)?;
         self.meta.write_vint(format)?;
-        if format == doc_values::SPARSE_COMPRESSED {
+        if format == Lucene54DocValuesFormat::SPARSE_COMPRESSED {
             self.meta.write_long(self.data.file_pointer())?;
             let num_docs_with_value: i64 = match number_type {
                 NumberType::VALUE => count - missing_count,
@@ -207,9 +211,11 @@ impl Lucene54DocValuesConsumer {
                 self.write_sparse_missing_bitset(values, number_type, num_docs_with_value)?;
             debug_assert!(max_doc == count);
         } else if missing_count == 0 {
-            self.meta.write_long(doc_values::ALL_LIVE as i64)?;
+            self.meta
+                .write_long(Lucene54DocValuesFormat::ALL_LIVE as i64)?;
         } else if missing_count == count {
-            self.meta.write_long(doc_values::ALL_MISSING as i64)?;
+            self.meta
+                .write_long(Lucene54DocValuesFormat::ALL_MISSING as i64)?;
         } else {
             self.meta.write_long(self.data.file_pointer())?;
             values.reset();
@@ -219,7 +225,7 @@ impl Lucene54DocValuesConsumer {
         self.meta.write_vlong(count)?;
 
         match format {
-            doc_values::CONST_COMPRESSED => {
+            Lucene54DocValuesFormat::CONST_COMPRESSED => {
                 debug_assert!(
                     unique_values.is_some() && !unique_values.as_ref().unwrap().is_empty()
                 );
@@ -230,14 +236,14 @@ impl Lucene54DocValuesConsumer {
                 // write the constant (nonzero value in the n=2 case, singleton value otherwise)
                 self.meta.write_long(v)?;
             }
-            doc_values::GCD_COMPRESSED => {
+            Lucene54DocValuesFormat::GCD_COMPRESSED => {
                 self.meta.write_long(min_value)?;
                 self.meta.write_long(gcd)?;
                 let max_delta = (max_value.wrapping_sub(min_value)) / gcd;
-                let bits = DirectWriter::unsigned_bits_required(max_delta);
+                let bits = DirectWriter::<O>::unsigned_bits_required(max_delta);
                 self.meta.write_vint(bits)?;
                 let mut quotient_writer =
-                    DirectWriter::get_instance(self.data.as_mut(), count, bits)?;
+                    DirectWriter::<O>::get_instance(&mut self.data, count, bits)?;
                 values.reset();
                 for nv in values {
                     let nv = nv?;
@@ -246,12 +252,12 @@ impl Lucene54DocValuesConsumer {
                 }
                 quotient_writer.finish()?;
             }
-            doc_values::DELTA_COMPRESSED => {
+            Lucene54DocValuesFormat::DELTA_COMPRESSED => {
                 let min_delta = if delta < 0 { 0 } else { min_value };
                 self.meta.write_long(min_delta)?;
                 self.meta.write_vint(delta_bits_required)?;
                 let mut writer =
-                    DirectWriter::get_instance(self.data.as_mut(), count, delta_bits_required)?;
+                    DirectWriter::<O>::get_instance(&mut self.data, count, delta_bits_required)?;
                 values.reset();
                 for nv in values {
                     let nv = nv?;
@@ -260,7 +266,7 @@ impl Lucene54DocValuesConsumer {
                 }
                 writer.finish()?;
             }
-            doc_values::TABLE_COMPRESSED => {
+            Lucene54DocValuesFormat::TABLE_COMPRESSED => {
                 if let Some(ref unique_values) = unique_values {
                     self.meta.write_vint(unique_values.len() as i32)?;
                     let mut i = 0;
@@ -272,7 +278,7 @@ impl Lucene54DocValuesConsumer {
                     }
                     self.meta.write_vint(table_bits_required)?;
                     let mut ords_writer =
-                        DirectWriter::get_instance(self.data.as_mut(), count, table_bits_required)?;
+                        DirectWriter::get_instance(&mut self.data, count, table_bits_required)?;
                     values.reset();
                     for nv in values {
                         let nv = nv?;
@@ -282,7 +288,7 @@ impl Lucene54DocValuesConsumer {
                     ords_writer.finish()?;
                 }
             }
-            doc_values::SPARSE_COMPRESSED => {
+            Lucene54DocValuesFormat::SPARSE_COMPRESSED => {
                 match number_type {
                     NumberType::VALUE => {
                         self.meta.write_byte(0)?;
@@ -314,9 +320,9 @@ impl Lucene54DocValuesConsumer {
     // TODO: in some cases representing missing with minValue-1 wouldn't take up additional space
     // and so on, but this is very simple, and algorithms only check this for values of 0
     // anyway (doesnt slow down normal decode)
-    fn write_missing_bitset_numeric(
+    fn write_missing_bitset_numeric<T: ReusableIterator<Item = Result<Numeric>> + ?Sized>(
         &mut self,
-        values: &mut ReusableIterator<Item = Result<Numeric>>,
+        values: &mut T,
     ) -> Result<()> {
         let mut bits = 0u8;
         let mut count = 0i32;
@@ -344,7 +350,7 @@ impl Lucene54DocValuesConsumer {
 
     fn write_missing_bitset_bytes(
         &mut self,
-        values: &mut ReusableIterator<Item = Result<BytesRef>>,
+        values: &mut impl ReusableIterator<Item = Result<BytesRef>>,
     ) -> Result<()> {
         let mut bits = 0u8;
         let mut count = 0i32;
@@ -370,9 +376,9 @@ impl Lucene54DocValuesConsumer {
         Ok(())
     }
 
-    fn write_sparse_missing_bitset(
+    fn write_sparse_missing_bitset<T: ReusableIterator<Item = Result<Numeric>> + ?Sized>(
         &mut self,
-        values: &mut ReusableIterator<Item = Result<Numeric>>,
+        values: &mut T,
         number_type: NumberType,
         num_docs_with_value: i64,
     ) -> Result<i64> {
@@ -380,12 +386,12 @@ impl Lucene54DocValuesConsumer {
 
         // Write doc IDs that have a value
         self.meta
-            .write_vint(doc_values::DIRECT_MONOTONIC_BLOCK_SHIFT)?;
+            .write_vint(Lucene54DocValuesFormat::DIRECT_MONOTONIC_BLOCK_SHIFT)?;
         let mut doc_ids_writer = DirectMonotonicWriter::get_instance(
-            self.meta.as_mut(),
-            self.data.as_mut(),
+            &mut self.meta,
+            &mut self.data,
             num_docs_with_value,
-            doc_values::DIRECT_MONOTONIC_BLOCK_SHIFT,
+            Lucene54DocValuesFormat::DIRECT_MONOTONIC_BLOCK_SHIFT,
         )?;
         let mut doc_id = 0;
         for nv in values {
@@ -414,7 +420,7 @@ impl Lucene54DocValuesConsumer {
     fn add_terms_dict(
         &mut self,
         field_info: &FieldInfo,
-        values: &mut ReusableIterator<Item = Result<BytesRef>>,
+        values: &mut impl ReusableIterator<Item = Result<BytesRef>>,
     ) -> Result<()> {
         // first check if it's a "fixed-length" terms dict, and compressibility if so
         let mut min_length = i32::max_value();
@@ -434,7 +440,8 @@ impl Lucene54DocValuesConsumer {
             min_length = min_length.min(v.len() as i32);
             max_length = max_length.max(v.len() as i32);
             if min_length == max_length {
-                let term_position = (num_values as i32 & doc_values::INTERVAL_MASK) as i32;
+                let term_position =
+                    (num_values as i32 & Lucene54DocValuesFormat::INTERVAL_MASK) as i32;
                 if term_position == 0 {
                     // first term in block, save it away to compare against the last term later
                     previous_value.resize(v.len(), 0);
@@ -451,12 +458,12 @@ impl Lucene54DocValuesConsumer {
         // prefix compression "costs" worst case 2 bytes per term because we must store suffix
         // lengths. so if we share at least 3 bytes on average, always compress.
         if min_length == max_length
-            && prefix_sum as i64 <= 3 * (num_values >> doc_values::INTERVAL_SHIFT)
+            && prefix_sum as i64 <= 3 * (num_values >> Lucene54DocValuesFormat::INTERVAL_SHIFT)
         {
             // no index needed: not very compressible, direct addressing by mult
             values.reset();
             self.add_binary_field(field_info, values)?;
-        } else if (num_values as i32) < doc_values::REVERSE_INTERVAL_COUNT {
+        } else if (num_values as i32) < Lucene54DocValuesFormat::REVERSE_INTERVAL_COUNT {
             // low cardinality: waste a few KB of ram, but can't really use fancy index etc
             values.reset();
             self.add_binary_field(field_info, values)?;
@@ -464,8 +471,9 @@ impl Lucene54DocValuesConsumer {
             debug_assert!(num_values > 0); // we don't have to handle the empty case
                                            // header
             self.meta.write_vint(field_info.number as i32)?;
-            self.meta.write_byte(doc_values::BINARY)?;
-            self.meta.write_vint(doc_values::BINARY_PREFIX_COMPRESSED)?;
+            self.meta.write_byte(Lucene54DocValuesFormat::BINARY)?;
+            self.meta
+                .write_vint(Lucene54DocValuesFormat::BINARY_PREFIX_COMPRESSED)?;
             self.meta.write_long(-1i64)?;
             // now write the bytes: sharing prefixes within a block
             let start_fp = self.data.file_pointer();
@@ -480,11 +488,13 @@ impl Lucene54DocValuesConsumer {
             let mut header_buffer = RAMOutputStream::new(false);
             let mut last_term: Vec<u8> = vec![];
             let mut count = 0i64;
-            let mut suffix_deltas: Vec<i32> = vec![0i32; doc_values::INTERVAL_COUNT as usize];
+            let mut suffix_deltas: Vec<i32> =
+                vec![0i32; Lucene54DocValuesFormat::INTERVAL_COUNT as usize];
 
             {
-                let mut term_address =
-                    MonotonicBlockPackedWriter::new(doc_values::MONOTONIC_BLOCK_SIZE as usize);
+                let mut term_address = MonotonicBlockPackedWriter::new(
+                    Lucene54DocValuesFormat::MONOTONIC_BLOCK_SIZE as usize,
+                );
                 values.reset();
                 loop {
                     let v = match values.next() {
@@ -493,17 +503,14 @@ impl Lucene54DocValuesConsumer {
                         }
                         Some(r) => r?,
                     };
-                    let term_position = (count & doc_values::INTERVAL_MASK as i64) as i32;
+                    let term_position =
+                        (count & Lucene54DocValuesFormat::INTERVAL_MASK as i64) as i32;
                     if term_position == 0 {
-                        term_address.add(
-                            self.data.file_pointer() - start_fp,
-                            address_buffer.as_data_output(),
-                        )?;
+                        term_address
+                            .add(self.data.file_pointer() - start_fp, &mut address_buffer)?;
                         // abs-encode first term
-                        header_buffer.as_data_output().write_vint(v.len() as i32)?;
-                        header_buffer
-                            .as_data_output()
-                            .write_bytes(v.bytes(), 0, v.len())?;
+                        header_buffer.write_vint(v.len() as i32)?;
+                        header_buffer.write_bytes(v.bytes(), 0, v.len())?;
 
                         last_term.resize(v.len(), 0);
                         last_term.copy_from_slice(v.bytes());
@@ -513,10 +520,8 @@ impl Lucene54DocValuesConsumer {
                         // terms just get less compression.
                         let shared_prefix =
                             255.min(bytes_difference(&last_term, v.bytes())) as usize;
-                        bytes_buffer
-                            .as_data_output()
-                            .write_byte(shared_prefix as u8)?;
-                        bytes_buffer.as_data_output().write_bytes(
+                        bytes_buffer.write_byte(shared_prefix as u8)?;
+                        bytes_buffer.write_bytes(
                             v.bytes(),
                             shared_prefix,
                             v.len() - shared_prefix,
@@ -528,7 +533,7 @@ impl Lucene54DocValuesConsumer {
 
                     count += 1;
                     // flush block
-                    if (count & doc_values::INTERVAL_MASK as i64) == 0 {
+                    if (count & Lucene54DocValuesFormat::INTERVAL_MASK as i64) == 0 {
                         self.flush_terms_dict_block(
                             &mut header_buffer,
                             &mut bytes_buffer,
@@ -538,7 +543,7 @@ impl Lucene54DocValuesConsumer {
                 }
 
                 // flush trailing crap
-                let leftover = (count & doc_values::INTERVAL_MASK as i64) as usize;
+                let leftover = (count & Lucene54DocValuesFormat::INTERVAL_MASK as i64) as usize;
                 if leftover > 0 {
                     for i in leftover..suffix_deltas.capacity() {
                         suffix_deltas[i as usize] = 0;
@@ -550,18 +555,19 @@ impl Lucene54DocValuesConsumer {
                     )?;
                 }
                 // write addresses of indexed terms
-                term_address.finish(address_buffer.as_data_output())?;
+                term_address.finish(&mut address_buffer)?;
             }
 
             let index_start_fp = self.data.file_pointer();
-            address_buffer.write_to(self.data.as_mut())?;
+            address_buffer.write_to(&mut self.data)?;
             self.meta.write_vint(min_length)?;
             self.meta.write_vint(max_length)?;
             self.meta.write_vlong(count)?;
             self.meta.write_long(start_fp)?;
             self.meta.write_long(index_start_fp)?;
             self.meta.write_vint(PACKED_VERSION_CURRENT)?;
-            self.meta.write_vint(doc_values::MONOTONIC_BLOCK_SIZE)?;
+            self.meta
+                .write_vint(Lucene54DocValuesFormat::MONOTONIC_BLOCK_SIZE)?;
 
             values.reset();
             self.add_reverse_term_index(field_info, values, max_length)?;
@@ -579,7 +585,7 @@ impl Lucene54DocValuesConsumer {
         &mut self,
         header_buffer: &mut RAMOutputStream,
         bytes_buffer: &mut RAMOutputStream,
-        suffix_deltas: &Vec<i32>,
+        suffix_deltas: &[i32],
     ) -> Result<()> {
         let mut two_byte = false;
         for i in 1..suffix_deltas.len() {
@@ -600,9 +606,9 @@ impl Lucene54DocValuesConsumer {
             }
         }
 
-        header_buffer.write_to(self.data.as_mut())?;
+        header_buffer.write_to(&mut self.data)?;
         header_buffer.reset();
-        bytes_buffer.write_to(self.data.as_mut())?;
+        bytes_buffer.write_to(&mut self.data)?;
         bytes_buffer.reset();
         Ok(())
     }
@@ -614,7 +620,7 @@ impl Lucene54DocValuesConsumer {
     fn add_reverse_term_index(
         &mut self,
         _field_info: &FieldInfo,
-        values: &mut ReusableIterator<Item = Result<BytesRef>>,
+        values: &mut impl ReusableIterator<Item = Result<BytesRef>>,
         _max_length: i32,
     ) -> Result<()> {
         let mut count = 0i64;
@@ -622,20 +628,22 @@ impl Lucene54DocValuesConsumer {
         let start_fp = self.data.file_pointer();
         let mut paged_bytes = PagedBytes::new(15);
         {
-            let mut addresses =
-                MonotonicBlockPackedWriter::new(doc_values::MONOTONIC_BLOCK_SIZE as usize);
+            let mut addresses = MonotonicBlockPackedWriter::new(
+                Lucene54DocValuesFormat::MONOTONIC_BLOCK_SIZE as usize,
+            );
 
             for v in values {
                 let v = v?;
-                let term_position = (count & doc_values::REVERSE_INTERVAL_MASK as i64) as i32;
+                let term_position =
+                    (count & Lucene54DocValuesFormat::REVERSE_INTERVAL_MASK as i64) as i32;
                 if term_position == 0 {
                     let len = sort_key_length(&prior_term, v.bytes());
                     let index_term = BytesRef::new(&v.bytes()[0..len]);
                     addresses.add(
                         paged_bytes.copy_using_length_prefix(&index_term)?,
-                        self.data.as_data_output(),
+                        &mut self.data,
                     )?;
-                } else if term_position == doc_values::REVERSE_INTERVAL_MASK {
+                } else if term_position == Lucene54DocValuesFormat::REVERSE_INTERVAL_MASK {
                     prior_term.resize(v.len(), 0);
                     prior_term.copy_from_slice(v.bytes());
                 }
@@ -643,20 +651,19 @@ impl Lucene54DocValuesConsumer {
                 count += 1;
             }
 
-            addresses.finish(self.data.as_data_output())?;
+            addresses.finish(&mut self.data)?;
         }
         let num_bytes = paged_bytes.get_pointer();
         paged_bytes.freeze(true)?;
         let mut input = paged_bytes.get_input()?;
         self.meta.write_long(start_fp)?;
         self.data.write_vlong(num_bytes)?;
-        self.data
-            .copy_bytes(input.as_data_input(), num_bytes as usize)
+        self.data.copy_bytes(&mut input, num_bytes as usize)
     }
 
     fn unique_value_sets(
-        doc_to_value_count: &mut ReusableIterator<Item = Result<u32>>,
-        values: &mut ReusableIterator<Item = Result<Numeric>>,
+        doc_to_value_count: &mut impl ReusableIterator<Item = Result<u32>>,
+        values: &mut impl ReusableIterator<Item = Result<Numeric>>,
     ) -> Result<Option<Vec<Vec<i64>>>> {
         let mut unique_value_sets: HashSet<u64> = HashSet::new();
         let mut result = vec![];
@@ -694,7 +701,7 @@ impl Lucene54DocValuesConsumer {
         Ok(Some(result))
     }
 
-    fn write_dictionary(&mut self, unique_value_sets: &Vec<Vec<i64>>) -> Result<()> {
+    fn write_dictionary(&mut self, unique_value_sets: &[Vec<i64>]) -> Result<()> {
         let mut length_sum = 0;
         for longs in unique_value_sets {
             length_sum += longs.len();
@@ -715,11 +722,15 @@ impl Lucene54DocValuesConsumer {
         Ok(())
     }
 
-    fn doc_to_set_id<'a>(
+    fn doc_to_set_id<'a, RI1, RI2>(
         unique_value_sets: &'a [Vec<i64>],
-        doc_to_value_count: &'a mut ReusableIterator<Item = Result<u32>>,
-        values: &'a mut ReusableIterator<Item = Result<Numeric>>,
-    ) -> SetIdIter<'a> {
+        doc_to_value_count: &'a mut RI1,
+        values: &'a mut RI2,
+    ) -> SetIdIter<'a, RI1, RI2>
+    where
+        RI1: ReusableIterator<Item = Result<u32>>,
+        RI2: ReusableIterator<Item = Result<Numeric>>,
+    {
         let mut set_ids: HashMap<u64, i32> = HashMap::new();
         let mut i = 0;
         for set in unique_value_sets {
@@ -737,20 +748,21 @@ impl Lucene54DocValuesConsumer {
         values: &mut ReusableIterator<Item = Result<u32>>,
     ) -> Result<()> {
         self.meta.write_vint(field_info.number as i32)?;
-        self.meta.write_byte(doc_values::NUMERIC)?;
-        self.meta.write_vint(doc_values::MONOTONIC_COMPRESSED)?;
+        self.meta.write_byte(Lucene54DocValuesFormat::NUMERIC)?;
+        self.meta
+            .write_vint(Lucene54DocValuesFormat::MONOTONIC_COMPRESSED)?;
         self.meta.write_long(-1)?;
         self.meta.write_long(self.data.file_pointer())?;
         self.meta.write_vlong(self.max_doc as i64)?;
         self.meta
-            .write_vint(doc_values::DIRECT_MONOTONIC_BLOCK_SHIFT)?;
+            .write_vint(Lucene54DocValuesFormat::DIRECT_MONOTONIC_BLOCK_SHIFT)?;
 
         {
             let mut writer = DirectMonotonicWriter::get_instance(
-                self.meta.as_mut(),
-                self.data.as_mut(),
+                &mut self.meta,
+                &mut self.data,
                 self.max_doc as i64 + 1,
-                doc_values::DIRECT_MONOTONIC_BLOCK_SHIFT,
+                Lucene54DocValuesFormat::DIRECT_MONOTONIC_BLOCK_SHIFT,
             )?;
             let mut addr = 0i64;
             writer.add(addr)?;
@@ -765,11 +777,11 @@ impl Lucene54DocValuesConsumer {
     }
 }
 
-impl DocValuesConsumer for Lucene54DocValuesConsumer {
+impl<O: IndexOutput> DocValuesConsumer for Lucene54DocValuesConsumer<O> {
     fn add_numeric_field(
         &mut self,
         field_info: &FieldInfo,
-        values: &mut ReusableIterator<Item = Result<Numeric>>,
+        values: &mut impl ReusableIterator<Item = Result<Numeric>>,
     ) -> Result<()> {
         self.add_numeric(field_info, values, NumberType::VALUE)
     }
@@ -777,11 +789,11 @@ impl DocValuesConsumer for Lucene54DocValuesConsumer {
     fn add_binary_field(
         &mut self,
         field_info: &FieldInfo,
-        values: &mut ReusableIterator<Item = Result<BytesRef>>,
+        values: &mut impl ReusableIterator<Item = Result<BytesRef>>,
     ) -> Result<()> {
         // write the byte[] data
         self.meta.write_vint(field_info.number as i32)?;
-        self.meta.write_byte(doc_values::BINARY)?;
+        self.meta.write_byte(Lucene54DocValuesFormat::BINARY)?;
         let mut min_length = i32::max_value();
         let mut max_length = i32::min_value();
         let start_fp = self.data.file_pointer();
@@ -810,15 +822,17 @@ impl DocValuesConsumer for Lucene54DocValuesConsumer {
         }
 
         let v = if min_length == max_length {
-            doc_values::BINARY_FIXED_UNCOMPRESSED
+            Lucene54DocValuesFormat::BINARY_FIXED_UNCOMPRESSED
         } else {
-            doc_values::BINARY_VARIABLE_UNCOMPRESSED
+            Lucene54DocValuesFormat::BINARY_VARIABLE_UNCOMPRESSED
         };
         self.meta.write_vint(v)?;
         if missing_count == 0 {
-            self.meta.write_long(doc_values::ALL_LIVE as i64)?;
+            self.meta
+                .write_long(Lucene54DocValuesFormat::ALL_LIVE as i64)?;
         } else if missing_count == count {
-            self.meta.write_long(doc_values::ALL_MISSING as i64)?;
+            self.meta
+                .write_long(Lucene54DocValuesFormat::ALL_MISSING as i64)?;
         } else {
             self.meta.write_long(self.data.file_pointer())?;
             values.reset();
@@ -836,14 +850,14 @@ impl DocValuesConsumer for Lucene54DocValuesConsumer {
         if min_length != max_length {
             self.meta.write_long(self.data.file_pointer())?;
             self.meta
-                .write_vint(doc_values::DIRECT_MONOTONIC_BLOCK_SHIFT)?;
+                .write_vint(Lucene54DocValuesFormat::DIRECT_MONOTONIC_BLOCK_SHIFT)?;
 
             {
                 let mut writer = DirectMonotonicWriter::get_instance(
-                    self.meta.as_mut(),
-                    self.data.as_mut(),
+                    &mut self.meta,
+                    &mut self.data,
                     count + 1,
-                    doc_values::DIRECT_MONOTONIC_BLOCK_SHIFT,
+                    Lucene54DocValuesFormat::DIRECT_MONOTONIC_BLOCK_SHIFT,
                 )?;
                 let mut addr = 0;
                 writer.add(addr)?;
@@ -865,11 +879,11 @@ impl DocValuesConsumer for Lucene54DocValuesConsumer {
     fn add_sorted_field(
         &mut self,
         field_info: &FieldInfo,
-        values: &mut ReusableIterator<Item = Result<BytesRef>>,
-        doc_to_ord: &mut ReusableIterator<Item = Result<Numeric>>,
+        values: &mut impl ReusableIterator<Item = Result<BytesRef>>,
+        doc_to_ord: &mut impl ReusableIterator<Item = Result<Numeric>>,
     ) -> Result<()> {
         self.meta.write_vint(field_info.number as i32)?;
-        self.meta.write_byte(doc_values::SORTED)?;
+        self.meta.write_byte(Lucene54DocValuesFormat::SORTED)?;
         self.add_terms_dict(field_info, values)?;
         self.add_numeric(field_info, doc_to_ord, NumberType::ORDINAL)
     }
@@ -877,13 +891,15 @@ impl DocValuesConsumer for Lucene54DocValuesConsumer {
     fn add_sorted_numeric_field(
         &mut self,
         field_info: &FieldInfo,
-        values: &mut ReusableIterator<Item = Result<Numeric>>,
-        doc_to_value_count: &mut ReusableIterator<Item = Result<u32>>,
+        values: &mut impl ReusableIterator<Item = Result<Numeric>>,
+        doc_to_value_count: &mut impl ReusableIterator<Item = Result<u32>>,
     ) -> Result<()> {
         self.meta.write_vint(field_info.number as i32)?;
-        self.meta.write_byte(doc_values::SORTED_NUMERIC)?;
+        self.meta
+            .write_byte(Lucene54DocValuesFormat::SORTED_NUMERIC)?;
         if is_single_valued(doc_to_value_count)? {
-            self.meta.write_vint(doc_values::SORTED_SINGLE_VALUED)?;
+            self.meta
+                .write_vint(Lucene54DocValuesFormat::SORTED_SINGLE_VALUED)?;
             // The field is single-valued, we can encode it as NUMERIC
             self.add_numeric_field(
                 field_info,
@@ -891,9 +907,10 @@ impl DocValuesConsumer for Lucene54DocValuesConsumer {
             )?;
         } else {
             if let Some(ref unique_value_sets) =
-                Lucene54DocValuesConsumer::unique_value_sets(doc_to_value_count, values)?
+                Lucene54DocValuesConsumer::<O>::unique_value_sets(doc_to_value_count, values)?
             {
-                self.meta.write_vint(doc_values::SORTED_SET_TABLE)?;
+                self.meta
+                    .write_vint(Lucene54DocValuesFormat::SORTED_SET_TABLE)?;
                 // write the set_id -> values mapping
                 self.write_dictionary(unique_value_sets)?;
                 // write the doc -> set_id as a numeric field
@@ -901,7 +918,7 @@ impl DocValuesConsumer for Lucene54DocValuesConsumer {
                 values.reset();
                 self.add_numeric(
                     field_info,
-                    &mut Lucene54DocValuesConsumer::doc_to_set_id(
+                    &mut Lucene54DocValuesConsumer::<O>::doc_to_set_id(
                         unique_value_sets,
                         doc_to_value_count,
                         values,
@@ -909,7 +926,8 @@ impl DocValuesConsumer for Lucene54DocValuesConsumer {
                     NumberType::ORDINAL,
                 )?;
             } else {
-                self.meta.write_vint(doc_values::SORTED_WITH_ADDRESSES)?;
+                self.meta
+                    .write_vint(Lucene54DocValuesFormat::SORTED_WITH_ADDRESSES)?;
                 // write the stream of values as a numeric field
                 values.reset();
                 self.add_numeric(field_info, values, NumberType::VALUE)?;
@@ -924,14 +942,15 @@ impl DocValuesConsumer for Lucene54DocValuesConsumer {
     fn add_sorted_set_field(
         &mut self,
         field_info: &FieldInfo,
-        values: &mut ReusableIterator<Item = Result<BytesRef>>,
-        doc_to_ord_count: &mut ReusableIterator<Item = Result<u32>>,
-        ords: &mut ReusableIterator<Item = Result<Numeric>>,
+        values: &mut impl ReusableIterator<Item = Result<BytesRef>>,
+        doc_to_ord_count: &mut impl ReusableIterator<Item = Result<u32>>,
+        ords: &mut impl ReusableIterator<Item = Result<Numeric>>,
     ) -> Result<()> {
         self.meta.write_vint(field_info.number as i32)?;
-        self.meta.write_byte(doc_values::SORTED_SET)?;
+        self.meta.write_byte(Lucene54DocValuesFormat::SORTED_SET)?;
         if is_single_valued(doc_to_ord_count)? {
-            self.meta.write_vint(doc_values::SORTED_SINGLE_VALUED)?;
+            self.meta
+                .write_vint(Lucene54DocValuesFormat::SORTED_SINGLE_VALUED)?;
             // The field is single-valued, we can encode it as NUMERIC
             self.add_sorted_field(
                 field_info,
@@ -940,9 +959,10 @@ impl DocValuesConsumer for Lucene54DocValuesConsumer {
             )?;
         } else {
             if let Some(ref unique_value_sets) =
-                Lucene54DocValuesConsumer::unique_value_sets(doc_to_ord_count, ords)?
+                Lucene54DocValuesConsumer::<O>::unique_value_sets(doc_to_ord_count, ords)?
             {
-                self.meta.write_vint(doc_values::SORTED_SET_TABLE)?;
+                self.meta
+                    .write_vint(Lucene54DocValuesFormat::SORTED_SET_TABLE)?;
                 // write the set_id -> values mapping
                 self.write_dictionary(unique_value_sets)?;
                 // write the ord -> byte[] as a binary field
@@ -952,7 +972,7 @@ impl DocValuesConsumer for Lucene54DocValuesConsumer {
                 ords.reset();
                 self.add_numeric(
                     field_info,
-                    &mut Lucene54DocValuesConsumer::doc_to_set_id(
+                    &mut Lucene54DocValuesConsumer::<O>::doc_to_set_id(
                         unique_value_sets,
                         doc_to_ord_count,
                         ords,
@@ -960,7 +980,8 @@ impl DocValuesConsumer for Lucene54DocValuesConsumer {
                     NumberType::ORDINAL,
                 )?;
             } else {
-                self.meta.write_vint(doc_values::SORTED_WITH_ADDRESSES)?;
+                self.meta
+                    .write_vint(Lucene54DocValuesFormat::SORTED_WITH_ADDRESSES)?;
                 // write the ord -> byte[] as a binary field
                 self.add_terms_dict(field_info, values)?;
                 // write the stream of values as a numeric field
@@ -977,19 +998,21 @@ impl DocValuesConsumer for Lucene54DocValuesConsumer {
     }
 }
 
-impl Drop for Lucene54DocValuesConsumer {
+impl<O: IndexOutput> Drop for Lucene54DocValuesConsumer<O> {
     fn drop(&mut self) {
         let mut _success = false;
         // write EOF marker
         let _ = self.meta.write_vint(-1);
         // write checksum
-        let _ = codec_util::write_footer(self.meta.as_mut());
-        let _ = codec_util::write_footer(self.data.as_mut());
+        let _ = codec_util::write_footer(&mut self.meta);
+        let _ = codec_util::write_footer(&mut self.data);
     }
 }
 
+// the use of ReusableIterFilter is recursive in `Lucene54DocValuesConsumer#add_numeric`,
+// so we must use trait object here to avoid endless type loop
 struct ReusableIterFilter<'a, I: 'a, P> {
-    iter: &'a mut ReusableIterator<Item = I>,
+    iter: &'a mut dyn ReusableIterator<Item = I>,
     predicate: P,
 }
 
@@ -998,7 +1021,7 @@ where
     P: FnMut(&I) -> bool,
 {
     pub fn new(
-        iter: &'a mut ReusableIterator<Item = I>,
+        iter: &'a mut dyn ReusableIterator<Item = I>,
         predicate: P,
     ) -> ReusableIterFilter<'a, I, P> {
         ReusableIterFilter { iter, predicate }
@@ -1036,23 +1059,27 @@ where
     }
 }
 
-fn hash_vec(longs: &Vec<i64>) -> u64 {
+fn hash_vec(longs: &[i64]) -> u64 {
     let mut hasher = DefaultHasher::default();
     longs.hash(&mut hasher);
     hasher.finish()
 }
 
-struct SetIdIter<'a> {
-    doc_to_value_count: &'a mut ReusableIterator<Item = Result<u32>>,
-    values: &'a mut ReusableIterator<Item = Result<Numeric>>,
+struct SetIdIter<'a, RI1, RI2> {
+    doc_to_value_count: &'a mut RI1,
+    values: &'a mut RI2,
     set_ids: HashMap<u64, i32>,
     doc_values: Vec<i64>,
 }
 
-impl<'a> SetIdIter<'a> {
+impl<'a, RI1, RI2> SetIdIter<'a, RI1, RI2>
+where
+    RI1: ReusableIterator<Item = Result<u32>>,
+    RI2: ReusableIterator<Item = Result<Numeric>>,
+{
     fn new(
-        doc_to_value_count: &'a mut ReusableIterator<Item = Result<u32>>,
-        values: &'a mut ReusableIterator<Item = Result<Numeric>>,
+        doc_to_value_count: &'a mut RI1,
+        values: &'a mut RI2,
         set_ids: HashMap<u64, i32>,
     ) -> Self {
         SetIdIter {
@@ -1064,7 +1091,11 @@ impl<'a> SetIdIter<'a> {
     }
 }
 
-impl<'a> Iterator for SetIdIter<'a> {
+impl<'a, RI1, RI2> Iterator for SetIdIter<'a, RI1, RI2>
+where
+    RI1: ReusableIterator<Item = Result<u32>>,
+    RI2: ReusableIterator<Item = Result<Numeric>>,
+{
     type Item = Result<Numeric>;
 
     fn next(&mut self) -> Option<Result<Numeric>> {
@@ -1093,7 +1124,11 @@ impl<'a> Iterator for SetIdIter<'a> {
     }
 }
 
-impl<'a> ReusableIterator for SetIdIter<'a> {
+impl<'a, RI1, RI2> ReusableIterator for SetIdIter<'a, RI1, RI2>
+where
+    RI1: ReusableIterator<Item = Result<u32>>,
+    RI2: ReusableIterator<Item = Result<Numeric>>,
+{
     fn reset(&mut self) {
         self.doc_to_value_count.reset();
         self.values.reset();

@@ -1,16 +1,16 @@
 use core::search::{DocIterator, Scorer};
 use core::util::DocId;
-use error::*;
+use error::Result;
 
 /// A Scorer for queries with a required part and an optional part.
 /// Delays `advance()` on the optional part until a `score()` is needed.
 pub struct ReqOptScorer {
-    req_scorer: Box<Scorer>,
-    opt_scorer: Box<Scorer>,
+    req_scorer: Box<dyn Scorer>,
+    opt_scorer: Box<dyn Scorer>,
 }
 
 impl ReqOptScorer {
-    pub fn new(req_scorer: Box<Scorer>, opt_scorer: Box<Scorer>) -> ReqOptScorer {
+    pub fn new(req_scorer: Box<dyn Scorer>, opt_scorer: Box<dyn Scorer>) -> ReqOptScorer {
         ReqOptScorer {
             req_scorer,
             opt_scorer,
@@ -88,8 +88,8 @@ mod tests {
         let s3 = create_mock_scorer(vec![2, 5]);
         let s4 = create_mock_scorer(vec![3, 4, 5]);
 
-        let conjunction_scorer = Box::new(ConjunctionScorer::new(vec![s1, s2]));
-        let disjunction_scorer = Box::new(DisjunctionSumScorer::new(vec![s3, s4]));
+        let conjunction_scorer: Box<dyn Scorer> = Box::new(ConjunctionScorer::new(vec![s1, s2]));
+        let disjunction_scorer: Box<dyn Scorer> = Box::new(DisjunctionSumScorer::new(vec![s3, s4]));
         let mut scorer = ReqOptScorer::new(conjunction_scorer, disjunction_scorer);
 
         assert_eq!(scorer.doc_id(), -1);

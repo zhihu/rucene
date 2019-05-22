@@ -87,26 +87,26 @@ const HISTOGRAM_SIZE: usize = 257;
 // buckets below this size will be sorted with introsort
 const LENGTH_THRESHOLD: usize = 100;
 
-pub struct DefaultIntroSelector<'a, 'b> {
+pub struct DefaultIntroSelector<'a, 'b, P: MutablePointsReader> {
     k: i32,
     num_bytes_to_compare: i32,
     offset: usize,
     pivot: &'a mut Vec<u8>,
     pivot_doc: i32,
     scratch2: &'b mut Vec<u8>,
-    reader: Box<MutablePointsReader>,
+    reader: P,
     bits_per_doc_id: i32,
 }
 
-impl<'a, 'b> DefaultIntroSelector<'a, 'b> {
+impl<'a, 'b, P: MutablePointsReader> DefaultIntroSelector<'a, 'b, P> {
     pub fn new(
         num_bytes_to_compare: i32,
         offset: usize,
         pivot: &'a mut Vec<u8>,
         scratch2: &'b mut Vec<u8>,
-        reader: Box<MutablePointsReader>,
+        reader: P,
         bits_per_doc_id: i32,
-    ) -> DefaultIntroSelector<'a, 'b> {
+    ) -> Self {
         DefaultIntroSelector {
             k: 0,
             num_bytes_to_compare,
@@ -120,7 +120,7 @@ impl<'a, 'b> DefaultIntroSelector<'a, 'b> {
     }
 }
 
-impl<'a, 'b> Selector for DefaultIntroSelector<'a, 'b> {
+impl<'a, 'b, P: MutablePointsReader> Selector for DefaultIntroSelector<'a, 'b, P> {
     fn select(&mut self, from: i32, to: i32, k: i32) {
         debug_assert!(from <= k && k < to);
         self.quick_select(from, to, k, 2 * ((((to - from) as f64).log2()) as i32));

@@ -1,18 +1,30 @@
-use core::index::{LeafReader, LeafReaderContext};
+use core::codec::{Codec, CodecPostingIterator, CodecTermState};
+use core::index::{LeafReaderContext, SearchLeafReader};
 use core::index::{Term, TermContext};
 use core::search::conjunction::ConjunctionScorer;
 use core::search::explanation::Explanation;
-use core::search::posting_iterator::{self, PostingIterator};
-use core::search::searcher::IndexSearcher;
-use core::search::{DocIterator, MatchNoDocScorer, Query, Scorer, SimScorer, SimWeight, Weight,
-                   NO_MORE_DOCS};
+use core::search::posting_iterator::{PostingIterator, PostingIteratorFlags};
+use core::search::searcher::SearchPlanBuilder;
+use core::search::spans::span_boost::{SpanBoostQuery, SpanBoostWeight, SpanBoostWeightEnum};
+use core::search::spans::span_near::{
+    GapSpans, NearSpansOrdered, NearSpansUnordered, SpanGapQuery, SpanGapWeight, SpanNearQuery,
+    SpanNearWeight,
+};
+use core::search::spans::span_or::{SpanOrQuery, SpanOrSpans, SpanOrWeight};
+use core::search::spans::span_term::{SpanTermQuery, SpanTermWeight, TermSpans};
+use core::search::term_query::TermQuery;
+use core::search::{DocIterator, Query, Scorer, SimScorer, SimWeight, Weight, NO_MORE_DOCS};
 use core::util::{DocId, KeyedContext};
+
 use error::{ErrorKind, Result};
 
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::Arc;
 
-pub fn term_contexts(weights: &[Box<SpanWeight>]) -> HashMap<Term, Arc<TermContext>> {
+pub fn term_contexts<C: Codec, T: SpanWeight<C>>(
+    weights: &[T],
+) -> HashMap<Term, Arc<TermContext<CodecTermState<C>>>> {
     let mut terms = HashMap::new();
     for w in weights {
         w.extract_term_contexts(&mut terms);
@@ -21,14 +33,119 @@ pub fn term_contexts(weights: &[Box<SpanWeight>]) -> HashMap<Term, Arc<TermConte
 }
 
 /// Base class for span-based queries.
-pub trait SpanQuery: Query {
+pub trait SpanQuery<C: Codec>: Query<C> {
+    type Weight: SpanWeight<C>;
+
+    fn span_weight(
+        &self,
+        searcher: &dyn SearchPlanBuilder<C>,
+        needs_scores: bool,
+    ) -> Result<Self::Weight>;
+
     /// Returns the name of the field matched by this query.
     fn field(&self) -> &str;
 
-    fn span_weight(&self, searcher: &IndexSearcher, needs_scores: bool) -> Result<Box<SpanWeight>>;
-
     fn ctx(&self) -> Option<KeyedContext> {
         None
+    }
+}
+
+pub enum SpanQueryEnum {
+    Term(SpanTermQuery),
+    Gap(SpanGapQuery),
+    Or(SpanOrQuery),
+    Near(SpanNearQuery),
+    Boost(SpanBoostQuery),
+}
+
+impl<C: Codec> SpanQuery<C> for SpanQueryEnum {
+    type Weight = SpanWeightEnum<C>;
+
+    fn span_weight(
+        &self,
+        searcher: &dyn SearchPlanBuilder<C>,
+        needs_scores: bool,
+    ) -> Result<Self::Weight> {
+        let weight = match self {
+            SpanQueryEnum::Term(q) => SpanWeightEnum::Term(q.span_weight(searcher, needs_scores)?),
+            SpanQueryEnum::Gap(q) => SpanWeightEnum::Gap(q.span_weight(searcher, needs_scores)?),
+            SpanQueryEnum::Or(q) => SpanWeightEnum::Or(q.span_weight(searcher, needs_scores)?),
+            SpanQueryEnum::Near(q) => SpanWeightEnum::Near(q.span_weight(searcher, needs_scores)?),
+            SpanQueryEnum::Boost(q) => q.span_weight(searcher, needs_scores)?,
+        };
+        Ok(weight)
+    }
+
+    fn field(&self) -> &str {
+        match self {
+            SpanQueryEnum::Term(q) => SpanQuery::<C>::field(q),
+            SpanQueryEnum::Gap(q) => SpanQuery::<C>::field(q),
+            SpanQueryEnum::Or(q) => SpanQuery::<C>::field(q),
+            SpanQueryEnum::Near(q) => SpanQuery::<C>::field(q),
+            SpanQueryEnum::Boost(q) => SpanQuery::<C>::field(q),
+        }
+    }
+
+    fn ctx(&self) -> Option<KeyedContext> {
+        match self {
+            SpanQueryEnum::Term(q) => SpanQuery::<C>::ctx(q),
+            SpanQueryEnum::Gap(q) => SpanQuery::<C>::ctx(q),
+            SpanQueryEnum::Or(q) => SpanQuery::<C>::ctx(q),
+            SpanQueryEnum::Near(q) => SpanQuery::<C>::ctx(q),
+            SpanQueryEnum::Boost(q) => SpanQuery::<C>::ctx(q),
+        }
+    }
+}
+
+impl<C: Codec> Query<C> for SpanQueryEnum {
+    fn create_weight(
+        &self,
+        searcher: &dyn SearchPlanBuilder<C>,
+        needs_scores: bool,
+    ) -> Result<Box<dyn Weight<C>>> {
+        match self {
+            SpanQueryEnum::Term(q) => q.create_weight(searcher, needs_scores),
+            SpanQueryEnum::Gap(q) => q.create_weight(searcher, needs_scores),
+            SpanQueryEnum::Or(q) => q.create_weight(searcher, needs_scores),
+            SpanQueryEnum::Near(q) => q.create_weight(searcher, needs_scores),
+            SpanQueryEnum::Boost(q) => q.create_weight(searcher, needs_scores),
+        }
+    }
+
+    fn extract_terms(&self) -> Vec<TermQuery> {
+        match self {
+            SpanQueryEnum::Term(q) => Query::<C>::extract_terms(q),
+            SpanQueryEnum::Gap(q) => Query::<C>::extract_terms(q),
+            SpanQueryEnum::Or(q) => Query::<C>::extract_terms(q),
+            SpanQueryEnum::Near(q) => Query::<C>::extract_terms(q),
+            SpanQueryEnum::Boost(q) => Query::<C>::extract_terms(q),
+        }
+    }
+
+    fn query_type(&self) -> &'static str {
+        "WrappedSpanQuery"
+    }
+
+    fn as_any(&self) -> &::std::any::Any {
+        match self {
+            SpanQueryEnum::Term(q) => Query::<C>::as_any(q),
+            SpanQueryEnum::Gap(q) => Query::<C>::as_any(q),
+            SpanQueryEnum::Or(q) => Query::<C>::as_any(q),
+            SpanQueryEnum::Near(q) => Query::<C>::as_any(q),
+            SpanQueryEnum::Boost(q) => Query::<C>::as_any(q),
+        }
+    }
+}
+
+impl fmt::Display for SpanQueryEnum {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            SpanQueryEnum::Term(q) => write!(f, "SpanQueryEnum({})", q),
+            SpanQueryEnum::Gap(q) => write!(f, "SpanQueryEnum({})", q),
+            SpanQueryEnum::Or(q) => write!(f, "SpanQueryEnum({})", q),
+            SpanQueryEnum::Near(q) => write!(f, "SpanQueryEnum({})", q),
+            SpanQueryEnum::Boost(q) => write!(f, "SpanQueryEnum({})", q),
+        }
     }
 }
 
@@ -69,7 +186,7 @@ pub trait Spans: DocIterator {
     /// `NO_MORE_POSITIONS` has been reached.
     ///
     /// @param collector a SpanCollector
-    fn collect(&mut self, collector: &mut SpanCollector) -> Result<()>;
+    fn collect(&mut self, collector: &mut impl SpanCollector) -> Result<()>;
 
     ////
     /// Return an estimation of the cost of using the positions of
@@ -98,13 +215,215 @@ pub trait Spans: DocIterator {
     }
 }
 
+pub enum SpansEnum<P: PostingIterator> {
+    Gap(GapSpans),
+    NearOrdered(NearSpansOrdered<P>),
+    NearUnordered(Box<NearSpansUnordered<P>>),
+    Or(SpanOrSpans<P>),
+    Term(TermSpans<P>),
+}
+
+impl<P: PostingIterator> Spans for SpansEnum<P> {
+    fn next_start_position(&mut self) -> Result<i32> {
+        match self {
+            SpansEnum::Gap(s) => s.next_start_position(),
+            SpansEnum::NearOrdered(s) => s.next_start_position(),
+            SpansEnum::NearUnordered(s) => s.next_start_position(),
+            SpansEnum::Or(s) => s.next_start_position(),
+            SpansEnum::Term(s) => s.next_start_position(),
+        }
+    }
+
+    fn start_position(&self) -> i32 {
+        match self {
+            SpansEnum::Gap(s) => s.start_position(),
+            SpansEnum::NearOrdered(s) => s.start_position(),
+            SpansEnum::NearUnordered(s) => s.start_position(),
+            SpansEnum::Or(s) => s.start_position(),
+            SpansEnum::Term(s) => s.start_position(),
+        }
+    }
+
+    fn end_position(&self) -> i32 {
+        match self {
+            SpansEnum::Gap(s) => s.end_position(),
+            SpansEnum::NearOrdered(s) => s.end_position(),
+            SpansEnum::NearUnordered(s) => s.end_position(),
+            SpansEnum::Or(s) => s.end_position(),
+            SpansEnum::Term(s) => s.end_position(),
+        }
+    }
+
+    fn width(&self) -> i32 {
+        match self {
+            SpansEnum::Gap(s) => s.width(),
+            SpansEnum::NearOrdered(s) => s.width(),
+            SpansEnum::NearUnordered(s) => s.width(),
+            SpansEnum::Or(s) => s.width(),
+            SpansEnum::Term(s) => s.width(),
+        }
+    }
+
+    fn collect(&mut self, collector: &mut impl SpanCollector) -> Result<()> {
+        match self {
+            SpansEnum::Gap(s) => s.collect(collector),
+            SpansEnum::NearOrdered(s) => s.collect(collector),
+            SpansEnum::NearUnordered(s) => s.collect(collector),
+            SpansEnum::Or(s) => s.collect(collector),
+            SpansEnum::Term(s) => s.collect(collector),
+        }
+    }
+
+    fn positions_cost(&self) -> f32 {
+        match self {
+            SpansEnum::Gap(s) => s.positions_cost(),
+            SpansEnum::NearOrdered(s) => s.positions_cost(),
+            SpansEnum::NearUnordered(s) => s.positions_cost(),
+            SpansEnum::Or(s) => s.positions_cost(),
+            SpansEnum::Term(s) => s.positions_cost(),
+        }
+    }
+
+    fn do_start_current_doc(&mut self) -> Result<()> {
+        match self {
+            SpansEnum::Gap(s) => s.do_start_current_doc(),
+            SpansEnum::NearOrdered(s) => s.do_start_current_doc(),
+            SpansEnum::NearUnordered(s) => s.do_start_current_doc(),
+            SpansEnum::Or(s) => s.do_start_current_doc(),
+            SpansEnum::Term(s) => s.do_start_current_doc(),
+        }
+    }
+
+    fn do_current_spans(&mut self) -> Result<()> {
+        match self {
+            SpansEnum::Gap(s) => s.do_current_spans(),
+            SpansEnum::NearOrdered(s) => s.do_current_spans(),
+            SpansEnum::NearUnordered(s) => s.do_current_spans(),
+            SpansEnum::Or(s) => s.do_current_spans(),
+            SpansEnum::Term(s) => s.do_current_spans(),
+        }
+    }
+
+    fn support_two_phase(&self) -> bool {
+        match self {
+            SpansEnum::Gap(s) => s.support_two_phase(),
+            SpansEnum::NearOrdered(s) => s.support_two_phase(),
+            SpansEnum::NearUnordered(s) => s.support_two_phase(),
+            SpansEnum::Or(s) => s.support_two_phase(),
+            SpansEnum::Term(s) => s.support_two_phase(),
+        }
+    }
+
+    fn advance_position(&mut self, position: i32) -> Result<i32> {
+        match self {
+            SpansEnum::Gap(s) => s.advance_position(position),
+            SpansEnum::NearOrdered(s) => s.advance_position(position),
+            SpansEnum::NearUnordered(s) => s.advance_position(position),
+            SpansEnum::Or(s) => s.advance_position(position),
+            SpansEnum::Term(s) => s.advance_position(position),
+        }
+    }
+}
+
+impl<P: PostingIterator> DocIterator for SpansEnum<P> {
+    fn doc_id(&self) -> DocId {
+        match self {
+            SpansEnum::Gap(s) => s.doc_id(),
+            SpansEnum::NearOrdered(s) => s.doc_id(),
+            SpansEnum::NearUnordered(s) => s.doc_id(),
+            SpansEnum::Or(s) => s.doc_id(),
+            SpansEnum::Term(s) => s.doc_id(),
+        }
+    }
+
+    fn next(&mut self) -> Result<DocId> {
+        match self {
+            SpansEnum::Gap(s) => s.next(),
+            SpansEnum::NearOrdered(s) => s.next(),
+            SpansEnum::NearUnordered(s) => s.next(),
+            SpansEnum::Or(s) => s.next(),
+            SpansEnum::Term(s) => s.next(),
+        }
+    }
+
+    fn advance(&mut self, target: DocId) -> Result<DocId> {
+        match self {
+            SpansEnum::Gap(s) => s.advance(target),
+            SpansEnum::NearOrdered(s) => s.advance(target),
+            SpansEnum::NearUnordered(s) => s.advance(target),
+            SpansEnum::Or(s) => s.advance(target),
+            SpansEnum::Term(s) => s.advance(target),
+        }
+    }
+
+    fn slow_advance(&mut self, target: DocId) -> Result<DocId> {
+        match self {
+            SpansEnum::Gap(s) => s.slow_advance(target),
+            SpansEnum::NearOrdered(s) => s.slow_advance(target),
+            SpansEnum::NearUnordered(s) => s.slow_advance(target),
+            SpansEnum::Or(s) => s.slow_advance(target),
+            SpansEnum::Term(s) => s.slow_advance(target),
+        }
+    }
+
+    fn cost(&self) -> usize {
+        match self {
+            SpansEnum::Gap(s) => s.cost(),
+            SpansEnum::NearOrdered(s) => s.cost(),
+            SpansEnum::NearUnordered(s) => s.cost(),
+            SpansEnum::Or(s) => s.cost(),
+            SpansEnum::Term(s) => s.cost(),
+        }
+    }
+
+    fn matches(&mut self) -> Result<bool> {
+        match self {
+            SpansEnum::Gap(s) => s.matches(),
+            SpansEnum::NearOrdered(s) => s.matches(),
+            SpansEnum::NearUnordered(s) => s.matches(),
+            SpansEnum::Or(s) => s.matches(),
+            SpansEnum::Term(s) => s.matches(),
+        }
+    }
+
+    fn match_cost(&self) -> f32 {
+        match self {
+            SpansEnum::Gap(s) => s.match_cost(),
+            SpansEnum::NearOrdered(s) => s.match_cost(),
+            SpansEnum::NearUnordered(s) => s.match_cost(),
+            SpansEnum::Or(s) => s.match_cost(),
+            SpansEnum::Term(s) => s.match_cost(),
+        }
+    }
+
+    fn approximate_next(&mut self) -> Result<DocId> {
+        match self {
+            SpansEnum::Gap(s) => s.approximate_next(),
+            SpansEnum::NearOrdered(s) => s.approximate_next(),
+            SpansEnum::NearUnordered(s) => s.approximate_next(),
+            SpansEnum::Or(s) => s.approximate_next(),
+            SpansEnum::Term(s) => s.approximate_next(),
+        }
+    }
+
+    fn approximate_advance(&mut self, target: DocId) -> Result<DocId> {
+        match self {
+            SpansEnum::Gap(s) => s.approximate_advance(target),
+            SpansEnum::NearOrdered(s) => s.approximate_advance(target),
+            SpansEnum::NearUnordered(s) => s.approximate_advance(target),
+            SpansEnum::Or(s) => s.approximate_advance(target),
+            SpansEnum::Term(s) => s.approximate_advance(target),
+        }
+    }
+}
+
 /// An interface defining the collection of postings information from the leaves
 /// of a Spans
 pub trait SpanCollector {
     /// Collect information from postings
     fn collect_leaf(
         &mut self,
-        postings: &PostingIterator,
+        postings: &impl PostingIterator,
         position: i32,
         term: &Term,
     ) -> Result<()>;
@@ -122,21 +441,18 @@ pub enum PostingsFlag {
 }
 
 impl PostingsFlag {
-    pub fn required_postings(&self) -> i16 {
+    pub fn required_postings(&self) -> u16 {
         match *self {
-            PostingsFlag::Positions => posting_iterator::POSTING_ITERATOR_FLAG_POSITIONS,
-            PostingsFlag::Payloads => posting_iterator::POSTING_ITERATOR_FLAG_PAYLOADS,
-            PostingsFlag::Offsets => {
-                posting_iterator::POSTING_ITERATOR_FLAG_PAYLOADS
-                    | posting_iterator::POSTING_ITERATOR_FLAG_OFFSETS
-            }
+            PostingsFlag::Positions => PostingIteratorFlags::POSITIONS,
+            PostingsFlag::Payloads => PostingIteratorFlags::PAYLOADS,
+            PostingsFlag::Offsets => PostingIteratorFlags::ALL,
         }
     }
 }
 
-pub struct SpanScorer {
-    spans: Box<Spans>,
-    doc_scorer: Option<Box<SimScorer>>,
+pub struct SpanScorer<S: Spans> {
+    spans: S,
+    doc_scorer: Option<Box<dyn SimScorer>>,
     /// accumulated sloppy freq (computed in setFreqCurrentDoc)
     freq: f32,
     /// number of matches (computed in setFreqCurrentDoc)
@@ -145,8 +461,8 @@ pub struct SpanScorer {
     last_scored_doc: DocId,
 }
 
-impl SpanScorer {
-    pub fn new(spans: Box<Spans>, doc_scorer: Option<Box<SimScorer>>) -> Self {
+impl<S: Spans> SpanScorer<S> {
+    pub fn new(spans: S, doc_scorer: Option<Box<dyn SimScorer>>) -> Self {
         SpanScorer {
             spans,
             doc_scorer,
@@ -205,7 +521,7 @@ impl SpanScorer {
     }
 }
 
-impl Scorer for SpanScorer {
+impl<S: Spans> Scorer for SpanScorer<S> {
     fn score(&mut self) -> Result<f32> {
         self.ensure_freq()?;
         self.score_current_doc()
@@ -216,7 +532,7 @@ impl Scorer for SpanScorer {
     }
 }
 
-impl DocIterator for SpanScorer {
+impl<S: Spans> DocIterator for SpanScorer<S> {
     fn doc_id(&self) -> i32 {
         self.spans.doc_id()
     }
@@ -250,12 +566,12 @@ impl DocIterator for SpanScorer {
 }
 
 #[allow(implicit_hasher)]
-pub fn build_sim_weight(
+pub fn build_sim_weight<C: Codec, IS: SearchPlanBuilder<C> + ?Sized>(
     field: &str,
-    searcher: &IndexSearcher,
-    term_contexts: HashMap<Term, Arc<TermContext>>,
+    searcher: &IS,
+    term_contexts: HashMap<Term, Arc<TermContext<CodecTermState<C>>>>,
     ctx: Option<KeyedContext>,
-) -> Result<Option<Box<SimWeight>>> {
+) -> Result<Option<Box<dyn SimWeight<C>>>> {
     if field.is_empty() || term_contexts.is_empty() {
         return Ok(None);
     }
@@ -274,28 +590,30 @@ pub fn build_sim_weight(
     )))
 }
 
-pub trait SpanWeight: Weight {
-    fn sim_weight(&self) -> Option<&SimWeight>;
+pub trait SpanWeight<C: Codec>: Weight<C> {
+    fn sim_weight(&self) -> Option<&SimWeight<C>>;
 
-    fn sim_weight_mut(&mut self) -> Option<&mut SimWeight>;
+    fn sim_weight_mut(&mut self) -> Option<&mut SimWeight<C>>;
 
     /// Expert: Return a Spans object iterating over matches from this Weight
     fn get_spans(
         &self,
-        reader: &LeafReaderContext,
+        reader: &LeafReaderContext<'_, C>,
         required_postings: &PostingsFlag,
-    ) -> Result<Option<Box<Spans>>>;
+    ) -> Result<Option<SpansEnum<CodecPostingIterator<C>>>>;
 
     /// Collect all TermContexts used by this Weight
-    fn extract_term_contexts(&self, contexts: &mut HashMap<Term, Arc<TermContext>>);
+    fn extract_term_contexts(
+        &self,
+        contexts: &mut HashMap<Term, Arc<TermContext<CodecTermState<C>>>>,
+    );
 
-    fn do_create_scorer(&self, ctx: &LeafReaderContext) -> Result<Box<Scorer>> {
+    fn do_create_scorer(&self, ctx: &LeafReaderContext<'_, C>) -> Result<Option<Box<dyn Scorer>>> {
         if let Some(spans) = self.get_spans(ctx, &PostingsFlag::Positions)? {
             let doc_scorer = self.sim_scorer(ctx.reader)?;
-            Ok(Box::new(SpanScorer::new(spans, doc_scorer)))
+            Ok(Some(Box::new(SpanScorer::new(spans, doc_scorer))))
         } else {
-            // TODO maybe return None is better, then `Scorer` trait should be changed
-            Ok(Box::new(MatchNoDocScorer::default()))
+            Ok(None)
         }
     }
 
@@ -313,7 +631,7 @@ pub trait SpanWeight: Weight {
         }
     }
 
-    fn sim_scorer(&self, reader: &LeafReader) -> Result<Option<Box<SimScorer>>> {
+    fn sim_scorer(&self, reader: &SearchLeafReader<C>) -> Result<Option<Box<dyn SimScorer>>> {
         let sim_scorer = if let Some(ref sim_weight) = self.sim_weight() {
             Some(sim_weight.sim_scorer(reader)?)
         } else {
@@ -322,7 +640,7 @@ pub trait SpanWeight: Weight {
         Ok(sim_scorer)
     }
 
-    fn explain_span(&self, reader: &LeafReaderContext, doc: DocId) -> Result<Explanation> {
+    fn explain_span(&self, reader: &LeafReaderContext<'_, C>, doc: DocId) -> Result<Explanation> {
         if let Some(spans) = self.get_spans(reader, &PostingsFlag::Positions)? {
             let mut scorer = SpanScorer::new(spans, self.sim_scorer(reader.reader)?);
 
@@ -357,66 +675,280 @@ pub trait SpanWeight: Weight {
     }
 }
 
-/// a raw pointer to spans as scorer
-/// only used for build a ConjunctionScorer
-struct SpansAsScorer {
-    spans: *mut Spans,
+pub enum SpanWeightEnum<C: Codec> {
+    Term(SpanTermWeight<C>),
+    Gap(SpanGapWeight<C>),
+    Boost(SpanBoostWeight<C>),
+    Near(SpanNearWeight<C>),
+    Or(SpanOrWeight<C>),
 }
 
-unsafe impl Send for SpansAsScorer {}
+impl<C: Codec> SpanWeight<C> for SpanWeightEnum<C> {
+    fn sim_weight(&self) -> Option<&SimWeight<C>> {
+        match self {
+            SpanWeightEnum::Term(w) => w.sim_weight(),
+            SpanWeightEnum::Gap(w) => w.sim_weight(),
+            SpanWeightEnum::Or(w) => w.sim_weight(),
+            SpanWeightEnum::Near(w) => w.sim_weight(),
+            SpanWeightEnum::Boost(w) => w.sim_weight(),
+        }
+    }
 
-unsafe impl Sync for SpansAsScorer {}
+    fn sim_weight_mut(&mut self) -> Option<&mut SimWeight<C>> {
+        match self {
+            SpanWeightEnum::Term(w) => w.sim_weight_mut(),
+            SpanWeightEnum::Gap(w) => w.sim_weight_mut(),
+            SpanWeightEnum::Or(w) => w.sim_weight_mut(),
+            SpanWeightEnum::Near(w) => w.sim_weight_mut(),
+            SpanWeightEnum::Boost(w) => w.sim_weight_mut(),
+        }
+    }
 
-impl Scorer for SpansAsScorer {
+    fn get_spans(
+        &self,
+        reader: &LeafReaderContext<'_, C>,
+        required_postings: &PostingsFlag,
+    ) -> Result<Option<SpansEnum<CodecPostingIterator<C>>>> {
+        match self {
+            SpanWeightEnum::Term(w) => w.get_spans(reader, required_postings),
+            SpanWeightEnum::Gap(w) => w.get_spans(reader, required_postings),
+            SpanWeightEnum::Or(w) => w.get_spans(reader, required_postings),
+            SpanWeightEnum::Near(w) => w.get_spans(reader, required_postings),
+            SpanWeightEnum::Boost(w) => w.get_spans(reader, required_postings),
+        }
+    }
+
+    fn extract_term_contexts(
+        &self,
+        contexts: &mut HashMap<Term, Arc<TermContext<CodecTermState<C>>>>,
+    ) {
+        match self {
+            SpanWeightEnum::Term(w) => w.extract_term_contexts(contexts),
+            SpanWeightEnum::Gap(w) => w.extract_term_contexts(contexts),
+            SpanWeightEnum::Or(w) => w.extract_term_contexts(contexts),
+            SpanWeightEnum::Near(w) => w.extract_term_contexts(contexts),
+            SpanWeightEnum::Boost(w) => w.extract_term_contexts(contexts),
+        }
+    }
+
+    fn do_create_scorer(&self, ctx: &LeafReaderContext<'_, C>) -> Result<Option<Box<dyn Scorer>>> {
+        match self {
+            SpanWeightEnum::Term(w) => w.do_create_scorer(ctx),
+            SpanWeightEnum::Gap(w) => w.do_create_scorer(ctx),
+            SpanWeightEnum::Or(w) => w.do_create_scorer(ctx),
+            SpanWeightEnum::Near(w) => w.do_create_scorer(ctx),
+            SpanWeightEnum::Boost(w) => w.do_create_scorer(ctx),
+        }
+    }
+
+    fn do_value_for_normalization(&self) -> f32 {
+        match self {
+            SpanWeightEnum::Term(w) => w.do_value_for_normalization(),
+            SpanWeightEnum::Gap(w) => w.do_value_for_normalization(),
+            SpanWeightEnum::Or(w) => w.do_value_for_normalization(),
+            SpanWeightEnum::Near(w) => w.do_value_for_normalization(),
+            SpanWeightEnum::Boost(w) => w.do_value_for_normalization(),
+        }
+    }
+
+    fn do_normalize(&mut self, query_norm: f32, boost: f32) {
+        match self {
+            SpanWeightEnum::Term(w) => w.do_normalize(query_norm, boost),
+            SpanWeightEnum::Gap(w) => w.do_normalize(query_norm, boost),
+            SpanWeightEnum::Or(w) => w.do_normalize(query_norm, boost),
+            SpanWeightEnum::Near(w) => w.do_normalize(query_norm, boost),
+            SpanWeightEnum::Boost(w) => w.do_normalize(query_norm, boost),
+        }
+    }
+
+    fn sim_scorer(&self, reader: &SearchLeafReader<C>) -> Result<Option<Box<dyn SimScorer>>> {
+        match self {
+            SpanWeightEnum::Term(w) => w.sim_scorer(reader),
+            SpanWeightEnum::Gap(w) => w.sim_scorer(reader),
+            SpanWeightEnum::Or(w) => w.sim_scorer(reader),
+            SpanWeightEnum::Near(w) => w.sim_scorer(reader),
+            SpanWeightEnum::Boost(w) => w.sim_scorer(reader),
+        }
+    }
+
+    fn explain_span(&self, reader: &LeafReaderContext<'_, C>, doc: i32) -> Result<Explanation> {
+        match self {
+            SpanWeightEnum::Term(w) => w.explain_span(reader, doc),
+            SpanWeightEnum::Gap(w) => w.explain_span(reader, doc),
+            SpanWeightEnum::Or(w) => w.explain_span(reader, doc),
+            SpanWeightEnum::Near(w) => w.explain_span(reader, doc),
+            SpanWeightEnum::Boost(w) => w.explain_span(reader, doc),
+        }
+    }
+}
+
+impl<C: Codec> Weight<C> for SpanWeightEnum<C> {
+    fn create_scorer(
+        &self,
+        leaf_reader: &LeafReaderContext<'_, C>,
+    ) -> Result<Option<Box<dyn Scorer>>> {
+        match self {
+            SpanWeightEnum::Term(w) => w.create_scorer(leaf_reader),
+            SpanWeightEnum::Gap(w) => w.create_scorer(leaf_reader),
+            SpanWeightEnum::Or(w) => w.create_scorer(leaf_reader),
+            SpanWeightEnum::Near(w) => w.create_scorer(leaf_reader),
+            SpanWeightEnum::Boost(w) => w.create_scorer(leaf_reader),
+        }
+    }
+
+    fn hash_code(&self) -> u32 {
+        match self {
+            SpanWeightEnum::Term(w) => w.hash_code(),
+            SpanWeightEnum::Gap(w) => w.hash_code(),
+            SpanWeightEnum::Or(w) => w.hash_code(),
+            SpanWeightEnum::Near(w) => w.hash_code(),
+            SpanWeightEnum::Boost(w) => w.hash_code(),
+        }
+    }
+
+    fn query_type(&self) -> &'static str {
+        "SpanQueryEnum"
+    }
+
+    fn actual_query_type(&self) -> &'static str {
+        match self {
+            SpanWeightEnum::Term(w) => w.actual_query_type(),
+            SpanWeightEnum::Gap(w) => w.actual_query_type(),
+            SpanWeightEnum::Or(w) => w.actual_query_type(),
+            SpanWeightEnum::Near(w) => w.actual_query_type(),
+            SpanWeightEnum::Boost(w) => w.actual_query_type(),
+        }
+    }
+
+    fn normalize(&mut self, norm: f32, boost: f32) {
+        match self {
+            SpanWeightEnum::Term(w) => w.normalize(norm, boost),
+            SpanWeightEnum::Gap(w) => w.normalize(norm, boost),
+            SpanWeightEnum::Or(w) => w.normalize(norm, boost),
+            SpanWeightEnum::Near(w) => w.normalize(norm, boost),
+            SpanWeightEnum::Boost(w) => w.normalize(norm, boost),
+        }
+    }
+
+    fn value_for_normalization(&self) -> f32 {
+        match self {
+            SpanWeightEnum::Term(w) => w.value_for_normalization(),
+            SpanWeightEnum::Gap(w) => w.value_for_normalization(),
+            SpanWeightEnum::Or(w) => w.value_for_normalization(),
+            SpanWeightEnum::Near(w) => w.value_for_normalization(),
+            SpanWeightEnum::Boost(w) => w.value_for_normalization(),
+        }
+    }
+
+    fn needs_scores(&self) -> bool {
+        match self {
+            SpanWeightEnum::Term(w) => w.needs_scores(),
+            SpanWeightEnum::Gap(w) => w.needs_scores(),
+            SpanWeightEnum::Or(w) => w.needs_scores(),
+            SpanWeightEnum::Near(w) => w.needs_scores(),
+            SpanWeightEnum::Boost(w) => w.needs_scores(),
+        }
+    }
+
+    fn explain(&self, reader: &LeafReaderContext<'_, C>, doc: DocId) -> Result<Explanation> {
+        match self {
+            SpanWeightEnum::Term(w) => w.explain(reader, doc),
+            SpanWeightEnum::Gap(w) => w.explain(reader, doc),
+            SpanWeightEnum::Or(w) => w.explain(reader, doc),
+            SpanWeightEnum::Near(w) => w.explain(reader, doc),
+            SpanWeightEnum::Boost(w) => w.explain(reader, doc),
+        }
+    }
+}
+
+impl<C: Codec> fmt::Display for SpanWeightEnum<C> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            SpanWeightEnum::Term(w) => write!(f, "SpanWeightEnum({})", w),
+            SpanWeightEnum::Gap(w) => write!(f, "SpanWeightEnum({})", w),
+            SpanWeightEnum::Or(w) => write!(f, "SpanWeightEnum({})", w),
+            SpanWeightEnum::Near(w) => write!(f, "SpanWeightEnum({})", w),
+            SpanWeightEnum::Boost(w) => write!(f, "SpanWeightEnum({})", w),
+        }
+    }
+}
+
+impl<C: Codec> From<SpanBoostWeightEnum<C>> for SpanWeightEnum<C> {
+    fn from(w: SpanBoostWeightEnum<C>) -> Self {
+        match w {
+            SpanBoostWeightEnum::Term(w) => SpanWeightEnum::Term(w),
+            SpanBoostWeightEnum::Gap(w) => SpanWeightEnum::Gap(w),
+            SpanBoostWeightEnum::Or(w) => SpanWeightEnum::Or(w),
+            SpanBoostWeightEnum::Near(w) => SpanWeightEnum::Near(w),
+        }
+    }
+}
+
+/// a raw pointer to spans as scorer
+/// only used for build a ConjunctionScorer
+pub(crate) struct SpansAsScorer<T: PostingIterator> {
+    spans: *mut SpansEnum<T>,
+}
+
+impl<T: PostingIterator> SpansAsScorer<T> {
+    #[inline]
+    fn spans(&self) -> &mut SpansEnum<T> {
+        unsafe { &mut *self.spans }
+    }
+}
+
+unsafe impl<T: PostingIterator> Send for SpansAsScorer<T> {}
+
+impl<T: PostingIterator> Scorer for SpansAsScorer<T> {
     fn score(&mut self) -> Result<f32> {
         unreachable!()
     }
 
     fn support_two_phase(&self) -> bool {
-        unsafe { (*self.spans).support_two_phase() }
+        self.spans().support_two_phase()
     }
 }
 
-impl DocIterator for SpansAsScorer {
+impl<T: PostingIterator> DocIterator for SpansAsScorer<T> {
     fn doc_id(&self) -> i32 {
-        unsafe { (*self.spans).doc_id() }
+        self.spans().doc_id()
     }
 
     fn next(&mut self) -> Result<i32> {
-        unsafe { (*self.spans).next() }
+        self.spans().next()
     }
 
     fn advance(&mut self, target: i32) -> Result<i32> {
-        unsafe { (*self.spans).advance(target) }
+        self.spans().advance(target)
     }
 
     fn slow_advance(&mut self, target: i32) -> Result<i32> {
-        unsafe { (*self.spans).slow_advance(target) }
+        self.spans().slow_advance(target)
     }
 
     fn cost(&self) -> usize {
-        unsafe { (*self.spans).cost() }
+        self.spans().cost()
     }
 
     fn matches(&mut self) -> Result<bool> {
-        unsafe { (*self.spans).matches() }
+        self.spans().matches()
     }
 
     fn match_cost(&self) -> f32 {
-        unsafe { (*self.spans).match_cost() }
+        self.spans().match_cost()
     }
 
     fn approximate_next(&mut self) -> Result<i32> {
-        unsafe { (*self.spans).approximate_next() }
+        self.spans().approximate_next()
     }
 
     fn approximate_advance(&mut self, target: i32) -> Result<i32> {
-        unsafe { (*self.spans).approximate_advance(target) }
+        self.spans().approximate_advance(target)
     }
 }
 
-pub struct ConjunctionSpanBase {
-    pub conjunction: ConjunctionScorer,
+pub(crate) struct ConjunctionSpanBase<T: PostingIterator> {
+    pub conjunction: ConjunctionScorer<SpansAsScorer<T>>,
     // use to move to next doc with all clauses
     /// a first start position is available in current doc for next_start_position
     pub first_in_current_doc: bool,
@@ -425,24 +957,26 @@ pub struct ConjunctionSpanBase {
     pub two_phase_match_cost: f32,
 }
 
-impl ConjunctionSpanBase {
-    pub fn new(sub_spans: &mut [Box<Spans>]) -> Result<Self> {
-        if sub_spans.len() < 2 {
+impl<P: PostingIterator> ConjunctionSpanBase<P> {
+    pub fn new<'a, I, T>(sub_spans: T) -> Result<Self>
+    where
+        P: 'a,
+        I: Iterator<Item = &'a mut SpansEnum<P>>,
+        T: IntoIterator<Item = &'a mut SpansEnum<P>, IntoIter = I>,
+    {
+        let scorers: Vec<_> = sub_spans
+            .into_iter()
+            .map(|spans| SpansAsScorer { spans })
+            .collect();
+        if scorers.len() < 2 {
             bail!(ErrorKind::IllegalArgument(format!(
                 "there must be at least 2 sub spans! but only {} given!",
-                sub_spans.len()
+                scorers.len(),
             )));
         }
-        let conjunction = {
-            let mut scorers: Vec<Box<Scorer>> = Vec::with_capacity(sub_spans.len());
-            for spans in sub_spans.iter_mut() {
-                scorers.push(Box::new(SpansAsScorer {
-                    spans: spans.as_mut() as *mut Spans,
-                }));
-            }
-            ConjunctionScorer::new(scorers)
-        };
-        let two_phase_match_cost = Self::two_phase_match_cost(sub_spans);
+
+        let two_phase_match_cost = Self::two_phase_match_cost(&scorers);
+        let conjunction = ConjunctionScorer::new(scorers);
         Ok(ConjunctionSpanBase {
             conjunction,
             first_in_current_doc: true,
@@ -452,14 +986,14 @@ impl ConjunctionSpanBase {
         })
     }
 
-    pub fn two_phase_match_cost(spans: &[Box<Spans>]) -> f32 {
+    pub fn two_phase_match_cost(spans: &[SpansAsScorer<P>]) -> f32 {
         spans
             .iter()
             .map(|s| {
                 if s.support_two_phase() {
                     s.match_cost()
                 } else {
-                    s.positions_cost()
+                    s.spans().positions_cost()
                 }
             })
             .sum()
@@ -467,10 +1001,10 @@ impl ConjunctionSpanBase {
 }
 
 /// Common super class for multiple sub spans required in a document.
-pub trait ConjunctionSpans: Spans {
-    fn conjunction_span_base(&self) -> &ConjunctionSpanBase;
+pub(crate) trait ConjunctionSpans<P: PostingIterator>: Spans {
+    fn conjunction_span_base(&self) -> &ConjunctionSpanBase<P>;
 
-    fn conjunction_span_base_mut(&mut self) -> &mut ConjunctionSpanBase;
+    fn conjunction_span_base_mut(&mut self) -> &mut ConjunctionSpanBase<P>;
 
     fn two_phase_current_doc_matches(&mut self) -> Result<bool>;
 
@@ -493,8 +1027,8 @@ pub trait ConjunctionSpans: Spans {
 // impl<T> DocIterator for T where T: DisjunctionScorer + Scorer 冲突
 // 所以目前只能实现为 macro
 macro_rules! conjunction_span_doc_iter {
-    ($t:ty) => {
-        impl DocIterator for $t {
+    ($ty:ident < $( $N:ident $(: $b0:ident $(+$b:ident)* )* ),* >) => {
+        impl< $( $N $(: $b0 $(+$b)* ),* ),* > DocIterator for $ty< $( $N ),* > {
             fn doc_id(&self) -> i32 {
                 self.conjunction_span_base().conjunction.doc_id()
             }

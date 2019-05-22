@@ -1,18 +1,13 @@
 use core::codec::{codec_util, INT_BYTES, LONG_BYTES};
-use core::store::Directory;
-use core::store::DirectoryRc;
-use core::store::{IOContext, IO_CONTEXT_READONCE};
-use core::store::{IndexInput, IndexOutput};
-use core::util::bkd::LongBitSet;
-use core::util::bkd::PointType;
-use core::util::bkd::{PointReader, PointWriter};
+use core::store::{DataOutput, Directory, IOContext, IndexInput, IndexOutput, IndexOutputRef};
+use core::util::bkd::{LongBitSet, PointReader, PointReaderEnum, PointType, PointWriter};
 use core::util::DocId;
 use error::{Error, ErrorKind::UnexpectedEOF, Result};
 use std::sync::Arc;
 
 pub struct OfflinePointReader {
     count_left: i64,
-    input: Box<IndexInput>,
+    input: Box<dyn IndexInput>,
     packed_value: Vec<u8>,
     single_value_per_doc: bool,
     bytes_per_doc: i32,
@@ -26,8 +21,8 @@ pub struct OfflinePointReader {
 }
 
 impl OfflinePointReader {
-    pub fn new(
-        temp_dir: &Directory,
+    pub fn new<D: Directory>(
+        temp_dir: &D,
         temp_file_name: &str,
         packed_bytes_length: i32,
         start: usize,
@@ -68,14 +63,14 @@ impl OfflinePointReader {
             // partitioning it, we open with checksums:
 
             // is_checksum = true;
-            // temp_dir.open_checksum_input(temp_file_name, IO_CONTEXT_READONCE)?
-            temp_dir.open_input(temp_file_name, &IO_CONTEXT_READONCE)?
+            // temp_dir.open_checksum_input(temp_file_name, IOContext::READ_ONCE)?
+            temp_dir.open_input(temp_file_name, &IOContext::READ_ONCE)?
         } else {
             // Since we are going to seek somewhere in the middle of a possibly huge
             // file, and not read all bytes from there, don't use ChecksumIndexInput here.
             // This is typically fine, because this same file will later be read fully,
             // at another level of the BKDWriter recursion
-            temp_dir.open_input(temp_file_name, &IO_CONTEXT_READONCE)?
+            temp_dir.open_input(temp_file_name, &IOContext::READ_ONCE)?
         };
 
         let seek_fp = start as i64 * bytes_per_doc as i64;
@@ -120,7 +115,7 @@ impl OfflinePointReader {
         ((i1 as i64) << 32) | ((i2 as i64) & 0xFFFFFFFFi64)
     }
 
-    fn read_int(bytes: &Vec<u8>, pos: usize) -> i32 {
+    fn read_int(bytes: &[u8], pos: usize) -> i32 {
         let mut pos = pos;
         let i1p1 = bytes[pos] as i32 & 0xFF;
         pos += 1;
@@ -219,8 +214,8 @@ impl PointReader for OfflinePointReader {
         &mut self,
         count: i64,
         right_tree: &mut LongBitSet,
-        left: &mut PointWriter,
-        right: &mut PointWriter,
+        left: &mut impl PointWriter,
+        right: &mut impl PointWriter,
         do_clear_bits: bool,
     ) -> Result<i64> {
         if left.point_type() != PointType::Offline || right.point_type() != PointType::Offline {
@@ -244,8 +239,8 @@ impl PointReader for OfflinePointReader {
         let mut right_count = 0;
 
         {
-            let right_out = right.index_output();
-            let left_out = left.index_output();
+            let mut right_out = right.index_output();
+            let mut left_out = left.index_output();
 
             debug_assert!(count <= self.count_left);
             self.count_left -= count;
@@ -283,15 +278,15 @@ impl PointReader for OfflinePointReader {
     }
 }
 
-pub struct OfflinePointWriter {
-    temp_dir: DirectoryRc,
-    output: Option<Box<IndexOutput>>,
+pub struct OfflinePointWriter<D: Directory> {
+    temp_dir: Arc<D>,
+    output: Option<D::TempOutput>,
     name: String,
     packed_bytes_length: usize,
     single_value_per_doc: bool,
     count: i64,
     long_ords: bool,
-    shared_reader: Option<Box<PointReader>>,
+    shared_reader: Option<PointReaderEnum>,
     next_shared_read: i64,
     expected_count: i64,
     closed: bool,
@@ -299,17 +294,17 @@ pub struct OfflinePointWriter {
     desc: String,
 }
 
-impl OfflinePointWriter {
+impl<D: Directory> OfflinePointWriter<D> {
     pub fn new(
-        temp_dir: &DirectoryRc,
+        temp_dir: Arc<D>,
         name: String,
         packed_bytes_length: usize,
         count: i64,
         long_ords: bool,
         single_value_per_doc: bool,
-    ) -> OfflinePointWriter {
+    ) -> OfflinePointWriter<D> {
         OfflinePointWriter {
-            temp_dir: Arc::clone(temp_dir),
+            temp_dir,
             output: None,
             name,
             packed_bytes_length,
@@ -326,21 +321,20 @@ impl OfflinePointWriter {
     }
 
     // only used for BKDWriter
-    pub fn output(&self) -> &IndexOutput {
+    pub fn output(&self) -> &D::TempOutput {
         debug_assert!(self.output.is_some());
-        self.output.as_ref().unwrap().as_ref()
+        self.output.as_ref().unwrap()
     }
 
     pub fn prefix_new(
-        temp_dir: &DirectoryRc,
+        temp_dir: Arc<D>,
         temp_file_name_prefix: &str,
         packed_bytes_length: usize,
         long_ords: bool,
         desc: &str,
         expected_count: i64,
         single_value_per_doc: bool,
-    ) -> OfflinePointWriter {
-        let temp_dir = Arc::clone(temp_dir);
+    ) -> OfflinePointWriter<D> {
         let output = temp_dir
             .create_temp_output(
                 temp_file_name_prefix,
@@ -369,7 +363,9 @@ impl OfflinePointWriter {
     }
 }
 
-impl PointWriter for OfflinePointWriter {
+impl<D: Directory + 'static> PointWriter for OfflinePointWriter<D> {
+    type IndexOutput = IndexOutputRef<D::TempOutput>;
+
     fn append(&mut self, packed_value: &[u8], ord: i64, doc_id: DocId) -> Result<()> {
         debug_assert!(packed_value.len() == self.packed_bytes_length);
         let output = self.output.as_mut().unwrap();
@@ -399,36 +395,12 @@ impl PointWriter for OfflinePointWriter {
         self.temp_dir.delete_file(&self.name)
     }
 
-    fn point_type(&self) -> PointType {
-        PointType::Offline
-    }
-
-    fn index_output(&mut self) -> &mut IndexOutput {
-        debug_assert!(self.output.is_some());
-        self.output.as_mut().unwrap().as_mut()
-    }
-
-    fn set_count(&mut self, count: i64) {
-        self.count = count;
-    }
-
-    fn close(&mut self) -> Result<()> {
-        if !self.closed {
-            debug_assert!(self.shared_reader.is_none());
-            let output = self.output.as_mut().unwrap();
-            codec_util::write_footer(output.as_mut())?;
-            self.closed = true;
-        }
-
-        Ok(())
-    }
-
-    fn point_reader(&self, start: usize, length: usize) -> Result<Box<PointReader>> {
+    fn point_reader(&self, start: usize, length: usize) -> Result<PointReaderEnum> {
         debug_assert!(self.closed);
         debug_assert!((start + length) as i64 <= self.count);
         debug_assert!(self.expected_count == 0 || self.count == self.expected_count);
 
-        Ok(Box::new(OfflinePointReader::new(
+        Ok(PointReaderEnum::Offline(OfflinePointReader::new(
             self.temp_dir.as_ref(),
             &self.name,
             self.packed_bytes_length as i32,
@@ -443,11 +415,11 @@ impl PointWriter for OfflinePointWriter {
         &mut self,
         start: usize,
         length: usize,
-        _to_close: &mut Vec<Box<PointReader>>,
-    ) -> Result<&mut PointReader> {
+        _to_close: &mut Vec<PointReaderEnum>,
+    ) -> Result<&mut PointReaderEnum> {
         if self.shared_reader.is_none() {
             debug_assert!(start == 0 && length as i64 <= self.count);
-            let shared_reader = Box::new(OfflinePointReader::new(
+            let shared_reader = PointReaderEnum::Offline(OfflinePointReader::new(
                 self.temp_dir.as_ref(),
                 &self.name,
                 self.packed_bytes_length as i32,
@@ -467,10 +439,34 @@ impl PointWriter for OfflinePointWriter {
 
         self.next_shared_read += length as i64;
 
-        Ok(self.shared_reader.as_mut().unwrap().as_mut())
+        Ok(self.shared_reader.as_mut().unwrap())
     }
 
-    fn clone(&self) -> Box<PointWriter> {
+    fn point_type(&self) -> PointType {
+        PointType::Offline
+    }
+
+    fn index_output(&mut self) -> Self::IndexOutput {
+        debug_assert!(self.output.is_some());
+        IndexOutputRef::new(self.output.as_mut().unwrap())
+    }
+
+    fn set_count(&mut self, count: i64) {
+        self.count = count;
+    }
+
+    fn close(&mut self) -> Result<()> {
+        if !self.closed {
+            debug_assert!(self.shared_reader.is_none());
+            let output = self.output.as_mut().unwrap();
+            codec_util::write_footer(output)?;
+            self.closed = true;
+        }
+
+        Ok(())
+    }
+
+    fn clone(&self) -> Self {
         let temp_dir = Arc::clone(&self.temp_dir);
         let output = temp_dir
             .create_temp_output(
@@ -482,7 +478,7 @@ impl PointWriter for OfflinePointWriter {
 
         let name = output.name().to_string();
 
-        Box::new(OfflinePointWriter {
+        OfflinePointWriter {
             temp_dir,
             output: Some(output),
             name,
@@ -496,6 +492,6 @@ impl PointWriter for OfflinePointWriter {
             closed: self.closed,
             temp_file_name_prefix: self.temp_file_name_prefix.clone(),
             desc: self.desc.clone(),
-        })
+        }
     }
 }

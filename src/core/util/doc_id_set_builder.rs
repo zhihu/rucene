@@ -1,15 +1,17 @@
 use core::index::PointValues;
 use core::index::Terms;
-use core::search::{DocIdSet, DocIterator, NO_MORE_DOCS};
+use core::search::{DocIterator, NO_MORE_DOCS};
 use core::util::bit_set::{BitSet, FixedBitSet};
-use core::util::bit_util::UnsignedShift;
-use core::util::doc_id_set::{BitDocIdSet, IntArrayDocIdSet};
-use core::util::packed::packed_misc::unsigned_bits_required;
+use core::util::bit_util::{BitsRequired, UnsignedShift};
+use core::util::doc_id_set::{BitDocIdSet, DocIdSetEnum, IntArrayDocIdSet};
 use core::util::sorter::LSBRadixSorter;
 use core::util::DocId;
-use error::*;
+
+use error::Result;
+
 use std::cmp::{max, min};
 use std::mem;
+use std::sync::Arc;
 
 /// A builder of {@link DocIdSet}s.  At first it uses a sparse structure to gather
 /// documents, and then upgrades to a non-sparse bit set once enough hits match.
@@ -37,7 +39,7 @@ impl DocIdSetBuilder {
         DocIdSetBuilder::new(max_doc, -1, -1)
     }
 
-    pub fn from_terms(max_doc: DocId, terms: &Terms) -> Result<DocIdSetBuilder> {
+    pub fn from_terms(max_doc: DocId, terms: &impl Terms) -> Result<DocIdSetBuilder> {
         Ok(DocIdSetBuilder::new(
             max_doc,
             terms.doc_count()?,
@@ -47,7 +49,7 @@ impl DocIdSetBuilder {
 
     pub fn from_values(
         max_doc: DocId,
-        values: &PointValues,
+        values: &impl PointValues,
         field: &str,
     ) -> Result<DocIdSetBuilder> {
         Ok(DocIdSetBuilder::new(
@@ -208,18 +210,20 @@ impl DocIdSetBuilder {
         self.adder = BulkAddr::FixedBitSet;
     }
 
-    pub fn build(&mut self) -> Box<DocIdSet> {
+    pub fn build(&mut self) -> DocIdSetEnum {
         if self.bit_set.is_some() {
             assert!(self.counter >= 0);
             let cost = (self.counter as f64 / self.num_values_per_doc).round() as usize;
-            let bit_set = mem::replace(&mut self.bit_set, None);
             self.buffers = Vec::new();
-            Box::new(BitDocIdSet::new(Box::new(bit_set.unwrap()), cost))
+            DocIdSetEnum::BitDocId(BitDocIdSet::new(
+                Arc::new(self.bit_set.take().unwrap()),
+                cost,
+            ))
         } else {
             let mut concatenated = DocIdSetBuilder::concat(&mut self.buffers);
             let mut sorter = LSBRadixSorter::default();
             sorter.sort(
-                unsigned_bits_required(i64::from(self.max_doc) - 1) as usize,
+                (self.max_doc - 1).bits_required() as usize,
                 &mut concatenated.array,
                 concatenated.length,
             );
@@ -233,7 +237,7 @@ impl DocIdSetBuilder {
             concatenated.array[l] = NO_MORE_DOCS;
             self.buffers = Vec::new();
             let array = mem::replace(&mut concatenated.array, Vec::new());
-            Box::new(IntArrayDocIdSet::new(array, l))
+            DocIdSetEnum::IntArray(IntArrayDocIdSet::new(array, l))
         }
     }
 

@@ -53,13 +53,15 @@ pub use self::volatile::Volatile;
 mod reference_manager;
 pub use self::reference_manager::*;
 
+mod byte_ref;
+pub use self::byte_ref::*;
+
 pub mod array;
 pub mod binary_heap;
 pub mod bit_set;
 pub mod bit_util;
 pub mod bkd;
 pub mod byte_block_pool;
-pub mod byte_ref;
 pub mod bytes_ref_hash;
 pub mod doc_id_set;
 pub mod external;
@@ -74,6 +76,8 @@ pub mod small_float;
 pub mod sorter;
 pub mod string_util;
 pub mod thread_pool;
+
+use std::ops::Deref;
 
 // a iterator that can be used over and over by call reset
 pub trait ReusableIterator: Iterator {
@@ -92,3 +96,14 @@ pub fn ptr_eq<T: ?Sized>(p1: &T, p2: &T) -> bool {
 }
 
 pub const BM25_SIMILARITY_IDF: &str = "idf";
+
+pub struct DerefWrapper<T>(pub T);
+
+impl<T> Deref for DerefWrapper<T> {
+    type Target = T;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}

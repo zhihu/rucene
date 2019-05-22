@@ -1,10 +1,10 @@
-use core::codec::codec_util;
 use core::codec::lucene53::norms::{VERSION_CURRENT, VERSION_START};
 use core::codec::NormsProducer;
+use core::codec::{codec_util, Codec};
 use core::index::{segment_file_name, FieldInfo, FieldInfos, SegmentReadState};
 use core::index::{NumericDocValues, NumericDocValuesContext};
-use core::store::IndexInput;
 use core::store::RandomAccessInput;
+use core::store::{Directory, IndexInput};
 use core::util::DocId;
 use error::ErrorKind::{CorruptIndex, IllegalArgument};
 use error::Result;
@@ -18,13 +18,13 @@ struct NormsEntry {
 
 pub struct Lucene53NormsProducer {
     max_doc: DocId,
-    data: Box<IndexInput>,
+    data: Box<dyn IndexInput>,
     entries: HashMap<i32, NormsEntry>,
 }
 
 impl Lucene53NormsProducer {
-    pub fn new(
-        state: &SegmentReadState,
+    pub fn new<D: Directory, DW: Directory, C: Codec>(
+        state: &SegmentReadState<'_, D, DW, C>,
         data_codec: &str,
         data_extension: &str,
         meta_codec: &str,
@@ -42,7 +42,7 @@ impl Lucene53NormsProducer {
             .directory
             .open_checksum_input(&meta_name, &state.context)?;
         let meta_version = codec_util::check_index_header(
-            checksum_input.as_mut(),
+            &mut checksum_input,
             meta_codec,
             VERSION_START,
             VERSION_CURRENT,
@@ -50,8 +50,8 @@ impl Lucene53NormsProducer {
             &state.segment_suffix,
         )?;
         let mut entries = HashMap::new();
-        Self::read_fields(checksum_input.as_mut(), &state.field_infos, &mut entries)?;
-        codec_util::check_footer(checksum_input.as_mut())?;
+        Self::read_fields(&mut checksum_input, &state.field_infos, &mut entries)?;
+        codec_util::check_footer(&mut checksum_input)?;
 
         let data_name = segment_file_name(
             &state.segment_info.name,
@@ -121,7 +121,7 @@ impl Lucene53NormsProducer {
 }
 
 impl NormsProducer for Lucene53NormsProducer {
-    fn norms(&self, field: &FieldInfo) -> Result<Box<NumericDocValues>> {
+    fn norms(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
         debug_assert!(self.entries.contains_key(&(field.number as i32)));
 
         let entry = &self.entries[&(field.number as i32)];
@@ -182,7 +182,7 @@ struct RandomAccessNumericDocValues<F>
 where
     F: Fn(&RandomAccessInput, DocId) -> Result<i64> + Send,
 {
-    input: Box<RandomAccessInput>,
+    input: Box<dyn RandomAccessInput>,
     consumer: F,
 }
 
@@ -190,7 +190,7 @@ impl<F> RandomAccessNumericDocValues<F>
 where
     F: Fn(&RandomAccessInput, DocId) -> Result<i64> + Send,
 {
-    fn new(input: Box<RandomAccessInput>, consumer: F) -> RandomAccessNumericDocValues<F> {
+    fn new(input: Box<dyn RandomAccessInput>, consumer: F) -> RandomAccessNumericDocValues<F> {
         RandomAccessNumericDocValues { input, consumer }
     }
 }

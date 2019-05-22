@@ -1,9 +1,12 @@
-use core::index::{IndexReader, Term};
-use core::index::{LeafReaderContext, POSTINGS_POSITIONS};
-use core::search::term_query::TermQuery;
-use core::search::Query;
+use core::codec::Codec;
+use core::index::{Fields, IndexReader, LeafReaderContext, Term, TermIterator, Terms};
+use core::search::{
+    posting_iterator::{PostingIterator, PostingIteratorFlags},
+    term_query::TermQuery,
+    DocIterator, Query,
+};
 use core::util::DocId;
-use error::*;
+use error::Result;
 
 use std::borrow::Cow;
 use std::cmp::{self, Ordering};
@@ -421,10 +424,10 @@ impl QueryPhraseMap {
         Ok(())
     }
 
-    pub fn add(
+    pub fn add<C: Codec, IR: IndexReader<Codec = C> + ?Sized>(
         &mut self,
         query: &TermQuery,
-        _reader: Option<&IndexReader>,
+        _reader: Option<&IR>,
         term_or_phrase_number: i32,
     ) -> Result<()> {
         let boost = 1f32;
@@ -491,9 +494,9 @@ pub struct FieldQuery {
 }
 
 impl FieldQuery {
-    pub fn new(
-        query: &Query,
-        reader: Option<&IndexReader>,
+    pub fn new<C: Codec, IR: IndexReader<Codec = C> + ?Sized>(
+        query: &dyn Query<C>,
+        reader: Option<&IR>,
         _phrase_highlight: bool,
         field_match: bool,
     ) -> Result<FieldQuery> {
@@ -518,10 +521,10 @@ impl FieldQuery {
         Ok(field_query)
     }
 
-    fn flatten(
+    fn flatten<C: Codec, IR: IndexReader<Codec = C> + ?Sized>(
         &self,
-        source_query: &Query,
-        _reader: Option<&IndexReader>,
+        source_query: &dyn Query<C>,
+        _reader: Option<&IR>,
         flat_queries: &mut Vec<TermQuery>,
         boost: f32,
     ) -> Result<()> {
@@ -551,9 +554,9 @@ impl FieldQuery {
     //      - fieldMatch==true termSetMap=Map<"name",Set<"john","lennon">>
     //      - fieldMatch==false termSetMap=Map<null,Set<"john","lennon">>
     //
-    fn save_terms(
+    fn save_terms<C: Codec, IR: IndexReader<Codec = C> + ?Sized>(
         &mut self,
-        _reader: Option<&IndexReader>,
+        _reader: Option<&IR>,
         flat_queries: &[TermQuery],
     ) -> Result<()> {
         for query in flat_queries {
@@ -582,7 +585,7 @@ impl FieldQuery {
             self.term_set_map.insert(key.clone(), set);
         }
 
-        assert!(self.term_set_map.contains_key(&key));
+        debug_assert!(self.term_set_map.contains_key(&key));
         self.term_set_map.get_mut(&key).unwrap().push(value)
     }
 
@@ -599,10 +602,10 @@ impl FieldQuery {
         self.term_or_phrase_number
     }
 
-    fn add_root_map_by_query(
+    fn add_root_map_by_query<C: Codec, IR: IndexReader<Codec = C> + ?Sized>(
         &mut self,
         query: &TermQuery,
-        reader: Option<&IndexReader>,
+        reader: Option<&IR>,
         term_or_phrase_number: i32,
     ) -> Result<()> {
         let key = self.get_key(query);
@@ -654,8 +657,8 @@ pub struct FieldTermStack {
 }
 
 impl FieldTermStack {
-    pub fn new(
-        ctx: &LeafReaderContext,
+    pub fn new<C: Codec>(
+        ctx: &LeafReaderContext<'_, C>,
         doc_id: DocId,
         field_name: &str,
         field_query: &FieldQuery,
@@ -694,12 +697,13 @@ impl FieldTermStack {
                             continue;
                         }
 
-                        let mut postings = terms_iter.postings_with_flags(POSTINGS_POSITIONS)?;
+                        let mut postings =
+                            terms_iter.postings_with_flags(PostingIteratorFlags::POSITIONS)?;
                         postings.next()?;
 
                         // For weight look here: http://lucene.apache.org/core/3_6_0/api/core/org/apache/lucene/search/DefaultSimilarity.html
                         let weight = (f64::from(max_docs)
-                            / (terms_iter.as_mut().total_term_freq()? + 1) as f64
+                            / (terms_iter.total_term_freq()? + 1) as f64
                             + 1.0)
                             .log(10.0f64) as f32;
                         let freq = postings.freq()?;
@@ -1141,9 +1145,9 @@ pub trait FragmentsBuilder {
     // @throws IOException If there is a low-level I/O error
     ///
     #[allow(too_many_arguments)]
-    fn create_fragments(
+    fn create_fragments<C: Codec>(
         &self,
-        reader: &IndexReader,
+        reader: &IndexReader<Codec = C>,
         doc_id: DocId,
         field_name: &str,
         field_frag_list: &mut FieldFragList,
@@ -1171,5 +1175,5 @@ pub trait FragListBuilder {
         &self,
         field_phrase_list: &FieldPhraseList,
         frag_char_size: i32,
-    ) -> Result<Box<FieldFragList>>;
+    ) -> Result<Box<dyn FieldFragList>>;
 }

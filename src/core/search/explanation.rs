@@ -42,7 +42,7 @@ impl Explanation {
         format!("{} = {}", self.value, self.description)
     }
 
-    pub fn details(&self) -> &Vec<Explanation> {
+    pub fn details(&self) -> &[Explanation] {
         self.details.as_ref()
     }
 

@@ -1,21 +1,23 @@
 use core::analysis::TokenStream;
-use core::codec::reader::{PointsReader, StoredFieldsReader, TermVectorsReader};
-use core::codec::BlockTermState;
-use core::codec::MutablePointsReader;
+use core::codec::{
+    BlockTermState, Codec, CodecPointsReader, CompressingStoredFieldsWriter,
+    CompressingTermVectorsWriter, MutablePointsReader, PointsReader, StoredFieldsReader,
+    TermVectorsReader,
+};
 use core::doc::{FieldType, STORE_FIELD_TYPE};
 use core::index::doc_id_merger::doc_id_merger_of;
 use core::index::doc_id_merger::{DocIdMerger, DocIdMergerSub, DocIdMergerSubBase};
-use core::index::TermIterator;
 use core::index::{DocMap, LiveDocsDocMap, MergeState};
-use core::index::{FieldInfo, FieldInfos, Fieldable, Fields, SegmentWriteState};
+use core::index::{FieldInfo, FieldInfos, Fieldable, Fields, SegmentWriteState, Terms};
 use core::index::{IntersectVisitor, PointValues, Relation};
+use core::index::{MergePointValuesEnum, TempMutablePointsReader, TermIterator};
 use core::index::{Status, StoredFieldVisitor};
-use core::search::posting_iterator::{POSTING_ITERATOR_FLAG_OFFSETS, POSTING_ITERATOR_FLAG_PAYLOADS};
-use core::search::NO_MORE_DOCS;
-use core::store::{DataInput, DataOutput, IndexOutput};
+use core::search::posting_iterator::{PostingIterator, PostingIteratorFlags};
+use core::search::{DocIterator, NO_MORE_DOCS};
+use core::store::{DataInput, DataOutput, Directory, IndexOutput};
 use core::util::bit_set::FixedBitSet;
 use core::util::bit_util::UnsignedShift;
-use core::util::byte_ref::BytesRef;
+use core::util::BytesRef;
 use core::util::{DocId, Numeric, VariantValue};
 
 use error::ErrorKind::{IllegalArgument, IllegalState, UnsupportedOperation};
@@ -27,93 +29,104 @@ use std::mem;
 use std::ptr;
 use std::sync::Arc;
 
-pub enum BoxedPointsReader {
-    Simple(Box<PointsReader>),
-    Mutable(Box<MutablePointsReader>),
+pub enum PointsReaderEnum<P: PointsReader, MP: MutablePointsReader> {
+    Simple(P),
+    Mutable(MP),
 }
 
-impl PointsReader for BoxedPointsReader {
+impl<P: PointsReader, MP: MutablePointsReader> PointsReader for PointsReaderEnum<P, MP> {
     fn check_integrity(&self) -> Result<()> {
         match self {
-            BoxedPointsReader::Simple(s) => s.check_integrity(),
-            BoxedPointsReader::Mutable(m) => m.check_integrity(),
+            PointsReaderEnum::Simple(s) => s.check_integrity(),
+            PointsReaderEnum::Mutable(m) => m.check_integrity(),
         }
     }
 
     fn as_any(&self) -> &Any {
         match self {
-            BoxedPointsReader::Simple(s) => PointsReader::as_any(s.as_ref()),
-            BoxedPointsReader::Mutable(m) => PointsReader::as_any(m.as_ref()),
+            PointsReaderEnum::Simple(s) => PointsReader::as_any(s),
+            PointsReaderEnum::Mutable(m) => PointsReader::as_any(m),
         }
     }
 }
 
-impl PointValues for BoxedPointsReader {
-    fn intersect(&self, field_name: &str, visitor: &mut IntersectVisitor) -> Result<()> {
+impl<P: PointsReader, MP: MutablePointsReader> PointValues for PointsReaderEnum<P, MP> {
+    fn intersect(&self, field_name: &str, visitor: &mut impl IntersectVisitor) -> Result<()> {
         match self {
-            BoxedPointsReader::Simple(s) => s.intersect(field_name, visitor),
-            BoxedPointsReader::Mutable(m) => m.intersect(field_name, visitor),
+            PointsReaderEnum::Simple(s) => s.intersect(field_name, visitor),
+            PointsReaderEnum::Mutable(m) => m.intersect(field_name, visitor),
         }
     }
 
     fn min_packed_value(&self, field_name: &str) -> Result<Vec<u8>> {
         match self {
-            BoxedPointsReader::Simple(s) => s.min_packed_value(field_name),
-            BoxedPointsReader::Mutable(m) => m.min_packed_value(field_name),
+            PointsReaderEnum::Simple(s) => s.min_packed_value(field_name),
+            PointsReaderEnum::Mutable(m) => m.min_packed_value(field_name),
         }
     }
 
     fn max_packed_value(&self, field_name: &str) -> Result<Vec<u8>> {
         match self {
-            BoxedPointsReader::Simple(s) => s.max_packed_value(field_name),
-            BoxedPointsReader::Mutable(m) => m.max_packed_value(field_name),
+            PointsReaderEnum::Simple(s) => s.max_packed_value(field_name),
+            PointsReaderEnum::Mutable(m) => m.max_packed_value(field_name),
         }
     }
 
     fn num_dimensions(&self, field_name: &str) -> Result<usize> {
         match self {
-            BoxedPointsReader::Simple(s) => s.num_dimensions(field_name),
-            BoxedPointsReader::Mutable(m) => m.num_dimensions(field_name),
+            PointsReaderEnum::Simple(s) => s.num_dimensions(field_name),
+            PointsReaderEnum::Mutable(m) => m.num_dimensions(field_name),
         }
     }
 
     fn bytes_per_dimension(&self, field_name: &str) -> Result<usize> {
         match self {
-            BoxedPointsReader::Simple(s) => s.bytes_per_dimension(field_name),
-            BoxedPointsReader::Mutable(m) => m.bytes_per_dimension(field_name),
+            PointsReaderEnum::Simple(s) => s.bytes_per_dimension(field_name),
+            PointsReaderEnum::Mutable(m) => m.bytes_per_dimension(field_name),
         }
     }
 
     fn size(&self, field_name: &str) -> Result<i64> {
         match self {
-            BoxedPointsReader::Simple(s) => s.size(field_name),
-            BoxedPointsReader::Mutable(m) => m.size(field_name),
+            PointsReaderEnum::Simple(s) => s.size(field_name),
+            PointsReaderEnum::Mutable(m) => m.size(field_name),
         }
     }
 
     fn doc_count(&self, field_name: &str) -> Result<i32> {
         match self {
-            BoxedPointsReader::Simple(s) => s.doc_count(field_name),
-            BoxedPointsReader::Mutable(m) => m.doc_count(field_name),
+            PointsReaderEnum::Simple(s) => s.doc_count(field_name),
+            PointsReaderEnum::Mutable(m) => m.doc_count(field_name),
         }
     }
 
     fn as_any(&self) -> &Any {
         match self {
-            BoxedPointsReader::Simple(s) => PointValues::as_any(s.as_ref()),
-            BoxedPointsReader::Mutable(m) => PointValues::as_any(m.as_ref()),
+            PointsReaderEnum::Simple(s) => PointValues::as_any(s),
+            PointsReaderEnum::Mutable(m) => PointValues::as_any(m),
         }
     }
 }
 
 pub trait PointsWriter {
     /// Write all values contained in the provided reader
-    fn write_field(&mut self, field_info: &FieldInfo, values: BoxedPointsReader) -> Result<()>;
+    fn write_field<P, MP>(
+        &mut self,
+        field_info: &FieldInfo,
+        values: PointsReaderEnum<P, MP>,
+    ) -> Result<()>
+    where
+        P: PointsReader,
+        MP: MutablePointsReader;
 
     /// Default naive merge implementation for one field: it just re-indexes all the values
     /// from the incoming segment.  The default codec overrides this for 1D fields and uses
     /// a faster but more complex implementation.
-    fn merge_one_field(&mut self, merge_state: &MergeState, field_info: &FieldInfo) -> Result<()> {
+    fn merge_one_field<D: Directory, C: Codec>(
+        &mut self,
+        merge_state: &MergeState<D, C>,
+        field_info: &FieldInfo,
+    ) -> Result<()> {
         let mut max_point_count = 0;
         let mut doc_count = 0;
         let mut i = 0;
@@ -131,26 +144,28 @@ pub trait PointsWriter {
             i += 1;
         }
 
-        self.write_field(
-            field_info,
-            BoxedPointsReader::Simple(Box::new(MergePointsReader::new(
+        let reader: PointsReaderEnum<MergePointsReader<C>, TempMutablePointsReader> =
+            PointsReaderEnum::Simple(MergePointsReader::new(
                 field_info.clone(),
                 merge_state,
                 max_point_count,
                 doc_count,
-            ))),
-        )
+            ));
+        self.write_field(field_info, reader)
     }
 
     /// Default merge implementation to merge incoming points readers by visiting all their points
     /// and adding to this writer
-    fn merge(&mut self, merge_state: &MergeState) -> Result<()>;
+    fn merge<D: Directory, C: Codec>(&mut self, merge_state: &MergeState<D, C>) -> Result<()>;
 
     /// Called once at the end before close
     fn finish(&mut self) -> Result<()>;
 }
 
-pub fn merge_point_values(writer: &mut PointsWriter, merge_state: &MergeState) -> Result<()> {
+pub fn merge_point_values<D: Directory, C: Codec, P: PointsWriter>(
+    writer: &mut P,
+    merge_state: &MergeState<D, C>,
+) -> Result<()> {
     // merge field at a time
     for field_info in merge_state
         .merge_field_infos
@@ -166,19 +181,19 @@ pub fn merge_point_values(writer: &mut PointsWriter, merge_state: &MergeState) -
     writer.finish()
 }
 
-struct MergePointsReader {
+pub struct MergePointsReader<C: Codec> {
     field_info: FieldInfo,
-    points_readers: Vec<Option<Arc<PointValues>>>,
+    points_readers: Vec<Option<MergePointValuesEnum<Arc<CodecPointsReader<C>>>>>,
     fields_infos: Vec<Arc<FieldInfos>>,
     doc_maps: Vec<Arc<LiveDocsDocMap>>,
     max_point_count: i64,
     doc_count: i32,
 }
 
-impl MergePointsReader {
-    fn new(
+impl<C: Codec> MergePointsReader<C> {
+    fn new<D: Directory>(
         field_info: FieldInfo,
-        merge_state: &MergeState,
+        merge_state: &MergeState<D, C>,
         max_point_count: i64,
         doc_count: i32,
     ) -> Self {
@@ -193,7 +208,7 @@ impl MergePointsReader {
     }
 }
 
-impl PointsReader for MergePointsReader {
+impl<C: Codec> PointsReader for MergePointsReader<C> {
     fn check_integrity(&self) -> Result<()> {
         bail!(UnsupportedOperation(Cow::Borrowed("")))
     }
@@ -203,8 +218,8 @@ impl PointsReader for MergePointsReader {
     }
 }
 
-impl PointValues for MergePointsReader {
-    fn intersect(&self, field_name: &str, visitor: &mut IntersectVisitor) -> Result<()> {
+impl<C: Codec> PointValues for MergePointsReader<C> {
+    fn intersect(&self, field_name: &str, visitor: &mut impl IntersectVisitor) -> Result<()> {
         if field_name != &self.field_info.name {
             bail!(IllegalArgument(
                 "field name must match the field being merged".into()
@@ -261,12 +276,12 @@ impl PointValues for MergePointsReader {
     }
 }
 
-struct MergeIntersectVisitorWrapper<'a> {
-    visitor: &'a mut IntersectVisitor,
+struct MergeIntersectVisitorWrapper<'a, V: IntersectVisitor> {
+    visitor: &'a mut V,
     doc_map: &'a LiveDocsDocMap,
 }
 
-impl<'a> IntersectVisitor for MergeIntersectVisitorWrapper<'a> {
+impl<'a, V: IntersectVisitor + 'a> IntersectVisitor for MergeIntersectVisitorWrapper<'a, V> {
     fn visit(&mut self, _doc_id: DocId) -> Result<()> {
         // Should never be called because our compare method never returns
         // Relation.CELL_INSIDE_QUERY
@@ -293,7 +308,11 @@ pub trait PostingsWriterBase {
     /// Called once after startup, before any terms have been
     /// added.  Implementations typically write a header to
     /// the provided {@code termsOut}.
-    fn init(&mut self, terms_out: &mut IndexOutput, state: &SegmentWriteState) -> Result<()>;
+    fn init<D: Directory, DW: Directory, C: Codec>(
+        &mut self,
+        terms_out: &mut impl IndexOutput,
+        state: &SegmentWriteState<D, DW, C>,
+    ) -> Result<()>;
 
     fn close(&mut self) -> Result<()>;
 
@@ -309,7 +328,7 @@ pub trait PostingsWriterBase {
     fn write_term(
         &mut self,
         term: &[u8],
-        terms: &mut TermIterator,
+        terms: &mut impl TermIterator,
         docs_seen: &mut FixedBitSet,
     ) -> Result<Option<BlockTermState>>;
 
@@ -327,7 +346,7 @@ pub trait PostingsWriterBase {
     fn encode_term(
         &mut self,
         longs: &mut [i64],
-        out: &mut DataOutput,
+        out: &mut impl DataOutput,
         field_info: &FieldInfo,
         state: &BlockTermState,
         absolute: bool,
@@ -423,16 +442,16 @@ pub trait TermVectorsWriter {
     ///
     /// TODO: we should probably nuke this and make a more efficient 4.x format
     /// PreFlex-RW could then be slow and buffer (it's only used in tests...)
-    fn add_prox(
+    fn add_prox<I: DataInput + ?Sized>(
         &mut self,
         num_prox: usize,
-        positions: Option<&mut DataInput>,
-        offsets: Option<&mut DataInput>,
+        positions: Option<&mut I>,
+        offsets: Option<&mut I>,
     ) -> Result<()> {
         let mut last_offset = 0;
-
         let mut positions = positions;
         let mut offsets = offsets;
+
         for _ in 0..num_prox {
             let mut payload = vec![];
             let mut position = -1;
@@ -473,16 +492,15 @@ pub trait TermVectorsWriter {
     ///  returning the number of documents that were written.
     ///  Implementations can override this method for more sophisticated
     ///  merging (bulk-byte copying, etc).
-    fn merge(&mut self, merge_state: &mut MergeState) -> Result<i32>;
+    fn merge<D: Directory, C: Codec>(&mut self, merge_state: &mut MergeState<D, C>) -> Result<i32>;
 
     /// Safe (but, slowish) default method to write every
     ///  vector field in the document.
-    fn add_all_doc_vectors(
+    fn add_all_doc_vectors<D: Directory, C: Codec>(
         &mut self,
-        vectors: Option<&Fields>,
-        merge_state: &MergeState,
+        vectors: Option<&impl Fields>,
+        merge_state: &MergeState<D, C>,
     ) -> Result<()> {
-        use core::index::TermsRef;
         if let Some(vectors) = vectors {
             let num_fields = vectors.size();
             self.start_document(num_fields)?;
@@ -505,7 +523,7 @@ pub trait TermVectorsWriter {
                     // FieldsEnum shouldn't lie...
                     continue;
                 }
-                let terms: TermsRef = terms_opt.unwrap();
+                let terms = terms_opt.unwrap();
                 let has_positions = terms.has_positions()?;
                 let has_offsets = terms.has_offsets()?;
                 let has_payloads = terms.has_payloads()?;
@@ -537,9 +555,8 @@ pub trait TermVectorsWriter {
                         self.start_term(&BytesRef::new(&term), freq as i32)?;
 
                         if has_positions || has_offsets {
-                            let mut docs_and_positions_iter = terms_iter.postings_with_flags(
-                                POSTING_ITERATOR_FLAG_OFFSETS | POSTING_ITERATOR_FLAG_PAYLOADS,
-                            )?;
+                            let mut docs_and_positions_iter =
+                                terms_iter.postings_with_flags(PostingIteratorFlags::ALL)?;
                             let doc_id = docs_and_positions_iter.next()?;
                             debug_assert_ne!(doc_id, NO_MORE_DOCS);
                             debug_assert_eq!(docs_and_positions_iter.freq()? as i64, freq);
@@ -570,9 +587,9 @@ pub trait TermVectorsWriter {
     }
 }
 
-pub fn merge_term_vectors(
-    writer: &mut TermVectorsWriter,
-    merge_state: &mut MergeState,
+pub fn merge_term_vectors<D: Directory, C: Codec, T: TermVectorsWriter>(
+    writer: &mut T,
+    merge_state: &mut MergeState<D, C>,
 ) -> Result<i32> {
     let readers = mem::replace(&mut merge_state.term_vectors_readers, Vec::with_capacity(0));
     let mut subs = Vec::with_capacity(readers.len());
@@ -597,7 +614,7 @@ pub fn merge_term_vectors(
             } else {
                 None
             };
-            writer.add_all_doc_vectors(vectors.as_ref().map(|v| v.as_ref()), merge_state)?;
+            writer.add_all_doc_vectors(vectors.as_ref(), merge_state)?;
             doc_count += 1;
         } else {
             break;
@@ -610,19 +627,15 @@ pub fn merge_term_vectors(
     Ok(doc_count)
 }
 
-struct TermVectorsMergeSub {
-    reader: Option<Arc<TermVectorsReader>>,
+struct TermVectorsMergeSub<T: TermVectorsReader> {
+    reader: Option<T>,
     max_doc: i32,
     doc_id: DocId,
     base: DocIdMergerSubBase,
 }
 
-impl TermVectorsMergeSub {
-    fn new(
-        doc_map: Arc<LiveDocsDocMap>,
-        reader: Option<Arc<TermVectorsReader>>,
-        max_doc: i32,
-    ) -> Self {
+impl<T: TermVectorsReader> TermVectorsMergeSub<T> {
+    fn new(doc_map: Arc<LiveDocsDocMap>, reader: Option<T>, max_doc: i32) -> Self {
         let base = DocIdMergerSubBase::new(doc_map);
         TermVectorsMergeSub {
             reader,
@@ -633,7 +646,7 @@ impl TermVectorsMergeSub {
     }
 }
 
-impl DocIdMergerSub for TermVectorsMergeSub {
+impl<T: TermVectorsReader> DocIdMergerSub for TermVectorsMergeSub<T> {
     fn next_doc(&mut self) -> Result<i32> {
         self.doc_id += 1;
         if self.doc_id == self.max_doc {
@@ -649,6 +662,104 @@ impl DocIdMergerSub for TermVectorsMergeSub {
 
     fn base_mut(&mut self) -> &mut DocIdMergerSubBase {
         &mut self.base
+    }
+}
+
+pub enum TermVectorsWriterEnum<O: IndexOutput> {
+    Compressing(CompressingTermVectorsWriter<O>),
+}
+
+impl<O: IndexOutput> TermVectorsWriter for TermVectorsWriterEnum<O> {
+    fn start_document(&mut self, num_vector_fields: usize) -> Result<()> {
+        match self {
+            TermVectorsWriterEnum::Compressing(w) => w.start_document(num_vector_fields),
+        }
+    }
+
+    fn finish_document(&mut self) -> Result<()> {
+        match self {
+            TermVectorsWriterEnum::Compressing(w) => w.finish_document(),
+        }
+    }
+
+    fn start_field(
+        &mut self,
+        info: &FieldInfo,
+        num_terms: usize,
+        has_positions: bool,
+        has_offsets: bool,
+        has_payloads: bool,
+    ) -> Result<()> {
+        match self {
+            TermVectorsWriterEnum::Compressing(w) => {
+                w.start_field(info, num_terms, has_positions, has_offsets, has_payloads)
+            }
+        }
+    }
+
+    fn finish_field(&mut self) -> Result<()> {
+        match self {
+            TermVectorsWriterEnum::Compressing(w) => w.finish_field(),
+        }
+    }
+
+    fn start_term(&mut self, term: &BytesRef, freq: i32) -> Result<()> {
+        match self {
+            TermVectorsWriterEnum::Compressing(w) => w.start_term(term, freq),
+        }
+    }
+
+    fn finish_term(&mut self) -> Result<()> {
+        match self {
+            TermVectorsWriterEnum::Compressing(w) => w.finish_term(),
+        }
+    }
+
+    fn add_position(
+        &mut self,
+        position: i32,
+        start_offset: i32,
+        end_offset: i32,
+        payload: &[u8],
+    ) -> Result<()> {
+        match self {
+            TermVectorsWriterEnum::Compressing(w) => {
+                w.add_position(position, start_offset, end_offset, payload)
+            }
+        }
+    }
+
+    fn finish(&mut self, fis: &FieldInfos, num_docs: usize) -> Result<()> {
+        match self {
+            TermVectorsWriterEnum::Compressing(w) => w.finish(fis, num_docs),
+        }
+    }
+
+    fn add_prox<I: DataInput + ?Sized>(
+        &mut self,
+        num_prox: usize,
+        positions: Option<&mut I>,
+        offsets: Option<&mut I>,
+    ) -> Result<()> {
+        match self {
+            TermVectorsWriterEnum::Compressing(w) => w.add_prox(num_prox, positions, offsets),
+        }
+    }
+
+    fn merge<D: Directory, C: Codec>(&mut self, merge_state: &mut MergeState<D, C>) -> Result<i32> {
+        match self {
+            TermVectorsWriterEnum::Compressing(w) => w.merge(merge_state),
+        }
+    }
+
+    fn add_all_doc_vectors<D: Directory, C: Codec>(
+        &mut self,
+        vectors: Option<&impl Fields>,
+        merge_state: &MergeState<D, C>,
+    ) -> Result<()> {
+        match self {
+            TermVectorsWriterEnum::Compressing(w) => w.add_all_doc_vectors(vectors, merge_state),
+        }
     }
 }
 
@@ -675,7 +786,7 @@ pub trait StoredFieldsWriter {
     fn finish_document(&mut self) -> Result<()>;
 
     /// Writes a single stored field.
-    fn write_field(&mut self, field_info: &FieldInfo, field: &Fieldable) -> Result<()>;
+    fn write_field(&mut self, field_info: &FieldInfo, field: &impl Fieldable) -> Result<()>;
 
     /// Called before {@link #close()}, passing in the number
     /// of documents that were written. Note that this is
@@ -692,12 +803,48 @@ pub trait StoredFieldsWriter {
     /// returning the number of documents that were written.
     /// Implementations can override this method for more sophisticated
     /// merging (bulk-byte copying, etc).
-    fn merge(&mut self, merge_state: &mut MergeState) -> Result<i32>;
+    fn merge<D: Directory, C: Codec>(&mut self, merge_state: &mut MergeState<D, C>) -> Result<i32>;
 }
 
-pub fn merge_store_fields(
-    writer: &mut (StoredFieldsWriter + 'static),
-    state: &mut MergeState,
+pub enum StoredFieldsWriterEnum<O: IndexOutput + 'static> {
+    Compressing(CompressingStoredFieldsWriter<O>),
+}
+
+impl<O: IndexOutput + 'static> StoredFieldsWriter for StoredFieldsWriterEnum<O> {
+    fn start_document(&mut self) -> Result<()> {
+        match self {
+            StoredFieldsWriterEnum::Compressing(w) => w.start_document(),
+        }
+    }
+
+    fn finish_document(&mut self) -> Result<()> {
+        match self {
+            StoredFieldsWriterEnum::Compressing(w) => w.finish_document(),
+        }
+    }
+
+    fn write_field(&mut self, field_info: &FieldInfo, field: &impl Fieldable) -> Result<()> {
+        match self {
+            StoredFieldsWriterEnum::Compressing(w) => w.write_field(field_info, field),
+        }
+    }
+
+    fn finish(&mut self, field_infos: &FieldInfos, num_docs: usize) -> Result<()> {
+        match self {
+            StoredFieldsWriterEnum::Compressing(w) => w.finish(field_infos, num_docs),
+        }
+    }
+
+    fn merge<D: Directory, C: Codec>(&mut self, merge_state: &mut MergeState<D, C>) -> Result<i32> {
+        match self {
+            StoredFieldsWriterEnum::Compressing(w) => w.merge(merge_state),
+        }
+    }
+}
+
+pub fn merge_store_fields<D: Directory, C: Codec, S: StoredFieldsWriter + 'static>(
+    writer: &mut S,
+    state: &mut MergeState<D, C>,
 ) -> Result<i32> {
     let fields_readers = mem::replace(&mut state.stored_fields_readers, Vec::with_capacity(0));
     let mut subs = Vec::with_capacity(fields_readers.len());
@@ -734,19 +881,19 @@ pub fn merge_store_fields(
     Ok(doc_count)
 }
 
-struct StoredFieldsMergeSub {
-    reader: Box<StoredFieldsReader>,
+struct StoredFieldsMergeSub<S: StoredFieldsWriter, R: StoredFieldsReader> {
+    reader: R,
     max_doc: i32,
-    visitor: MergeVisitor,
+    visitor: MergeVisitor<S>,
     base: DocIdMergerSubBase,
     doc_id: DocId,
 }
 
-impl StoredFieldsMergeSub {
+impl<S: StoredFieldsWriter, R: StoredFieldsReader> StoredFieldsMergeSub<S, R> {
     fn new(
-        visitor: MergeVisitor,
+        visitor: MergeVisitor<S>,
         doc_map: Arc<LiveDocsDocMap>,
-        reader: Box<StoredFieldsReader>,
+        reader: R,
         max_doc: i32,
     ) -> Self {
         let base = DocIdMergerSubBase::new(doc_map);
@@ -760,7 +907,7 @@ impl StoredFieldsMergeSub {
     }
 }
 
-impl DocIdMergerSub for StoredFieldsMergeSub {
+impl<S: StoredFieldsWriter, R: StoredFieldsReader> DocIdMergerSub for StoredFieldsMergeSub<S, R> {
     fn next_doc(&mut self) -> Result<DocId> {
         self.doc_id += 1;
         Ok(if self.doc_id == self.max_doc {
@@ -779,18 +926,18 @@ impl DocIdMergerSub for StoredFieldsMergeSub {
     }
 }
 
-pub struct MergeVisitor {
+pub struct MergeVisitor<S: StoredFieldsWriter> {
     value: Option<VariantValue>,
     current_field: *const FieldInfo,
-    fields_writer: *mut StoredFieldsWriter,
+    fields_writer: *mut S,
     remapper: Option<Arc<FieldInfos>>,
 }
 
-impl MergeVisitor {
-    pub fn new(
-        merge_state: &MergeState,
+impl<S: StoredFieldsWriter> MergeVisitor<S> {
+    pub fn new<D: Directory, C: Codec>(
+        merge_state: &MergeState<D, C>,
         reader_index: usize,
-        fields_writer: &mut (StoredFieldsWriter + 'static),
+        fields_writer: &mut S,
     ) -> Self {
         // if field numbers are aligned, we can save hash lookups
         // on every field access. Otherwise, we need to lookup
@@ -834,7 +981,7 @@ impl MergeVisitor {
     }
 }
 
-impl StoredFieldVisitor for MergeVisitor {
+impl<S: StoredFieldsWriter> StoredFieldVisitor for MergeVisitor<S> {
     fn binary_field(&mut self, field_info: &FieldInfo, value: Vec<u8>) -> Result<()> {
         self.reset(field_info);
         self.value = Some(VariantValue::Binary(value));
@@ -876,7 +1023,7 @@ impl StoredFieldVisitor for MergeVisitor {
     }
 }
 
-impl Fieldable for MergeVisitor {
+impl<S: StoredFieldsWriter> Fieldable for MergeVisitor<S> {
     fn name(&self) -> &str {
         unsafe { &(*self.current_field).name }
     }
@@ -890,7 +1037,7 @@ impl Fieldable for MergeVisitor {
         debug_assert!(self.value.is_some());
         self.value.as_ref()
     }
-    fn token_stream(&mut self) -> Result<Box<TokenStream>> {
+    fn token_stream(&mut self) -> Result<Box<dyn TokenStream>> {
         unreachable!()
     }
 

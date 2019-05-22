@@ -1,4 +1,4 @@
-use core::util::byte_ref::BytesRef;
+use core::util::BytesRef;
 use error::{ErrorKind, Result};
 
 use std::fmt;

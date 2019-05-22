@@ -1,10 +1,10 @@
-use core::index::NumericDocValuesRef;
-use core::index::{LeafReader, LeafReaderContext};
-use core::search::sort_field::SortFieldType;
+use core::index::{LeafReaderContext, NumericDocValuesRef, SearchLeafReader};
+use core::search::sort_field::{SortFieldType, SortedWrapperDocValuesSource};
 use core::util::bits::BitsRef;
 use core::util::{DocId, VariantValue};
 use error::Result;
 
+use core::codec::Codec;
 use std::cmp::Ordering;
 use std::fmt;
 
@@ -96,9 +96,98 @@ pub trait FieldComparator: fmt::Display {
 
     fn copy(&mut self, slot: usize, value: ComparatorValue) -> Result<()>;
 
-    fn get_information_from_reader(&mut self, reader: &LeafReaderContext) -> Result<()>;
+    fn get_information_from_reader<C: Codec>(
+        &mut self,
+        reader: &LeafReaderContext<'_, C>,
+    ) -> Result<()>;
 
     fn get_type(&self) -> SortFieldType;
+}
+
+pub enum FieldComparatorEnum {
+    Score(RelevanceComparator),
+    Doc(DocComparator),
+    NumericDV(NumericDocValuesComparator<DefaultDocValuesSource>),
+    SortedNumericDV(NumericDocValuesComparator<SortedWrapperDocValuesSource>),
+}
+
+impl FieldComparator for FieldComparatorEnum {
+    fn compare(&self, slot1: usize, slot2: usize) -> Ordering {
+        match self {
+            FieldComparatorEnum::Score(c) => c.compare(slot1, slot2),
+            FieldComparatorEnum::Doc(c) => c.compare(slot1, slot2),
+            FieldComparatorEnum::NumericDV(c) => c.compare(slot1, slot2),
+            FieldComparatorEnum::SortedNumericDV(c) => c.compare(slot1, slot2),
+        }
+    }
+
+    fn value(&self, slot: usize) -> VariantValue {
+        match self {
+            FieldComparatorEnum::Score(c) => c.value(slot),
+            FieldComparatorEnum::Doc(c) => c.value(slot),
+            FieldComparatorEnum::NumericDV(c) => c.value(slot),
+            FieldComparatorEnum::SortedNumericDV(c) => c.value(slot),
+        }
+    }
+
+    fn set_bottom(&mut self, slot: usize) {
+        match self {
+            FieldComparatorEnum::Score(c) => c.set_bottom(slot),
+            FieldComparatorEnum::Doc(c) => c.set_bottom(slot),
+            FieldComparatorEnum::NumericDV(c) => c.set_bottom(slot),
+            FieldComparatorEnum::SortedNumericDV(c) => c.set_bottom(slot),
+        }
+    }
+
+    fn compare_bottom(&self, value: ComparatorValue) -> Result<Ordering> {
+        match self {
+            FieldComparatorEnum::Score(c) => c.compare_bottom(value),
+            FieldComparatorEnum::Doc(c) => c.compare_bottom(value),
+            FieldComparatorEnum::NumericDV(c) => c.compare_bottom(value),
+            FieldComparatorEnum::SortedNumericDV(c) => c.compare_bottom(value),
+        }
+    }
+
+    fn copy(&mut self, slot: usize, value: ComparatorValue) -> Result<()> {
+        match self {
+            FieldComparatorEnum::Score(c) => c.copy(slot, value),
+            FieldComparatorEnum::Doc(c) => c.copy(slot, value),
+            FieldComparatorEnum::NumericDV(c) => c.copy(slot, value),
+            FieldComparatorEnum::SortedNumericDV(c) => c.copy(slot, value),
+        }
+    }
+
+    fn get_information_from_reader<C: Codec>(
+        &mut self,
+        reader: &LeafReaderContext<'_, C>,
+    ) -> Result<()> {
+        match self {
+            FieldComparatorEnum::Score(c) => c.get_information_from_reader(reader),
+            FieldComparatorEnum::Doc(c) => c.get_information_from_reader(reader),
+            FieldComparatorEnum::NumericDV(c) => c.get_information_from_reader(reader),
+            FieldComparatorEnum::SortedNumericDV(c) => c.get_information_from_reader(reader),
+        }
+    }
+
+    fn get_type(&self) -> SortFieldType {
+        match self {
+            FieldComparatorEnum::Score(c) => c.get_type(),
+            FieldComparatorEnum::Doc(c) => c.get_type(),
+            FieldComparatorEnum::NumericDV(c) => c.get_type(),
+            FieldComparatorEnum::SortedNumericDV(c) => c.get_type(),
+        }
+    }
+}
+
+impl fmt::Display for FieldComparatorEnum {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            FieldComparatorEnum::Score(c) => write!(f, "FieldComparatorEnum({})", c),
+            FieldComparatorEnum::Doc(c) => write!(f, "FieldComparatorEnum({})", c),
+            FieldComparatorEnum::NumericDV(c) => write!(f, "FieldComparatorEnum({})", c),
+            FieldComparatorEnum::SortedNumericDV(c) => write!(f, "FieldComparatorEnum({})", c),
+        }
+    }
 }
 
 pub struct RelevanceComparator {
@@ -146,7 +235,10 @@ impl FieldComparator for RelevanceComparator {
         Ok(())
     }
 
-    fn get_information_from_reader(&mut self, _reader: &LeafReaderContext) -> Result<()> {
+    fn get_information_from_reader<C: Codec>(
+        &mut self,
+        _reader: &LeafReaderContext<'_, C>,
+    ) -> Result<()> {
         Ok(())
     }
 
@@ -206,7 +298,10 @@ impl FieldComparator for DocComparator {
         Ok(())
     }
 
-    fn get_information_from_reader(&mut self, reader: &LeafReaderContext) -> Result<()> {
+    fn get_information_from_reader<C: Codec>(
+        &mut self,
+        reader: &LeafReaderContext<'_, C>,
+    ) -> Result<()> {
         self.doc_base = reader.doc_base;
         Ok(())
     }
@@ -314,7 +409,10 @@ impl<T: DocValuesSource> FieldComparator for NumericDocValuesComparator<T> {
         Ok(())
     }
 
-    fn get_information_from_reader(&mut self, reader: &LeafReaderContext) -> Result<()> {
+    fn get_information_from_reader<C: Codec>(
+        &mut self,
+        reader: &LeafReaderContext<'_, C>,
+    ) -> Result<()> {
         self.current_read_values = Some(
             self.doc_values_source
                 .numeric_doc_values(reader.reader, &self.field)?,
@@ -345,18 +443,35 @@ impl<T: DocValuesSource> fmt::Display for NumericDocValuesComparator<T> {
 }
 
 pub trait DocValuesSource {
-    fn numeric_doc_values(&self, reader: &LeafReader, field: &str) -> Result<NumericDocValuesRef>;
-    fn docs_with_fields(&self, reader: &LeafReader, field: &str) -> Result<BitsRef>;
+    fn numeric_doc_values<C: Codec>(
+        &self,
+        reader: &SearchLeafReader<C>,
+        field: &str,
+    ) -> Result<NumericDocValuesRef>;
+
+    fn docs_with_fields<C: Codec>(
+        &self,
+        reader: &SearchLeafReader<C>,
+        field: &str,
+    ) -> Result<BitsRef>;
 }
 
 #[derive(Default)]
 pub struct DefaultDocValuesSource;
 
 impl DocValuesSource for DefaultDocValuesSource {
-    fn numeric_doc_values(&self, reader: &LeafReader, field: &str) -> Result<NumericDocValuesRef> {
+    fn numeric_doc_values<C: Codec>(
+        &self,
+        reader: &SearchLeafReader<C>,
+        field: &str,
+    ) -> Result<NumericDocValuesRef> {
         reader.get_numeric_doc_values(field)
     }
-    fn docs_with_fields(&self, reader: &LeafReader, field: &str) -> Result<BitsRef> {
+    fn docs_with_fields<C: Codec>(
+        &self,
+        reader: &SearchLeafReader<C>,
+        field: &str,
+    ) -> Result<BitsRef> {
         reader.get_docs_with_field(field)
     }
 }
@@ -371,9 +486,9 @@ mod tests {
     fn test_relevance_comparator() {
         let mut comparator = RelevanceComparator::new(3);
         {
-            comparator.copy(0, ComparatorValue::Score(1f32));
-            comparator.copy(1, ComparatorValue::Score(2f32));
-            comparator.copy(2, ComparatorValue::Score(3f32));
+            comparator.copy(0, ComparatorValue::Score(1f32)).unwrap();
+            comparator.copy(1, ComparatorValue::Score(2f32)).unwrap();
+            comparator.copy(2, ComparatorValue::Score(3f32)).unwrap();
         }
 
         assert_eq!(comparator.compare(0, 1), Ordering::Greater);
@@ -399,10 +514,12 @@ mod tests {
         let index_reader = MockIndexReader::new(vec![leaf_reader]);
         let leaf_reader_context = index_reader.leaves();
         {
-            comparator.get_information_from_reader(&leaf_reader_context[0]);
-            comparator.copy(0, ComparatorValue::Doc(1));
-            comparator.copy(1, ComparatorValue::Doc(2));
-            comparator.copy(2, ComparatorValue::Doc(3));
+            comparator
+                .get_information_from_reader(&leaf_reader_context[0])
+                .unwrap();
+            comparator.copy(0, ComparatorValue::Doc(1)).unwrap();
+            comparator.copy(1, ComparatorValue::Doc(2)).unwrap();
+            comparator.copy(2, ComparatorValue::Doc(3)).unwrap();
         }
 
         assert_eq!(comparator.compare(0, 1), Ordering::Less);

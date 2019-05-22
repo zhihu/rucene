@@ -1,16 +1,23 @@
 use core::analysis::TokenStream;
+use core::codec::Codec;
 use core::index::byte_slice_reader::ByteSliceReader;
+use core::index::merge_policy::MergePolicy;
+use core::index::merge_scheduler::MergeScheduler;
 use core::index::postings_array::{ParallelPostingsArray, PostingsArray};
 use core::index::term_vector::TermVectorsConsumerPerField;
 use core::index::terms_hash::TermsHashBase;
 use core::index::{FieldInfo, FieldInvertState, Fieldable, IndexOptions};
+use core::store::Directory;
 use core::util::bit_util::UnsignedShift;
-use core::util::byte_block_pool::{self, ByteBlockPool};
+use core::util::byte_block_pool::ByteBlockPool;
 use core::util::bytes_ref_hash::{BytesRefHash, BytesStartArray};
 use core::util::int_block_pool::{self, IntBlockPool};
 use core::util::{Count, Counter, DocId};
 
-use std::cmp::{max, Ordering};
+use std::{
+    cmp::{max, Ordering},
+    mem, ptr,
+};
 
 use error::Result;
 
@@ -55,7 +62,7 @@ impl<T: PostingsArray + 'static> TermsHashPerFieldBase<T> {
             stream_count,
             num_posting_int: 2 * stream_count,
             field_info,
-            bytes_hash: BytesRefHash::default(),
+            bytes_hash: unsafe { mem::uninitialized() },
             postings_array,
             int_upto_idx: 0,
             int_upto_start: 0,
@@ -65,12 +72,16 @@ impl<T: PostingsArray + 'static> TermsHashPerFieldBase<T> {
     }
 
     pub fn init(&mut self) {
-        let bytes_starts: Box<BytesStartArray> = {
+        let bytes_starts: Box<dyn BytesStartArray> = {
             let mut counter = unsafe { self.bytes_used.shallow_copy() };
             Box::new(PostingsBytesStartArray::new(self, &mut counter))
         };
-        self.bytes_hash =
-            unsafe { BytesRefHash::new(&mut *self.term_byte_pool, HASH_INIT_SIZE, bytes_starts) };
+        unsafe {
+            ptr::write(
+                &mut self.bytes_hash,
+                BytesRefHash::new(&mut *self.term_byte_pool, HASH_INIT_SIZE, bytes_starts),
+            );
+        }
         self.inited = true;
     }
 
@@ -109,8 +120,8 @@ impl<T: PostingsArray + 'static> TermsHashPerFieldBase<T> {
             {
                 self.int_pool_mut().next_buffer();
             }
-            if byte_block_pool::BYTE_BLOCK_SIZE - self.byte_block_pool().byte_upto
-                < self.num_posting_int * byte_block_pool::FIRST_LEVEL_SIZE
+            if ByteBlockPool::BYTE_BLOCK_SIZE - self.byte_block_pool().byte_upto
+                < self.num_posting_int * ByteBlockPool::FIRST_LEVEL_SIZE
             {
                 self.byte_pool_mut().next_buffer();
             }
@@ -125,7 +136,7 @@ impl<T: PostingsArray + 'static> TermsHashPerFieldBase<T> {
             for i in 0..self.stream_count {
                 let upto = self
                     .byte_pool_mut()
-                    .new_slice(byte_block_pool::FIRST_LEVEL_SIZE);
+                    .new_slice(ByteBlockPool::FIRST_LEVEL_SIZE);
                 unsafe {
                     (&mut *self.int_pool).buffers[self.int_upto_idx][self.int_upto_start + i] =
                         (upto as isize + self.byte_block_pool().byte_offset) as i32;
@@ -147,8 +158,8 @@ impl<T: PostingsArray + 'static> TermsHashPerFieldBase<T> {
         unsafe {
             let upto =
                 (*self.int_pool).buffers[self.int_upto_idx][self.int_upto_start + stream] as usize;
-            let mut byte_pool_idx = upto >> byte_block_pool::BYTE_BLOCK_SHIFT;
-            let mut offset = upto & byte_block_pool::BYTE_BLOCK_MASK;
+            let mut byte_pool_idx = upto >> ByteBlockPool::BYTE_BLOCK_SHIFT;
+            let mut offset = upto & ByteBlockPool::BYTE_BLOCK_MASK;
             if (*self.byte_pool).buffers[byte_pool_idx][offset] != 0 {
                 // End of slice; allocate a new one
                 offset = (*self.byte_pool).alloc_slice(byte_pool_idx, offset);
@@ -210,7 +221,7 @@ pub trait TermsHashPerField: Ord + PartialOrd + Eq + PartialEq {
         let ints_idx = int_start as usize >> int_block_pool::INT_BLOCK_SHIFT;
         let upto = int_start as usize & int_block_pool::INT_BLOCK_MASK;
         let start_index = self.base().postings_array.parallel_array().byte_starts[term_id] as usize
-            + stream * byte_block_pool::FIRST_LEVEL_SIZE;
+            + stream * ByteBlockPool::FIRST_LEVEL_SIZE;
         let end_index = self.base().int_block_pool().buffers[ints_idx][upto + stream];
         reader.init(
             &self.base().byte_block_pool(),
@@ -286,7 +297,7 @@ pub trait TermsHashPerField: Ord + PartialOrd + Eq + PartialEq {
     fn start(
         &mut self,
         field_state: &FieldInvertState,
-        field: &Fieldable,
+        field: &impl Fieldable,
         first: bool,
     ) -> Result<bool>;
 
@@ -379,7 +390,12 @@ impl<T: PostingsArray + 'static> BytesStartArray for PostingsBytesStartArray<T> 
 // TODO: break into separate freq and prox writers as
 // codecs; make separate container (tii/tis/skip/*) that can
 // be configured as any number of files 1..N
-pub struct FreqProxTermsWriterPerField {
+pub struct FreqProxTermsWriterPerField<
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+> {
     pub base: TermsHashPerFieldBase<FreqProxPostingsArray>,
     // freq_prox_postings_array: FreqProxPostingsArray,
     pub has_freq: bool,
@@ -393,14 +409,20 @@ pub struct FreqProxTermsWriterPerField {
     doc_count: u32,
     /// Set to true if any token had a payload in the current segment
     pub saw_payloads: bool,
-    pub next_per_field: TermVectorsConsumerPerField,
+    pub next_per_field: TermVectorsConsumerPerField<D, C, MS, MP>,
 }
 
-impl FreqProxTermsWriterPerField {
+impl<D, C, MS, MP> FreqProxTermsWriterPerField<D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
     pub fn new(
         terms_hash: &mut TermsHashBase,
         field_info: FieldInfo,
-        next_per_field: TermVectorsConsumerPerField,
+        next_per_field: TermVectorsConsumerPerField<D, C, MS, MP>,
     ) -> Self {
         let stream_count = if field_info.index_options >= IndexOptions::DocsAndFreqsAndPositions {
             2
@@ -468,7 +490,13 @@ impl FreqProxTermsWriterPerField {
     }
 }
 
-impl TermsHashPerField for FreqProxTermsWriterPerField {
+impl<D, C, MS, MP> TermsHashPerField for FreqProxTermsWriterPerField<D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
     type P = FreqProxPostingsArray;
 
     fn base(&self) -> &TermsHashPerFieldBase<FreqProxPostingsArray> {
@@ -503,7 +531,7 @@ impl TermsHashPerField for FreqProxTermsWriterPerField {
     fn start(
         &mut self,
         field_state: &FieldInvertState,
-        field: &Fieldable,
+        field: &impl Fieldable,
         first: bool,
     ) -> Result<bool> {
         self.base.do_next_call = self.next_per_field.start(field_state, field, first)?;
@@ -648,21 +676,46 @@ impl TermsHashPerField for FreqProxTermsWriterPerField {
     }
 }
 
-impl Eq for FreqProxTermsWriterPerField {}
+impl<D, C, MS, MP> Eq for FreqProxTermsWriterPerField<D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
+}
 
-impl PartialEq for FreqProxTermsWriterPerField {
+impl<D, C, MS, MP> PartialEq for FreqProxTermsWriterPerField<D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
     fn eq(&self, other: &Self) -> bool {
         self.base.field_info.name.eq(&other.base.field_info.name)
     }
 }
 
-impl Ord for FreqProxTermsWriterPerField {
+impl<D, C, MS, MP> Ord for FreqProxTermsWriterPerField<D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
     fn cmp(&self, other: &Self) -> Ordering {
         self.base.field_info.name.cmp(&other.base.field_info.name)
     }
 }
 
-impl PartialOrd for FreqProxTermsWriterPerField {
+impl<D, C, MS, MP> PartialOrd for FreqProxTermsWriterPerField<D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }

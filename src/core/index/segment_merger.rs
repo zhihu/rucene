@@ -1,8 +1,12 @@
-use core::codec::Codec;
+use core::codec::{
+    Codec, DocValuesConsumer, DocValuesFormat, FieldInfosFormat, FieldsConsumer, NormsConsumer,
+    NormsFormat, PointsFormat, PointsWriter, PostingsFormat, StoredFieldsFormat,
+    StoredFieldsWriter, TermVectorsFormat, TermVectorsWriter,
+};
 use core::index::merge_state::MergeState;
 use core::index::{FieldInfosBuilder, FieldNumbersRef};
 use core::index::{SegmentInfo, SegmentReader, SegmentWriteState};
-use core::store::{DirectoryRc, IOContext};
+use core::store::{Directory, IOContext};
 use error::ErrorKind::{IllegalArgument, IllegalState};
 use error::Result;
 
@@ -12,19 +16,24 @@ use std::sync::Arc;
 /// The SegmentMerger class combines two or more Segments, represented by an
 /// IndexReader, into a single Segment.  Call the merge method to combine the
 /// segments
-pub struct SegmentMerger {
-    directory: DirectoryRc,
-    codec: Arc<Codec>,
+pub struct SegmentMerger<D: Directory + 'static, DW: Directory, C: Codec> {
+    directory: Arc<DW>,
+    codec: Arc<C>,
     context: IOContext,
-    pub merge_state: MergeState,
+    pub merge_state: MergeState<D, C>,
     field_infos_builder: FieldInfosBuilder<FieldNumbersRef>,
 }
 
-impl SegmentMerger {
+impl<D, DW, C> SegmentMerger<D, DW, C>
+where
+    D: Directory + 'static,
+    DW: Directory + 'static,
+    C: Codec,
+{
     pub fn new(
-        readers: Vec<Arc<SegmentReader>>,
-        segment_info: &SegmentInfo,
-        directory: DirectoryRc,
+        readers: Vec<Arc<SegmentReader<D, C>>>,
+        segment_info: &SegmentInfo<D, C>,
+        directory: Arc<DW>,
         field_numbers: FieldNumbersRef,
         context: IOContext,
     ) -> Result<Self> {
@@ -129,7 +138,10 @@ impl SegmentMerger {
         Ok(())
     }
 
-    fn merge_doc_values(&mut self, segment_write_state: &SegmentWriteState) -> Result<()> {
+    fn merge_doc_values(
+        &mut self,
+        segment_write_state: &SegmentWriteState<D, DW, C>,
+    ) -> Result<()> {
         let mut consumer = self
             .codec
             .doc_values_format()
@@ -137,7 +149,7 @@ impl SegmentMerger {
         consumer.merge(&mut self.merge_state)
     }
 
-    fn merge_points(&mut self, segment_write_state: &SegmentWriteState) -> Result<()> {
+    fn merge_points(&mut self, segment_write_state: &SegmentWriteState<D, DW, C>) -> Result<()> {
         let mut writer = self
             .codec
             .points_format()
@@ -145,7 +157,7 @@ impl SegmentMerger {
         writer.merge(&mut self.merge_state)
     }
 
-    fn merge_norms(&mut self, segment_write_state: &SegmentWriteState) -> Result<()> {
+    fn merge_norms(&mut self, segment_write_state: &SegmentWriteState<D, DW, C>) -> Result<()> {
         let mut consumer = self
             .codec
             .norms_format()
@@ -187,14 +199,14 @@ impl SegmentMerger {
     /// Merge the TermVectors from each of the segments into the new one.
     fn merge_vectors(&mut self) -> Result<i32> {
         let mut term_vectors_writer = self.codec.term_vectors_format().tv_writer(
-            Arc::clone(&self.directory),
+            &*self.directory,
             self.merge_state.segment_info(),
             &self.context,
         )?;
         term_vectors_writer.merge(&mut self.merge_state)
     }
 
-    fn merge_terms(&mut self, segment_write_state: &SegmentWriteState) -> Result<()> {
+    fn merge_terms(&mut self, segment_write_state: &SegmentWriteState<D, DW, C>) -> Result<()> {
         let mut consumer = self
             .codec
             .postings_format()

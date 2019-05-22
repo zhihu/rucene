@@ -1,6 +1,8 @@
-use core::index::LeafReader;
-use core::index::SortedNumericDocValuesRef;
-use core::index::{NumericDocValues, NumericDocValuesContext, NumericDocValuesRef};
+use core::codec::Codec;
+use core::index::{
+    NumericDocValues, NumericDocValuesContext, NumericDocValuesRef, SearchLeafReader,
+    SortedNumericDocValuesRef,
+};
 use core::search::field_comparator::*;
 use core::util::numeric::{sortable_double_bits, sortable_float_bits};
 use core::util::BitsRef;
@@ -107,7 +109,7 @@ impl SortField {
         &self,
         num_hits: usize,
         missing_value: Option<&VariantValue>,
-    ) -> Box<FieldComparator> {
+    ) -> FieldComparatorEnum {
         match self {
             SortField::Simple(s) => s.get_comparator(num_hits, missing_value),
             SortField::SortedNumeric(s) => s.get_comparator(num_hits, missing_value),
@@ -162,17 +164,17 @@ impl SimpleSortField {
         &self,
         num_hits: usize,
         missing_value: Option<&VariantValue>,
-    ) -> Box<FieldComparator> {
+    ) -> FieldComparatorEnum {
         match self.field_type {
-            SortFieldType::Score => Box::new(RelevanceComparator::new(num_hits)),
-            SortFieldType::Doc => Box::new(DocComparator::new(num_hits)),
+            SortFieldType::Score => FieldComparatorEnum::Score(RelevanceComparator::new(num_hits)),
+            SortFieldType::Doc => FieldComparatorEnum::Doc(DocComparator::new(num_hits)),
             SortFieldType::String => {
                 unimplemented!();
             }
             _ => {
                 // debug_assert!(missing_value.is_some());
 
-                Box::new(NumericDocValuesComparator::new(
+                FieldComparatorEnum::NumericDV(NumericDocValuesComparator::new(
                     num_hits,
                     self.field.clone(),
                     self.field_type,
@@ -240,9 +242,9 @@ impl SortedNumericSortField {
         &self,
         num_hits: usize,
         missing_value: Option<&VariantValue>,
-    ) -> Box<FieldComparator> {
+    ) -> FieldComparatorEnum {
         // debug_assert!(missing_value.is_some());
-        Box::new(NumericDocValuesComparator::new(
+        FieldComparatorEnum::SortedNumericDV(NumericDocValuesComparator::new(
             num_hits,
             self.raw_field.field.clone(),
             self.real_type,
@@ -257,7 +259,7 @@ impl SortedNumericSortField {
     }
 }
 
-struct SortedWrapperDocValuesSource {
+pub struct SortedWrapperDocValuesSource {
     selector: SortedNumericSelectorType,
     field_type: SortFieldType,
 }
@@ -272,7 +274,11 @@ impl SortedWrapperDocValuesSource {
 }
 
 impl DocValuesSource for SortedWrapperDocValuesSource {
-    fn numeric_doc_values(&self, reader: &LeafReader, field: &str) -> Result<NumericDocValuesRef> {
+    fn numeric_doc_values<C: Codec>(
+        &self,
+        reader: &SearchLeafReader<C>,
+        field: &str,
+    ) -> Result<NumericDocValuesRef> {
         SortedNumericSelector::wrap(
             reader.get_sorted_numeric_doc_values(field)?,
             self.selector,
@@ -280,7 +286,11 @@ impl DocValuesSource for SortedWrapperDocValuesSource {
         )
     }
 
-    fn docs_with_fields(&self, reader: &LeafReader, field: &str) -> Result<BitsRef> {
+    fn docs_with_fields<C: Codec>(
+        &self,
+        reader: &SearchLeafReader<C>,
+        field: &str,
+    ) -> Result<BitsRef> {
         reader.get_docs_with_field(field)
     }
 }
@@ -448,6 +458,7 @@ impl NumericDocValues for SortedNumAsNumDocValuesMax {
 /// via {@link #setMissingValue(Object)}.
 /// @see SortedSetSelector
 /// TODO, may implement later
+#[allow(dead_code)]
 struct SortedSetSortField {
     selector: SortedSetSelectorType,
     raw_field: SimpleSortField,

@@ -3,7 +3,7 @@ use std::hash::Hash;
 use std::io;
 
 use core::store::{DataInput, DataOutput};
-use error::*;
+use error::Result;
 
 // pub mod builder;
 pub mod bytes_output;

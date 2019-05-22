@@ -1,25 +1,24 @@
-use core::index::term::TermIterator;
-use core::index::{RandomAccessOrds, SortedDocValues, SortedSetDocValues,
-                  SortedSetDocValuesContext, NO_MORE_ORDS};
+use core::index::{
+    DocValuesTermIterator, RandomAccessOrds, SortedDocValues, SortedSetDocValues,
+    SortedSetDocValuesContext, NO_MORE_ORDS,
+};
 use core::util::DocId;
 use error::Result;
 
-use std::sync::Arc;
-
-pub struct SingletonSortedSetDocValues {
-    dv_in: Arc<SortedDocValues>,
+pub struct SingletonSortedSetDocValues<T: SortedDocValues> {
+    dv_in: T,
 }
 
-impl SingletonSortedSetDocValues {
-    pub fn new(dv_in: Arc<SortedDocValues>) -> Self {
+impl<T: SortedDocValues> SingletonSortedSetDocValues<T> {
+    pub fn new(dv_in: T) -> Self {
         SingletonSortedSetDocValues { dv_in }
     }
-    pub fn get_sorted_doc_values(&self) -> &SortedDocValues {
-        self.dv_in.as_ref()
+    pub fn get_sorted_doc_values(&self) -> &T {
+        &self.dv_in
     }
 }
 
-impl RandomAccessOrds for SingletonSortedSetDocValues {
+impl<T: SortedDocValues> RandomAccessOrds for SingletonSortedSetDocValues<T> {
     fn ord_at(&self, ctx: &SortedSetDocValuesContext, _index: i32) -> Result<i64> {
         Ok(ctx.0)
     }
@@ -29,7 +28,7 @@ impl RandomAccessOrds for SingletonSortedSetDocValues {
     }
 }
 
-impl SortedSetDocValues for SingletonSortedSetDocValues {
+impl<T: SortedDocValues> SortedSetDocValues for SingletonSortedSetDocValues<T> {
     fn set_document(&self, doc: DocId) -> Result<SortedSetDocValuesContext> {
         let v = i64::from(self.dv_in.get_ord(doc)?);
         Ok((v, v, v))
@@ -55,7 +54,7 @@ impl SortedSetDocValues for SingletonSortedSetDocValues {
         Ok(i64::from(val))
     }
 
-    fn term_iterator(&self) -> Result<Box<TermIterator>> {
+    fn term_iterator(&self) -> Result<DocValuesTermIterator> {
         self.dv_in.term_iterator()
     }
 }

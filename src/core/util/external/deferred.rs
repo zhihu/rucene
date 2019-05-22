@@ -29,7 +29,7 @@ impl fmt::Debug for Deferred {
 
 impl Deferred {
     /// Constructs a new `Deferred` from a `FnOnce()`.
-    pub fn new<F: FnOnce()>(f: F) -> Self {
+    pub fn new<F: FnOnce() + 'static>(f: F) -> Self {
         let size = mem::size_of::<F>();
         let align = mem::align_of::<F>();
 

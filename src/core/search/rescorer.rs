@@ -1,8 +1,9 @@
-use error::*;
+use error::Result;
 
 use std::collections::HashMap;
 
-use core::index::LeafReaderContext;
+use core::codec::Codec;
+use core::index::{IndexReader, LeafReaderContext};
 use core::search::explanation::Explanation;
 use core::search::searcher::IndexSearcher;
 use core::search::sort_field::SortFieldType;
@@ -17,12 +18,12 @@ use core::util::{IndexedContext, VariantValue};
 pub struct QueryRescorer;
 
 impl QueryRescorer {
-    fn batch_rescore(
+    fn batch_rescore<C: Codec>(
         &self,
-        readers: &[LeafReaderContext],
-        req: &RescoreRequest,
+        readers: &[LeafReaderContext<'_, C>],
+        req: &RescoreRequest<C>,
         hits: &mut [ScoreDocHit],
-        weight: &Weight,
+        weight: &dyn Weight<C>,
         score_field_index: i32,
         batch_scorer: &BatchScorer,
     ) -> Result<()> {
@@ -46,8 +47,7 @@ impl QueryRescorer {
             if reader_idx != current_reader_idx {
                 let reader = &readers[reader_idx as usize];
                 doc_base = reader.doc_base;
-                let current_scorer = weight.create_scorer(reader)?;
-                scorer = Some(current_scorer);
+                scorer = weight.create_scorer(reader)?;
                 current_reader_idx = reader_idx;
             }
 
@@ -114,12 +114,12 @@ impl QueryRescorer {
         Ok(())
     }
 
-    fn iterative_rescore(
+    fn iterative_rescore<C: Codec>(
         &self,
-        readers: &[LeafReaderContext],
-        req: &RescoreRequest,
+        readers: &[LeafReaderContext<'_, C>],
+        req: &RescoreRequest<C>,
         hits: &mut [ScoreDocHit],
-        weight: &Weight,
+        weight: &dyn Weight<C>,
         score_field_index: i32,
     ) -> Result<()> {
         let mut hit_upto = 0usize;
@@ -142,8 +142,7 @@ impl QueryRescorer {
             if reader_idx != current_reader_idx {
                 let reader = &readers[reader_idx as usize];
                 doc_base = reader.doc_base();
-                let current_scorer = weight.create_scorer(reader)?;
-                scorer = Some(current_scorer);
+                scorer = weight.create_scorer(reader)?;
                 current_reader_idx = reader_idx;
             }
 
@@ -186,13 +185,13 @@ impl QueryRescorer {
         Ok(())
     }
 
-    fn query_rescore(
+    fn query_rescore<C: Codec, IS: IndexSearcher<C>>(
         &self,
-        searcher: &IndexSearcher,
-        req: &RescoreRequest,
+        searcher: &IS,
+        req: &RescoreRequest<C>,
         top_docs: &TopDocs,
     ) -> Result<Vec<ScoreDocHit>> {
-        let mut hits = top_docs.score_docs().clone();
+        let mut hits = top_docs.score_docs().to_vec();
         if hits.len() > req.window_size {
             hits.truncate(req.window_size);
         }
@@ -242,9 +241,9 @@ impl QueryRescorer {
         Ok(hits)
     }
 
-    fn combine_score(
+    fn combine_score<C: Codec>(
         &self,
-        ctx: &RescoreRequest,
+        ctx: &RescoreRequest<C>,
         last_score: f32,
         is_match: bool,
         new_score: f32,
@@ -261,7 +260,12 @@ impl QueryRescorer {
         }
     }
 
-    fn combine_docs(&self, docs: &mut TopDocs, resorted: Vec<ScoreDocHit>, ctx: &RescoreRequest) {
+    fn combine_docs<C: Codec>(
+        &self,
+        docs: &mut TopDocs,
+        resorted: Vec<ScoreDocHit>,
+        ctx: &RescoreRequest<C>,
+    ) {
         let rescore_len = resorted.len();
         let mut resorted = resorted;
         // used for collapsing top docs
@@ -340,10 +344,10 @@ impl QueryRescorer {
     //        ))
     //    }
 
-    fn explain_es(
+    fn explain_es<C: Codec, IS: IndexSearcher<C>>(
         &self,
-        searcher: &IndexSearcher,
-        req: &RescoreRequest,
+        searcher: &IS,
+        req: &RescoreRequest<C>,
         first: Explanation,
         doc: DocId,
     ) -> Result<Explanation> {
@@ -402,10 +406,10 @@ impl QueryRescorer {
         }
     }
 
-    fn score_features(
+    fn score_features<C: Codec, IS: IndexSearcher<C>>(
         &self,
-        searcher: &IndexSearcher,
-        req: &RescoreRequest,
+        searcher: &IS,
+        req: &RescoreRequest<C>,
         top_docs: &TopDocs,
     ) -> Result<(Vec<Option<Vec<FeatureResult>>>, Vec<f32>)> {
         let hits = top_docs.score_docs();
@@ -434,8 +438,7 @@ impl QueryRescorer {
             if reader_idx != current_reader_idx {
                 let reader = &readers[reader_idx as usize];
                 doc_base = reader.doc_base();
-                let current_scorer = weight.create_scorer(reader)?;
-                scorer = Some(current_scorer);
+                scorer = weight.create_scorer(reader)?;
                 current_reader_idx = reader_idx;
             }
 
@@ -464,10 +467,10 @@ impl QueryRescorer {
 }
 
 impl Rescorer for QueryRescorer {
-    fn rescore(
+    fn rescore<C: Codec, IS: IndexSearcher<C>>(
         &self,
-        searcher: &IndexSearcher,
-        rescore_req: &RescoreRequest,
+        searcher: &IS,
+        rescore_req: &RescoreRequest<C>,
         top_docs: &mut TopDocs,
     ) -> Result<()> {
         if top_docs.total_hits() == 0 || top_docs.score_docs().is_empty() {
@@ -480,10 +483,10 @@ impl Rescorer for QueryRescorer {
         Ok(())
     }
 
-    fn rescore_features(
+    fn rescore_features<C: Codec, IS: IndexSearcher<C>>(
         &self,
-        searcher: &IndexSearcher,
-        rescore_req: &RescoreRequest,
+        searcher: &IS,
+        rescore_req: &RescoreRequest<C>,
         top_docs: &mut TopDocs,
     ) -> Result<Vec<HashMap<String, VariantValue>>> {
         if top_docs.total_hits() == 0 || top_docs.score_docs().is_empty() {
@@ -520,10 +523,10 @@ impl Rescorer for QueryRescorer {
         Ok(result_features)
     }
 
-    fn explain(
+    fn explain<C: Codec, IS: IndexSearcher<C>>(
         &self,
-        searcher: &IndexSearcher,
-        req: &RescoreRequest,
+        searcher: &IS,
+        req: &RescoreRequest<C>,
         first: Explanation,
         doc: DocId,
     ) -> Result<Explanation> {

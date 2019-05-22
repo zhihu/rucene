@@ -1,5 +1,5 @@
 use core::store::{DataInput, DataOutput};
-use error::*;
+use error::Result;
 use std::cmp::min;
 use std::vec::Vec;
 
@@ -134,7 +134,7 @@ impl Output for ByteSequenceOutput {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 pub struct ByteSequenceOutputFactory {}
 
 #[allow(dead_code)]

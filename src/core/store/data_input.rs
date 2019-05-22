@@ -239,3 +239,5 @@ pub trait DataInput: Read {
         Ok(())
     }
 }
+
+impl<'a> DataInput for &'a [u8] {}

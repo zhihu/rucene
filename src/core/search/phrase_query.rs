@@ -1,4 +1,4 @@
-use error::*;
+use error::{ErrorKind, Result};
 use std::boxed::Box;
 use std::cmp::{min, Ord, Ordering};
 use std::collections::BinaryHeap;
@@ -6,21 +6,18 @@ use std::collections::{HashMap, HashSet};
 use std::f32;
 use std::fmt;
 
-use core::index::LeafReaderContext;
-use core::index::POSTINGS_POSITIONS;
-use core::index::{EmptyTermIterator, TermIterator};
-use core::index::{Term, TermState};
+use core::codec::{Codec, CodecTermState};
+use core::index::{LeafReaderContext, Term, TermIterator, Terms};
 use core::search::conjunction::ConjunctionScorer;
 use core::search::explanation::Explanation;
-use core::search::posting_iterator::{EmptyPostingIterator, PostingIterator};
-use core::search::searcher::IndexSearcher;
+use core::search::posting_iterator::{PostingIterator, PostingIteratorFlags};
+use core::search::searcher::SearchPlanBuilder;
 use core::search::statistics::{CollectionStatistics, TermStatistics};
 use core::search::term_query::TermQuery;
-use core::search::Query;
-use core::search::Scorer;
-use core::search::Weight;
-use core::search::{two_phase_next, DocIterator, NO_MORE_DOCS};
-use core::search::{SimScorer, SimWeight, Similarity};
+use core::search::{
+    two_phase_next, DocIterator, Query, Scorer, SimScorer, SimWeight, Similarity, Weight,
+    NO_MORE_DOCS,
+};
 use core::util::bit_set::{BitSet, FixedBitSet, ImmutableBitSet};
 use core::util::bits::Bits;
 use core::util::{DocId, KeyedContext};
@@ -117,8 +114,12 @@ impl PhraseQuery {
     }
 }
 
-impl Query for PhraseQuery {
-    fn create_weight(&self, searcher: &IndexSearcher, needs_scores: bool) -> Result<Box<Weight>> {
+impl<C: Codec> Query<C> for PhraseQuery {
+    fn create_weight(
+        &self,
+        searcher: &dyn SearchPlanBuilder<C>,
+        needs_scores: bool,
+    ) -> Result<Box<dyn Weight<C>>> {
         debug_assert!(
             self.positions.len() >= 2,
             "PhraseWeight does not support less than 2 terms, call rewrite first"
@@ -128,11 +129,8 @@ impl Query for PhraseQuery {
             "PhraseWeight requires that the first position is 0, call rewrite first"
         );
 
-        let reader = searcher.reader();
-        let max_doc = i64::from(reader.max_doc());
-
-        let mut term_states: Vec<HashMap<DocId, Box<TermState>>> =
-            Vec::with_capacity(self.terms.len());
+        let max_doc = i64::from(searcher.max_doc());
+        let mut term_states = Vec::with_capacity(self.terms.len());
         let mut term_stats: Vec<TermStatistics> = Vec::with_capacity(self.terms.len());
 
         for i in 0..self.terms.len() {
@@ -202,29 +200,29 @@ impl fmt::Display for PhraseQuery {
 pub static TERM_POSNS_SEEK_OPS_PER_DOC: i32 = 128;
 pub static TERM_OPS_PER_POS: i32 = 7;
 
-pub struct PhraseWeight {
+pub struct PhraseWeight<C: Codec> {
     field: String,
     terms: Vec<Term>,
     positions: Vec<i32>,
     slop: i32,
-    similarity: Box<Similarity>,
-    sim_weight: Box<SimWeight>,
+    similarity: Box<dyn Similarity<C>>,
+    sim_weight: Box<dyn SimWeight<C>>,
     needs_scores: bool,
-    term_states: Vec<HashMap<DocId, Box<TermState>>>,
+    term_states: Vec<HashMap<DocId, CodecTermState<C>>>,
 }
 
-impl PhraseWeight {
+impl<C: Codec> PhraseWeight<C> {
     #[allow(too_many_arguments)]
     pub fn new(
         field: String,
         terms: Vec<Term>,
         positions: Vec<i32>,
         slop: i32,
-        similarity: Box<Similarity>,
-        sim_weight: Box<SimWeight>,
+        similarity: Box<dyn Similarity<C>>,
+        sim_weight: Box<dyn SimWeight<C>>,
         needs_scores: bool,
-        term_states: Vec<HashMap<DocId, Box<TermState>>>,
-    ) -> PhraseWeight {
+        term_states: Vec<HashMap<DocId, CodecTermState<C>>>,
+    ) -> PhraseWeight<C> {
         PhraseWeight {
             field,
             terms,
@@ -237,7 +235,7 @@ impl PhraseWeight {
         }
     }
 
-    fn term_positions_cost(&self, term_iter: &mut TermIterator) -> Result<f32> {
+    fn term_positions_cost(&self, term_iter: &mut impl TermIterator) -> Result<f32> {
         let doc_freq = term_iter.doc_freq()?;
         debug_assert!(doc_freq > 0);
         let total_term_freq = term_iter.total_term_freq()?; // -1 when not available
@@ -252,35 +250,37 @@ impl PhraseWeight {
     }
 }
 
-impl Weight for PhraseWeight {
-    fn create_scorer(&self, reader_context: &LeafReaderContext) -> Result<Box<Scorer>> {
+impl<C: Codec> Weight<C> for PhraseWeight<C> {
+    fn create_scorer(
+        &self,
+        reader_context: &LeafReaderContext<'_, C>,
+    ) -> Result<Option<Box<dyn Scorer>>> {
         debug_assert!(!self.terms.len() >= 2);
 
-        let mut postings_freqs: Vec<PostingsAndFreq> = Vec::with_capacity(self.terms.len());
-        let mut term_iter: Box<TermIterator> =
-            if let Some(field_terms) = reader_context.reader.terms(&self.field)? {
-                debug_assert!(
-                    field_terms.has_positions()?,
-                    format!(
-                        "field {} was indexed without position data; cannot run PhraseQuery \
-                         (phrase={:?})",
-                        self.field, self.terms
-                    )
-                );
-                field_terms.iterator()?
-            } else {
-                Box::new(EmptyTermIterator::default())
-            };
+        let mut postings_freqs = Vec::with_capacity(self.terms.len());
+        let mut term_iter = if let Some(field_terms) = reader_context.reader.terms(&self.field)? {
+            debug_assert!(
+                field_terms.has_positions()?,
+                format!(
+                    "field {} was indexed without position data; cannot run PhraseQuery \
+                     (phrase={:?})",
+                    self.field, self.terms
+                )
+            );
+            field_terms.iterator()?
+        } else {
+            return Ok(None);
+        };
 
         let mut total_match_cost = 0f32;
         for i in 0..self.terms.len() {
             let postings = if let Some(state) = self.term_states[i].get(&reader_context.doc_base) {
-                term_iter.seek_exact_state(self.terms[i].bytes.as_ref(), state.as_ref())?;
-                total_match_cost += self.term_positions_cost(term_iter.as_mut())?;
+                term_iter.seek_exact_state(self.terms[i].bytes.as_ref(), state)?;
+                total_match_cost += self.term_positions_cost(&mut term_iter)?;
 
-                term_iter.postings_with_flags(POSTINGS_POSITIONS)?
+                term_iter.postings_with_flags(PostingIteratorFlags::POSITIONS)?
             } else {
-                Box::new(EmptyPostingIterator::default())
+                return Ok(None);
             };
 
             postings_freqs.push(PostingsAndFreq::new(
@@ -291,7 +291,7 @@ impl Weight for PhraseWeight {
         }
 
         let sim_scorer = self.sim_weight.sim_scorer(reader_context.reader)?;
-        let scorer: Box<Scorer> = if self.slop == 0 {
+        let scorer: Box<dyn Scorer> = if self.slop == 0 {
             // sort by increasing docFreq order
             // optimize exact case
 
@@ -311,7 +311,7 @@ impl Weight for PhraseWeight {
                 total_match_cost,
             ))
         };
-        Ok(scorer)
+        Ok(Some(scorer))
     }
 
     fn query_type(&self) -> &'static str {
@@ -330,44 +330,44 @@ impl Weight for PhraseWeight {
         self.needs_scores
     }
 
-    fn explain(&self, reader: &LeafReaderContext, doc: DocId) -> Result<Explanation> {
+    fn explain(&self, reader: &LeafReaderContext<'_, C>, doc: DocId) -> Result<Explanation> {
         debug_assert!(!self.terms.len() >= 2);
 
         let mut matched = true;
-        let mut postings_freqs: Vec<PostingsAndFreq> = Vec::with_capacity(self.terms.len());
-        let mut term_iter: Box<TermIterator> =
-            if let Some(field_terms) = reader.reader.terms(&self.field)? {
-                debug_assert!(
-                    field_terms.has_positions()?,
-                    format!(
-                        "field {} was indexed without position data; cannot run PhraseQuery \
-                         (phrase={:?})",
-                        self.field, self.terms
-                    )
-                );
-                field_terms.iterator()?
-            } else {
-                matched = false;
-                Box::new(EmptyTermIterator::default())
-            };
+        let mut postings_freqs = Vec::with_capacity(self.terms.len());
+        let mut term_iter = if let Some(field_terms) = reader.reader.terms(&self.field)? {
+            debug_assert!(
+                field_terms.has_positions()?,
+                format!(
+                    "field {} was indexed without position data; cannot run PhraseQuery \
+                     (phrase={:?})",
+                    self.field, self.terms
+                )
+            );
+            Some(field_terms.iterator()?)
+        } else {
+            matched = false;
+            None
+        };
 
         let mut total_match_cost = 0f32;
         for i in 0..self.terms.len() {
-            let postings = if let Some(state) = self.term_states[i].get(&reader.doc_base()) {
-                term_iter.seek_exact_state(self.terms[i].bytes.as_ref(), state.as_ref())?;
-                total_match_cost += self.term_positions_cost(term_iter.as_mut())?;
+            if let Some(state) = self.term_states[i].get(&reader.doc_base()) {
+                if let Some(ref mut term_iter) = term_iter {
+                    term_iter.seek_exact_state(self.terms[i].bytes.as_ref(), state)?;
+                    total_match_cost += self.term_positions_cost(term_iter)?;
 
-                term_iter.postings_with_flags(POSTINGS_POSITIONS)?
+                    let postings =
+                        term_iter.postings_with_flags(PostingIteratorFlags::POSITIONS)?;
+                    postings_freqs.push(PostingsAndFreq::new(
+                        postings,
+                        self.positions[i],
+                        &self.terms[i],
+                    ));
+                }
             } else {
                 matched = false;
-                Box::new(EmptyPostingIterator::default())
-            };
-
-            postings_freqs.push(PostingsAndFreq::new(
-                postings,
-                self.positions[i],
-                &self.terms[i],
-            ));
+            }
         }
 
         if matched {
@@ -428,7 +428,7 @@ impl Weight for PhraseWeight {
     }
 }
 
-impl fmt::Display for PhraseWeight {
+impl<C: Codec> fmt::Display for PhraseWeight<C> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
@@ -438,16 +438,16 @@ impl fmt::Display for PhraseWeight {
     }
 }
 
-struct PostingsAndFreq {
-    pub postings: Box<PostingIterator>,
+struct PostingsAndFreq<T: PostingIterator> {
+    pub postings: T,
     pub pos: i32,
     pub terms: Vec<Term>,
     pub nterms: i32,
     // for faster comparisons
 }
 
-impl PostingsAndFreq {
-    fn new(postings: Box<PostingIterator>, pos: i32, term: &Term) -> PostingsAndFreq {
+impl<T: PostingIterator> PostingsAndFreq<T> {
+    fn new(postings: T, pos: i32, term: &Term) -> Self {
         PostingsAndFreq {
             postings,
             pos,
@@ -457,13 +457,13 @@ impl PostingsAndFreq {
     }
 }
 
-impl Ord for PostingsAndFreq {
+impl<T: PostingIterator> Ord for PostingsAndFreq<T> {
     fn cmp(&self, other: &Self) -> Ordering {
         self.partial_cmp(&other).unwrap()
     }
 }
 
-impl PartialOrd for PostingsAndFreq {
+impl<T: PostingIterator> PartialOrd for PostingsAndFreq<T> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         if self.pos != other.pos {
             return Some(self.pos.cmp(&other.pos));
@@ -493,9 +493,9 @@ impl PartialOrd for PostingsAndFreq {
     }
 }
 
-impl Eq for PostingsAndFreq {}
+impl<T: PostingIterator> Eq for PostingsAndFreq<T> {}
 
-impl PartialEq for PostingsAndFreq {
+impl<T: PostingIterator> PartialEq for PostingsAndFreq<T> {
     fn eq(&self, other: &Self) -> bool {
         self == other
     }
@@ -511,8 +511,6 @@ pub struct PostingsAndPosition {
 
 unsafe impl Send for PostingsAndPosition {}
 
-unsafe impl Sync for PostingsAndPosition {}
-
 impl PostingsAndPosition {
     pub fn new(postings: *mut PostingIterator, offset: i32) -> PostingsAndPosition {
         PostingsAndPosition {
@@ -525,31 +523,33 @@ impl PostingsAndPosition {
     }
 }
 
-pub struct ExactPhraseScorer {
+pub struct ExactPhraseScorer<T: PostingIterator> {
     freq: i32,
     needs_scores: bool,
     match_cost: f32,
     postings: Vec<PostingsAndPosition>,
-    doc_scorer: Box<SimScorer>,
-    conjunction: ConjunctionScorer,
+    doc_scorer: Box<dyn SimScorer>,
+    conjunction: ConjunctionScorer<PostingsIterAsScorer<T>>,
 }
 
-impl ExactPhraseScorer {
+impl<T: PostingIterator + 'static> ExactPhraseScorer<T> {
     fn new(
-        postings: Vec<PostingsAndFreq>,
-        doc_scorer: Box<SimScorer>,
+        postings: Vec<PostingsAndFreq<T>>,
+        doc_scorer: Box<dyn SimScorer>,
         needs_scores: bool,
         match_cost: f32,
     ) -> Self {
-        let mut iterators: Vec<Box<Scorer>> = Vec::with_capacity(postings.len());
+        let mut iterators = Vec::with_capacity(postings.len());
         let mut postings_and_positions: Vec<PostingsAndPosition> =
             Vec::with_capacity(postings.len());
 
-        for posing in postings {
+        for (i, posing) in postings.into_iter().enumerate() {
             let mut iterator = posing.postings;
-            let postings_prt = iterator.as_mut() as *mut PostingIterator;
-            iterators.push(Box::new(PostingsIterAsScorer { iterator }));
-            postings_and_positions.push(PostingsAndPosition::new(postings_prt, posing.pos));
+            iterators.push(PostingsIterAsScorer { iterator });
+            postings_and_positions.push(PostingsAndPosition::new(
+                &mut iterators[i].iterator,
+                posing.pos,
+            ));
         }
 
         let conjunction = ConjunctionScorer::new(iterators);
@@ -658,7 +658,7 @@ impl ExactPhraseScorer {
     }
 }
 
-impl Scorer for ExactPhraseScorer {
+impl<T: PostingIterator + 'static> Scorer for ExactPhraseScorer<T> {
     fn score(&mut self) -> Result<f32> {
         let doc_id = self.conjunction.doc_id();
         let freq = self.freq as f32;
@@ -666,7 +666,7 @@ impl Scorer for ExactPhraseScorer {
     }
 }
 
-impl DocIterator for ExactPhraseScorer {
+impl<T: PostingIterator + 'static> DocIterator for ExactPhraseScorer<T> {
     fn doc_id(&self) -> DocId {
         self.conjunction.doc_id()
     }
@@ -709,8 +709,6 @@ struct PhrasePositions {
 }
 
 unsafe impl Send for PhrasePositions {}
-
-unsafe impl Sync for PhrasePositions {}
 
 impl PhrasePositions {
     fn new(postings: *mut PostingIterator, offset: i32, ord: i32, terms: Vec<Term>) -> Self {
@@ -777,8 +775,6 @@ struct PPElement {
 
 unsafe impl Send for PPElement {}
 
-unsafe impl Sync for PPElement {}
-
 impl fmt::Debug for PPElement {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         unsafe { write!(f, "index: {}, pp: ({:?})", self.index, *self.pp) }
@@ -819,17 +815,17 @@ impl PartialEq for PPElement {
 impl Eq for PPElement {}
 
 // TODO a fake scorer struct used for `ConjunctionScorer`
-struct PostingsIterAsScorer {
-    pub iterator: Box<PostingIterator>,
+struct PostingsIterAsScorer<T: PostingIterator> {
+    pub iterator: T,
 }
 
-impl Scorer for PostingsIterAsScorer {
+impl<T: PostingIterator> Scorer for PostingsIterAsScorer<T> {
     fn score(&mut self) -> Result<f32> {
         unreachable!()
     }
 }
 
-impl DocIterator for PostingsIterAsScorer {
+impl<T: PostingIterator> DocIterator for PostingsIterAsScorer<T> {
     fn doc_id(&self) -> i32 {
         self.iterator.doc_id()
     }
@@ -847,13 +843,13 @@ impl DocIterator for PostingsIterAsScorer {
     }
 }
 
-pub struct SloppyPhraseScorer {
-    conjunction: ConjunctionScorer,
+pub struct SloppyPhraseScorer<T: PostingIterator> {
+    conjunction: ConjunctionScorer<PostingsIterAsScorer<T>>,
     // a conjunction doc id set iterator
     phrase_positions: Vec<PhrasePositions>,
     sloppy_freq: f32,
     // phrase frequency in current doc as computed by phraseFreq().
-    doc_scorer: Box<SimScorer>,
+    doc_scorer: Box<dyn SimScorer>,
     slop: i32,
     num_postings: usize,
     pq: BinaryHeap<PPElement>,
@@ -876,23 +872,22 @@ pub struct SloppyPhraseScorer {
     match_cost: f32,
 }
 
-impl SloppyPhraseScorer {
+impl<T: PostingIterator + 'static> SloppyPhraseScorer<T> {
     fn new(
-        postings: Vec<PostingsAndFreq>,
+        postings: Vec<PostingsAndFreq<T>>,
         slop: i32,
-        doc_scorer: Box<SimScorer>,
+        doc_scorer: Box<dyn SimScorer>,
         needs_scores: bool,
         match_cost: f32,
-    ) -> SloppyPhraseScorer {
+    ) -> Self {
         let num_postings = postings.len();
-        let mut doc_iterators: Vec<Box<Scorer>> = Vec::with_capacity(num_postings);
+        let mut doc_iterators = Vec::with_capacity(num_postings);
         let mut phrase_positions = Vec::with_capacity(num_postings);
         for (idx, posting) in postings.into_iter().enumerate() {
             let mut iterator = posting.postings;
-            let iter_ptr = iterator.as_mut() as *mut PostingIterator;
-            doc_iterators.push(Box::new(PostingsIterAsScorer { iterator }));
+            doc_iterators.push(PostingsIterAsScorer { iterator });
             phrase_positions.push(PhrasePositions::new(
-                iter_ptr,
+                &mut doc_iterators[idx].iterator,
                 posting.pos,
                 idx as i32,
                 posting.terms.clone(),
@@ -1421,7 +1416,7 @@ impl SloppyPhraseScorer {
     }
 }
 
-impl Scorer for SloppyPhraseScorer {
+impl<T: PostingIterator + 'static> Scorer for SloppyPhraseScorer<T> {
     fn score(&mut self) -> Result<f32> {
         let doc_id = self.doc_id();
         self.doc_scorer.score(doc_id, self.sloppy_freq)
@@ -1432,7 +1427,7 @@ impl Scorer for SloppyPhraseScorer {
     }
 }
 
-impl DocIterator for SloppyPhraseScorer {
+impl<T: PostingIterator + 'static> DocIterator for SloppyPhraseScorer<T> {
     fn doc_id(&self) -> i32 {
         self.conjunction.doc_id()
     }

@@ -2,15 +2,15 @@ use std::collections::BinaryHeap;
 use std::f32;
 use std::usize;
 
+use core::codec::Codec;
 use core::index::LeafReaderContext;
-use core::search::collector::{Collector, LeafCollector, SearchCollector};
+use core::search::collector::{Collector, ParallelLeafCollector, SearchCollector};
 use core::search::top_docs::{ScoreDoc, ScoreDocHit, TopDocs, TopScoreDocs};
 use core::search::Scorer;
 use core::util::DocId;
-use error::*;
+use error::{ErrorKind::IllegalState, Result};
 
 use crossbeam::channel::{unbounded, Receiver, Sender};
-use std::mem;
 
 type ScoreDocPriorityQueue = BinaryHeap<ScoreDoc>;
 
@@ -76,7 +76,9 @@ impl TopDocsCollector {
 }
 
 impl SearchCollector for TopDocsCollector {
-    fn set_next_reader(&mut self, reader: &LeafReaderContext) -> Result<()> {
+    type LC = TopDocsLeafCollector;
+
+    fn set_next_reader<C: Codec>(&mut self, reader: &LeafReaderContext<'_, C>) -> Result<()> {
         self.cur_doc_base = reader.doc_base;
 
         Ok(())
@@ -86,24 +88,30 @@ impl SearchCollector for TopDocsCollector {
         true
     }
 
-    fn leaf_collector(&mut self, reader: &LeafReaderContext) -> Result<Box<LeafCollector>> {
+    fn leaf_collector<C: Codec>(
+        &mut self,
+        reader: &LeafReaderContext<'_, C>,
+    ) -> Result<TopDocsLeafCollector> {
         if self.channel.is_none() {
             self.channel = Some(unbounded());
         }
-        Ok(Box::new(TopDocsLeafCollector::new(
+        Ok(TopDocsLeafCollector::new(
             reader.doc_base,
             self.channel.as_ref().unwrap().0.clone(),
-        )))
+        ))
     }
 
-    fn finish(&mut self) -> Result<()> {
-        debug_assert!(self.channel.is_some());
-        let channel = mem::replace(&mut self.channel, None);
-        let (sender, receiver) = channel.unwrap();
-        drop(sender);
-        while let Some(doc) = receiver.recv() {
-            self.add_doc(doc.doc, doc.score)
+    fn finish_parallel(&mut self) -> Result<()> {
+        let channel = self.channel.take();
+        // iff all the `weight.create_scorer(leaf_reader)` return None, the channel won't
+        // inited and thus stay None
+        if let Some((sender, receiver)) = channel {
+            drop(sender);
+            while let Ok(doc) = receiver.recv() {
+                self.add_doc(doc.doc, doc.score)
+            }
         }
+
         Ok(())
     }
 }
@@ -113,7 +121,7 @@ impl Collector for TopDocsCollector {
         true
     }
 
-    fn collect(&mut self, doc: DocId, scorer: &mut Scorer) -> Result<()> {
+    fn collect<S: Scorer + ?Sized>(&mut self, doc: DocId, scorer: &mut S) -> Result<()> {
         let score = scorer.score()?;
         debug_assert!((score - f32::NEG_INFINITY).abs() >= f32::EPSILON);
         debug_assert!(!score.is_nan());
@@ -125,7 +133,7 @@ impl Collector for TopDocsCollector {
     }
 }
 
-struct TopDocsLeafCollector {
+pub struct TopDocsLeafCollector {
     doc_base: DocId,
     channel: Sender<ScoreDoc>,
 }
@@ -136,7 +144,7 @@ impl TopDocsLeafCollector {
     }
 }
 
-impl LeafCollector for TopDocsLeafCollector {
+impl ParallelLeafCollector for TopDocsLeafCollector {
     /// may do clean up and notify parent that leaf is ended
     fn finish_leaf(&mut self) -> Result<()> {
         Ok(())
@@ -148,10 +156,15 @@ impl Collector for TopDocsLeafCollector {
         true
     }
 
-    fn collect(&mut self, doc: i32, scorer: &mut Scorer) -> Result<()> {
+    fn collect<S: Scorer + ?Sized>(&mut self, doc: i32, scorer: &mut S) -> Result<()> {
         let score_doc = ScoreDoc::new(doc + self.doc_base, scorer.score()?);
-        self.channel.send(score_doc);
-        Ok(())
+        self.channel.send(score_doc).map_err(|e| {
+            IllegalState(format!(
+                "channel unexpected closed before search complete with err: {:?}",
+                e
+            ))
+            .into()
+        })
     }
 }
 
@@ -166,8 +179,7 @@ mod tests {
 
     #[test]
     fn test_collect() {
-        let mut scorer_box = create_mock_scorer(vec![1, 2, 3, 3, 5]);
-        let scorer = scorer_box.as_mut();
+        let mut scorer = create_mock_scorer(vec![1, 2, 3, 3, 5]);
 
         let leaf_reader = MockLeafReader::new(0);
         let index_reader = MockIndexReader::new(vec![leaf_reader]);
@@ -179,7 +191,7 @@ mod tests {
             loop {
                 let doc = scorer.next().unwrap();
                 if doc != NO_MORE_DOCS {
-                    collector.collect(doc, scorer).unwrap();
+                    collector.collect(doc, &mut scorer).unwrap();
                 } else {
                     break;
                 }

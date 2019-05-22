@@ -1,6 +1,7 @@
+use core::codec::Codec;
 use core::index::LeafReaderContext;
 use core::search::explanation::Explanation;
-use core::search::searcher::IndexSearcher;
+use core::search::searcher::SearchPlanBuilder;
 use core::search::term_query::TermQuery;
 use core::search::{two_phase_next, DocIterator, FeatureResult};
 use core::search::{Query, Scorer, Weight};
@@ -13,27 +14,34 @@ use std::sync::Arc;
 
 const FILTER_QUERY: &str = "filter_query";
 
-pub trait FilterFunction: fmt::Display {
-    fn leaf_function(&self, leaf_reader: &LeafReaderContext) -> Result<Box<LeafFilterFunction>>;
+pub trait FilterFunction<C: Codec>: fmt::Display {
+    fn leaf_function(
+        &self,
+        leaf_reader: &LeafReaderContext<'_, C>,
+    ) -> Result<Box<dyn LeafFilterFunction>>;
 }
 
 pub trait LeafFilterFunction: Send + Sync {
     fn matches(&mut self, doc_id: DocId) -> Result<bool>;
 }
 
-pub struct FilterQuery {
-    query: Box<Query>,
-    filters: Vec<Arc<FilterFunction>>,
+pub struct FilterQuery<C: Codec> {
+    query: Box<dyn Query<C>>,
+    filters: Vec<Arc<FilterFunction<C>>>,
 }
 
-impl FilterQuery {
-    pub fn new(query: Box<Query>, filters: Vec<Arc<FilterFunction>>) -> Self {
+impl<C: Codec> FilterQuery<C> {
+    pub fn new(query: Box<dyn Query<C>>, filters: Vec<Arc<FilterFunction<C>>>) -> Self {
         FilterQuery { query, filters }
     }
 }
 
-impl Query for FilterQuery {
-    fn create_weight(&self, searcher: &IndexSearcher, needs_scores: bool) -> Result<Box<Weight>> {
+impl<C: Codec> Query<C> for FilterQuery<C> {
+    fn create_weight(
+        &self,
+        searcher: &dyn SearchPlanBuilder<C>,
+        needs_scores: bool,
+    ) -> Result<Box<dyn Weight<C>>> {
         let mut filters = Vec::with_capacity(self.filters.len());
         for f in &self.filters {
             filters.push(Arc::clone(f));
@@ -57,7 +65,7 @@ impl Query for FilterQuery {
     }
 }
 
-impl fmt::Display for FilterQuery {
+impl<C: Codec> fmt::Display for FilterQuery<C> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let filters_fmt: Vec<String> = self
             .filters
@@ -74,19 +82,25 @@ impl fmt::Display for FilterQuery {
     }
 }
 
-struct FilterWeight {
-    weight: Box<Weight>,
-    filters: Vec<Arc<FilterFunction>>,
+struct FilterWeight<C: Codec> {
+    weight: Box<dyn Weight<C>>,
+    filters: Vec<Arc<FilterFunction<C>>>,
 }
 
-impl Weight for FilterWeight {
-    fn create_scorer(&self, reader_context: &LeafReaderContext) -> Result<Box<Scorer>> {
-        let scorer = self.weight.create_scorer(reader_context)?;
-        let mut filters = Vec::with_capacity(self.filters.len());
-        for filter in &self.filters {
-            filters.push(filter.leaf_function(reader_context)?);
+impl<C: Codec> Weight<C> for FilterWeight<C> {
+    fn create_scorer(
+        &self,
+        reader_context: &LeafReaderContext<'_, C>,
+    ) -> Result<Option<Box<dyn Scorer>>> {
+        if let Some(scorer) = self.weight.create_scorer(reader_context)? {
+            let mut filters = Vec::with_capacity(self.filters.len());
+            for filter in &self.filters {
+                filters.push(filter.leaf_function(reader_context)?);
+            }
+            Ok(Some(Box::new(FilterScorer { scorer, filters })))
+        } else {
+            Ok(None)
         }
-        Ok(Box::new(FilterScorer { scorer, filters }))
     }
 
     fn query_type(&self) -> &'static str {
@@ -105,12 +119,12 @@ impl Weight for FilterWeight {
         self.weight.needs_scores()
     }
 
-    fn explain(&self, reader: &LeafReaderContext, doc: DocId) -> Result<Explanation> {
+    fn explain(&self, reader: &LeafReaderContext<'_, C>, doc: DocId) -> Result<Explanation> {
         self.weight.explain(reader, doc)
     }
 }
 
-impl fmt::Display for FilterWeight {
+impl<C: Codec> fmt::Display for FilterWeight<C> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let filters_fmt: Vec<String> = self
             .filters
@@ -128,8 +142,8 @@ impl fmt::Display for FilterWeight {
 }
 
 struct FilterScorer {
-    scorer: Box<Scorer>,
-    filters: Vec<Box<LeafFilterFunction>>,
+    scorer: Box<dyn Scorer>,
+    filters: Vec<Box<dyn LeafFilterFunction>>,
 }
 
 impl DocIterator for FilterScorer {

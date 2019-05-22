@@ -1,18 +1,20 @@
 use std::str::FromStr;
 use std::sync::Arc;
 
-use core::codec::compressing::{CompressingStoredFieldsFormat, CompressionMode};
+use core::codec::compressing::{
+    CompressingStoredFieldsFormat, CompressingStoredFieldsReader, CompressionMode,
+};
 use core::codec::format::StoredFieldsFormat;
-use core::codec::reader::StoredFieldsReader;
-use core::codec::writer::StoredFieldsWriter;
+use core::codec::writer::StoredFieldsWriterEnum;
+use core::codec::Codec;
 use core::index::field_info::FieldInfos;
 use core::index::SegmentInfo;
-use core::store::{DirectoryRc, IOContext};
-use error::{Error as CoreError, Result};
+use core::store::{Directory, IOContext};
+use error::{Error as CoreError, ErrorKind::IllegalState, Result};
 
 const MODE_KEY: &str = "Lucene50StoredFieldsFormat.mode";
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub enum StoredFieldCompressMode {
     BestSpeed,
     BestCompression,
@@ -30,6 +32,7 @@ impl FromStr for StoredFieldCompressMode {
     }
 }
 
+#[derive(Copy, Clone)]
 pub struct Lucene50StoredFieldsFormat {
     #[allow(dead_code)]
     mode: StoredFieldCompressMode,
@@ -46,64 +49,71 @@ impl Lucene50StoredFieldsFormat {
         }
     }
 
-    pub fn format(&self, mode: &StoredFieldCompressMode) -> Result<Box<StoredFieldsFormat>> {
+    pub fn format(&self, mode: &StoredFieldCompressMode) -> CompressingStoredFieldsFormat {
         match mode {
-            StoredFieldCompressMode::BestSpeed => Ok(Box::new(CompressingStoredFieldsFormat::new(
+            StoredFieldCompressMode::BestSpeed => CompressingStoredFieldsFormat::new(
                 "Lucene50StoredFieldsFast",
                 "",
                 CompressionMode::FAST,
                 1 << 14,
                 128,
                 1024,
-            ))),
-            StoredFieldCompressMode::BestCompression => {
-                Ok(Box::new(CompressingStoredFieldsFormat::new(
-                    "Lucene50StoredFieldsHigh",
-                    "",
-                    CompressionMode::HighCompression,
-                    61440,
-                    512,
-                    1024,
-                )))
-            }
+            ),
+            StoredFieldCompressMode::BestCompression => CompressingStoredFieldsFormat::new(
+                "Lucene50StoredFieldsHigh",
+                "",
+                CompressionMode::HighCompression,
+                61440,
+                512,
+                1024,
+            ),
         }
     }
 }
 
 impl StoredFieldsFormat for Lucene50StoredFieldsFormat {
-    fn fields_reader(
+    type Reader = CompressingStoredFieldsReader;
+    fn fields_reader<D: Directory, DW: Directory, C: Codec>(
         &self,
-        directory: DirectoryRc,
-        si: &SegmentInfo,
+        directory: &DW,
+        si: &SegmentInfo<D, C>,
         field_info: Arc<FieldInfos>,
         ioctx: &IOContext,
-    ) -> Result<Box<StoredFieldsReader>> {
+    ) -> Result<Self::Reader> {
         if let Some(value) = si.attributes.get(MODE_KEY) {
             let mode = StoredFieldCompressMode::from_str(value)?;
 
-            self.format(&mode)?
+            self.format(&mode)
                 .fields_reader(directory, si, field_info, ioctx)
         } else {
-            bail!("missing value for {} for segment: {}", MODE_KEY, si.name)
+            bail!(IllegalState(format!(
+                "missing value for {} for segment: {}",
+                MODE_KEY, si.name
+            )))
         }
     }
 
-    fn fields_writer(
+    fn fields_writer<D, DW, C>(
         &self,
-        directory: DirectoryRc,
-        si: &mut SegmentInfo,
+        directory: Arc<DW>,
+        si: &mut SegmentInfo<D, C>,
         ioctx: &IOContext,
-    ) -> Result<Box<StoredFieldsWriter>> {
+    ) -> Result<StoredFieldsWriterEnum<DW::IndexOutput>>
+    where
+        D: Directory,
+        DW: Directory,
+        DW::IndexOutput: 'static,
+        C: Codec,
+    {
         if si.attributes.contains_key(MODE_KEY) {
-            bail!(
+            bail!(IllegalState(format!(
                 "found existing value for {} for segment: {}",
-                MODE_KEY,
-                si.name
-            )
+                MODE_KEY, si.name
+            )))
         }
 
         si.attributes
             .insert(MODE_KEY.to_string(), "BEST_SPEED".to_string());
-        self.format(&self.mode)?.fields_writer(directory, si, ioctx)
+        self.format(&self.mode).fields_writer(directory, si, ioctx)
     }
 }

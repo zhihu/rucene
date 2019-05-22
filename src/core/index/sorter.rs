@@ -1,16 +1,19 @@
+use core::codec::Codec;
 use core::index::merge_state::{LiveDocsDocMap, ReaderWrapperEnum};
-use core::index::{LeafReader, NumericDocValues, NumericDocValuesRef};
-use core::search::field_comparator::{ComparatorValue, FieldComparator};
+use core::index::{LeafReader, LeafReaderContext, NumericDocValues, NumericDocValuesRef};
+use core::search::field_comparator::{ComparatorValue, FieldComparator, FieldComparatorEnum};
 use core::search::sort::Sort;
 use core::search::sort_field::{SortField, SortFieldType, SortedNumericSelector};
-use core::util::packed::{PackedLongValuesBuilder, PackedLongValuesBuilderType, DEFAULT_PAGE_SIZE};
+use core::util::packed::{
+    PackedLongValues, PackedLongValuesBuilder, PackedLongValuesBuilderType, DEFAULT_PAGE_SIZE,
+};
 use core::util::packed_misc::COMPACT;
 use core::util::{BitsRef, DocId};
 
 use error::ErrorKind::IllegalArgument;
 use error::Result;
 
-use core::index::leaf_reader::LeafReaderContext;
+use core::store::Directory;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
@@ -33,8 +36,9 @@ impl Sorter {
         }
     }
 
+    #[allow(dead_code)]
     /// Check consistency of a `SorterDocMap`, useful for assertions.
-    pub fn is_consistent(doc_map: &SorterDocMap) -> bool {
+    fn is_consistent(doc_map: &SorterDocMap) -> bool {
         let max_doc = doc_map.len() as i32;
         for i in 0..max_doc {
             let new_id = doc_map.old_to_new(i);
@@ -48,7 +52,7 @@ impl Sorter {
     /// Computes the old-to-new permutation over the given comparator.
     fn sort(
         max_doc: DocId,
-        comparator: &mut SorterDocComparator,
+        comparator: &mut impl SorterDocComparator,
     ) -> Result<Option<PackedLongDocMap>> {
         debug_assert!(max_doc > 0);
         // check if the index is sorted
@@ -95,11 +99,11 @@ impl Sorter {
         }
         // NOTE: the #build method contain reference, but the builder will move after return,
         // so we won't use the build result
-        new_to_old_builder.build();
+        let new_to_old = new_to_old_builder.build();
 
         // invert the docs mapping
         for i in 0..max_doc {
-            docs[new_to_old_builder.get(i)? as usize] = i;
+            docs[new_to_old.get(i)? as usize] = i;
         } // docs is now the old_to_new mapping
 
         let mut old_to_new_builder = PackedLongValuesBuilder::new(
@@ -112,12 +116,12 @@ impl Sorter {
         }
         // NOTE: the #build method contain reference, but the builder will move after return,
         // so we won't use the build result
-        old_to_new_builder.build();
+        let old_to_new = old_to_new_builder.build();
 
         Ok(Some(PackedLongDocMap {
             max_doc: max_doc as usize,
-            old_to_new: old_to_new_builder,
-            new_to_old: new_to_old_builder,
+            old_to_new,
+            new_to_old,
         }))
     }
 
@@ -131,7 +135,10 @@ impl Sorter {
     ///
     /// NOTE: deleted documents are expected to appear in the mapping as
     /// well, they will however be marked as deleted in the sorted view.
-    pub fn sort_leaf_reader(&self, reader: &LeafReaderContext) -> Result<Option<PackedLongDocMap>> {
+    pub fn sort_leaf_reader<C: Codec>(
+        &self,
+        reader: &LeafReaderContext<'_, C>,
+    ) -> Result<Option<PackedLongDocMap>> {
         let fields = self.sort.get_sort();
         let mut reverses = Vec::with_capacity(fields.len());
         let mut comparators = Vec::with_capacity(fields.len());
@@ -148,8 +155,8 @@ impl Sorter {
         Self::sort(reader.reader.max_doc(), &mut comparator)
     }
 
-    pub fn get_or_wrap_numeric(
-        reader: &LeafReader,
+    pub fn get_or_wrap_numeric<R: LeafReader + ?Sized>(
+        reader: &R,
         sort_field: &SortField,
     ) -> Result<NumericDocValuesRef> {
         match sort_field {
@@ -165,8 +172,8 @@ impl Sorter {
 
 pub struct PackedLongDocMap {
     max_doc: usize,
-    old_to_new: PackedLongValuesBuilder,
-    new_to_old: PackedLongValuesBuilder,
+    old_to_new: PackedLongValues,
+    new_to_old: PackedLongValues,
 }
 
 impl SorterDocMap for PackedLongDocMap {
@@ -206,7 +213,7 @@ trait SorterDocComparator {
 }
 
 struct SortFieldsDocComparator {
-    comparators: Vec<Box<FieldComparator>>,
+    comparators: Vec<FieldComparatorEnum>,
     reverses: Vec<bool>,
 }
 
@@ -229,14 +236,17 @@ impl SorterDocComparator for SortFieldsDocComparator {
     }
 }
 
-pub struct MultiSorter;
+pub(crate) struct MultiSorter;
 
 impl MultiSorter {
     /// Does a merge sort of the leaves of the incoming reader, returning `DocMap`
     /// to map each leaf's documents into the merged segment.  The documents for
     /// each incoming leaf reader must already be sorted by the same sort!
     /// Returns null if the merge sort is not needed (segments are already in index sort order).
-    pub fn sort(sort: &Sort, readers: &[ReaderWrapperEnum]) -> Result<Vec<LiveDocsDocMap>> {
+    pub fn sort<D: Directory, C: Codec>(
+        sort: &Sort,
+        readers: &[ReaderWrapperEnum<D, C>],
+    ) -> Result<Vec<LiveDocsDocMap>> {
         let fields = sort.get_sort();
 
         let mut comparators = Vec::with_capacity(fields.len());
@@ -299,9 +309,9 @@ impl MultiSorter {
         let mut i = 0;
         let mut doc_maps = Vec::with_capacity(leaf_count);
         for mut builder in builders {
-            builder.build();
+            let values = builder.build();
             let live_docs = readers[i].live_docs();
-            doc_maps.push(LiveDocsDocMap::new(live_docs, builder, 0));
+            doc_maps.push(LiveDocsDocMap::new(live_docs, values, 0));
             i += 1;
         }
 
@@ -310,8 +320,8 @@ impl MultiSorter {
 
     /// Returns {@code CrossReaderComparator} for the provided readers to represent
     /// the requested {@link SortField} sort order.
-    fn get_comparator(
-        readers: &[ReaderWrapperEnum],
+    fn get_comparator<D: Directory, C: Codec>(
+        readers: &[ReaderWrapperEnum<D, C>],
         sort_field: &SortField,
     ) -> Result<CrossReaderComparatorEnum> {
         let reverse = sort_field.is_reverse();

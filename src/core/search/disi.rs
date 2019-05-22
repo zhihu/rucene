@@ -6,8 +6,8 @@ use std::cmp::{Ord, Ordering};
 use std::ops::{Deref, DerefMut};
 use std::ptr;
 
-pub struct DisiWrapper<T: DocIterator + ?Sized> {
-    scorer: Box<T>,
+pub struct DisiWrapper<T: DocIterator> {
+    scorer: T,
     pub doc: DocId,
     matches: Option<bool>,
     pub next: *mut DisiWrapper<T>,
@@ -15,7 +15,7 @@ pub struct DisiWrapper<T: DocIterator + ?Sized> {
     pub last_approx_non_match_doc: DocId,
 }
 
-impl<T: DocIterator + ?Sized> DisiWrapper<T> {
+impl<T: DocIterator> DisiWrapper<T> {
     pub fn next_scorer(&self) -> Option<&mut DisiWrapper<T>> {
         if self.next.is_null() {
             None
@@ -24,7 +24,7 @@ impl<T: DocIterator + ?Sized> DisiWrapper<T> {
         }
     }
 
-    pub fn new(scorer: Box<T>) -> DisiWrapper<T> {
+    pub fn new(scorer: T) -> DisiWrapper<T> {
         DisiWrapper {
             scorer,
             doc: -1,
@@ -36,11 +36,11 @@ impl<T: DocIterator + ?Sized> DisiWrapper<T> {
     }
 
     pub fn inner(&self) -> &T {
-        self.scorer.as_ref()
+        &self.scorer
     }
 
     pub fn inner_mut(&mut self) -> &mut T {
-        self.scorer.as_mut()
+        &mut self.scorer
     }
 
     pub fn set_doc(&mut self, doc: DocId) {
@@ -99,36 +99,35 @@ impl<T: DocIterator + ?Sized> DisiWrapper<T> {
     }
 }
 
-impl<T: DocIterator + ?Sized> Ord for DisiWrapper<T> {
+impl<T: DocIterator> Ord for DisiWrapper<T> {
     fn cmp(&self, other: &Self) -> Ordering {
         self.scorer.doc_id().cmp(&other.scorer.doc_id()).reverse()
     }
 }
 
-impl<T: DocIterator + ?Sized> Eq for DisiWrapper<T> {}
+impl<T: DocIterator> Eq for DisiWrapper<T> {}
 
-impl<T: DocIterator + ?Sized> PartialEq for DisiWrapper<T> {
+impl<T: DocIterator> PartialEq for DisiWrapper<T> {
     fn eq(&self, other: &Self) -> bool {
         self.scorer.doc_id() == other.scorer.doc_id()
     }
 }
 
-impl<T: DocIterator + ?Sized> PartialOrd for DisiWrapper<T> {
+impl<T: DocIterator> PartialOrd for DisiWrapper<T> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-pub struct DisiPriorityQueue<T: DocIterator + ?Sized> {
+pub struct DisiPriorityQueue<T: DocIterator> {
     heap: Vec<*mut DisiWrapper<T>>,
     size: isize,
     _buffer: Vec<DisiWrapper<T>>,
 }
 
-unsafe impl<T: DocIterator + ?Sized> Send for DisiPriorityQueue<T> {}
-unsafe impl<T: DocIterator + ?Sized> Sync for DisiPriorityQueue<T> {}
+unsafe impl<T: DocIterator> Send for DisiPriorityQueue<T> {}
 
-impl<T: DocIterator + ?Sized> DisiPriorityQueue<T> {
+impl<T: DocIterator> DisiPriorityQueue<T> {
     fn left_node(node: isize) -> isize {
         ((node + 1) << 1) - 1
     }
@@ -141,7 +140,7 @@ impl<T: DocIterator + ?Sized> DisiPriorityQueue<T> {
         ((node + 1) >> 1) - 1
     }
 
-    pub fn new(children: Vec<Box<T>>) -> DisiPriorityQueue<T> {
+    pub fn new(children: Vec<T>) -> DisiPriorityQueue<T> {
         let mut _buffer: Vec<DisiWrapper<T>> = children.into_iter().map(DisiWrapper::new).collect();
         let children: Vec<*mut DisiWrapper<T>> = _buffer
             .iter_mut()
@@ -321,7 +320,7 @@ impl<T: DocIterator + ?Sized> DisiPriorityQueue<T> {
     }
 }
 
-impl<'a, T: DocIterator + ?Sized> IntoIterator for &'a DisiPriorityQueue<T> {
+impl<'a, T: DocIterator> IntoIterator for &'a DisiPriorityQueue<T> {
     type Item = &'a T;
     type IntoIter = DisiQueueIterator<'a, T>;
 
@@ -330,18 +329,18 @@ impl<'a, T: DocIterator + ?Sized> IntoIterator for &'a DisiPriorityQueue<T> {
     }
 }
 
-pub struct DisiQueueIterator<'a, T: 'a + DocIterator + ?Sized> {
+pub struct DisiQueueIterator<'a, T: 'a + DocIterator> {
     queue: &'a DisiPriorityQueue<T>,
     index: usize,
 }
 
-impl<'a, T: 'a + DocIterator + ?Sized> DisiQueueIterator<'a, T> {
+impl<'a, T: 'a + DocIterator> DisiQueueIterator<'a, T> {
     fn new(queue: &'a DisiPriorityQueue<T>) -> DisiQueueIterator<'a, T> {
         DisiQueueIterator { queue, index: 0 }
     }
 }
 
-impl<'a, T: 'a + DocIterator + ?Sized> Iterator for DisiQueueIterator<'a, T> {
+impl<'a, T: 'a + DocIterator> Iterator for DisiQueueIterator<'a, T> {
     type Item = &'a T;
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
@@ -357,12 +356,12 @@ impl<'a, T: 'a + DocIterator + ?Sized> Iterator for DisiQueueIterator<'a, T> {
 }
 
 // copy from binary heap for `DisiPriorityQueue`
-pub struct PeekMut<'a, T: 'a + DocIterator + ?Sized> {
+pub struct PeekMut<'a, T: 'a + DocIterator> {
     heap: &'a mut DisiPriorityQueue<T>,
     sift: bool,
 }
 
-impl<'a, T: 'a + DocIterator + ?Sized> Drop for PeekMut<'a, T> {
+impl<'a, T: 'a + DocIterator> Drop for PeekMut<'a, T> {
     fn drop(&mut self) {
         if self.sift {
             self.heap.update_top();
@@ -370,20 +369,20 @@ impl<'a, T: 'a + DocIterator + ?Sized> Drop for PeekMut<'a, T> {
     }
 }
 
-impl<'a, T: DocIterator + ?Sized> Deref for PeekMut<'a, T> {
+impl<'a, T: DocIterator> Deref for PeekMut<'a, T> {
     type Target = DisiWrapper<T>;
     fn deref(&self) -> &DisiWrapper<T> {
         unsafe { &*self.heap.heap[0] }
     }
 }
 
-impl<'a, T: DocIterator + ?Sized> DerefMut for PeekMut<'a, T> {
+impl<'a, T: DocIterator> DerefMut for PeekMut<'a, T> {
     fn deref_mut(&mut self) -> &mut DisiWrapper<T> {
         unsafe { &mut *self.heap.heap[0] }
     }
 }
 
-impl<'a, T: DocIterator + ?Sized> PeekMut<'a, T> {
+impl<'a, T: DocIterator> PeekMut<'a, T> {
     /// Removes the peeked value from the heap and returns it.
     pub fn pop(mut this: PeekMut<'a, T>) -> &'static mut DisiWrapper<T> {
         let value = this.heap.pop();

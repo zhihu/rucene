@@ -33,7 +33,7 @@ impl FSIndexOutput {
 impl Drop for FSIndexOutput {
     fn drop(&mut self) {
         if let Err(ref desc) = self.writer.flush() {
-            println!("Oops, failed to flush {:?}, errmsg: {}", self.name, desc);
+            error!("Oops, failed to flush {:?}, errmsg: {}", self.name, desc);
         }
         self.bytes_written = 0;
     }
@@ -65,10 +65,6 @@ impl IndexOutput for FSIndexOutput {
     fn checksum(&self) -> Result<i64> {
         // self.writer.flush()?;
         Ok((self.writer.crc().sum() as i64) & 0xffff_ffffi64)
-    }
-
-    fn as_data_output(&mut self) -> &mut DataOutput {
-        self
     }
 }
 

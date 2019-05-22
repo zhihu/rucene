@@ -7,25 +7,25 @@ use std::sync::RwLock;
 
 use core::index::segment_file_name;
 use core::store::LockFactory;
-use core::store::{Directory, IOContext, Lock};
-use core::store::{FSIndexOutput, IndexInput, IndexOutput, MmapIndexInput};
+use core::store::{Directory, IOContext};
+use core::store::{FSIndexOutput, IndexInput, MmapIndexInput};
 use core::util::to_base36;
 use error::ErrorKind::IllegalState;
 use error::Result;
 
-pub struct FSDirectory {
+pub struct FSDirectory<LF: LockFactory> {
     pub directory: PathBuf,
     pending_deletes: RwLock<BTreeSet<String>>,
     pub ops_since_last_delete: AtomicUsize,
     pub next_temp_file_counter: AtomicUsize,
-    lock_factory: Box<LockFactory>,
+    lock_factory: LF,
 }
 
-impl FSDirectory {
+impl<LF: LockFactory> FSDirectory<LF> {
     pub fn new<T: AsRef<Path> + ?Sized>(
         directory: &T,
-        lock_factory: Box<LockFactory>,
-    ) -> Result<FSDirectory> {
+        lock_factory: LF,
+    ) -> Result<FSDirectory<LF>> {
         let directory = directory.as_ref();
         if !Path::exists(directory) {
             fs::create_dir_all(directory)?;
@@ -106,7 +106,11 @@ fn list_all<T: AsRef<Path>>(path: &T) -> Result<Vec<String>> {
     Ok(result)
 }
 
-impl Directory for FSDirectory {
+impl<LF: LockFactory> Directory for FSDirectory<LF> {
+    type LK = LF::LK;
+    type IndexOutput = FSIndexOutput;
+    type TempOutput = FSIndexOutput;
+
     fn list_all(&self) -> Result<Vec<String>> {
         list_all(&self.directory)
     }
@@ -128,22 +132,22 @@ impl Directory for FSDirectory {
         }
     }
 
-    fn create_output(&self, name: &str, _context: &IOContext) -> Result<Box<IndexOutput>> {
+    fn create_output(&self, name: &str, _context: &IOContext) -> Result<Self::IndexOutput> {
         // If this file was pending delete, we are now bringing it back to life:
         self.pending_deletes.write()?.remove(name);
         self.maybe_delete_pending_files()?;
         let path = self.resolve(name);
-        Ok(Box::new(FSIndexOutput::new(&path)?))
+        FSIndexOutput::new(&path)
     }
 
-    fn open_input(&self, name: &str, _ctx: &IOContext) -> Result<Box<IndexInput>> {
+    fn open_input(&self, name: &str, _ctx: &IOContext) -> Result<Box<dyn IndexInput>> {
         self.ensure_can_read(name)?;
         let path = self.directory.as_path().join(name);
         // hack logic, we don'e implement FsIndexInput yes, so just us MmapIndexInput instead
         Ok(Box::new(MmapIndexInput::new(path)?))
     }
 
-    fn obtain_lock(&self, name: &str) -> Result<Box<Lock>> {
+    fn obtain_lock(&self, name: &str) -> Result<Self::LK> {
         self.lock_factory.obtain_lock(self, name)
     }
 
@@ -152,7 +156,7 @@ impl Directory for FSDirectory {
         prefix: &str,
         suffix: &str,
         _ctx: &IOContext,
-    ) -> Result<Box<IndexOutput>> {
+    ) -> Result<Self::TempOutput> {
         self.maybe_delete_pending_files()?;
 
         loop {
@@ -171,7 +175,7 @@ impl Directory for FSDirectory {
             }
 
             let path = self.resolve(&name);
-            return Ok(Box::new(FSIndexOutput::new(&path)?));
+            return FSIndexOutput::new(&path);
         }
     }
 
@@ -185,7 +189,7 @@ impl Directory for FSDirectory {
 
         let mut deletes = BTreeSet::new();
         deletes.insert(name.to_string());
-        FSDirectory::delete_pending_files(&mut deletes, &self.directory)?;
+        Self::delete_pending_files(&mut deletes, &self.directory)?;
         self.pending_deletes.write()?.remove(name);
 
         self.maybe_delete_pending_files()
@@ -205,7 +209,9 @@ impl Directory for FSDirectory {
 
     fn rename(&self, source: &str, dest: &str) -> Result<()> {
         if self.pending_deletes.read()?.contains(source) {
-            bail!("NoSuchFile: file '{}' is pending delete and cannot be moved");
+            bail!(IllegalState(
+                "file '{}' is pending delete and cannot be moved".into()
+            ));
         }
         self.pending_deletes.write()?.remove(dest);
         let source_path = self.resolve(source);
@@ -219,15 +225,11 @@ impl Directory for FSDirectory {
     }
 }
 
-unsafe impl Send for FSDirectory {}
+// unsafe impl<LF: LockFactory + Send> Send for FSDirectory<LF> {}
 
-unsafe impl Sync for FSDirectory {}
+// unsafe impl<LF: LockFactory + Send> Sync for FSDirectory<LF> {}
 
-impl Drop for FSDirectory {
-    fn drop(&mut self) {}
-}
-
-impl fmt::Display for FSDirectory {
+impl<LF: LockFactory> fmt::Display for FSDirectory<LF> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "FSDirectory({})", self.directory.display())
     }

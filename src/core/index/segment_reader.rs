@@ -1,21 +1,28 @@
-use std::{any::Any,
-          cell::RefCell,
-          collections::{hash_map::Entry, HashMap},
-          sync::Arc};
+use std::{
+    cell::RefCell,
+    collections::{hash_map::Entry, HashMap},
+    sync::Arc,
+};
 use thread_local::{CachedThreadLocal, ThreadLocal};
 
-use core::index::leaf_reader::LeafReaderContext;
-use core::{codec::{DocValuesProducer, FieldsProducerRef, NormsProducer, StoredFieldsReader,
-                   TermVectorsReader},
-           doc::{Document, DocumentStoredFieldVisitor},
-           index::{field_info::Fields, point_values::PointValuesRef,
-                   stored_field_visitor::StoredFieldVisitor, BinaryDocValuesRef, DocValuesType,
-                   FieldInfo, FieldInfos, IndexReader, LeafReader, NumericDocValues,
-                   NumericDocValuesRef, SegmentCommitInfo, SegmentCoreReaders, SegmentDocValues,
-                   SortedDocValuesRef, SortedNumericDocValuesRef, SortedSetDocValuesRef},
-           search::sort::Sort,
-           store::{IOContext, IO_CONTEXT_READ, IO_CONTEXT_READONCE},
-           util::{external::deferred::Deferred, numeric::to_base36, BitsRef, DocId, MatchAllBits}};
+use core::store::Directory;
+use core::{
+    codec::{
+        Codec, CodecFieldsProducer, CodecNormsProducer, CodecPointsReader, CodecStoredFieldsReader,
+        CodecTVFields, CodecTVReader, DocValuesProducer, FieldInfosFormat, LiveDocsFormat,
+        NormsProducer, StoredFieldsReader, TermVectorsReader,
+    },
+    doc::{Document, DocumentStoredFieldVisitor},
+    index::{
+        leaf_reader::LeafReaderContext, BinaryDocValuesRef, CfsDirectory, DocValuesType, FieldInfo,
+        FieldInfos, IndexReader, LeafReader, NumericDocValues, NumericDocValuesRef,
+        SegmentCommitInfo, SegmentCoreReaders, SegmentDocValues, SortedDocValuesRef,
+        SortedNumericDocValuesRef, SortedSetDocValuesRef, StoredFieldVisitor,
+    },
+    search::sort::Sort,
+    store::IOContext,
+    util::{external::deferred::Deferred, numeric::to_base36, BitsRef, DocId, MatchAllBits},
+};
 use error::{ErrorKind::IllegalArgument, Result};
 
 pub enum DocValuesRefEnum {
@@ -26,13 +33,13 @@ pub enum DocValuesRefEnum {
     SortedSet(SortedSetDocValuesRef),
 }
 
-pub type ThreadLocalDocValueProducer = ThreadLocal<Arc<DocValuesProducer>>;
+pub type ThreadLocalDocValueProducer = ThreadLocal<Arc<dyn DocValuesProducer>>;
 
-pub struct SegmentReader {
-    pub si: Arc<SegmentCommitInfo>,
+pub struct SegmentReader<D: Directory, C: Codec> {
+    pub si: Arc<SegmentCommitInfo<D, C>>,
     pub live_docs: BitsRef,
     num_docs: i32,
-    pub core: Arc<SegmentCoreReaders>,
+    pub core: Arc<SegmentCoreReaders<D, C>>,
     pub is_nrt: bool,
     pub field_infos: Arc<FieldInfos>,
     // context: LeafReaderContext
@@ -41,22 +48,22 @@ pub struct SegmentReader {
     doc_values_local: CachedThreadLocal<RefCell<HashMap<String, DocValuesRefEnum>>>,
 }
 
-unsafe impl Sync for SegmentReader {}
+unsafe impl<D: Directory + Send + Sync + 'static, C: Codec> Sync for SegmentReader<D, C> {}
 
 /// IndexReader implementation over a single segment.
 /// Instances pointing to the same segment (but with different deletes, etc)
 /// may share the same core data.
 /// @lucene.experimental
-impl SegmentReader {
+impl<D: Directory + 'static, C: Codec> SegmentReader<D, C> {
     pub fn new(
-        si: Arc<SegmentCommitInfo>,
+        si: Arc<SegmentCommitInfo<D, C>>,
         live_docs: BitsRef,
         num_docs: i32,
-        core: Arc<SegmentCoreReaders>,
+        core: Arc<SegmentCoreReaders<D, C>>,
         is_nrt: bool,
         field_infos: Arc<FieldInfos>,
         doc_values_producer: ThreadLocalDocValueProducer,
-    ) -> SegmentReader {
+    ) -> SegmentReader<D, C> {
         let docs_with_field_local = CachedThreadLocal::new();
         docs_with_field_local.get_or(|| Box::new(RefCell::new(HashMap::new())));
 
@@ -77,10 +84,10 @@ impl SegmentReader {
     }
 
     pub fn build(
-        si: Arc<SegmentCommitInfo>,
+        si: Arc<SegmentCommitInfo<D, C>>,
         live_docs: BitsRef,
         num_docs: i32,
-        core: Arc<SegmentCoreReaders>,
+        core: Arc<SegmentCoreReaders<D, C>>,
     ) -> Result<Self> {
         let field_infos = Self::init_field_infos(si.as_ref(), core.as_ref())?;
         let doc_values =
@@ -96,12 +103,15 @@ impl SegmentReader {
         ))
     }
 
-    pub fn build_from_reader(si: Arc<SegmentCommitInfo>, sr: &SegmentReader) -> Result<Self> {
+    pub fn build_from_reader(
+        si: Arc<SegmentCommitInfo<D, C>>,
+        sr: &SegmentReader<D, C>,
+    ) -> Result<Self> {
         let live_docs: BitsRef = if si.has_deletions() {
             si.info.codec().live_docs_format().read_live_docs(
                 Arc::clone(&si.info.directory),
                 si.as_ref(),
-                &IO_CONTEXT_READONCE,
+                &IOContext::READ_ONCE,
             )?
         } else {
             Arc::new(MatchAllBits::new(si.info.max_doc as usize))
@@ -111,12 +121,12 @@ impl SegmentReader {
     }
 
     pub fn build_from(
-        si: Arc<SegmentCommitInfo>,
-        sr: &SegmentReader,
+        si: Arc<SegmentCommitInfo<D, C>>,
+        sr: &SegmentReader<D, C>,
         live_docs: BitsRef,
         num_docs: i32,
         is_nrt: bool,
-    ) -> Result<SegmentReader> {
+    ) -> Result<SegmentReader<D, C>> {
         if num_docs > si.info.max_doc {
             bail!(IllegalArgument(format!(
                 "num_docs={}, but max_docs={}",
@@ -170,7 +180,7 @@ impl SegmentReader {
     /// Constructs a new SegmentReader with a new core.
     /// @throws CorruptIndexException if the index is corrupt
     /// @throws IOException if there is a low-level IO error
-    pub fn open(si: &Arc<SegmentCommitInfo>, ctx: &IOContext) -> Result<SegmentReader> {
+    pub fn open(si: &Arc<SegmentCommitInfo<D, C>>, ctx: &IOContext) -> Result<SegmentReader<D, C>> {
         let core = Arc::new(SegmentCoreReaders::new(&si.info.directory, &si.info, ctx)?);
         let codec = si.info.codec();
         let num_docs = si.info.max_doc() - si.del_count();
@@ -183,7 +193,7 @@ impl SegmentReader {
                 si.info.directory.as_ref(),
                 &si.info,
                 &segment_suffix,
-                &IOContext::Read(true),
+                &IOContext::READ_ONCE,
             )?;
             Arc::new(field_infos)
         };
@@ -192,7 +202,7 @@ impl SegmentReader {
             codec.live_docs_format().read_live_docs(
                 Arc::clone(&si.info.directory),
                 si,
-                &IO_CONTEXT_READ,
+                &IOContext::READ,
             )?
         } else {
             assert_eq!(si.del_count(), 0);
@@ -213,10 +223,6 @@ impl SegmentReader {
         ))
     }
 
-    pub fn postings_reader(&self) -> FieldsProducerRef {
-        self.core.fields()
-    }
-
     fn get_dv_field(&self, field: &str, dv_type: DocValuesType) -> Option<&FieldInfo> {
         match self.field_infos.field_info_by_name(field) {
             Some(fi) if fi.doc_values_type == dv_type => Some(fi),
@@ -224,21 +230,21 @@ impl SegmentReader {
         }
     }
 
-    pub fn leaf_context(&self) -> LeafReaderContext {
+    pub fn leaf_context(&self) -> LeafReaderContext<C> {
         LeafReaderContext::new(self, self, 0, 0)
     }
 }
 
-impl SegmentReader {
+impl<D: Directory + 'static, C: Codec> SegmentReader<D, C> {
     fn init_doc_values_producer(
-        core: &SegmentCoreReaders,
-        si: &SegmentCommitInfo,
+        core: &SegmentCoreReaders<D, C>,
+        si: &SegmentCommitInfo<D, C>,
         field_infos: Arc<FieldInfos>,
     ) -> Result<ThreadLocalDocValueProducer> {
         // initDocValuesProducer: init most recent DocValues for the current commit
         let dir = match core.cfs_reader {
             Some(ref d) => Arc::clone(d),
-            None => Arc::clone(&si.info.directory),
+            None => Arc::new(CfsDirectory::Raw(Arc::clone(&si.info.directory))),
         };
 
         let doc_values_producer = if !field_infos.has_doc_values {
@@ -266,19 +272,21 @@ impl SegmentReader {
                     return Ok(());
                 }
 
-                let dir = self
-                    .core
-                    .cfs_reader
-                    .as_ref()
-                    .map(|s| Arc::clone(&s))
-                    .unwrap_or_else(|| Arc::clone(&self.si.info.directory));
-
-                let dv_producer = SegmentDocValues::get_doc_values_producer(
-                    -1_i64,
-                    &self.si,
-                    dir,
-                    Arc::clone(&self.field_infos),
-                )?;
+                let dv_producer = if let Some(ref cfs_dir) = self.core.cfs_reader {
+                    SegmentDocValues::get_doc_values_producer(
+                        -1_i64,
+                        &self.si,
+                        Arc::clone(cfs_dir),
+                        Arc::clone(&self.field_infos),
+                    )?
+                } else {
+                    SegmentDocValues::get_doc_values_producer(
+                        -1_i64,
+                        &self.si,
+                        Arc::clone(&self.si.info.directory),
+                        Arc::clone(&self.field_infos),
+                    )?
+                };
 
                 self.doc_values_producer
                     .get_or(|| Box::new(Arc::from(dv_producer)));
@@ -287,9 +295,9 @@ impl SegmentReader {
         Ok(())
     }
 
-    fn init_field_infos(
-        si: &SegmentCommitInfo,
-        core: &SegmentCoreReaders,
+    fn init_field_infos<C1: Codec>(
+        si: &SegmentCommitInfo<D, C1>,
+        core: &SegmentCoreReaders<D, C1>,
     ) -> Result<Arc<FieldInfos>> {
         if !si.has_field_updates() {
             Ok(Arc::clone(&core.core_field_infos))
@@ -301,18 +309,19 @@ impl SegmentReader {
                 si.info.directory.as_ref(),
                 &si.info,
                 &segment_suffix,
-                &IOContext::Read(true),
+                &IOContext::READ_ONCE,
             )?))
         }
     }
 }
 
-impl IndexReader for SegmentReader {
-    fn leaves(&self) -> Vec<LeafReaderContext> {
+impl<D: Directory + 'static, C: Codec> IndexReader for SegmentReader<D, C> {
+    type Codec = C;
+    fn leaves(&self) -> Vec<LeafReaderContext<C>> {
         vec![self.leaf_context()]
     }
 
-    fn term_vector(&self, doc_id: i32) -> Result<Option<Box<Fields>>> {
+    fn term_vector(&self, doc_id: i32) -> Result<Option<CodecTVFields<C>>> {
         LeafReader::term_vector(self, doc_id)
     }
 
@@ -330,40 +339,49 @@ impl IndexReader for SegmentReader {
         LeafReader::num_docs(self)
     }
 
-    fn leaf_reader_for_doc(&self, doc: i32) -> LeafReaderContext {
+    fn leaf_reader_for_doc(&self, doc: i32) -> LeafReaderContext<C> {
         debug_assert!(doc <= IndexReader::max_doc(self));
         self.leaf_context()
     }
-
-    fn as_any(&self) -> &Any {
-        self
-    }
 }
 
-impl LeafReader for SegmentReader {
-    fn fields(&self) -> Result<FieldsProducerRef> {
-        Ok(self.core.fields())
+impl<D, C> LeafReader for SegmentReader<D, C>
+where
+    D: Directory + 'static,
+    C: Codec,
+{
+    type Codec = C;
+    type FieldsProducer = CodecFieldsProducer<C>;
+    type TVFields = CodecTVFields<C>;
+    type TVReader = Arc<CodecTVReader<C>>;
+    type StoredReader = Arc<CodecStoredFieldsReader<C>>;
+    type NormsReader = Arc<CodecNormsProducer<C>>;
+    type PointsReader = Arc<CodecPointsReader<C>>;
+
+    fn codec(&self) -> &Self::Codec {
+        self.si.info.codec().as_ref()
+    }
+
+    fn fields(&self) -> Result<Self::FieldsProducer> {
+        Ok(self.core.fields().clone())
     }
 
     fn name(&self) -> &str {
         &self.si.info.name
     }
 
-    fn term_vector(&self, doc_id: DocId) -> Result<Option<Box<Fields>>> {
+    fn term_vector(&self, doc_id: DocId) -> Result<Option<CodecTVFields<C>>> {
         self.check_bounds(doc_id);
         if let Some(ref reader) = self.core.term_vectors_reader {
             reader.get(doc_id)
         } else {
-            bail!("the index does not support term vectors!");
+            Ok(None)
         }
     }
 
     fn document(&self, doc_id: DocId, visitor: &mut StoredFieldVisitor) -> Result<()> {
         self.check_bounds(doc_id);
-        self.core
-            .fields_reader
-            .as_ref()
-            .visit_document(doc_id, visitor)
+        self.core.fields_reader.visit_document(doc_id, visitor)
     }
 
     fn live_docs(&self) -> BitsRef {
@@ -474,9 +492,8 @@ impl LeafReader for SegmentReader {
                 Some(fi) if self.doc_values_producer.get().is_some() => {
                     let dv_producer = self.doc_values_producer.get().unwrap();
                     let dv = dv_producer.get_sorted(fi)?;
-                    let cell = Arc::from(dv);
-                    v.insert(DocValuesRefEnum::Sorted(Arc::clone(&cell)));
-                    Ok(cell)
+                    v.insert(DocValuesRefEnum::Sorted(Arc::clone(&dv)));
+                    Ok(dv)
                 }
                 _ => bail!(IllegalArgument(format!(
                     "non-dv-segment or non-exist or non-binary field: {}",
@@ -551,7 +568,7 @@ impl LeafReader for SegmentReader {
         }
     }
 
-    fn norm_values(&self, field: &str) -> Result<Option<Box<NumericDocValues>>> {
+    fn norm_values(&self, field: &str) -> Result<Option<Box<dyn NumericDocValues>>> {
         if let Some(field_info) = self.field_infos.field_info_by_name(field) {
             if field_info.has_norms() {
                 assert!(self.core.norms_producer.is_some());
@@ -598,11 +615,8 @@ impl LeafReader for SegmentReader {
         }
     }
 
-    fn point_values(&self) -> Option<PointValuesRef> {
-        match self.core.points_reader {
-            Some(ref reader) => Some(Arc::clone(reader)),
-            None => None,
-        }
+    fn point_values(&self) -> Option<Self::PointsReader> {
+        self.core.points_reader.clone()
     }
 
     fn core_cache_key(&self) -> &str {
@@ -622,29 +636,29 @@ impl LeafReader for SegmentReader {
         true
     }
 
-    fn store_fields_reader(&self) -> Result<Arc<StoredFieldsReader>> {
+    fn store_fields_reader(&self) -> Result<Self::StoredReader> {
         Ok(Arc::clone(&self.core.fields_reader))
     }
 
-    fn term_vectors_reader(&self) -> Result<Option<Arc<TermVectorsReader>>> {
-        Ok(self.core.term_vectors_reader.as_ref().map(Arc::clone))
+    fn term_vectors_reader(&self) -> Result<Option<Self::TVReader>> {
+        Ok(self.core.term_vectors_reader.clone())
     }
 
-    fn norms_reader(&self) -> Result<Option<Arc<NormsProducer>>> {
-        Ok(self.core.norms_producer.as_ref().map(Arc::clone))
+    fn norms_reader(&self) -> Result<Option<Self::NormsReader>> {
+        Ok(self.core.norms_producer.clone())
     }
 
-    fn doc_values_reader(&self) -> Result<Option<Arc<DocValuesProducer>>> {
+    fn doc_values_reader(&self) -> Result<Option<Arc<dyn DocValuesProducer>>> {
         Ok(self.doc_values_producer.get().map(Arc::clone))
     }
 
-    fn postings_reader(&self) -> Result<FieldsProducerRef> {
-        Ok(self.core.fields())
+    fn postings_reader(&self) -> Result<Self::FieldsProducer> {
+        self.fields()
     }
 }
 
-impl AsRef<IndexReader> for SegmentReader {
-    fn as_ref(&self) -> &(IndexReader + 'static) {
+impl<D: Directory + 'static, C: Codec> AsRef<IndexReader<Codec = C>> for SegmentReader<D, C> {
+    fn as_ref(&self) -> &(IndexReader<Codec = C> + 'static) {
         self
     }
 }

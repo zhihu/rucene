@@ -1,10 +1,11 @@
 use core::store::DataOutput;
-use core::util::bit_util::{UnsignedShift, ZigZagEncoding};
-use core::util::packed::packed_misc::{check_block_size, get_encoder, max_value,
-                                      unsigned_bits_required, Format, BPV_SHIFT, MAX_BLOCK_SIZE,
-                                      MIN_BLOCK_SIZE, MIN_VALUE_EQUALS_0, VERSION_CURRENT};
+use core::util::bit_util::{BitsRequired, UnsignedShift, ZigZagEncoding};
+use core::util::packed::packed_misc::{
+    check_block_size, get_encoder, max_value, Format, PackedIntEncoder, PackedIntMeta, BPV_SHIFT,
+    MAX_BLOCK_SIZE, MIN_BLOCK_SIZE, MIN_VALUE_EQUALS_0, VERSION_CURRENT,
+};
 
-use error::*;
+use error::{ErrorKind::IllegalState, Result};
 
 pub struct BaseBlockPackedWriter {
     pub values: Vec<i64>,
@@ -28,7 +29,7 @@ impl BaseBlockPackedWriter {
     }
 
     // same as DataOutput.writeVLong but accepts negative values
-    pub fn write_vlong(out: &mut DataOutput, mut i: i64) -> Result<()> {
+    pub fn write_vlong(out: &mut impl DataOutput, mut i: i64) -> Result<()> {
         let mut k = 0;
         while (i & (!0x7Fi64)) != 0i64 && k < 8 {
             k += 1;
@@ -53,13 +54,13 @@ impl BaseBlockPackedWriter {
 
     pub fn check_not_finished(&self) -> Result<()> {
         if self.finished {
-            bail!("Already finished");
+            bail!(IllegalState("Already finished".into()));
         }
 
         Ok(())
     }
 
-    pub fn write_values(&mut self, bits_required: i32, out: &mut DataOutput) -> Result<()> {
+    pub fn write_values(&mut self, bits_required: i32, out: &mut impl DataOutput) -> Result<()> {
         let encoder = get_encoder(Format::Packed, VERSION_CURRENT, bits_required)?;
         let iterations = self.values.len() / encoder.byte_value_count();
         let block_size = encoder.byte_block_count() * iterations;
@@ -82,14 +83,14 @@ impl BaseBlockPackedWriter {
 }
 
 pub trait AbstractBlockPackedWriter {
-    fn add(&mut self, l: i64, out: &mut DataOutput) -> Result<()>;
+    fn add(&mut self, l: i64, out: &mut impl DataOutput) -> Result<()>;
 
     /// Flush all buffered data to disk. This instance is not usable anymore
     ///  after this method has been called until {@link #reset(DataOutput)} has
     ///  been called. */
-    fn finish(&mut self, out: &mut DataOutput) -> Result<()>;
+    fn finish(&mut self, out: &mut impl DataOutput) -> Result<()>;
 
-    fn flush(&mut self, out: &mut DataOutput) -> Result<()>;
+    fn flush(&mut self, out: &mut impl DataOutput) -> Result<()>;
 
     fn reset(&mut self);
 }
@@ -107,7 +108,7 @@ impl BlockPackedWriter {
 }
 
 impl AbstractBlockPackedWriter for BlockPackedWriter {
-    fn add(&mut self, l: i64, out: &mut DataOutput) -> Result<()> {
+    fn add(&mut self, l: i64, out: &mut impl DataOutput) -> Result<()> {
         self.base_writer.check_not_finished()?;
         if self.base_writer.off == self.base_writer.values.len() {
             self.flush(out)?;
@@ -118,7 +119,7 @@ impl AbstractBlockPackedWriter for BlockPackedWriter {
         Ok(())
     }
 
-    fn finish(&mut self, out: &mut DataOutput) -> Result<()> {
+    fn finish(&mut self, out: &mut impl DataOutput) -> Result<()> {
         self.base_writer.check_not_finished()?;
         if self.base_writer.off > 0 {
             self.flush(out)?;
@@ -128,7 +129,7 @@ impl AbstractBlockPackedWriter for BlockPackedWriter {
         Ok(())
     }
 
-    fn flush(&mut self, out: &mut DataOutput) -> Result<()> {
+    fn flush(&mut self, out: &mut impl DataOutput) -> Result<()> {
         debug_assert!(self.base_writer.off > 0);
         let mut min: i64 = i64::max_value();
         let mut max: i64 = i64::min_value();
@@ -141,7 +142,7 @@ impl AbstractBlockPackedWriter for BlockPackedWriter {
         let bits_required = if delta == 0 {
             0
         } else {
-            unsigned_bits_required(delta)
+            delta.bits_required() as i32
         };
         if bits_required == 64 {
             // no need to delta-encode

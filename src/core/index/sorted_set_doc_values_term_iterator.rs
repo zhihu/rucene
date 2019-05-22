@@ -1,10 +1,8 @@
 use core::index::term::{OrdTermState, SeekStatus, TermIterator, TermState};
 use core::index::SortedSetDocValues;
-use core::search::posting_iterator::PostingIterator;
+use core::search::posting_iterator::EmptyPostingIterator;
 use error::ErrorKind::*;
 use error::Result;
-
-use std::any::Any;
 
 /// Implements a `TermIterator` wrapping a provided `SortedSetDocValues`
 pub struct SortedSetDocValuesTermIterator<T: SortedSetDocValues + 'static> {
@@ -25,6 +23,8 @@ impl<T: SortedSetDocValues + 'static> SortedSetDocValuesTermIterator<T> {
 }
 
 impl<T: SortedSetDocValues + 'static> TermIterator for SortedSetDocValuesTermIterator<T> {
+    type Postings = EmptyPostingIterator;
+    type TermState = OrdTermState;
     fn next(&mut self) -> Result<Option<Vec<u8>>> {
         self.current_ord += 1;
         if self.current_ord >= self.values.get_value_count() as i64 {
@@ -67,7 +67,7 @@ impl<T: SortedSetDocValues + 'static> TermIterator for SortedSetDocValuesTermIte
         }
     }
 
-    fn seek_exact_state(&mut self, _text: &[u8], state: &TermState) -> Result<()> {
+    fn seek_exact_state(&mut self, _text: &[u8], state: &Self::TermState) -> Result<()> {
         self.seek_exact_ord(state.ord())
     }
 
@@ -97,20 +97,16 @@ impl<T: SortedSetDocValues + 'static> TermIterator for SortedSetDocValuesTermIte
         Ok(-1)
     }
 
-    fn postings_with_flags(&mut self, _flags: i16) -> Result<Box<PostingIterator>> {
+    fn postings_with_flags(&mut self, _flags: u16) -> Result<Self::Postings> {
         bail!(UnsupportedOperation(
             "postings_with_flags unsupported for SortedSetDocValuesTermIterator".into()
         ))
     }
 
-    fn term_state(&mut self) -> Result<Box<TermState>> {
+    fn term_state(&mut self) -> Result<Self::TermState> {
         let state = OrdTermState {
             ord: self.current_ord,
         };
-        Ok(Box::new(state))
-    }
-
-    fn as_any(&self) -> &Any {
-        self
+        Ok(state)
     }
 }

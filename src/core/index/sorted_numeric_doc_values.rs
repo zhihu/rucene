@@ -24,7 +24,7 @@ pub trait SortedNumericDocValues: Send + Sync {
     }
 }
 
-pub type SortedNumericDocValuesRef = Arc<SortedNumericDocValues>;
+pub type SortedNumericDocValuesRef = Arc<dyn SortedNumericDocValues>;
 
 pub struct EmptySortedNumericDocValues;
 
@@ -46,18 +46,18 @@ impl SortedNumericDocValues for EmptySortedNumericDocValues {
     }
 }
 
-pub struct AddressedSortedNumericDocValues {
-    values: Box<LongValues>,
-    ord_index: Box<LongValues>,
+pub struct AddressedSortedNumericDocValues<T: LongValues> {
+    values: Box<dyn LongValues>,
+    ord_index: T,
 }
 
-impl AddressedSortedNumericDocValues {
-    pub fn new(values: Box<LongValues>, ord_index: Box<LongValues>) -> Self {
+impl<T: LongValues> AddressedSortedNumericDocValues<T> {
+    pub fn new(values: Box<dyn LongValues>, ord_index: T) -> Self {
         AddressedSortedNumericDocValues { values, ord_index }
     }
 }
 
-impl SortedNumericDocValues for AddressedSortedNumericDocValues {
+impl<T: LongValues> SortedNumericDocValues for AddressedSortedNumericDocValues<T> {
     fn set_document(
         &self,
         ctx: Option<SortedNumericDocValuesContext>,
@@ -78,13 +78,13 @@ impl SortedNumericDocValues for AddressedSortedNumericDocValues {
 }
 
 pub struct TabledSortedNumericDocValues {
-    ordinals: Box<LongValues>,
+    ordinals: Box<dyn LongValues>,
     table: Vec<i64>,
     offsets: Vec<i32>,
 }
 
 impl TabledSortedNumericDocValues {
-    pub fn new(ordinals: Box<LongValues>, table: &[i64], offsets: &[i32]) -> Self {
+    pub fn new(ordinals: Box<dyn LongValues>, table: &[i64], offsets: &[i32]) -> Self {
         TabledSortedNumericDocValues {
             ordinals,
             table: table.to_vec(),

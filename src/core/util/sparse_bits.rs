@@ -66,20 +66,16 @@ impl SparseBitsContext {
     }
 }
 
-pub struct SparseBits {
+pub struct SparseBits<T: LongValues> {
     max_doc: i64,
     doc_ids_length: i64,
     first_doc_id: i64,
-    doc_ids: Arc<LongValues>,
+    doc_ids: T,
 }
 
-impl SparseBits {
-    pub fn new(
-        max_doc: i64,
-        doc_ids_length: i64,
-        mut doc_ids: Box<LongValues>,
-    ) -> Result<SparseBits> {
-        if doc_ids_length > 0 && max_doc <= doc_ids.as_mut().get64(doc_ids_length - 1)? {
+impl<T: LongValues> SparseBits<T> {
+    pub fn new(max_doc: i64, doc_ids_length: i64, doc_ids: T) -> Result<Self> {
+        if doc_ids_length > 0 && max_doc <= doc_ids.get64(doc_ids_length - 1)? {
             bail!(IllegalArgument(
                 "max_doc must be > the last element of doc_ids".to_owned()
             ));
@@ -87,13 +83,13 @@ impl SparseBits {
         let first_doc_id = if doc_ids_length == 0 {
             max_doc
         } else {
-            doc_ids.as_mut().get64(0)?
+            doc_ids.get64(0)?
         };
         Ok(SparseBits {
             max_doc,
             doc_ids_length,
             first_doc_id,
-            doc_ids: Arc::from(doc_ids),
+            doc_ids,
         })
     }
 
@@ -153,34 +149,32 @@ impl SparseBits {
         doc_id: i64,
     ) -> Result<()> {
         if ctx.doc_id > doc_id || ctx.next_doc_id <= doc_id {
-            bail!(
+            bail!(IllegalState(format!(
                 "internal error a {} {} {}",
-                doc_id,
-                ctx.doc_id,
-                ctx.next_doc_id
-            );
+                doc_id, ctx.doc_id, ctx.next_doc_id
+            )));
         }
         if !((ctx.index == -1 && ctx.doc_id == -1)
             || ctx.doc_id == self.doc_ids.get64(ctx.index)?)
         {
-            bail!(
+            bail!(IllegalState(format!(
                 "internal error b {} {} {}",
                 ctx.index,
                 ctx.doc_id,
                 self.doc_ids.get64(ctx.index)?
-            );
+            )));
         }
         if !((next_index == self.doc_ids_length && ctx.next_doc_id == self.max_doc)
             || ctx.next_doc_id == self.doc_ids.get64(next_index)?)
         {
-            bail!(
+            bail!(IllegalState(format!(
                 "internal error c {} {} {} {} {}",
                 next_index,
                 self.doc_ids_length,
                 ctx.next_doc_id,
                 self.max_doc,
                 self.doc_ids.get64(next_index)?
-            );
+            )));
         }
         Ok(())
     }
@@ -222,7 +216,7 @@ impl SparseBits {
     }
 }
 
-impl Bits for SparseBits {
+impl<T: LongValues> Bits for SparseBits<T> {
     fn get_with_ctx(&self, ctx: BitsContext, index: usize) -> Result<(bool, BitsContext)> {
         let mut ctx = match ctx {
             Some(c) => SparseBitsContext::deserialize(&c)?,
@@ -236,16 +230,16 @@ impl Bits for SparseBits {
     }
 }
 
-pub struct SparseLongValues {
-    docs_with_field: Arc<SparseBits>,
-    values: Box<LongValues>,
+pub struct SparseLongValues<T: LongValues> {
+    docs_with_field: Arc<SparseBits<T>>,
+    values: Box<dyn LongValues>,
     missing_value: i64,
 }
 
-impl SparseLongValues {
+impl<T: LongValues> SparseLongValues<T> {
     pub fn new(
-        docs_with_field: Arc<SparseBits>,
-        values: Box<LongValues>,
+        docs_with_field: Arc<SparseBits<T>>,
+        values: Box<dyn LongValues>,
         missing_value: i64,
     ) -> Self {
         SparseLongValues {
@@ -255,12 +249,12 @@ impl SparseLongValues {
         }
     }
 
-    pub fn docs_with_field_clone(&self) -> Arc<SparseBits> {
+    pub fn docs_with_field_clone(&self) -> Arc<SparseBits<T>> {
         Arc::clone(&self.docs_with_field)
     }
 }
 
-impl LongValues for SparseLongValues {
+impl<T: LongValues> LongValues for SparseLongValues<T> {
     fn get64_with_ctx(
         &self,
         ctx: LongValuesContext,
@@ -280,7 +274,7 @@ impl LongValues for SparseLongValues {
     }
 }
 
-impl NumericDocValues for SparseLongValues {
+impl<T: LongValues> NumericDocValues for SparseLongValues<T> {
     fn get_with_ctx(
         &self,
         ctx: NumericDocValuesContext,

@@ -103,7 +103,7 @@ pub trait DataOutput: Write {
         Ok(())
     }
 
-    fn copy_bytes(&mut self, from: &mut DataInput, len: usize) -> Result<()> {
+    fn copy_bytes<I: DataInput + ?Sized>(&mut self, from: &mut I, len: usize) -> Result<()> {
         const COPY_BUFFER_SIZE: usize = 16384;
         let mut left = len as i64;
         let mut copy_buffer = [0u8; COPY_BUFFER_SIZE];

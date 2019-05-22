@@ -4,8 +4,9 @@ use std::sync::Arc;
 use core::codec::codec_util::{check_footer, check_index_header};
 use core::codec::codec_util::{write_footer, write_index_header};
 use core::codec::format::LiveDocsFormat;
+use core::codec::Codec;
 use core::index::{file_name_from_generation, SegmentCommitInfo};
-use core::store::{Directory, DirectoryRc, IOContext};
+use core::store::{DataInput, DataOutput, Directory, IOContext};
 use core::util::bit_set::{bits2words, BitSet, FixedBitSet, ImmutableBitSet};
 use core::util::numeric::to_base36;
 use core::util::{Bits, BitsRef};
@@ -17,13 +18,14 @@ const CODEC_NAME: &str = "Lucene50LiveDocs";
 const VERSION_START: i32 = 0;
 const VERSION_CURRENT: i32 = VERSION_START;
 
+#[derive(Copy, Clone)]
 pub struct Lucene50LiveDocsFormat {}
 
 impl LiveDocsFormat for Lucene50LiveDocsFormat {
-    fn new_live_docs(&self, size: usize) -> Result<Box<Bits>> {
+    fn new_live_docs(&self, size: usize) -> Result<FixedBitSet> {
         let mut bits = FixedBitSet::new(size);
         bits.batch_set(0, size);
-        Ok(Box::new(bits))
+        Ok(bits)
     }
 
     fn new_live_docs_from_existing(&self, existing: &Bits) -> Result<BitsRef> {
@@ -31,10 +33,10 @@ impl LiveDocsFormat for Lucene50LiveDocsFormat {
         Ok(existing.clone())
     }
 
-    fn read_live_docs(
+    fn read_live_docs<D: Directory, C: Codec>(
         &self,
-        dir: DirectoryRc,
-        info: &SegmentCommitInfo,
+        dir: Arc<D>,
+        info: &SegmentCommitInfo<D, C>,
         context: &IOContext,
     ) -> Result<BitsRef> {
         let gen = info.del_gen();
@@ -43,7 +45,7 @@ impl LiveDocsFormat for Lucene50LiveDocsFormat {
 
         let mut index_stream = dir.open_checksum_input(name.as_str(), context)?;
         check_index_header(
-            index_stream.as_mut(),
+            &mut index_stream,
             CODEC_NAME,
             VERSION_START,
             VERSION_CURRENT,
@@ -54,10 +56,10 @@ impl LiveDocsFormat for Lucene50LiveDocsFormat {
         let num_words = bits2words(length);
         let mut bits: Vec<i64> = Vec::with_capacity(num_words);
         for _ in 0..num_words {
-            bits.push(index_stream.as_mut().read_long()?);
+            bits.push(index_stream.read_long()?);
         }
 
-        check_footer(index_stream.as_mut())?;
+        check_footer(&mut index_stream)?;
 
         let fix_bits = FixedBitSet::copy_from(bits, length)?;
         if fix_bits.len() - fix_bits.cardinality() == info.del_count() as usize {
@@ -71,11 +73,11 @@ impl LiveDocsFormat for Lucene50LiveDocsFormat {
         }
     }
 
-    fn write_live_docs(
+    fn write_live_docs<D: Directory, D1: Directory, C: Codec>(
         &self,
         bits: &Bits,
-        dir: &Directory,
-        info: &SegmentCommitInfo,
+        dir: &D1,
+        info: &SegmentCommitInfo<D, C>,
         new_del_count: i32,
         context: &IOContext,
     ) -> Result<()> {
@@ -95,7 +97,7 @@ impl LiveDocsFormat for Lucene50LiveDocsFormat {
 
         let mut output = dir.create_output(&name, context)?;
         write_index_header(
-            output.as_mut(),
+            &mut output,
             CODEC_NAME,
             VERSION_CURRENT,
             info.info.get_id(),
@@ -104,10 +106,14 @@ impl LiveDocsFormat for Lucene50LiveDocsFormat {
         for v in &fbs.bits {
             output.write_long(*v)?;
         }
-        write_footer(output.as_mut())
+        write_footer(&mut output)
     }
 
-    fn files(&self, info: &SegmentCommitInfo, files: &mut HashSet<String>) {
+    fn files<D: Directory, C: Codec>(
+        &self,
+        info: &SegmentCommitInfo<D, C>,
+        files: &mut HashSet<String>,
+    ) {
         if info.has_deletions() {
             let new_file =
                 file_name_from_generation(&info.info.name, EXTENSION, info.del_gen() as u64);

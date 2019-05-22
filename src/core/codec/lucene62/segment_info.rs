@@ -1,16 +1,18 @@
-use core::codec::codec_util;
 use core::codec::format::*;
+use core::codec::{codec_util, Codec};
 use core::index::{parse_segment_name, segment_file_name};
-use core::index::{SegmentInfo, SEGMENT_INFO_NO, SEGMENT_INFO_YES};
+use core::index::{SegmentInfo, SEGMENT_USE_COMPOUND_NO, SEGMENT_USE_COMPOUND_YES};
 use core::search::sort::Sort;
 use core::search::sort_field::{SimpleSortField, SortField};
 use core::search::sort_field::{SortFieldType, SortedNumericSortField};
 use core::search::sort_field::{SortedNumericSelectorType, SortedSetSelectorType};
-use core::store::{BufferedChecksumIndexInput, ChecksumIndexInput, IOContext, IndexInput};
-use core::store::{Directory, DirectoryRc};
+use core::store::Directory;
+use core::store::{
+    BufferedChecksumIndexInput, ChecksumIndexInput, DataOutput, IOContext, IndexInput,
+};
 use core::util::string_util::ID_LENGTH;
 use core::util::{VariantValue, Version};
-use error::ErrorKind::{IllegalArgument, IllegalState};
+use error::ErrorKind::{CorruptIndex, IllegalArgument, IllegalState};
 use error::Result;
 use std::sync::Arc;
 
@@ -20,12 +22,12 @@ const VERSION_START: i32 = 0;
 const VERSION_MULTI_VALUED_SORT: i32 = 1;
 const VERSION_CURRENT: i32 = VERSION_MULTI_VALUED_SORT;
 
-fn read_segment_info_from_index(
-    input: &mut IndexInput,
-    dir: &DirectoryRc,
+fn read_segment_info_from_index<D: Directory, C: Codec>(
+    input: &mut dyn IndexInput,
+    dir: &Arc<D>,
     segment: &str,
     id: [u8; ID_LENGTH],
-) -> Result<SegmentInfo> {
+) -> Result<SegmentInfo<D, C>> {
     codec_util::check_index_header(input, CODEC_NAME, VERSION_START, VERSION_CURRENT, &id, "")?;
     let major = input.read_int()?;
     let minor = input.read_int()?;
@@ -33,9 +35,9 @@ fn read_segment_info_from_index(
     let version = Version::new(major, minor, bugfix)?;
     let doc_count = input.read_int()?;
     if doc_count < 0 {
-        bail!("Corrupt Index: invalid docCount: {}", doc_count);
+        bail!(CorruptIndex(format!("invalid docCount: {}", doc_count)));
     }
-    let is_compound_file = i32::from(input.read_byte()?) == SEGMENT_INFO_YES;
+    let is_compound_file = input.read_byte()? == SEGMENT_USE_COMPOUND_YES;
 
     let diagnostics = input.read_map_of_strings()?;
     let files = input.read_set_of_strings()?;
@@ -44,7 +46,6 @@ fn read_segment_info_from_index(
     let num_sort_fields = input.read_vint()?;
     let mut index_sort = None;
     if num_sort_fields > 0 {
-        // bail!("Sorted fields feature is not supported yet")
         let mut sort_fields = Vec::with_capacity(num_sort_fields as usize);
         for _ in 0..num_sort_fields {
             let field_name = input.read_string()?;
@@ -66,7 +67,10 @@ fn read_segment_info_from_index(
                         2 => sorted_set_selector = Some(SortedSetSelectorType::MiddleMin),
                         3 => sorted_set_selector = Some(SortedSetSelectorType::MiddleMax),
                         _ => {
-                            bail!("invalid index SortedSetSelector ID: {}", selector);
+                            bail!(CorruptIndex(format!(
+                                "invalid index SortedSetSelector ID: {}",
+                                selector
+                            )));
                         }
                     }
                     SortFieldType::String
@@ -79,7 +83,10 @@ fn read_segment_info_from_index(
                         2 => SortFieldType::Double,
                         3 => SortFieldType::Float,
                         _ => {
-                            bail!("invalid index SortedNumericSortField type ID: {}", type_val);
+                            bail!(CorruptIndex(format!(
+                                "invalid index SortedNumericSortField type ID: {}",
+                                type_val
+                            )));
                         }
                     };
                     let numeric_selector = input.read_byte()?;
@@ -91,16 +98,19 @@ fn read_segment_info_from_index(
                             sorted_numeric_selector = Some(SortedNumericSelectorType::Max);
                         }
                         _ => {
-                            bail!(
+                            bail!(CorruptIndex(format!(
                                 "invalid index SortedNumericSelector ID: {}",
                                 numeric_selector
-                            );
+                            )));
                         }
                     }
                     sort_type_tmp
                 }
                 _ => {
-                    bail!("invalid index sort field type ID: {}", sort_type_id);
+                    bail!(CorruptIndex(format!(
+                        "invalid index sort field type ID: {}",
+                        sort_type_id
+                    )));
                 }
             };
             let b = input.read_byte()?;
@@ -109,7 +119,7 @@ fn read_segment_info_from_index(
             } else if b == 1 {
                 false
             } else {
-                bail!("invalid index sort reverse: {}", b);
+                bail!(CorruptIndex(format!("invalid index sort reverse: {}", b)));
             };
 
             // TODO: not support sort by SortedSet field yet
@@ -143,19 +153,19 @@ fn read_segment_info_from_index(
                     }
                     SortFieldType::Long => {
                         if bv != 1 {
-                            bail!("invalid missing value flag: {}", bv);
+                            bail!(CorruptIndex(format!("invalid missing value flag: {}", bv)));
                         }
                         missing_value = Some(VariantValue::Long(input.read_long()?));
                     }
                     SortFieldType::Int => {
                         if bv != 1 {
-                            bail!("invalid missing value flag: {}", bv);
+                            bail!(CorruptIndex(format!("invalid missing value flag: {}", bv)));
                         }
                         missing_value = Some(VariantValue::Int(input.read_int()?));
                     }
                     SortFieldType::Double => {
                         if bv != 1 {
-                            bail!("invalid missing value flag: {}", bv);
+                            bail!(CorruptIndex(format!("invalid missing value flag: {}", bv)));
                         }
                         missing_value = Some(VariantValue::Double(f64::from_bits(
                             input.read_long()? as u64,
@@ -163,7 +173,7 @@ fn read_segment_info_from_index(
                     }
                     SortFieldType::Float => {
                         if bv != 1 {
-                            bail!("invalid missing value flag: {}", bv);
+                            bail!(CorruptIndex(format!("invalid missing value flag: {}", bv)));
                         }
                         missing_value = Some(VariantValue::Float(f32::from_bits(
                             input.read_int()? as u32,
@@ -181,10 +191,10 @@ fn read_segment_info_from_index(
         }
         index_sort = Some(Sort::new(sort_fields));
     } else if num_sort_fields < 0 {
-        bail!(
+        bail!(CorruptIndex(format!(
             "Corrupt Index: invalid index sort field count: {}",
             num_sort_fields
-        );
+        )));
     }
 
     let mut si = SegmentInfo::new(
@@ -205,22 +215,17 @@ fn read_segment_info_from_index(
     Ok(si)
 }
 
+#[derive(Copy, Clone, Default)]
 pub struct Lucene62SegmentInfoFormat;
 
-impl Default for Lucene62SegmentInfoFormat {
-    fn default() -> Lucene62SegmentInfoFormat {
-        Lucene62SegmentInfoFormat {}
-    }
-}
-
 impl SegmentInfoFormat for Lucene62SegmentInfoFormat {
-    fn read(
+    fn read<D: Directory, C: Codec>(
         &self,
-        directory: &DirectoryRc,
+        directory: &Arc<D>,
         segment_name: &str,
         segment_id: [u8; ID_LENGTH],
         context: &IOContext,
-    ) -> Result<SegmentInfo> {
+    ) -> Result<SegmentInfo<D, C>> {
         let file_name = segment_file_name(segment_name, "", SI_EXTENSION);
         let original_input = directory.open_input(&file_name, context)?;
         let mut checksum = BufferedChecksumIndexInput::new(original_input);
@@ -232,16 +237,21 @@ impl SegmentInfoFormat for Lucene62SegmentInfoFormat {
         Ok(segment_info)
     }
 
-    fn write(&self, dir: &Directory, info: &mut SegmentInfo, context: &IOContext) -> Result<()> {
+    fn write<D: Directory, DW: Directory, C: Codec>(
+        &self,
+        dir: &Arc<DW>,
+        info: &mut SegmentInfo<D, C>,
+        io_context: &IOContext,
+    ) -> Result<()> {
         let file_name = segment_file_name(&info.name, "", SI_EXTENSION);
 
-        let mut output = dir.create_output(&file_name, context)?;
+        let mut output = dir.create_output(&file_name, io_context)?;
         // Only add the file once we've successfully created it,
         // else IFD assert can trip:
         info.add_file(&file_name)?;
 
         codec_util::write_index_header(
-            output.as_mut(),
+            &mut output,
             CODEC_NAME,
             VERSION_CURRENT,
             info.get_id(),
@@ -262,11 +272,11 @@ impl SegmentInfoFormat for Lucene62SegmentInfoFormat {
         output.write_int(info.max_doc())?;
 
         let is_compound = if info.is_compound_file() {
-            SEGMENT_INFO_YES
+            SEGMENT_USE_COMPOUND_YES
         } else {
-            SEGMENT_INFO_NO
+            SEGMENT_USE_COMPOUND_NO
         };
-        output.write_byte(is_compound as u8)?;
+        output.write_byte(is_compound)?;
         output.write_map_of_strings(&info.diagnostics)?;
         for file in info.files() {
             if parse_segment_name(file) != &info.name {
@@ -365,6 +375,6 @@ impl SegmentInfoFormat for Lucene62SegmentInfoFormat {
             output.write_vint(0)?;
         }
 
-        codec_util::write_footer(output.as_mut())
+        codec_util::write_footer(&mut output)
     }
 }

@@ -1,10 +1,12 @@
-use core::codec::codec_util;
 use core::codec::format::FieldInfosFormat;
+use core::codec::{codec_util, Codec};
 use core::index::{segment_file_name, DocValuesType, IndexOptions, SegmentInfo};
 use core::index::{FieldInfo, FieldInfos};
 use core::store::Directory;
-use core::store::{BufferedChecksumIndexInput, ChecksumIndexInput, IOContext, IndexInput};
-use error::Result;
+use core::store::{
+    BufferedChecksumIndexInput, ChecksumIndexInput, DataOutput, IOContext, IndexInput,
+};
+use error::{ErrorKind::CorruptIndex, Result};
 
 /// Extension of field infos
 const EXTENSION: &str = "fnm";
@@ -19,9 +21,9 @@ const STORE_TERM_VECTOR: u8 = 0x1;
 const OMIT_NORMS: u8 = 0x2;
 const STORE_PAYLOADS: u8 = 0x4;
 
-fn read_field_infos_from_index<T: IndexInput + ?Sized>(
+fn read_field_infos_from_index<T: IndexInput + ?Sized, D: Directory, C: Codec>(
     input: &mut T,
-    segment_info: &SegmentInfo,
+    segment_info: &SegmentInfo<D, C>,
     suffix: &str,
 ) -> Result<Vec<FieldInfo>> {
     let mut infos: Vec<FieldInfo> = Vec::new();
@@ -39,11 +41,10 @@ fn read_field_infos_from_index<T: IndexInput + ?Sized>(
         let name = input.read_string()?;
         let field_number = input.read_vint()?;
         if field_number < 0 {
-            bail!(
-                "Corrupted Index: invalid field number for field: {}, fieldNumber={}",
-                name,
-                field_number
-            );
+            bail!(CorruptIndex(format!(
+                "invalid field number for field: {}, field_number={}",
+                name, field_number
+            )));
         }
         let bits = input.read_byte()?;
         let store_term_vector = (bits & STORE_TERM_VECTOR) != 0;
@@ -78,9 +79,9 @@ fn read_field_infos_from_index<T: IndexInput + ?Sized>(
     Ok(infos)
 }
 
-pub fn read_field_infos(
-    directory: &mut Directory,
-    segment_info: &SegmentInfo,
+pub fn read_field_infos<D: Directory, C: Codec>(
+    directory: &mut D,
+    segment_info: &SegmentInfo<D, C>,
     suffix: &str,
     context: &IOContext,
 ) -> Result<FieldInfos> {
@@ -102,7 +103,7 @@ fn read_index_options<T: IndexInput + ?Sized>(input: &mut T) -> Result<IndexOpti
         2 => IndexOptions::DocsAndFreqs,
         3 => IndexOptions::DocsAndFreqsAndPositions,
         4 => IndexOptions::DocsAndFreqsAndPositionsAndOffsets,
-        _ => bail!("Corrupted Index: invalid IndexOptions byte: {}", byte),
+        _ => bail!(CorruptIndex(format!("invalid IndexOptions byte: {}", byte))),
     })
 }
 
@@ -126,7 +127,10 @@ fn read_doc_values_type<T: IndexInput + ?Sized>(input: &mut T) -> Result<DocValu
         3 => DocValuesType::Sorted,
         4 => DocValuesType::SortedSet,
         5 => DocValuesType::SortedNumeric,
-        _ => bail!("Corrupted Index: invalid DocValuesType byte: {}", byte),
+        _ => bail!(CorruptIndex(format!(
+            "Corrupted Index: invalid DocValuesType byte: {}",
+            byte
+        ))),
     })
 }
 
@@ -142,19 +146,14 @@ fn doc_values_byte(dv_type: DocValuesType) -> u8 {
     }
 }
 
+#[derive(Copy, Clone, Default)]
 pub struct Lucene60FieldInfosFormat;
 
-impl Default for Lucene60FieldInfosFormat {
-    fn default() -> Lucene60FieldInfosFormat {
-        Lucene60FieldInfosFormat {}
-    }
-}
-
 impl FieldInfosFormat for Lucene60FieldInfosFormat {
-    fn read(
+    fn read<D: Directory, DW: Directory, C: Codec>(
         &self,
-        directory: &Directory,
-        segment_info: &SegmentInfo,
+        directory: &DW,
+        segment_info: &SegmentInfo<D, C>,
         segment_suffix: &str,
         ctx: &IOContext,
     ) -> Result<FieldInfos> {
@@ -173,10 +172,10 @@ impl FieldInfosFormat for Lucene60FieldInfosFormat {
         Ok(FieldInfos::new(infos)?)
     }
 
-    fn write(
+    fn write<D: Directory, DW: Directory, C: Codec>(
         &self,
-        directory: &Directory,
-        segment_info: &SegmentInfo,
+        directory: &DW,
+        segment_info: &SegmentInfo<D, C>,
         segment_suffix: &str,
         infos: &FieldInfos,
         context: &IOContext,
@@ -184,7 +183,7 @@ impl FieldInfosFormat for Lucene60FieldInfosFormat {
         let file_name = segment_file_name(&segment_info.name, segment_suffix, EXTENSION);
         let mut output = directory.create_output(&file_name, context)?;
         codec_util::write_index_header(
-            output.as_mut(),
+            &mut output,
             CODEC_NAME,
             FORMAT_CURRENT,
             segment_info.get_id(),
@@ -224,6 +223,6 @@ impl FieldInfosFormat for Lucene60FieldInfosFormat {
             }
         }
 
-        codec_util::write_footer(output.as_mut())
+        codec_util::write_footer(&mut output)
     }
 }

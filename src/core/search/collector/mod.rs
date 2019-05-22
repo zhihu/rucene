@@ -1,5 +1,6 @@
-use error::*;
+use error::Result;
 
+use core::codec::Codec;
 use core::index::LeafReaderContext;
 use core::search::Scorer;
 use core::util::DocId;
@@ -53,16 +54,37 @@ error_chain! {
 /// example, a collector that simply counts the total number
 /// of hits would skip it.
 pub trait SearchCollector: Collector {
+    type LC: ParallelLeafCollector;
     /// This method is called before collecting on a new leaf.
-    fn set_next_reader(&mut self, reader: &LeafReaderContext) -> Result<()>;
+    fn set_next_reader<C: Codec>(&mut self, reader: &LeafReaderContext<'_, C>) -> Result<()>;
 
     /// iff this collector support parallel collect
     fn support_parallel(&self) -> bool;
 
     /// segment collector for parallel search
-    fn leaf_collector(&mut self, reader: &LeafReaderContext) -> Result<Box<LeafCollector>>;
+    fn leaf_collector<C: Codec>(&mut self, reader: &LeafReaderContext<'_, C>) -> Result<Self::LC>;
 
-    fn finish(&mut self) -> Result<()>;
+    fn finish_parallel(&mut self) -> Result<()>;
+}
+
+impl<'a, T: SearchCollector + 'a> SearchCollector for &'a mut T {
+    type LC = T::LC;
+
+    fn set_next_reader<C: Codec>(&mut self, reader: &LeafReaderContext<'_, C>) -> Result<()> {
+        (**self).set_next_reader(reader)
+    }
+
+    fn support_parallel(&self) -> bool {
+        (**self).support_parallel()
+    }
+
+    fn leaf_collector<C: Codec>(&mut self, reader: &LeafReaderContext<'_, C>) -> Result<Self::LC> {
+        (**self).leaf_collector(reader)
+    }
+
+    fn finish_parallel(&mut self) -> Result<()> {
+        (**self).finish_parallel()
+    }
 }
 
 pub trait Collector {
@@ -80,9 +102,19 @@ pub trait Collector {
     /// Note: This is called in an inner search loop. For good search performance,
     /// implementations of this method should not call `IndexSearcher::doc(DocId)` on every hit.
     /// Doing so can slow searches by an order of magnitude or more.
-    fn collect(&mut self, doc: DocId, scorer: &mut Scorer) -> Result<()>;
+    fn collect<S: Scorer + ?Sized>(&mut self, doc: DocId, scorer: &mut S) -> Result<()>;
 }
 
-pub trait LeafCollector: Collector + Send + Sync {
+impl<'a, T: Collector + 'a> Collector for &'a mut T {
+    fn needs_scores(&self) -> bool {
+        (**self).needs_scores()
+    }
+
+    fn collect<S: Scorer + ?Sized>(&mut self, doc: i32, scorer: &mut S) -> Result<()> {
+        (**self).collect(doc, scorer)
+    }
+}
+
+pub trait ParallelLeafCollector: Collector + Send + 'static {
     fn finish_leaf(&mut self) -> Result<()>;
 }

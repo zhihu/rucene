@@ -1,29 +1,31 @@
-use core::codec::{DocValuesProducer, FieldsProducer, FieldsProducerRef, NormsProducer};
-use core::codec::{StoredFieldsReader, TermVectorsReader};
+use core::codec::{
+    Codec, CodecFieldsProducer, CodecNormsProducer, CodecPointsReader, CodecStoredFieldsReader,
+    CodecTVFields, CodecTVReader, DocValuesProducer, FieldsProducer, NormsProducer,
+    StoredFieldsReader, TermVectorsReader,
+};
 use core::index::sorter::{PackedLongDocMap, SorterDocMap};
-use core::index::term::TermsRef;
-use core::index::LeafReader;
 use core::index::SegmentReader;
 use core::index::StoredFieldVisitor;
 use core::index::{BinaryDocValues, BinaryDocValuesRef};
+use core::index::{DocValuesTermIterator, LeafReader};
 use core::index::{FieldInfo, FieldInfos, Fields, IndexOptions};
-use core::index::{IntersectVisitor, PointValues, PointValuesRef, Relation};
+use core::index::{IntersectVisitor, PointValues, Relation};
 use core::index::{NumericDocValues, NumericDocValuesRef};
 use core::index::{SeekStatus, TermIterator, Terms};
 use core::index::{SortedDocValues, SortedDocValuesRef};
-use core::index::{SortedNumericDocValues, SortedNumericDocValuesContext, SortedNumericDocValuesRef};
+use core::index::{
+    SortedNumericDocValues, SortedNumericDocValuesContext, SortedNumericDocValuesRef,
+};
 use core::index::{SortedSetDocValues, SortedSetDocValuesContext, SortedSetDocValuesRef};
-use core::search::posting_iterator::posting_feature_requested;
-use core::search::posting_iterator::PostingIterator;
-use core::search::posting_iterator::{POSTING_ITERATOR_FLAG_FREQS, POSTING_ITERATOR_FLAG_POSITIONS};
+use core::search::posting_iterator::{PostingIterator, PostingIteratorFlags};
 use core::search::sort::Sort;
-use core::search::{DocIterator, NO_MORE_DOCS};
-use core::store::{DataInput, IndexInput, IndexOutput, RAMOutputStream};
+use core::search::{DocIterator, Payload, NO_MORE_DOCS};
+use core::store::{DataInput, Directory, IndexInput, IndexOutput, RAMOutputStream};
 use core::util::external::deferred::Deferred;
 use core::util::fst::bytes_store::{BytesStore, StoreBytesReader};
 use core::util::{Bits, BitsContext, BitsRef, DocId};
 
-use error::Result;
+use error::{ErrorKind::IllegalArgument, Result};
 
 use std::any::Any;
 use std::mem;
@@ -31,18 +33,18 @@ use std::sync::Arc;
 
 /// This is a hack to make index sorting fast, with a `LeafReader` that
 /// always returns merge instances when you ask for the codec readers.
-pub struct MergeReaderWrapper {
-    reader: Arc<SegmentReader>,
-    fields: FieldsProducerRef,
-    norms: Option<Arc<NormsProducer>>,
-    doc_values: Option<Box<DocValuesProducer>>,
-    store: Box<StoredFieldsReader>,
-    vectors: Option<Arc<TermVectorsReader>>,
+pub struct MergeReaderWrapper<D: Directory + 'static, C: Codec> {
+    reader: Arc<SegmentReader<D, C>>,
+    fields: CodecFieldsProducer<C>,
+    norms: Option<Arc<CodecNormsProducer<C>>>,
+    doc_values: Option<Box<dyn DocValuesProducer>>,
+    store: Arc<CodecStoredFieldsReader<C>>,
+    vectors: Option<Arc<CodecTVReader<C>>>,
 }
 
-impl MergeReaderWrapper {
-    pub fn new(reader: Arc<SegmentReader>) -> Result<MergeReaderWrapper> {
-        let fields = reader.postings_reader();
+impl<D: Directory + 'static, C: Codec> MergeReaderWrapper<D, C> {
+    pub fn new(reader: Arc<SegmentReader<D, C>>) -> Result<MergeReaderWrapper<D, C>> {
+        let fields = reader.postings_reader()?;
         let norms = reader.norms_reader()?;
         let doc_values = match reader.doc_values_reader()? {
             Some(p) => Some(p.get_merge_instance()?),
@@ -63,31 +65,43 @@ impl MergeReaderWrapper {
 
     fn check_bounds(&self, doc_id: DocId) -> Result<()> {
         if doc_id < 0 || doc_id > self.max_doc() {
-            bail!(
+            bail!(IllegalArgument(format!(
                 "doc_id must be >= 0 and < max_doc={}, got {}",
                 self.max_doc(),
                 doc_id
-            );
+            )));
         }
         Ok(())
     }
 }
 
-impl LeafReader for MergeReaderWrapper {
-    fn fields(&self) -> Result<FieldsProducerRef> {
-        Ok(Arc::clone(&self.fields))
+impl<D: Directory + 'static, C: Codec> LeafReader for MergeReaderWrapper<D, C> {
+    type Codec = C;
+    type FieldsProducer = CodecFieldsProducer<C>;
+    type TVFields = CodecTVFields<C>;
+    type TVReader = Arc<CodecTVReader<C>>;
+    type StoredReader = Arc<CodecStoredFieldsReader<C>>;
+    type NormsReader = Arc<CodecNormsProducer<C>>;
+    type PointsReader = Arc<CodecPointsReader<C>>;
+
+    fn codec(&self) -> &Self::Codec {
+        self.reader.codec()
+    }
+
+    fn fields(&self) -> Result<CodecFieldsProducer<C>> {
+        Ok(self.fields.clone())
     }
 
     fn name(&self) -> &str {
         self.reader.name()
     }
 
-    fn term_vector(&self, doc_id: i32) -> Result<Option<Box<Fields>>> {
+    fn term_vector(&self, doc_id: i32) -> Result<Option<CodecTVFields<C>>> {
         self.check_bounds(doc_id)?;
         if let Some(ref vectors) = self.vectors {
             vectors.get(doc_id)
         } else {
-            bail!("reader does not have term vectors")
+            Ok(None)
         }
     }
 
@@ -124,7 +138,7 @@ impl LeafReader for MergeReaderWrapper {
         if let Some(field_info) = self.field_info(field) {
             self.doc_values.as_ref().unwrap().get_numeric(field_info)
         } else {
-            bail!("field '{}' not exist!")
+            bail!(IllegalArgument(format!("field '{}' not exist!", field)))
         }
     }
 
@@ -134,7 +148,7 @@ impl LeafReader for MergeReaderWrapper {
                 self.doc_values.as_ref().unwrap().get_binary(field_info)?,
             ))
         } else {
-            bail!("field '{}' not exist!")
+            bail!(IllegalArgument(format!("field '{}' not exist!", field)))
         }
     }
 
@@ -144,7 +158,7 @@ impl LeafReader for MergeReaderWrapper {
                 self.doc_values.as_ref().unwrap().get_sorted(field_info)?,
             ))
         } else {
-            bail!("field '{}' not exist!")
+            bail!(IllegalArgument(format!("field '{}' not exist!", field)))
         }
     }
 
@@ -157,7 +171,7 @@ impl LeafReader for MergeReaderWrapper {
                     .get_sorted_numeric(field_info)?,
             ))
         } else {
-            bail!("field '{}' not exist!")
+            bail!(IllegalArgument(format!("field '{}' not exist!", field)))
         }
     }
 
@@ -170,11 +184,11 @@ impl LeafReader for MergeReaderWrapper {
                     .get_sorted_set(field_info)?,
             ))
         } else {
-            bail!("field '{}' not exist!")
+            bail!(IllegalArgument(format!("field '{}' not exist!", field)))
         }
     }
 
-    fn norm_values(&self, field: &str) -> Result<Option<Box<NumericDocValues>>> {
+    fn norm_values(&self, field: &str) -> Result<Option<Box<dyn NumericDocValues>>> {
         if let Some(ref norms) = self.norms {
             if let Some(field_info) = self.field_info(field) {
                 return Ok(Some(norms.norms(field_info)?));
@@ -190,11 +204,11 @@ impl LeafReader for MergeReaderWrapper {
                 .unwrap()
                 .get_docs_with_field(field_info)
         } else {
-            bail!("field '{}' not exist!")
+            bail!(IllegalArgument(format!("field '{}' not exist!", field)))
         }
     }
 
-    fn point_values(&self) -> Option<PointValuesRef> {
+    fn point_values(&self) -> Option<Self::PointsReader> {
         self.reader.point_values()
     }
 
@@ -214,23 +228,23 @@ impl LeafReader for MergeReaderWrapper {
         false
     }
 
-    fn store_fields_reader(&self) -> Result<Arc<StoredFieldsReader>> {
+    fn store_fields_reader(&self) -> Result<Self::StoredReader> {
         unreachable!()
     }
 
-    fn term_vectors_reader(&self) -> Result<Option<Arc<TermVectorsReader>>> {
+    fn term_vectors_reader(&self) -> Result<Option<Self::TVReader>> {
         unreachable!()
     }
 
-    fn norms_reader(&self) -> Result<Option<Arc<NormsProducer>>> {
+    fn norms_reader(&self) -> Result<Option<Self::NormsReader>> {
         unreachable!()
     }
 
-    fn doc_values_reader(&self) -> Result<Option<Arc<DocValuesProducer>>> {
+    fn doc_values_reader(&self) -> Result<Option<Arc<dyn DocValuesProducer>>> {
         unreachable!()
     }
 
-    fn postings_reader(&self) -> Result<Arc<FieldsProducer>> {
+    fn postings_reader(&self) -> Result<CodecFieldsProducer<C>> {
         unreachable!()
     }
 }
@@ -238,7 +252,7 @@ impl LeafReader for MergeReaderWrapper {
 /// A `LeafReader` which supports sorting documents by a given `Sort`. This
 /// is package private and is only used by Rucene whne it needs to merge a
 /// newly fluhsed (unsorted) segment.
-pub(crate) struct SortingLeafReader<T: LeafReader> {
+pub struct SortingLeafReader<T: LeafReader> {
     doc_map: Arc<PackedLongDocMap>,
     reader: T,
 }
@@ -250,8 +264,20 @@ impl<T: LeafReader> SortingLeafReader<T> {
     }
 }
 
-impl<T: LeafReader> LeafReader for SortingLeafReader<T> {
-    fn fields(&self) -> Result<FieldsProducerRef> {
+impl<T: LeafReader + 'static> LeafReader for SortingLeafReader<T> {
+    type Codec = T::Codec;
+    type FieldsProducer = Arc<SortingFields<T::FieldsProducer>>;
+    type TVFields = T::TVFields;
+    type TVReader = T::TVReader;
+    type StoredReader = T::StoredReader;
+    type NormsReader = T::NormsReader;
+    type PointsReader = SortingPointValues<T::PointsReader>;
+
+    fn codec(&self) -> &Self::Codec {
+        self.reader.codec()
+    }
+
+    fn fields(&self) -> Result<Self::FieldsProducer> {
         Ok(Arc::new(SortingFields::new(
             self.reader.fields()?,
             self.reader.clone_field_infos(),
@@ -263,7 +289,7 @@ impl<T: LeafReader> LeafReader for SortingLeafReader<T> {
         self.reader.name()
     }
 
-    fn term_vector(&self, doc_id: DocId) -> Result<Option<Box<Fields>>> {
+    fn term_vector(&self, doc_id: DocId) -> Result<Option<Self::TVFields>> {
         self.reader.term_vector(self.doc_map.new_to_old(doc_id))
     }
 
@@ -334,7 +360,7 @@ impl<T: LeafReader> LeafReader for SortingLeafReader<T> {
         )))
     }
 
-    fn norm_values(&self, field: &str) -> Result<Option<Box<NumericDocValues>>> {
+    fn norm_values(&self, field: &str) -> Result<Option<Box<dyn NumericDocValues>>> {
         match self.reader.norm_values(field)? {
             Some(n) => Ok(Some(Box::new(SortingNumericDocValues::new(
                 n,
@@ -351,14 +377,11 @@ impl<T: LeafReader> LeafReader for SortingLeafReader<T> {
         )))
     }
 
-    /// Returns the `PointValuesRef` used for numeric or
+    /// Returns the `PointValues` used for numeric or
     /// spatial searches, or None if there are no point fields.
-    fn point_values(&self) -> Option<PointValuesRef> {
+    fn point_values(&self) -> Option<Self::PointsReader> {
         match self.reader.point_values() {
-            Some(p) => Some(Arc::new(SortingPointValues::new(
-                p,
-                Arc::clone(&self.doc_map),
-            ))),
+            Some(p) => Some(SortingPointValues::new(p, Arc::clone(&self.doc_map))),
             None => None,
         }
     }
@@ -385,39 +408,35 @@ impl<T: LeafReader> LeafReader for SortingLeafReader<T> {
     }
 
     // following methods are from `CodecReader`
-    fn store_fields_reader(&self) -> Result<Arc<StoredFieldsReader>> {
+    fn store_fields_reader(&self) -> Result<Self::StoredReader> {
         unreachable!()
     }
 
-    fn term_vectors_reader(&self) -> Result<Option<Arc<TermVectorsReader>>> {
+    fn term_vectors_reader(&self) -> Result<Option<Self::TVReader>> {
         unreachable!()
     }
 
-    fn norms_reader(&self) -> Result<Option<Arc<NormsProducer>>> {
+    fn norms_reader(&self) -> Result<Option<Self::NormsReader>> {
         unreachable!()
     }
 
-    fn doc_values_reader(&self) -> Result<Option<Arc<DocValuesProducer>>> {
+    fn doc_values_reader(&self) -> Result<Option<Arc<dyn DocValuesProducer>>> {
         unreachable!()
     }
 
-    fn postings_reader(&self) -> Result<Arc<FieldsProducer>> {
+    fn postings_reader(&self) -> Result<Self::FieldsProducer> {
         unreachable!()
     }
 }
 
-struct SortingFields {
-    fields: FieldsProducerRef,
+pub struct SortingFields<T: FieldsProducer> {
+    fields: T,
     doc_map: Arc<PackedLongDocMap>,
     infos: Arc<FieldInfos>,
 }
 
-impl SortingFields {
-    fn new(
-        fields: FieldsProducerRef,
-        infos: Arc<FieldInfos>,
-        doc_map: Arc<PackedLongDocMap>,
-    ) -> Self {
+impl<T: FieldsProducer> SortingFields<T> {
+    fn new(fields: T, infos: Arc<FieldInfos>, doc_map: Arc<PackedLongDocMap>) -> Self {
         SortingFields {
             fields,
             doc_map,
@@ -426,18 +445,19 @@ impl SortingFields {
     }
 }
 
-impl Fields for SortingFields {
+impl<T: FieldsProducer> Fields for SortingFields<T> {
+    type Terms = SortingTerms<T::Terms>;
     fn fields(&self) -> Vec<String> {
         self.fields.fields()
     }
 
-    fn terms(&self, field: &str) -> Result<Option<TermsRef>> {
+    fn terms(&self, field: &str) -> Result<Option<Self::Terms>> {
         match self.fields.terms(field)? {
-            Some(terms) => Ok(Some(Arc::new(SortingTerms::new(
+            Some(terms) => Ok(Some(SortingTerms::new(
                 terms,
                 self.infos.field_info_by_name(field).unwrap().index_options,
                 Arc::clone(&self.doc_map),
-            )))),
+            ))),
             None => Ok(None),
         }
     }
@@ -447,20 +467,20 @@ impl Fields for SortingFields {
     }
 }
 
-impl FieldsProducer for SortingFields {
+impl<T: FieldsProducer> FieldsProducer for SortingFields<T> {
     fn check_integrity(&self) -> Result<()> {
         Ok(())
     }
 }
 
-struct SortingTerms {
-    terms: TermsRef,
+pub struct SortingTerms<T: Terms> {
+    terms: T,
     doc_map: Arc<PackedLongDocMap>,
     index_options: IndexOptions,
 }
 
-impl SortingTerms {
-    fn new(terms: TermsRef, index_options: IndexOptions, doc_map: Arc<PackedLongDocMap>) -> Self {
+impl<T: Terms> SortingTerms<T> {
+    fn new(terms: T, index_options: IndexOptions, doc_map: Arc<PackedLongDocMap>) -> Self {
         SortingTerms {
             terms,
             index_options,
@@ -469,14 +489,15 @@ impl SortingTerms {
     }
 }
 
-impl Terms for SortingTerms {
-    fn iterator(&self) -> Result<Box<TermIterator>> {
-        Ok(Box::new(SortingTermsIterator::new(
+impl<T: Terms> Terms for SortingTerms<T> {
+    type Iterator = SortingTermsIterator<T::Iterator>;
+    fn iterator(&self) -> Result<Self::Iterator> {
+        Ok(SortingTermsIterator::new(
             self.terms.iterator()?,
             Arc::clone(&self.doc_map),
             self.index_options,
             self.has_positions()?,
-        )))
+        ))
     }
 
     fn size(&self) -> Result<i64> {
@@ -512,16 +533,16 @@ impl Terms for SortingTerms {
     }
 }
 
-struct SortingTermsIterator {
-    iter: Box<TermIterator>,
+pub struct SortingTermsIterator<T: TermIterator> {
+    iter: T,
     doc_map: Arc<PackedLongDocMap>,
     index_options: IndexOptions,
     has_positions: bool,
 }
 
-impl SortingTermsIterator {
+impl<T: TermIterator> SortingTermsIterator<T> {
     fn new(
-        iter: Box<TermIterator>,
+        iter: T,
         doc_map: Arc<PackedLongDocMap>,
         index_options: IndexOptions,
         has_positions: bool,
@@ -535,7 +556,9 @@ impl SortingTermsIterator {
     }
 }
 
-impl TermIterator for SortingTermsIterator {
+impl<T: TermIterator> TermIterator for SortingTermsIterator<T> {
+    type Postings = SortingPostingIterEnum<T::Postings>;
+    type TermState = T::TermState;
     fn next(&mut self) -> Result<Option<Vec<u8>>> {
         self.iter.next()
     }
@@ -564,8 +587,10 @@ impl TermIterator for SortingTermsIterator {
         self.iter.total_term_freq()
     }
 
-    fn postings_with_flags(&mut self, flags: i16) -> Result<Box<PostingIterator>> {
-        if self.has_positions && posting_feature_requested(flags, POSTING_ITERATOR_FLAG_POSITIONS) {
+    fn postings_with_flags(&mut self, flags: u16) -> Result<Self::Postings> {
+        if self.has_positions
+            && PostingIteratorFlags::feature_requested(flags, PostingIteratorFlags::POSITIONS)
+        {
             let docs_and_positions = self.iter.postings_with_flags(flags)?;
             // we ignore the fact that offsets may be stored but not asked for,
             // since this code is expected to be used during addIndexes which will
@@ -573,33 +598,31 @@ impl TermIterator for SortingTermsIterator {
             // factor in whether 'flags' says offsets are not required.
             let store_offsets =
                 self.index_options >= IndexOptions::DocsAndFreqsAndPositionsAndOffsets;
-            return Ok(Box::new(SortingPostingsIterator::new(
-                self.doc_map.len() as i32,
-                docs_and_positions,
-                self.doc_map.as_ref(),
-                store_offsets,
-            )?));
+            return Ok(SortingPostingIterEnum::Posting(
+                SortingPostingsIterator::new(
+                    self.doc_map.len() as i32,
+                    docs_and_positions,
+                    self.doc_map.as_ref(),
+                    store_offsets,
+                )?,
+            ));
         }
 
         let docs = self.iter.postings_with_flags(flags)?;
         let with_freqs = self.index_options >= IndexOptions::DocsAndFreqs
-            && posting_feature_requested(flags, POSTING_ITERATOR_FLAG_FREQS);
-        Ok(Box::new(SortingDocsIterator::new(
+            && PostingIteratorFlags::feature_requested(flags, PostingIteratorFlags::FREQS);
+        Ok(SortingPostingIterEnum::Doc(SortingDocsIterator::new(
             self.doc_map.len() as i32,
             docs,
             with_freqs,
             self.doc_map.as_ref(),
         )?))
     }
-
-    fn as_any(&self) -> &Any {
-        self
-    }
 }
 
-struct SortingPostingsIterator {
-    postings: Box<PostingIterator>,
-    max_doc: i32,
+pub struct SortingPostingsIterator<T: PostingIterator> {
+    postings: T,
+    _max_doc: i32,
     docs_and_offsets: Vec<DocAndOffset>,
     upto: i32,
     posting_input: StoreBytesReader,
@@ -618,10 +641,10 @@ struct DocAndOffset {
     offset: i64,
 }
 
-impl SortingPostingsIterator {
+impl<T: PostingIterator> SortingPostingsIterator<T> {
     fn new(
         max_doc: i32,
-        mut postings: Box<PostingIterator>,
+        mut postings: T,
         doc_map: &PackedLongDocMap,
         store_offsets: bool,
     ) -> Result<Self> {
@@ -646,7 +669,7 @@ impl SortingPostingsIterator {
                     docs_and_offsets[i] = doc_offset;
                 }
                 i += 1;
-                Self::add_positions(postings.as_mut(), &mut output, store_offsets)?;
+                Self::add_positions(&mut postings, &mut output, store_offsets)?;
             }
             upto = i as i32;
             mem::replace(&mut output.store, BytesStore::with_block_bits(1))
@@ -657,7 +680,7 @@ impl SortingPostingsIterator {
 
         Ok(SortingPostingsIterator {
             postings,
-            max_doc,
+            _max_doc: max_doc,
             docs_and_offsets,
             upto,
             posting_input,
@@ -673,7 +696,7 @@ impl SortingPostingsIterator {
 
     fn add_positions(
         input: &mut PostingIterator,
-        output: &mut IndexOutput,
+        output: &mut impl IndexOutput,
         store_offsets: bool,
     ) -> Result<()> {
         let freq = input.freq()?;
@@ -706,7 +729,7 @@ impl SortingPostingsIterator {
     }
 }
 
-impl DocIterator for SortingPostingsIterator {
+impl<T: PostingIterator> DocIterator for SortingPostingsIterator<T> {
     fn doc_id(&self) -> i32 {
         if self.doc_it < 0 {
             -1
@@ -743,11 +766,7 @@ impl DocIterator for SortingPostingsIterator {
     }
 }
 
-impl PostingIterator for SortingPostingsIterator {
-    fn clone_as_doc_iterator(&self) -> Result<Box<DocIterator>> {
-        self.postings.clone_as_doc_iterator()
-    }
-
+impl<T: PostingIterator> PostingIterator for SortingPostingsIterator<T> {
     fn freq(&self) -> Result<i32> {
         Ok(self.curr_freq)
     }
@@ -782,10 +801,6 @@ impl PostingIterator for SortingPostingsIterator {
     fn payload(&self) -> Result<Vec<u8>> {
         Ok(self.payload.clone())
     }
-
-    fn as_any_mut(&mut self) -> &mut Any {
-        self
-    }
 }
 
 struct DocAndFreq {
@@ -793,22 +808,22 @@ struct DocAndFreq {
     freq: i32,
 }
 
-pub struct SortingDocsIterator {
-    posting: Box<PostingIterator>,
-    max_doc: i32,
+pub struct SortingDocsIterator<T: PostingIterator> {
+    posting: T,
+    _max_doc: i32,
     docs_and_freqs: Vec<DocAndFreq>,
     doc_it: DocId,
     upto: i32,
     with_freqs: bool,
 }
 
-impl SortingDocsIterator {
+impl<T: PostingIterator> SortingDocsIterator<T> {
     fn new(
         max_doc: i32,
-        mut posting: Box<PostingIterator>,
+        mut posting: T,
         with_freqs: bool,
         doc_map: &PackedLongDocMap,
-    ) -> Result<SortingDocsIterator> {
+    ) -> Result<Self> {
         let mut i = 0;
         let mut docs_and_freqs = Vec::with_capacity(64);
         loop {
@@ -826,7 +841,7 @@ impl SortingDocsIterator {
         docs_and_freqs.sort_by(|d1, d2| d1.doc.cmp(&d2.doc));
         let upto = i;
         Ok(SortingDocsIterator {
-            max_doc,
+            _max_doc: max_doc,
             posting,
             docs_and_freqs,
             doc_it: -1,
@@ -836,11 +851,7 @@ impl SortingDocsIterator {
     }
 }
 
-impl PostingIterator for SortingDocsIterator {
-    fn clone_as_doc_iterator(&self) -> Result<Box<DocIterator>> {
-        self.posting.clone_as_doc_iterator()
-    }
-
+impl<T: PostingIterator> PostingIterator for SortingDocsIterator<T> {
     fn freq(&self) -> Result<i32> {
         Ok(if self.with_freqs && self.doc_it < self.upto {
             self.docs_and_freqs[self.doc_it as usize].freq
@@ -864,13 +875,9 @@ impl PostingIterator for SortingDocsIterator {
     fn payload(&self) -> Result<Vec<u8>> {
         Ok(Vec::with_capacity(0))
     }
-
-    fn as_any_mut(&mut self) -> &mut Any {
-        self
-    }
 }
 
-impl DocIterator for SortingDocsIterator {
+impl<T: PostingIterator> DocIterator for SortingDocsIterator<T> {
     fn doc_id(&self) -> i32 {
         if self.doc_it < 0 {
             -1
@@ -898,6 +905,128 @@ impl DocIterator for SortingDocsIterator {
 
     fn cost(&self) -> usize {
         self.posting.cost()
+    }
+}
+
+pub enum SortingPostingIterEnum<T: PostingIterator> {
+    Posting(SortingPostingsIterator<T>),
+    Doc(SortingDocsIterator<T>),
+    Raw(T),
+}
+
+impl<T: PostingIterator> PostingIterator for SortingPostingIterEnum<T> {
+    fn freq(&self) -> Result<i32> {
+        match self {
+            SortingPostingIterEnum::Posting(i) => i.freq(),
+            SortingPostingIterEnum::Doc(i) => i.freq(),
+            SortingPostingIterEnum::Raw(i) => i.freq(),
+        }
+    }
+
+    fn next_position(&mut self) -> Result<i32> {
+        match self {
+            SortingPostingIterEnum::Posting(i) => i.next_position(),
+            SortingPostingIterEnum::Doc(i) => i.next_position(),
+            SortingPostingIterEnum::Raw(i) => i.next_position(),
+        }
+    }
+
+    fn start_offset(&self) -> Result<i32> {
+        match self {
+            SortingPostingIterEnum::Posting(i) => i.start_offset(),
+            SortingPostingIterEnum::Doc(i) => i.start_offset(),
+            SortingPostingIterEnum::Raw(i) => i.start_offset(),
+        }
+    }
+
+    fn end_offset(&self) -> Result<i32> {
+        match self {
+            SortingPostingIterEnum::Posting(i) => i.end_offset(),
+            SortingPostingIterEnum::Doc(i) => i.end_offset(),
+            SortingPostingIterEnum::Raw(i) => i.end_offset(),
+        }
+    }
+
+    fn payload(&self) -> Result<Payload> {
+        match self {
+            SortingPostingIterEnum::Posting(i) => i.payload(),
+            SortingPostingIterEnum::Doc(i) => i.payload(),
+            SortingPostingIterEnum::Raw(i) => i.payload(),
+        }
+    }
+}
+
+impl<T: PostingIterator> DocIterator for SortingPostingIterEnum<T> {
+    fn doc_id(&self) -> DocId {
+        match self {
+            SortingPostingIterEnum::Posting(i) => i.doc_id(),
+            SortingPostingIterEnum::Doc(i) => i.doc_id(),
+            SortingPostingIterEnum::Raw(i) => i.doc_id(),
+        }
+    }
+
+    fn next(&mut self) -> Result<DocId> {
+        match self {
+            SortingPostingIterEnum::Posting(i) => i.next(),
+            SortingPostingIterEnum::Doc(i) => i.next(),
+            SortingPostingIterEnum::Raw(i) => i.next(),
+        }
+    }
+
+    fn advance(&mut self, target: i32) -> Result<DocId> {
+        match self {
+            SortingPostingIterEnum::Posting(i) => i.advance(target),
+            SortingPostingIterEnum::Doc(i) => i.advance(target),
+            SortingPostingIterEnum::Raw(i) => i.advance(target),
+        }
+    }
+
+    fn slow_advance(&mut self, target: i32) -> Result<DocId> {
+        match self {
+            SortingPostingIterEnum::Posting(i) => i.slow_advance(target),
+            SortingPostingIterEnum::Doc(i) => i.slow_advance(target),
+            SortingPostingIterEnum::Raw(i) => i.slow_advance(target),
+        }
+    }
+
+    fn cost(&self) -> usize {
+        match self {
+            SortingPostingIterEnum::Posting(i) => i.cost(),
+            SortingPostingIterEnum::Doc(i) => i.cost(),
+            SortingPostingIterEnum::Raw(i) => i.cost(),
+        }
+    }
+
+    fn matches(&mut self) -> Result<bool> {
+        match self {
+            SortingPostingIterEnum::Posting(i) => i.matches(),
+            SortingPostingIterEnum::Doc(i) => i.matches(),
+            SortingPostingIterEnum::Raw(i) => i.matches(),
+        }
+    }
+
+    fn match_cost(&self) -> f32 {
+        match self {
+            SortingPostingIterEnum::Posting(i) => i.match_cost(),
+            SortingPostingIterEnum::Doc(i) => i.match_cost(),
+            SortingPostingIterEnum::Raw(i) => i.match_cost(),
+        }
+    }
+
+    fn approximate_next(&mut self) -> Result<DocId> {
+        match self {
+            SortingPostingIterEnum::Posting(i) => i.approximate_next(),
+            SortingPostingIterEnum::Doc(i) => i.approximate_next(),
+            SortingPostingIterEnum::Raw(i) => i.approximate_next(),
+        }
+    }
+
+    fn approximate_advance(&mut self, target: i32) -> Result<DocId> {
+        match self {
+            SortingPostingIterEnum::Posting(i) => i.approximate_advance(target),
+            SortingPostingIterEnum::Doc(i) => i.approximate_advance(target),
+            SortingPostingIterEnum::Raw(i) => i.approximate_advance(target),
+        }
     }
 }
 
@@ -975,7 +1104,7 @@ impl SortedNumericDocValues for SortingSortedNumericDocValues {
         self.doc_values.count(ctx)
     }
 
-    fn get_numeric_doc_values(&self) -> Option<Arc<NumericDocValues>> {
+    fn get_numeric_doc_values(&self) -> Option<Arc<dyn NumericDocValues>> {
         self.doc_values.get_numeric_doc_values()
     }
 }
@@ -1006,13 +1135,14 @@ impl Bits for SortingBits {
     }
 }
 
-struct SortingPointValues {
-    point_values: PointValuesRef,
+#[derive(Clone)]
+pub struct SortingPointValues<P: PointValues> {
+    point_values: P,
     doc_map: Arc<PackedLongDocMap>,
 }
 
-impl SortingPointValues {
-    fn new(point_values: PointValuesRef, doc_map: Arc<PackedLongDocMap>) -> Self {
+impl<P: PointValues> SortingPointValues<P> {
+    fn new(point_values: P, doc_map: Arc<PackedLongDocMap>) -> Self {
         SortingPointValues {
             point_values,
             doc_map,
@@ -1020,8 +1150,8 @@ impl SortingPointValues {
     }
 }
 
-impl PointValues for SortingPointValues {
-    fn intersect(&self, field_name: &str, visitor: &mut IntersectVisitor) -> Result<()> {
+impl<P: PointValues + 'static> PointValues for SortingPointValues<P> {
+    fn intersect(&self, field_name: &str, visitor: &mut impl IntersectVisitor) -> Result<()> {
         let mut sort_visitor = SortingIntersectVisitor {
             visitor,
             doc_map: Arc::clone(&self.doc_map),
@@ -1058,12 +1188,12 @@ impl PointValues for SortingPointValues {
     }
 }
 
-struct SortingIntersectVisitor<'a> {
-    visitor: &'a mut IntersectVisitor,
+struct SortingIntersectVisitor<'a, IV: IntersectVisitor> {
+    visitor: &'a mut IV,
     doc_map: Arc<PackedLongDocMap>,
 }
 
-impl<'a> IntersectVisitor for SortingIntersectVisitor<'a> {
+impl<'a, IV: IntersectVisitor> IntersectVisitor for SortingIntersectVisitor<'a, IV> {
     fn visit(&mut self, doc_id: i32) -> Result<()> {
         let new_doc = self.doc_map.old_to_new(doc_id);
         self.visitor.visit(new_doc)
@@ -1106,7 +1236,7 @@ impl SortedDocValues for SortingSortedDocValues {
         self.doc_values.get_value_count()
     }
 
-    fn term_iterator(&self) -> Result<Box<TermIterator>> {
+    fn term_iterator(&self) -> Result<DocValuesTermIterator> {
         self.doc_values.term_iterator()
     }
 }
@@ -1152,25 +1282,37 @@ impl SortedSetDocValues for SortingSortedSetDocValues {
         self.doc_values.lookup_term(key)
     }
 
-    fn term_iterator(&self) -> Result<Box<TermIterator>> {
+    fn term_iterator(&self) -> Result<DocValuesTermIterator> {
         self.doc_values.term_iterator()
     }
 }
 
 /// Wraps arbitrary readers for merging. Note that this can cause slow
 /// and memory-intensive merges. Consider using `FilterCodecReader` instead
-pub struct SlowCodecReaderWrapper {
-    reader: Arc<LeafReader>,
+pub(crate) struct SlowCodecReaderWrapper<T: LeafReader> {
+    reader: Arc<T>,
 }
 
-impl SlowCodecReaderWrapper {
-    pub fn new(reader: Arc<LeafReader>) -> Self {
+impl<T: LeafReader> SlowCodecReaderWrapper<T> {
+    pub fn new(reader: Arc<T>) -> Self {
         SlowCodecReaderWrapper { reader }
     }
 }
 
-impl LeafReader for SlowCodecReaderWrapper {
-    fn fields(&self) -> Result<FieldsProducerRef> {
+impl<T: LeafReader + 'static> LeafReader for SlowCodecReaderWrapper<T> {
+    type Codec = T::Codec;
+    type FieldsProducer = T::FieldsProducer;
+    type TVFields = T::TVFields;
+    type TVReader = LeafReaderAsTermVectorsReaderWrapper<T>;
+    type StoredReader = LeafReaderAsStoreFieldsReader<T>;
+    type NormsReader = LeafReaderAsNormsProducer<T>;
+    type PointsReader = T::PointsReader;
+
+    fn codec(&self) -> &Self::Codec {
+        self.reader.codec()
+    }
+
+    fn fields(&self) -> Result<Self::FieldsProducer> {
         self.reader.fields()
     }
 
@@ -1178,7 +1320,7 @@ impl LeafReader for SlowCodecReaderWrapper {
         self.reader.name()
     }
 
-    fn term_vector(&self, doc_id: DocId) -> Result<Option<Box<Fields>>> {
+    fn term_vector(&self, doc_id: DocId) -> Result<Option<Self::TVFields>> {
         self.reader.term_vector(doc_id)
     }
 
@@ -1230,7 +1372,7 @@ impl LeafReader for SlowCodecReaderWrapper {
         self.reader.get_sorted_set_doc_values(field)
     }
 
-    fn norm_values(&self, field: &str) -> Result<Option<Box<NumericDocValues>>> {
+    fn norm_values(&self, field: &str) -> Result<Option<Box<dyn NumericDocValues>>> {
         self.reader.norm_values(field)
     }
 
@@ -1238,9 +1380,9 @@ impl LeafReader for SlowCodecReaderWrapper {
         self.reader.get_docs_with_field(field)
     }
 
-    /// Returns the `PointValuesRef` used for numeric or
+    /// Returns the `PointValues` used for numeric or
     /// spatial searches, or None if there are no point fields.
-    fn point_values(&self) -> Option<PointValuesRef> {
+    fn point_values(&self) -> Option<Self::PointsReader> {
         self.reader.point_values()
     }
 
@@ -1266,41 +1408,53 @@ impl LeafReader for SlowCodecReaderWrapper {
     }
 
     // following methods are from `CodecReader`
-    fn store_fields_reader(&self) -> Result<Arc<StoredFieldsReader>> {
-        Ok(Arc::new(LeafReaderAsStoreFieldsReader {
-            reader: Arc::clone(&self.reader),
-        }))
+    fn store_fields_reader(&self) -> Result<Self::StoredReader> {
+        Ok(LeafReaderAsStoreFieldsReader::new(Arc::clone(&self.reader)))
     }
 
-    fn term_vectors_reader(&self) -> Result<Option<Arc<TermVectorsReader>>> {
-        Ok(Some(Arc::new(LeafReaderAsTermVectorsReaderWrapper {
-            reader: Arc::clone(&self.reader),
-        })))
+    fn term_vectors_reader(&self) -> Result<Option<Self::TVReader>> {
+        Ok(Some(LeafReaderAsTermVectorsReaderWrapper::new(Arc::clone(
+            &self.reader,
+        ))))
     }
 
-    fn norms_reader(&self) -> Result<Option<Arc<NormsProducer>>> {
-        Ok(Some(Arc::new(LeafReaderAsNormsProducer {
-            reader: Arc::clone(&self.reader),
-        })))
+    fn norms_reader(&self) -> Result<Option<Self::NormsReader>> {
+        Ok(Some(LeafReaderAsNormsProducer::new(Arc::clone(
+            &self.reader,
+        ))))
     }
 
-    fn doc_values_reader(&self) -> Result<Option<Arc<DocValuesProducer>>> {
-        Ok(Some(Arc::new(LeafReaderAsDocValuesProducer {
-            reader: Arc::clone(&self.reader),
-        })))
+    fn doc_values_reader(&self) -> Result<Option<Arc<dyn DocValuesProducer>>> {
+        Ok(Some(Arc::new(LeafReaderAsDocValuesProducer::new(
+            Arc::clone(&self.reader),
+        ))))
     }
 
-    fn postings_reader(&self) -> Result<FieldsProducerRef> {
+    fn postings_reader(&self) -> Result<Self::FieldsProducer> {
         self.reader.fields()
     }
 }
 
-struct LeafReaderAsStoreFieldsReader {
-    reader: Arc<LeafReader>,
+pub struct LeafReaderAsStoreFieldsReader<T: LeafReader> {
+    reader: Arc<T>,
 }
 
-impl StoredFieldsReader for LeafReaderAsStoreFieldsReader {
-    fn visit_document(&self, doc_id: DocId, visitor: &mut StoredFieldVisitor) -> Result<()> {
+impl<T: LeafReader> LeafReaderAsStoreFieldsReader<T> {
+    fn new(reader: Arc<T>) -> Self {
+        Self { reader }
+    }
+}
+
+impl<T: LeafReader> Clone for LeafReaderAsStoreFieldsReader<T> {
+    fn clone(&self) -> Self {
+        Self {
+            reader: Arc::clone(&self.reader),
+        }
+    }
+}
+
+impl<T: LeafReader + 'static> StoredFieldsReader for LeafReaderAsStoreFieldsReader<T> {
+    fn visit_document(&self, doc_id: DocId, visitor: &mut dyn StoredFieldVisitor) -> Result<()> {
         self.reader.document(doc_id, visitor)
     }
 
@@ -1313,10 +1467,8 @@ impl StoredFieldsReader for LeafReaderAsStoreFieldsReader {
         self.visit_document(doc_id, visitor)
     }
 
-    fn get_merge_instance(&self) -> Result<Box<StoredFieldsReader>> {
-        Ok(Box::new(LeafReaderAsStoreFieldsReader {
-            reader: Arc::clone(&self.reader),
-        }))
+    fn get_merge_instance(&self) -> Result<Self> {
+        Ok(LeafReaderAsStoreFieldsReader::new(Arc::clone(&self.reader)))
     }
 
     fn as_any(&self) -> &Any {
@@ -1324,12 +1476,19 @@ impl StoredFieldsReader for LeafReaderAsStoreFieldsReader {
     }
 }
 
-struct LeafReaderAsTermVectorsReaderWrapper {
-    reader: Arc<LeafReader>,
+pub struct LeafReaderAsTermVectorsReaderWrapper<T: LeafReader> {
+    reader: Arc<T>,
 }
 
-impl TermVectorsReader for LeafReaderAsTermVectorsReaderWrapper {
-    fn get(&self, doc: i32) -> Result<Option<Box<Fields>>> {
+impl<T: LeafReader> LeafReaderAsTermVectorsReaderWrapper<T> {
+    fn new(reader: Arc<T>) -> Self {
+        LeafReaderAsTermVectorsReaderWrapper { reader }
+    }
+}
+
+impl<T: LeafReader + 'static> TermVectorsReader for LeafReaderAsTermVectorsReaderWrapper<T> {
+    type Fields = T::TVFields;
+    fn get(&self, doc: i32) -> Result<Option<Self::Fields>> {
         self.reader.term_vector(doc)
     }
 
@@ -1338,34 +1497,62 @@ impl TermVectorsReader for LeafReaderAsTermVectorsReaderWrapper {
     }
 }
 
-struct LeafReaderAsNormsProducer {
-    reader: Arc<LeafReader>,
+impl<T: LeafReader> Clone for LeafReaderAsTermVectorsReaderWrapper<T> {
+    fn clone(&self) -> Self {
+        Self {
+            reader: Arc::clone(&self.reader),
+        }
+    }
 }
 
-impl NormsProducer for LeafReaderAsNormsProducer {
-    fn norms(&self, field: &FieldInfo) -> Result<Box<NumericDocValues>> {
+pub struct LeafReaderAsNormsProducer<T: LeafReader> {
+    reader: Arc<T>,
+}
+
+impl<T: LeafReader> LeafReaderAsNormsProducer<T> {
+    fn new(reader: Arc<T>) -> Self {
+        Self { reader }
+    }
+}
+
+impl<T: LeafReader> NormsProducer for LeafReaderAsNormsProducer<T> {
+    fn norms(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
         Ok(self.reader.norm_values(&field.name)?.unwrap())
     }
 }
 
-struct LeafReaderAsDocValuesProducer {
-    reader: Arc<LeafReader>,
+impl<T: LeafReader> Clone for LeafReaderAsNormsProducer<T> {
+    fn clone(&self) -> Self {
+        Self {
+            reader: Arc::clone(&self.reader),
+        }
+    }
 }
 
-impl DocValuesProducer for LeafReaderAsDocValuesProducer {
-    fn get_numeric(&self, field_info: &FieldInfo) -> Result<Arc<NumericDocValues>> {
+struct LeafReaderAsDocValuesProducer<T: LeafReader> {
+    reader: Arc<T>,
+}
+
+impl<T: LeafReader> LeafReaderAsDocValuesProducer<T> {
+    fn new(reader: Arc<T>) -> Self {
+        Self { reader }
+    }
+}
+
+impl<T: LeafReader + 'static> DocValuesProducer for LeafReaderAsDocValuesProducer<T> {
+    fn get_numeric(&self, field_info: &FieldInfo) -> Result<Arc<dyn NumericDocValues>> {
         self.reader.get_numeric_doc_values(&field_info.name)
     }
-    fn get_binary(&self, field_info: &FieldInfo) -> Result<Arc<BinaryDocValues>> {
+    fn get_binary(&self, field_info: &FieldInfo) -> Result<Arc<dyn BinaryDocValues>> {
         self.reader.get_binary_doc_values(&field_info.name)
     }
-    fn get_sorted(&self, field: &FieldInfo) -> Result<Arc<SortedDocValues>> {
+    fn get_sorted(&self, field: &FieldInfo) -> Result<Arc<dyn SortedDocValues>> {
         self.reader.get_sorted_doc_values(&field.name)
     }
-    fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Arc<SortedNumericDocValues>> {
+    fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Arc<dyn SortedNumericDocValues>> {
         self.reader.get_sorted_numeric_doc_values(&field.name)
     }
-    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Arc<SortedSetDocValues>> {
+    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Arc<dyn SortedSetDocValues>> {
         self.reader.get_sorted_set_doc_values(&field.name)
     }
     /// Returns a `bits` at the size of `reader.max_doc()`, with turned on bits for each doc_id
@@ -1381,9 +1568,14 @@ impl DocValuesProducer for LeafReaderAsDocValuesProducer {
         Ok(())
     }
 
-    fn get_merge_instance(&self) -> Result<Box<DocValuesProducer>> {
+    fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
         Ok(Box::new(Self {
             reader: Arc::clone(&self.reader),
         }))
     }
 }
+
+// TODO: hack logic, when merge, the dv producer need not be Send or Sync, but
+// the dv producer has this restrict
+unsafe impl<T: LeafReader> Send for LeafReaderAsDocValuesProducer<T> {}
+unsafe impl<T: LeafReader> Sync for LeafReaderAsDocValuesProducer<T> {}

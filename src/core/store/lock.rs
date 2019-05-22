@@ -1,5 +1,7 @@
 use core::store::Directory;
-use error::*;
+
+use error::{ErrorKind::AlreadyClosed, Result};
+
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
@@ -55,7 +57,8 @@ pub trait Lock: Sync + Send {
 /// @see LockVerifyServer
 /// @see LockStressTest
 /// @see VerifyingLockFactory
-pub trait LockFactory {
+pub trait LockFactory: Send + Sync {
+    type LK: Lock;
     ///
     // Return a new obtained Lock instance identified by lockName.
     // @param lockName name of the lock to be created.
@@ -63,11 +66,11 @@ pub trait LockFactory {
     //         not be obtained because it is currently held elsewhere.
     // @throws IOException if any i/o error occurs attempting to gain the lock
     //
-    fn obtain_lock(&self, dir: &Directory, lock_name: &str) -> Result<Box<Lock>>;
+    fn obtain_lock<D: Directory>(&self, dir: &D, lock_name: &str) -> Result<Self::LK>;
 }
 
 pub struct NativeFSLock {
-    lock: Mutex<String>,
+    _lock: Mutex<String>,
     channel: fs::File,
     real_path: PathBuf,
     lock_held: Arc<Mutex<HashSet<PathBuf>>>,
@@ -81,7 +84,7 @@ impl NativeFSLock {
         lock_held: Arc<Mutex<HashSet<PathBuf>>>,
     ) -> NativeFSLock {
         NativeFSLock {
-            lock,
+            _lock: lock,
             channel,
             real_path,
             lock_held,
@@ -95,10 +98,10 @@ impl Lock for NativeFSLock {
         // first release the lock, then the channel
         let remove = self.lock_held.lock()?.remove(&self.real_path);
         if !remove {
-            bail!(
+            bail!(AlreadyClosed(format!(
                 "Lock path was cleared but never marked as held: {:?}",
                 self.real_path
-            );
+            )));
         }
 
         Ok(())
@@ -106,21 +109,23 @@ impl Lock for NativeFSLock {
 
     fn ensure_valid(&self) -> Result<()> {
         if !self.lock_held.lock()?.contains(&self.real_path) {
-            bail!("Lock path unexpectedly cleared from map");
+            bail!(AlreadyClosed(
+                "Lock path unexpectedly cleared from map".into()
+            ));
+        }
+
+        if self.channel.metadata()?.len() != 0 {
+            bail!(AlreadyClosed("Unexpected lock file size".into()));
         }
 
         let meta = fs::metadata(&self.real_path)?;
         if meta.len() != 0 {
-            bail!("Unexpected lock file size");
+            bail!(AlreadyClosed("Unexpected lock file size".into()));
         }
 
         Ok(())
     }
 }
-
-unsafe impl Send for NativeFSLock {}
-
-unsafe impl Sync for NativeFSLock {}
 
 pub struct NativeFSLockFactory {
     pub lock_held: Arc<Mutex<HashSet<PathBuf>>>,
@@ -135,7 +140,8 @@ impl Default for NativeFSLockFactory {
 }
 
 impl LockFactory for NativeFSLockFactory {
-    fn obtain_lock(&self, dir: &Directory, lock_name: &str) -> Result<Box<Lock>> {
+    type LK = NativeFSLock;
+    fn obtain_lock<D: Directory>(&self, dir: &D, lock_name: &str) -> Result<Self::LK> {
         let mut real_path = dir.resolve(lock_name);
         real_path.pop();
         let _ = fs::create_dir(&real_path);
@@ -145,11 +151,11 @@ impl LockFactory for NativeFSLockFactory {
 
         self.lock_held.lock()?.insert(real_path.clone());
 
-        Ok(Box::new(NativeFSLock::new(
+        Ok(NativeFSLock::new(
             Mutex::new(lock_name.to_string()),
             channel,
             real_path,
             Arc::clone(&self.lock_held),
-        )))
+        ))
     }
 }

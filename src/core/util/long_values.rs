@@ -1,5 +1,7 @@
+use core::codec::LiveBitsEnum;
 use core::index::{NumericDocValues, NumericDocValuesContext};
-use core::util::BitsRef;
+use core::util::packed::DirectPackedReader;
+use core::util::Bits;
 use core::util::DocId;
 use error::Result;
 
@@ -62,12 +64,12 @@ impl NumericDocValues for IdentityLongValues {
 }
 
 pub struct LiveLongValues {
-    live: BitsRef,
+    live: LiveBitsEnum,
     constant: i64,
 }
 
 impl LiveLongValues {
-    pub fn new(live: BitsRef, constant: i64) -> Self {
+    pub fn new(live: LiveBitsEnum, constant: i64) -> Self {
         LiveLongValues { live, constant }
     }
 }
@@ -94,12 +96,12 @@ impl NumericDocValues for LiveLongValues {
 }
 
 pub struct DeltaLongValues {
-    values: Box<LongValues>,
+    values: DirectPackedReader,
     delta: i64,
 }
 
 impl DeltaLongValues {
-    pub fn new(values: Box<LongValues>, delta: i64) -> Self {
+    pub fn new(values: DirectPackedReader, delta: i64) -> Self {
         DeltaLongValues { values, delta }
     }
 }
@@ -126,13 +128,13 @@ impl NumericDocValues for DeltaLongValues {
 }
 
 pub struct GcdLongValues {
-    quotient_reader: Box<LongValues>,
+    quotient_reader: DirectPackedReader,
     base: i64,
     mult: i64,
 }
 
 impl GcdLongValues {
-    pub fn new(quotient_reader: Box<LongValues>, base: i64, mult: i64) -> Self {
+    pub fn new(quotient_reader: DirectPackedReader, base: i64, mult: i64) -> Self {
         GcdLongValues {
             quotient_reader,
             base,
@@ -163,12 +165,12 @@ impl NumericDocValues for GcdLongValues {
 }
 
 pub struct TableLongValues {
-    ords: Box<LongValues>,
+    ords: DirectPackedReader,
     table: Vec<i64>,
 }
 
 impl TableLongValues {
-    pub fn new(ords: Box<LongValues>, table: Vec<i64>) -> TableLongValues {
+    pub fn new(ords: DirectPackedReader, table: Vec<i64>) -> TableLongValues {
         TableLongValues { ords, table }
     }
 }

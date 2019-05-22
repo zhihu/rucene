@@ -1,5 +1,6 @@
 use error::Result;
 
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 /// Abstract base class to rate limit IO.  Typically implementations are
@@ -25,21 +26,37 @@ pub trait RateLimiter: Sync + Send {
     fn min_pause_check_bytes(&self) -> u64;
 }
 
-const MIN_PAUSE_CHECK_MSEC: i32 = 5;
+impl RateLimiter for Arc<RateLimiter> {
+    fn set_mb_per_sec(&self, mb_per_sec: f64) {
+        (**self).set_mb_per_sec(mb_per_sec);
+    }
+
+    fn mb_per_sec(&self) -> f64 {
+        (**self).mb_per_sec()
+    }
+
+    fn pause(&self, bytes: u64) -> Result<Duration> {
+        (**self).pause(bytes)
+    }
+
+    fn min_pause_check_bytes(&self) -> u64 {
+        (**self).min_pause_check_bytes()
+    }
+}
 
 /// Simple class to rate limit IO.
 pub struct SimpleRateLimiter {
-    mb_per_sec: f64,
-    min_pause_check_bytes: u64,
-    last_ns: SystemTime,
+    _mb_per_sec: f64,
+    _min_pause_check_bytes: u64,
+    _last_ns: SystemTime,
 }
 
 impl SimpleRateLimiter {
     pub fn new(mb_per_sec: f64) -> Self {
         SimpleRateLimiter {
-            mb_per_sec,
-            min_pause_check_bytes: 0,
-            last_ns: SystemTime::now(),
+            _mb_per_sec: mb_per_sec,
+            _min_pause_check_bytes: 0,
+            _last_ns: SystemTime::now(),
         }
     }
 }

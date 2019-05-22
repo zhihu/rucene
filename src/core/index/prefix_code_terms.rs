@@ -1,7 +1,7 @@
 use core::index::Term;
 use core::store::{DataInput, DataOutput, IndexInput, RAMOutputStream};
-use core::util::byte_ref::{BytesRef, BytesRefBuilder};
 use core::util::fst::bytes_store::{BytesStore, StoreBytesReader};
+use core::util::{BytesRef, BytesRefBuilder};
 
 use error::Result;
 
@@ -121,10 +121,6 @@ impl PrefixCodedTermsBuilder {
         } else {
             cmp
         }
-    }
-
-    pub fn len(&self) -> usize {
-        self.size
     }
 }
 
