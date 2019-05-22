@@ -2,15 +2,12 @@ use error::Result;
 use std::fmt;
 use std::sync::Arc;
 
+use core::codec::Codec;
 use core::index::field_info::FieldInvertState;
-use core::index::LeafReader;
-use core::index::NumericDocValues;
+use core::index::{NumericDocValues, SearchLeafReader};
 use core::search::explanation::Explanation;
-use core::search::statistics::CollectionStatistics;
-use core::search::statistics::TermStatistics;
-use core::search::SimScorer;
-use core::search::SimWeight;
-use core::search::Similarity;
+use core::search::statistics::{CollectionStatistics, TermStatistics};
+use core::search::{SimScorer, SimWeight, Similarity};
 use core::util::small_float::SmallFloat;
 use core::util::{DocId, KeyedContext};
 
@@ -134,14 +131,14 @@ impl BM25Similarity {
     }
 }
 
-impl Similarity for BM25Similarity {
+impl<C: Codec> Similarity<C> for BM25Similarity {
     fn compute_weight(
         &self,
         collection_stats: &CollectionStatistics,
         term_stats: &[TermStatistics],
         _context: Option<&KeyedContext>,
         boost: f32,
-    ) -> Box<SimWeight> {
+    ) -> Box<dyn SimWeight<C>> {
         let avgdl = BM25Similarity::avg_field_length(&collection_stats);
         let idf = BM25Similarity::idf(&term_stats, &collection_stats);
         let field = collection_stats.field.clone();
@@ -174,11 +171,11 @@ pub struct BM25SimScorer {
     k1: f32,
     weight: f32,
     cache: Arc<[f32; 256]>,
-    norms: Option<Box<NumericDocValues>>,
+    norms: Option<Box<dyn NumericDocValues>>,
 }
 
 impl BM25SimScorer {
-    fn new(weight: &BM25SimWeight, norms: Option<Box<NumericDocValues>>) -> BM25SimScorer {
+    fn new(weight: &BM25SimWeight, norms: Option<Box<dyn NumericDocValues>>) -> BM25SimScorer {
         BM25SimScorer {
             k1: weight.k1,
             weight: weight.weight,
@@ -244,7 +241,7 @@ impl BM25SimWeight {
             idf_explanation,
             avg_dl,
         };
-        weight.normalize(1.0, boost);
+        weight.do_normalize(boost);
         weight
     }
 
@@ -252,7 +249,7 @@ impl BM25SimWeight {
         &self,
         doc: DocId,
         freq: Explanation,
-        norms: Option<Box<NumericDocValues>>,
+        norms: Option<Box<dyn NumericDocValues>>,
     ) -> Result<Explanation> {
         let mut subs: Vec<Explanation> = vec![];
 
@@ -320,7 +317,7 @@ impl BM25SimWeight {
         &self,
         doc: DocId,
         freq: Explanation,
-        norms: Option<Box<NumericDocValues>>,
+        norms: Option<Box<dyn NumericDocValues>>,
     ) -> Result<Explanation> {
         let mut subs: Vec<Explanation> = vec![];
 
@@ -345,24 +342,33 @@ impl BM25SimWeight {
             subs,
         ))
     }
+
+    fn do_normalize(&mut self, boost: f32) {
+        self.boost = boost;
+        self.weight = self.idf * boost;
+    }
 }
 
-impl SimWeight for BM25SimWeight {
+impl<C: Codec> SimWeight<C> for BM25SimWeight {
     fn get_value_for_normalization(&self) -> f32 {
         self.weight * self.weight
     }
 
     fn normalize(&mut self, _query_norm: f32, boost: f32) {
-        self.boost = boost;
-        self.weight = self.idf * boost;
+        self.do_normalize(boost)
     }
 
-    fn sim_scorer(&self, reader: &LeafReader) -> Result<Box<SimScorer>> {
+    fn sim_scorer(&self, reader: &SearchLeafReader<C>) -> Result<Box<dyn SimScorer>> {
         let norm = reader.norm_values(&self.field)?;
         Ok(Box::new(BM25SimScorer::new(self, norm)))
     }
 
-    fn explain(&self, reader: &LeafReader, doc: DocId, freq: Explanation) -> Result<Explanation> {
+    fn explain(
+        &self,
+        reader: &SearchLeafReader<C>,
+        doc: DocId,
+        freq: Explanation,
+    ) -> Result<Explanation> {
         let norms = reader.norm_values(&self.field)?;
         self.explain_score(doc, freq, norms)
     }

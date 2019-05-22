@@ -1,8 +1,10 @@
 use core::codec::blocktree::{BlockTreeTermsReader, BlockTreeTermsWriter};
 use core::codec::format::PostingsFormat;
 use core::codec::lucene50::{Lucene50PostingsReader, Lucene50PostingsWriter};
-use core::codec::{FieldsConsumer, FieldsProducer};
+use core::codec::{Codec, FieldsConsumerEnum};
 use core::index::{SegmentReadState, SegmentWriteState};
+use core::store::Directory;
+
 use error::Result;
 
 use std::fmt;
@@ -48,16 +50,23 @@ impl Lucene50PostingsFormat {
 }
 
 impl PostingsFormat for Lucene50PostingsFormat {
-    fn fields_producer(&self, state: &SegmentReadState) -> Result<Box<FieldsProducer>> {
+    type FieldsProducer = BlockTreeTermsReader;
+    fn fields_producer<'a, D: Directory, DW: Directory, C: Codec>(
+        &self,
+        state: &SegmentReadState<'a, D, DW, C>,
+    ) -> Result<Self::FieldsProducer> {
         let reader = Lucene50PostingsReader::open(&state)?;
-        Ok(Box::new(BlockTreeTermsReader::new(reader, state)?))
+        BlockTreeTermsReader::new(reader, state)
     }
 
-    fn fields_consumer(&self, state: &SegmentWriteState) -> Result<Box<FieldsConsumer>> {
+    fn fields_consumer<D: Directory, DW: Directory, C: Codec>(
+        &self,
+        state: &SegmentWriteState<D, DW, C>,
+    ) -> Result<FieldsConsumerEnum<D, DW, C>> {
         let postings_writer = Lucene50PostingsWriter::new(state)?;
-        Ok(Box::new(BlockTreeTermsWriter::new(
+        Ok(FieldsConsumerEnum::Lucene50(BlockTreeTermsWriter::new(
             state,
-            Box::new(postings_writer),
+            postings_writer,
             self.min_term_block_size,
             self.max_term_block_size,
         )?))

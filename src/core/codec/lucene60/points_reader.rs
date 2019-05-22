@@ -1,13 +1,12 @@
-use error::*;
+use error::{ErrorKind, Result};
 
-use core::codec::codec_util;
 use core::codec::format::PointsFormat;
 use core::codec::lucene60::Lucene60PointsWriter;
-use core::codec::writer::PointsWriter;
+use core::codec::{codec_util, Codec};
 use core::index::segment_file_name;
 use core::index::{FieldInfos, SegmentReadState, SegmentWriteState};
 use core::index::{IntersectVisitor, PointValues};
-use core::store::IndexInput;
+use core::store::{DataInput, Directory};
 use core::util::bkd::BKDReader;
 
 use std::any::Any;
@@ -28,32 +27,36 @@ pub const DATA_VERSION_CURRENT: i32 = DATA_VERSION_START;
 pub const INDEX_VERSION_START: i32 = 0;
 pub const INDEX_VERSION_CURRENT: i32 = INDEX_VERSION_START;
 
+#[derive(Copy, Clone)]
 pub struct Lucene60PointsFormat;
 
-impl Default for Lucene60PointsFormat {
-    fn default() -> Lucene60PointsFormat {
-        Lucene60PointsFormat {}
-    }
-}
-
 impl PointsFormat for Lucene60PointsFormat {
-    fn fields_writer(&self, state: &SegmentWriteState) -> Result<Box<PointsWriter>> {
-        Ok(Box::new(Lucene60PointsWriter::new(state)?))
+    type Reader = Lucene60PointsReader;
+    fn fields_writer<D: Directory, DW: Directory, C: Codec>(
+        &self,
+        state: &SegmentWriteState<D, DW, C>,
+    ) -> Result<Lucene60PointsWriter<D, DW, C>> {
+        Lucene60PointsWriter::new(state)
     }
 
-    fn fields_reader(&self, state: &SegmentReadState) -> Result<Box<PointValues>> {
-        Ok(Box::new(Lucene60PointsReader::new(state)?))
+    fn fields_reader<'a, D: Directory, DW: Directory, C: Codec>(
+        &self,
+        state: &SegmentReadState<'a, D, DW, C>,
+    ) -> Result<Self::Reader> {
+        Lucene60PointsReader::new(state)
     }
 }
 
 pub struct Lucene60PointsReader {
-    data_in: Box<IndexInput>,
+    // data_in: Box<dyn IndexInput>,
     field_infos: Arc<FieldInfos>,
     pub readers: HashMap<i32, BKDReader>,
 }
 
 impl Lucene60PointsReader {
-    pub fn new(read_state: &SegmentReadState) -> Result<Lucene60PointsReader> {
+    pub fn new<D: Directory, DW: Directory, C: Codec>(
+        read_state: &SegmentReadState<'_, D, DW, C>,
+    ) -> Result<Lucene60PointsReader> {
         // let field_infos = Arc::clone(&read_state.field_infos);
         let index_file_name = segment_file_name(
             &read_state.segment_info.name,
@@ -67,7 +70,7 @@ impl Lucene60PointsReader {
             .directory
             .open_checksum_input(&index_file_name, read_state.context)?;
         codec_util::check_index_header(
-            index_in.as_mut(),
+            &mut index_in,
             META_CODEC_NAME,
             INDEX_VERSION_START,
             INDEX_VERSION_CURRENT,
@@ -80,7 +83,7 @@ impl Lucene60PointsReader {
             let fp = index_in.read_vlong()?;
             field_to_file_offset.insert(field_number, fp);
         }
-        codec_util::check_footer(index_in.as_mut())?;
+        codec_util::check_footer(&mut index_in)?;
 
         let data_file_name = segment_file_name(
             &read_state.segment_info.name,
@@ -113,7 +116,6 @@ impl Lucene60PointsReader {
         }
 
         Ok(Lucene60PointsReader {
-            data_in,
             field_infos: Arc::clone(&read_state.field_infos),
             readers,
         })
@@ -138,7 +140,7 @@ impl Lucene60PointsReader {
 }
 
 impl PointValues for Lucene60PointsReader {
-    fn intersect(&self, field_name: &str, visitor: &mut IntersectVisitor) -> Result<()> {
+    fn intersect(&self, field_name: &str, visitor: &mut impl IntersectVisitor) -> Result<()> {
         // Schema ghost corner case!  This field did index points in the past, but
         // now all docs having this point field were deleted in this segment:
         self.bkd_reader(field_name)?

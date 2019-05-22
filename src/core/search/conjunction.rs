@@ -1,17 +1,17 @@
 use core::search::{two_phase_next, DocIterator, Scorer, NO_MORE_DOCS};
 use core::util::DocId;
-use error::*;
+use error::Result;
 
-pub struct ConjunctionScorer {
-    lead1: Box<Scorer>,
-    lead2: Box<Scorer>,
-    others: Vec<Box<Scorer>>,
+pub struct ConjunctionScorer<T: Scorer> {
+    lead1: T,
+    lead2: T,
+    others: Vec<T>,
     support_two_phase: bool,
     two_phase_match_cost: f32,
 }
 
-impl ConjunctionScorer {
-    pub fn new(mut children: Vec<Box<Scorer>>) -> ConjunctionScorer {
+impl<T: Scorer> ConjunctionScorer<T> {
+    pub fn new(mut children: Vec<T>) -> ConjunctionScorer<T> {
         assert!(children.len() >= 2);
 
         // Sort the scores the first time to allow the least cost DocIterator to
@@ -80,7 +80,7 @@ impl ConjunctionScorer {
     }
 }
 
-impl Scorer for ConjunctionScorer {
+impl<T: Scorer> Scorer for ConjunctionScorer<T> {
     fn score(&mut self) -> Result<f32> {
         let mut score: f32 = self.lead1.score()?;
         score += self.lead2.score()?;
@@ -95,7 +95,7 @@ impl Scorer for ConjunctionScorer {
     }
 }
 
-impl DocIterator for ConjunctionScorer {
+impl<T: Scorer> DocIterator for ConjunctionScorer<T> {
     fn doc_id(&self) -> DocId {
         self.lead1.doc_id()
     }
@@ -273,7 +273,7 @@ mod tests {
         assert_eq!(scorer.doc_id(), NO_MORE_DOCS);
     }
 
-    fn create_conjunction_scorer() -> ConjunctionScorer {
+    fn create_conjunction_scorer() -> ConjunctionScorer<MockSimpleScorer<MockDocIterator>> {
         let s1 = create_mock_scorer(vec![1, 2, 3, 4, 5]);
         let s2 = create_mock_scorer(vec![2, 5]);
         let s3 = create_mock_scorer(vec![2, 3, 4, 5]);
@@ -281,12 +281,14 @@ mod tests {
         ConjunctionScorer::new(vec![s1, s2, s3])
     }
 
-    fn create_conjunction_two_phase_scorer() -> ConjunctionScorer {
+    fn create_conjunction_two_phase_scorer() -> ConjunctionScorer<Box<dyn Scorer>> {
         let s1 = create_mock_scorer(vec![1, 2, 3, 4, 5, 6, 7, 8]);
         let s2 = create_mock_scorer(vec![2, 3, 5, 7, 8]);
         let s3 = create_mock_two_phase_scorer(vec![1, 2, 3, 4, 5, 6, 7], vec![1, 4, 5]);
         let s4 = create_mock_two_phase_scorer(vec![1, 2, 3, 4, 5, 6, 7], vec![2, 4]);
 
-        ConjunctionScorer::new(vec![s1, s2, s3, s4])
+        let scorers: Vec<Box<dyn Scorer>> =
+            vec![Box::new(s1), Box::new(s2), Box::new(s3), Box::new(s4)];
+        ConjunctionScorer::new(scorers)
     }
 }

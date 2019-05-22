@@ -1,32 +1,36 @@
-use core::codec::FieldsProducerRef;
-use core::codec::{DocValuesProducer, NormsProducer};
-use core::codec::{StoredFieldsReader, TermVectorsReader};
-use core::index::leaf_reader_wrapper::{MergeReaderWrapper, SlowCodecReaderWrapper,
-                                       SortingLeafReader};
+use core::codec::{
+    Codec, CodecFieldsProducer, CodecNormsProducer, CodecPointsReader, CodecStoredFieldsReader,
+    CodecTVFields, CodecTVReader, DocValuesProducer, FieldsProducer, NormsProducer,
+    StoredFieldsReader, TermVectorsReader,
+};
+use core::index::leaf_reader_wrapper::{
+    LeafReaderAsNormsProducer, LeafReaderAsStoreFieldsReader, LeafReaderAsTermVectorsReaderWrapper,
+    MergeReaderWrapper, SlowCodecReaderWrapper, SortingFields, SortingLeafReader,
+    SortingPointValues, SortingPostingIterEnum, SortingTerms, SortingTermsIterator,
+};
 use core::index::sorter::{MultiSorter, PackedLongDocMap, Sorter, SorterDocMap};
-use core::index::BinaryDocValuesRef;
-use core::index::SegmentInfo;
-use core::index::SortedDocValuesRef;
-use core::index::SortedNumericDocValuesRef;
-use core::index::SortedSetDocValuesRef;
-use core::index::StoredFieldVisitor;
-use core::index::{FieldInfo, FieldInfos, Fields};
-use core::index::{LeafReader, SegmentReader};
-use core::index::{NumericDocValues, NumericDocValuesRef};
-use core::index::{PointValues, PointValuesRef};
+use core::index::{
+    BinaryDocValuesRef, FieldInfo, FieldInfos, Fields, LeafReader, NumericDocValues,
+    NumericDocValuesRef, PointValues, SeekStatus, SegmentInfo, SegmentReader, SortedDocValuesRef,
+    SortedNumericDocValuesRef, SortedSetDocValuesRef, StoredFieldVisitor, TermIterator, Terms,
+};
 use core::search::sort::Sort;
 use core::util::external::deferred::Deferred;
-use core::util::packed::{PackedLongValuesBuilder, PackedLongValuesBuilderType, DEFAULT_PAGE_SIZE};
+use core::util::packed::{
+    PackedLongValues, PackedLongValuesBuilder, PackedLongValuesBuilderType, DEFAULT_PAGE_SIZE,
+};
 use core::util::packed_misc::COMPACT;
 use core::util::{Bits, BitsRef, DocId};
 
 use error::ErrorKind::IllegalArgument;
 use error::Result;
 
+use core::index::point_values::IntersectVisitor;
+use core::store::Directory;
 use std::sync::Arc;
 
 /// Holds common state used during segment merging.
-pub struct MergeState {
+pub struct MergeState<D: Directory + 'static, C: Codec> {
     /// Maps document IDs from old segments to document IDs in the new segment
     pub doc_maps: Vec<Arc<LiveDocsDocMap>>,
     /// Only used by IW when it must remap deletes that arrived against the
@@ -34,24 +38,41 @@ pub struct MergeState {
     pub leaf_doc_maps: Vec<DocMapEnum>,
     /// `SegmentInfo` of the newly merged segment.
     // WARN: pointer to OneMerge.info.info, must used carefully
-    pub segment_info: *mut SegmentInfo,
+    pub segment_info: *mut SegmentInfo<D, C>,
     /// `FieldInfos` of the newly merged segment.
     pub merge_field_infos: Option<Arc<FieldInfos>>,
-    pub stored_fields_readers: Vec<Box<StoredFieldsReader>>,
-    pub term_vectors_readers: Vec<Option<Arc<TermVectorsReader>>>,
-    pub norms_producers: Vec<Option<Arc<NormsProducer>>>,
-    pub doc_values_producers: Vec<Option<Box<DocValuesProducer>>>,
+    pub stored_fields_readers: Vec<
+        MergeStoredReaderEnum<
+            CodecStoredFieldsReader<C>,
+            SortingLeafReader<MergeReaderWrapper<D, C>>,
+        >,
+    >,
+    pub term_vectors_readers: Vec<
+        Option<MergeTVReaderEnum<CodecTVReader<C>, SortingLeafReader<MergeReaderWrapper<D, C>>>>,
+    >,
+    pub norms_producers: Vec<
+        Option<
+            MergeNormsReaderEnum<
+                CodecNormsProducer<C>,
+                SortingLeafReader<MergeReaderWrapper<D, C>>,
+            >,
+        >,
+    >,
+    pub doc_values_producers: Vec<Option<Box<dyn DocValuesProducer>>>,
     pub fields_infos: Vec<Arc<FieldInfos>>,
     pub live_docs: Vec<BitsRef>,
-    pub fields_producers: Vec<FieldsProducerRef>,
-    pub points_readers: Vec<Option<Arc<PointValues>>>,
+    pub fields_producers: Vec<MergeFieldsProducer<CodecFieldsProducer<C>>>,
+    pub points_readers: Vec<Option<MergePointValuesEnum<Arc<CodecPointsReader<C>>>>>,
     pub max_docs: Vec<i32>,
     /// Indicates if the index needs to be sorted
     pub needs_index_sort: bool,
 }
 
-impl MergeState {
-    pub fn new(seg_readers: Vec<Arc<SegmentReader>>, segment_info: &SegmentInfo) -> Result<Self> {
+impl<D: Directory + 'static, C: Codec> MergeState<D, C> {
+    pub fn new(
+        seg_readers: Vec<Arc<SegmentReader<D, C>>>,
+        segment_info: &SegmentInfo<D, C>,
+    ) -> Result<Self> {
         let num_readers = seg_readers.len();
 
         let mut leaf_doc_maps = Vec::with_capacity(num_readers);
@@ -59,7 +80,7 @@ impl MergeState {
             leaf_doc_maps.push(DocMapEnum::Default(DefaultDocMap::default()));
         }
         let mut needs_index_sort = false;
-        let readers: Vec<ReaderWrapperEnum> = Self::maybe_sort_readers(
+        let readers: Vec<ReaderWrapperEnum<D, C>> = Self::maybe_sort_readers(
             seg_readers,
             segment_info,
             &mut leaf_doc_maps,
@@ -100,7 +121,7 @@ impl MergeState {
             num_docs += reader.num_docs();
         }
         // TODO: hack logic
-        let segment_info_ptr = segment_info as *const SegmentInfo as *mut SegmentInfo;
+        let segment_info_ptr = segment_info as *const SegmentInfo<D, C> as *mut SegmentInfo<D, C>;
         unsafe {
             (*segment_info_ptr).set_max_doc(num_docs)?;
         }
@@ -122,16 +143,16 @@ impl MergeState {
         })
     }
 
-    pub fn segment_info(&self) -> &mut SegmentInfo {
+    pub fn segment_info(&self) -> &mut SegmentInfo<D, C> {
         unsafe { &mut *self.segment_info }
     }
 
     fn maybe_sort_readers(
-        seg_readers: Vec<Arc<SegmentReader>>,
-        segment_info: &SegmentInfo,
+        seg_readers: Vec<Arc<SegmentReader<D, C>>>,
+        segment_info: &SegmentInfo<D, C>,
         leaf_doc_maps: &mut Vec<DocMapEnum>,
         needs_index_sort: &mut bool,
-    ) -> Result<Vec<ReaderWrapperEnum>> {
+    ) -> Result<Vec<ReaderWrapperEnum<D, C>>> {
         if segment_info.index_sort.is_none() {
             let mut readers = Vec::with_capacity(seg_readers.len());
             for leaf in seg_readers {
@@ -182,8 +203,8 @@ impl MergeState {
         Ok(readers)
     }
 
-    fn build_doc_maps(
-        readers: &[ReaderWrapperEnum],
+    fn build_doc_maps<D1: Directory>(
+        readers: &[ReaderWrapperEnum<D1, C>],
         index_sort: Option<&Sort>,
         needs_index_sort: &mut bool,
     ) -> Result<Vec<LiveDocsDocMap>> {
@@ -199,7 +220,9 @@ impl MergeState {
     }
 
     /// remap doc_ids around deletions
-    fn build_deletion_doc_maps(readers: &[ReaderWrapperEnum]) -> Result<Vec<LiveDocsDocMap>> {
+    fn build_deletion_doc_maps<D1: Directory>(
+        readers: &[ReaderWrapperEnum<D1, C>],
+    ) -> Result<Vec<LiveDocsDocMap>> {
         let mut total_docs = 0;
         let num_readers = readers.len();
         let mut doc_maps = Vec::with_capacity(num_readers);
@@ -213,7 +236,7 @@ impl MergeState {
         Ok(doc_maps)
     }
 
-    fn remove_deletes(max_doc: i32, live_docs: &Bits) -> Result<PackedLongValuesBuilder> {
+    fn remove_deletes(max_doc: i32, live_docs: &Bits) -> Result<PackedLongValues> {
         debug_assert!(max_doc >= 0);
         let mut doc_map_builder = PackedLongValuesBuilder::new(
             DEFAULT_PAGE_SIZE,
@@ -227,21 +250,44 @@ impl MergeState {
                 del += 1;
             }
         }
-        doc_map_builder.build();
-        Ok(doc_map_builder)
+        Ok(doc_map_builder.build())
     }
 }
 
-pub enum ReaderWrapperEnum {
-    Segment(Arc<SegmentReader>),
-    SortedSegment(SlowCodecReaderWrapper),
+pub(crate) enum ReaderWrapperEnum<D: Directory + 'static, C: Codec> {
+    Segment(Arc<SegmentReader<D, C>>),
+    SortedSegment(SlowCodecReaderWrapper<SortingLeafReader<MergeReaderWrapper<D, C>>>),
 }
 
-impl LeafReader for ReaderWrapperEnum {
-    fn fields(&self) -> Result<FieldsProducerRef> {
+impl<D: Directory + 'static, C: Codec> LeafReader for ReaderWrapperEnum<D, C> {
+    type Codec = C;
+    type FieldsProducer = MergeFieldsProducer<CodecFieldsProducer<C>>;
+    type TVFields = CodecTVFields<C>;
+    type TVReader =
+        MergeTVReaderEnum<CodecTVReader<C>, SortingLeafReader<MergeReaderWrapper<D, C>>>;
+    type StoredReader = MergeStoredReaderEnum<
+        CodecStoredFieldsReader<C>,
+        SortingLeafReader<MergeReaderWrapper<D, C>>,
+    >;
+    type NormsReader =
+        MergeNormsReaderEnum<CodecNormsProducer<C>, SortingLeafReader<MergeReaderWrapper<D, C>>>;
+    type PointsReader = MergePointValuesEnum<Arc<CodecPointsReader<C>>>;
+
+    fn codec(&self) -> &Self::Codec {
         match self {
-            ReaderWrapperEnum::Segment(s) => s.fields(),
-            ReaderWrapperEnum::SortedSegment(s) => s.fields(),
+            ReaderWrapperEnum::Segment(s) => s.codec(),
+            ReaderWrapperEnum::SortedSegment(s) => s.codec(),
+        }
+    }
+
+    fn fields(&self) -> Result<Self::FieldsProducer> {
+        match self {
+            ReaderWrapperEnum::Segment(s) => Ok(MergeFieldsProducer(MergeFieldsProducerEnum::Raw(
+                s.fields()?,
+            ))),
+            ReaderWrapperEnum::SortedSegment(s) => Ok(MergeFieldsProducer(
+                MergeFieldsProducerEnum::Sort(s.fields()?),
+            )),
         }
     }
 
@@ -252,7 +298,7 @@ impl LeafReader for ReaderWrapperEnum {
         }
     }
 
-    fn term_vector(&self, doc_id: DocId) -> Result<Option<Box<Fields>>> {
+    fn term_vector(&self, doc_id: DocId) -> Result<Option<CodecTVFields<C>>> {
         match self {
             ReaderWrapperEnum::Segment(s) => LeafReader::term_vector(s.as_ref(), doc_id),
             ReaderWrapperEnum::SortedSegment(s) => s.term_vector(doc_id),
@@ -343,7 +389,7 @@ impl LeafReader for ReaderWrapperEnum {
         }
     }
 
-    fn norm_values(&self, field: &str) -> Result<Option<Box<NumericDocValues>>> {
+    fn norm_values(&self, field: &str) -> Result<Option<Box<dyn NumericDocValues>>> {
         match self {
             ReaderWrapperEnum::Segment(s) => s.norm_values(field),
             ReaderWrapperEnum::SortedSegment(s) => s.norm_values(field),
@@ -357,12 +403,14 @@ impl LeafReader for ReaderWrapperEnum {
         }
     }
 
-    /// Returns the `PointValuesRef` used for numeric or
+    /// Returns the `PointValues` used for numeric or
     /// spatial searches, or None if there are no point fields.
-    fn point_values(&self) -> Option<PointValuesRef> {
+    fn point_values(&self) -> Option<Self::PointsReader> {
         match self {
-            ReaderWrapperEnum::Segment(s) => s.point_values(),
-            ReaderWrapperEnum::SortedSegment(s) => s.point_values(),
+            ReaderWrapperEnum::Segment(s) => s.point_values().map(|p| MergePointValuesEnum::Raw(p)),
+            ReaderWrapperEnum::SortedSegment(s) => {
+                s.point_values().map(|p| MergePointValuesEnum::Sorting(p))
+            }
         }
     }
 
@@ -400,40 +448,526 @@ impl LeafReader for ReaderWrapperEnum {
     }
 
     // following methods are from `CodecReader`
-    fn store_fields_reader(&self) -> Result<Arc<StoredFieldsReader>> {
+    fn store_fields_reader(&self) -> Result<Self::StoredReader> {
         match self {
-            ReaderWrapperEnum::Segment(s) => s.store_fields_reader(),
-            ReaderWrapperEnum::SortedSegment(s) => s.store_fields_reader(),
+            ReaderWrapperEnum::Segment(s) => {
+                Ok(MergeStoredReaderEnum::Raw(s.store_fields_reader()?))
+            }
+            ReaderWrapperEnum::SortedSegment(s) => {
+                Ok(MergeStoredReaderEnum::LeafReader(s.store_fields_reader()?))
+            }
         }
     }
 
-    fn term_vectors_reader(&self) -> Result<Option<Arc<TermVectorsReader>>> {
+    fn term_vectors_reader(&self) -> Result<Option<Self::TVReader>> {
         match self {
-            ReaderWrapperEnum::Segment(s) => s.term_vectors_reader(),
-            ReaderWrapperEnum::SortedSegment(s) => s.term_vectors_reader(),
+            ReaderWrapperEnum::Segment(s) => {
+                if let Some(tv_reader) = s.term_vectors_reader()? {
+                    Ok(Some(MergeTVReaderEnum::Raw(tv_reader)))
+                } else {
+                    Ok(None)
+                }
+            }
+            ReaderWrapperEnum::SortedSegment(s) => {
+                if let Some(tv_reader) = s.term_vectors_reader()? {
+                    Ok(Some(MergeTVReaderEnum::LeafReader(tv_reader)))
+                } else {
+                    Ok(None)
+                }
+            }
         }
     }
 
-    fn norms_reader(&self) -> Result<Option<Arc<NormsProducer>>> {
+    fn norms_reader(&self) -> Result<Option<Self::NormsReader>> {
         match self {
-            ReaderWrapperEnum::Segment(s) => s.norms_reader(),
-            ReaderWrapperEnum::SortedSegment(s) => s.norms_reader(),
+            ReaderWrapperEnum::Segment(s) => {
+                if let Some(norm_reader) = s.norms_reader()? {
+                    Ok(Some(MergeNormsReaderEnum::Raw(norm_reader)))
+                } else {
+                    Ok(None)
+                }
+            }
+            ReaderWrapperEnum::SortedSegment(s) => {
+                if let Some(norm_reader) = s.norms_reader()? {
+                    Ok(Some(MergeNormsReaderEnum::LeafReader(norm_reader)))
+                } else {
+                    Ok(None)
+                }
+            }
         }
     }
 
-    fn doc_values_reader(&self) -> Result<Option<Arc<DocValuesProducer>>> {
+    fn doc_values_reader(&self) -> Result<Option<Arc<dyn DocValuesProducer>>> {
         match self {
             ReaderWrapperEnum::Segment(s) => s.doc_values_reader(),
             ReaderWrapperEnum::SortedSegment(s) => s.doc_values_reader(),
         }
     }
 
-    fn postings_reader(&self) -> Result<FieldsProducerRef> {
+    fn postings_reader(&self) -> Result<Self::FieldsProducer> {
+        self.fields()
+    }
+}
+
+pub enum MergeStoredReaderEnum<R: StoredFieldsReader, L: LeafReader> {
+    Raw(Arc<R>),
+    LeafReader(LeafReaderAsStoreFieldsReader<L>),
+}
+
+impl<R: StoredFieldsReader, L: LeafReader> Clone for MergeStoredReaderEnum<R, L> {
+    fn clone(&self) -> Self {
         match self {
-            ReaderWrapperEnum::Segment(s) => Ok(s.postings_reader()),
-            ReaderWrapperEnum::SortedSegment(s) => s.postings_reader(),
+            MergeStoredReaderEnum::Raw(s) => MergeStoredReaderEnum::Raw(Arc::clone(s)),
+            MergeStoredReaderEnum::LeafReader(s) => MergeStoredReaderEnum::LeafReader(s.clone()),
         }
     }
+}
+
+impl<R: StoredFieldsReader + 'static, L: LeafReader + 'static> StoredFieldsReader
+    for MergeStoredReaderEnum<R, L>
+{
+    fn visit_document(&self, doc_id: DocId, visitor: &mut dyn StoredFieldVisitor) -> Result<()> {
+        match self {
+            MergeStoredReaderEnum::Raw(s) => s.visit_document(doc_id, visitor),
+            MergeStoredReaderEnum::LeafReader(s) => s.visit_document(doc_id, visitor),
+        }
+    }
+
+    fn visit_document_mut(
+        &mut self,
+        doc_id: DocId,
+        visitor: &mut StoredFieldVisitor,
+    ) -> Result<()> {
+        match self {
+            MergeStoredReaderEnum::Raw(s) => s.visit_document_mut(doc_id, visitor),
+            MergeStoredReaderEnum::LeafReader(s) => s.visit_document_mut(doc_id, visitor),
+        }
+    }
+
+    fn get_merge_instance(&self) -> Result<Self> {
+        match self {
+            MergeStoredReaderEnum::Raw(s) => {
+                Ok(MergeStoredReaderEnum::Raw(s.get_merge_instance()?))
+            }
+            MergeStoredReaderEnum::LeafReader(s) => {
+                Ok(MergeStoredReaderEnum::LeafReader(s.get_merge_instance()?))
+            }
+        }
+    }
+
+    fn as_any(&self) -> &::std::any::Any {
+        match self {
+            MergeStoredReaderEnum::Raw(s) => s,
+            MergeStoredReaderEnum::LeafReader(s) => s,
+        }
+    }
+}
+
+pub enum MergeTVReaderEnum<TR: TermVectorsReader, L: LeafReader<TVFields = TR::Fields>> {
+    Raw(Arc<TR>),
+    LeafReader(LeafReaderAsTermVectorsReaderWrapper<L>),
+}
+
+impl<TR, L> TermVectorsReader for MergeTVReaderEnum<TR, L>
+where
+    TR: TermVectorsReader + 'static,
+    L: LeafReader<TVFields = TR::Fields> + 'static,
+{
+    type Fields = TR::Fields;
+
+    fn get(&self, doc: DocId) -> Result<Option<Self::Fields>> {
+        match self {
+            MergeTVReaderEnum::Raw(tr) => tr.get(doc),
+            MergeTVReaderEnum::LeafReader(tr) => tr.get(doc),
+        }
+    }
+
+    fn as_any(&self) -> &::std::any::Any {
+        match self {
+            MergeTVReaderEnum::Raw(tr) => tr.as_any(),
+            MergeTVReaderEnum::LeafReader(tr) => tr.as_any(),
+        }
+    }
+}
+
+impl<TR: TermVectorsReader, L: LeafReader<TVFields = TR::Fields>> Clone
+    for MergeTVReaderEnum<TR, L>
+{
+    fn clone(&self) -> Self {
+        match self {
+            MergeTVReaderEnum::Raw(tr) => MergeTVReaderEnum::Raw(Arc::clone(tr)),
+            MergeTVReaderEnum::LeafReader(tr) => MergeTVReaderEnum::LeafReader(tr.clone()),
+        }
+    }
+}
+
+pub enum MergeNormsReaderEnum<R: NormsProducer, L: LeafReader> {
+    Raw(Arc<R>),
+    LeafReader(LeafReaderAsNormsProducer<L>),
+}
+
+impl<R: NormsProducer, L: LeafReader> NormsProducer for MergeNormsReaderEnum<R, L> {
+    fn norms(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
+        match self {
+            MergeNormsReaderEnum::Raw(n) => n.norms(field),
+            MergeNormsReaderEnum::LeafReader(n) => n.norms(field),
+        }
+    }
+
+    fn check_integrity(&self) -> Result<()> {
+        match self {
+            MergeNormsReaderEnum::Raw(n) => n.check_integrity(),
+            MergeNormsReaderEnum::LeafReader(n) => n.check_integrity(),
+        }
+    }
+}
+
+impl<R: NormsProducer, L: LeafReader> Clone for MergeNormsReaderEnum<R, L> {
+    fn clone(&self) -> Self {
+        match self {
+            MergeNormsReaderEnum::Raw(n) => MergeNormsReaderEnum::Raw(Arc::clone(n)),
+            MergeNormsReaderEnum::LeafReader(n) => MergeNormsReaderEnum::LeafReader(n.clone()),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub enum MergePointValuesEnum<P: PointValues + Clone> {
+    Raw(P),
+    Sorting(SortingPointValues<P>),
+}
+
+impl<P: PointValues + Clone + 'static> PointValues for MergePointValuesEnum<P> {
+    fn intersect(&self, field_name: &str, visitor: &mut impl IntersectVisitor) -> Result<()> {
+        match self {
+            MergePointValuesEnum::Raw(p) => p.intersect(field_name, visitor),
+            MergePointValuesEnum::Sorting(p) => p.intersect(field_name, visitor),
+        }
+    }
+
+    fn min_packed_value(&self, field_name: &str) -> Result<Vec<u8>> {
+        match self {
+            MergePointValuesEnum::Raw(p) => p.min_packed_value(field_name),
+            MergePointValuesEnum::Sorting(p) => p.min_packed_value(field_name),
+        }
+    }
+
+    fn max_packed_value(&self, field_name: &str) -> Result<Vec<u8>> {
+        match self {
+            MergePointValuesEnum::Raw(p) => p.max_packed_value(field_name),
+            MergePointValuesEnum::Sorting(p) => p.max_packed_value(field_name),
+        }
+    }
+
+    fn num_dimensions(&self, field_name: &str) -> Result<usize> {
+        match self {
+            MergePointValuesEnum::Raw(p) => p.num_dimensions(field_name),
+            MergePointValuesEnum::Sorting(p) => p.num_dimensions(field_name),
+        }
+    }
+
+    fn bytes_per_dimension(&self, field_name: &str) -> Result<usize> {
+        match self {
+            MergePointValuesEnum::Raw(p) => p.bytes_per_dimension(field_name),
+            MergePointValuesEnum::Sorting(p) => p.bytes_per_dimension(field_name),
+        }
+    }
+
+    fn size(&self, field_name: &str) -> Result<i64> {
+        match self {
+            MergePointValuesEnum::Raw(p) => p.size(field_name),
+            MergePointValuesEnum::Sorting(p) => p.size(field_name),
+        }
+    }
+
+    fn doc_count(&self, field_name: &str) -> Result<i32> {
+        match self {
+            MergePointValuesEnum::Raw(p) => p.doc_count(field_name),
+            MergePointValuesEnum::Sorting(p) => p.doc_count(field_name),
+        }
+    }
+
+    fn as_any(&self) -> &::std::any::Any {
+        match self {
+            MergePointValuesEnum::Raw(p) => p.as_any(),
+            MergePointValuesEnum::Sorting(p) => p.as_any(),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct MergeFieldsProducer<T: FieldsProducer>(MergeFieldsProducerEnum<T>);
+
+impl<T: FieldsProducer> FieldsProducer for MergeFieldsProducer<T> {
+    fn check_integrity(&self) -> Result<()> {
+        match &self.0 {
+            MergeFieldsProducerEnum::Raw(f) => f.check_integrity(),
+            MergeFieldsProducerEnum::Sort(f) => f.check_integrity(),
+        }
+    }
+}
+
+impl<T: FieldsProducer> Fields for MergeFieldsProducer<T> {
+    type Terms = MergeTerms<T::Terms>;
+    fn fields(&self) -> Vec<String> {
+        match &self.0 {
+            MergeFieldsProducerEnum::Raw(f) => f.fields(),
+            MergeFieldsProducerEnum::Sort(f) => f.fields(),
+        }
+    }
+
+    fn terms(&self, field: &str) -> Result<Option<Self::Terms>> {
+        match &self.0 {
+            MergeFieldsProducerEnum::Raw(f) => {
+                if let Some(terms) = f.terms(field)? {
+                    Ok(Some(MergeTerms(MergeTermsEnum::Raw(terms))))
+                } else {
+                    Ok(None)
+                }
+            }
+            MergeFieldsProducerEnum::Sort(f) => {
+                if let Some(terms) = f.terms(field)? {
+                    Ok(Some(MergeTerms(MergeTermsEnum::Sort(terms))))
+                } else {
+                    Ok(None)
+                }
+            }
+        }
+    }
+
+    fn size(&self) -> usize {
+        match &self.0 {
+            MergeFieldsProducerEnum::Raw(f) => f.size(),
+            MergeFieldsProducerEnum::Sort(f) => f.size(),
+        }
+    }
+
+    fn terms_freq(&self, field: &str) -> usize {
+        match &self.0 {
+            MergeFieldsProducerEnum::Raw(f) => f.terms_freq(field),
+            MergeFieldsProducerEnum::Sort(f) => f.terms_freq(field),
+        }
+    }
+}
+
+enum MergeFieldsProducerEnum<T: FieldsProducer> {
+    Raw(T),
+    Sort(Arc<SortingFields<T>>),
+}
+
+impl<T> Clone for MergeFieldsProducerEnum<T>
+where
+    T: FieldsProducer + Clone,
+{
+    fn clone(&self) -> Self {
+        match self {
+            MergeFieldsProducerEnum::Raw(f) => MergeFieldsProducerEnum::Raw(f.clone()),
+            MergeFieldsProducerEnum::Sort(f) => MergeFieldsProducerEnum::Sort(Arc::clone(f)),
+        }
+    }
+}
+
+enum MergeTermsEnum<T: Terms> {
+    Raw(T),
+    Sort(SortingTerms<T>),
+}
+
+pub struct MergeTerms<T: Terms>(MergeTermsEnum<T>);
+
+impl<T: Terms> Terms for MergeTerms<T> {
+    type Iterator = MergeTermIterator<T::Iterator>;
+    fn iterator(&self) -> Result<Self::Iterator> {
+        match &self.0 {
+            MergeTermsEnum::Raw(t) => {
+                Ok(MergeTermIterator(MergeTermIteratorEnum::Raw(t.iterator()?)))
+            }
+            MergeTermsEnum::Sort(t) => Ok(MergeTermIterator(MergeTermIteratorEnum::Sorting(
+                t.iterator()?,
+            ))),
+        }
+    }
+
+    fn size(&self) -> Result<i64> {
+        match &self.0 {
+            MergeTermsEnum::Raw(t) => t.size(),
+            MergeTermsEnum::Sort(t) => t.size(),
+        }
+    }
+
+    fn sum_total_term_freq(&self) -> Result<i64> {
+        match &self.0 {
+            MergeTermsEnum::Raw(t) => t.sum_total_term_freq(),
+            MergeTermsEnum::Sort(t) => t.sum_total_term_freq(),
+        }
+    }
+
+    fn sum_doc_freq(&self) -> Result<i64> {
+        match &self.0 {
+            MergeTermsEnum::Raw(t) => t.sum_doc_freq(),
+            MergeTermsEnum::Sort(t) => t.sum_doc_freq(),
+        }
+    }
+
+    fn doc_count(&self) -> Result<i32> {
+        match &self.0 {
+            MergeTermsEnum::Raw(t) => t.doc_count(),
+            MergeTermsEnum::Sort(t) => t.doc_count(),
+        }
+    }
+
+    fn has_freqs(&self) -> Result<bool> {
+        match &self.0 {
+            MergeTermsEnum::Raw(t) => t.has_freqs(),
+            MergeTermsEnum::Sort(t) => t.has_freqs(),
+        }
+    }
+
+    fn has_offsets(&self) -> Result<bool> {
+        match &self.0 {
+            MergeTermsEnum::Raw(t) => t.has_offsets(),
+            MergeTermsEnum::Sort(t) => t.has_offsets(),
+        }
+    }
+
+    fn has_positions(&self) -> Result<bool> {
+        match &self.0 {
+            MergeTermsEnum::Raw(t) => t.has_positions(),
+            MergeTermsEnum::Sort(t) => t.has_positions(),
+        }
+    }
+
+    fn has_payloads(&self) -> Result<bool> {
+        match &self.0 {
+            MergeTermsEnum::Raw(t) => t.has_payloads(),
+            MergeTermsEnum::Sort(t) => t.has_payloads(),
+        }
+    }
+
+    fn min(&self) -> Result<Option<Vec<u8>>> {
+        match &self.0 {
+            MergeTermsEnum::Raw(t) => t.min(),
+            MergeTermsEnum::Sort(t) => t.min(),
+        }
+    }
+
+    fn max(&self) -> Result<Option<Vec<u8>>> {
+        match &self.0 {
+            MergeTermsEnum::Raw(t) => t.max(),
+            MergeTermsEnum::Sort(t) => t.max(),
+        }
+    }
+
+    fn stats(&self) -> Result<String> {
+        match &self.0 {
+            MergeTermsEnum::Raw(t) => t.stats(),
+            MergeTermsEnum::Sort(t) => t.stats(),
+        }
+    }
+}
+
+pub struct MergeTermIterator<T: TermIterator>(MergeTermIteratorEnum<T>);
+
+impl<T: TermIterator> TermIterator for MergeTermIterator<T> {
+    type Postings = SortingPostingIterEnum<T::Postings>;
+    type TermState = T::TermState;
+
+    fn next(&mut self) -> Result<Option<Vec<u8>>> {
+        match &mut self.0 {
+            MergeTermIteratorEnum::Raw(t) => t.next(),
+            MergeTermIteratorEnum::Sorting(t) => t.next(),
+        }
+    }
+
+    fn seek_exact(&mut self, text: &[u8]) -> Result<bool> {
+        match &mut self.0 {
+            MergeTermIteratorEnum::Raw(t) => t.seek_exact(text),
+            MergeTermIteratorEnum::Sorting(t) => t.seek_exact(text),
+        }
+    }
+
+    fn seek_ceil(&mut self, text: &[u8]) -> Result<SeekStatus> {
+        match &mut self.0 {
+            MergeTermIteratorEnum::Raw(t) => t.seek_ceil(text),
+            MergeTermIteratorEnum::Sorting(t) => t.seek_ceil(text),
+        }
+    }
+
+    fn seek_exact_ord(&mut self, ord: i64) -> Result<()> {
+        match &mut self.0 {
+            MergeTermIteratorEnum::Raw(t) => t.seek_exact_ord(ord),
+            MergeTermIteratorEnum::Sorting(t) => t.seek_exact_ord(ord),
+        }
+    }
+
+    fn seek_exact_state(&mut self, text: &[u8], state: &Self::TermState) -> Result<()> {
+        match &mut self.0 {
+            MergeTermIteratorEnum::Raw(t) => t.seek_exact_state(text, state),
+            MergeTermIteratorEnum::Sorting(t) => t.seek_exact_state(text, state),
+        }
+    }
+
+    fn term(&self) -> Result<&[u8]> {
+        match &self.0 {
+            MergeTermIteratorEnum::Raw(t) => t.term(),
+            MergeTermIteratorEnum::Sorting(t) => t.term(),
+        }
+    }
+
+    fn ord(&self) -> Result<i64> {
+        match &self.0 {
+            MergeTermIteratorEnum::Raw(t) => t.ord(),
+            MergeTermIteratorEnum::Sorting(t) => t.ord(),
+        }
+    }
+
+    fn doc_freq(&mut self) -> Result<i32> {
+        match &mut self.0 {
+            MergeTermIteratorEnum::Raw(t) => t.doc_freq(),
+            MergeTermIteratorEnum::Sorting(t) => t.doc_freq(),
+        }
+    }
+
+    fn total_term_freq(&mut self) -> Result<i64> {
+        match &mut self.0 {
+            MergeTermIteratorEnum::Raw(t) => t.total_term_freq(),
+            MergeTermIteratorEnum::Sorting(t) => t.total_term_freq(),
+        }
+    }
+
+    fn postings(&mut self) -> Result<Self::Postings> {
+        match &mut self.0 {
+            MergeTermIteratorEnum::Raw(t) => Ok(SortingPostingIterEnum::Raw(t.postings()?)),
+            MergeTermIteratorEnum::Sorting(t) => t.postings(),
+        }
+    }
+
+    fn postings_with_flags(&mut self, flags: u16) -> Result<Self::Postings> {
+        match &mut self.0 {
+            MergeTermIteratorEnum::Raw(t) => {
+                Ok(SortingPostingIterEnum::Raw(t.postings_with_flags(flags)?))
+            }
+            MergeTermIteratorEnum::Sorting(t) => t.postings_with_flags(flags),
+        }
+    }
+
+    fn term_state(&mut self) -> Result<Self::TermState> {
+        match &mut self.0 {
+            MergeTermIteratorEnum::Raw(t) => t.term_state(),
+            MergeTermIteratorEnum::Sorting(t) => t.term_state(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        match &self.0 {
+            MergeTermIteratorEnum::Raw(t) => t.is_empty(),
+            MergeTermIteratorEnum::Sorting(t) => t.is_empty(),
+        }
+    }
+}
+
+enum MergeTermIteratorEnum<T: TermIterator> {
+    Raw(T),
+    Sorting(SortingTermsIterator<T>),
 }
 
 pub trait DocMap {
@@ -484,12 +1018,12 @@ impl DocMap for DocMapBySortDocMap {
 
 pub struct LiveDocsDocMap {
     live_docs: BitsRef,
-    del_docs: PackedLongValuesBuilder,
+    del_docs: PackedLongValues,
     doc_base: DocId,
 }
 
 impl LiveDocsDocMap {
-    pub fn new(live_docs: BitsRef, del_docs: PackedLongValuesBuilder, doc_base: DocId) -> Self {
+    pub fn new(live_docs: BitsRef, del_docs: PackedLongValues, doc_base: DocId) -> Self {
         LiveDocsDocMap {
             live_docs,
             del_docs,

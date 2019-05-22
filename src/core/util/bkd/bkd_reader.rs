@@ -2,36 +2,38 @@ use core::codec::codec_util;
 use core::index::{DocMap, IntersectVisitor, LiveDocsDocMap, Relation};
 use core::store::{ByteArrayDataInput, ByteArrayRef, DataInput, IndexInput};
 use core::util::bkd::DocIdsWriter;
-use core::util::bkd::{BKD_CODEC_NAME, BKD_VERSION_COMPRESSED_DOC_IDS,
-                      BKD_VERSION_COMPRESSED_VALUES, BKD_VERSION_CURRENT,
-                      BKD_VERSION_IMPLICIT_SPLIT_DIM_1D, BKD_VERSION_PACKED_INDEX,
-                      BKD_VERSION_START};
+use core::util::bkd::{
+    BKD_CODEC_NAME, BKD_VERSION_COMPRESSED_DOC_IDS, BKD_VERSION_COMPRESSED_VALUES,
+    BKD_VERSION_CURRENT, BKD_VERSION_IMPLICIT_SPLIT_DIM_1D, BKD_VERSION_PACKED_INDEX,
+    BKD_VERSION_START,
+};
 use core::util::math;
 use core::util::DocId;
 
-use error::*;
+use error::{ErrorKind, Result};
+
 use std::cmp::Ordering;
 use std::sync::Arc;
 
 /// Used to track all state for a single call to {@link #intersect}.
-pub struct IntersectState<'a> {
-    pub input: Box<IndexInput>,
+pub struct IntersectState<'a, IV: IntersectVisitor> {
+    pub input: Box<dyn IndexInput>,
     scratch_doc_ids: Vec<i32>,
     pub scratch_packed_value: Vec<u8>,
     common_prefix_lengths: Vec<i32>,
-    visitor: &'a mut IntersectVisitor,
-    index_tree: Box<IndexTree>,
+    visitor: &'a mut IV,
+    index_tree: Box<dyn IndexTree>,
 }
 
-impl<'a> IntersectState<'a> {
+impl<'a, IV: IntersectVisitor + 'a> IntersectState<'a, IV> {
     pub fn new(
-        input: Box<IndexInput>,
+        input: Box<dyn IndexInput>,
         num_dims: usize,
         packed_bytes_length: usize,
         max_points_in_leaf_node: usize,
-        visitor: &'a mut IntersectVisitor,
-        index_tree: Box<IndexTree>,
-    ) -> IntersectState {
+        visitor: &'a mut IV,
+        index_tree: Box<dyn IndexTree>,
+    ) -> Self {
         let scratch_doc_ids = vec![0i32; max_points_in_leaf_node];
         let scratch_packed_value = vec![0u8; packed_bytes_length];
         let common_prefix_lengths = vec![0i32; num_dims];
@@ -55,7 +57,7 @@ pub struct BKDReader {
     pub num_dims: usize,
     pub bytes_per_dim: usize,
     num_leaves: usize,
-    pub input: Arc<IndexInput>,
+    pub input: Arc<dyn IndexInput>,
     pub max_points_in_leaf_node: usize,
     pub min_packed_value: Vec<u8>,
     pub max_packed_value: Vec<u8>,
@@ -73,8 +75,8 @@ pub struct BKDReader {
 }
 
 impl BKDReader {
-    pub fn new(input: Arc<IndexInput>) -> Result<BKDReader> {
-        let mut reader: Box<IndexInput> = input.as_ref().clone()?;
+    pub fn new(input: Arc<dyn IndexInput>) -> Result<BKDReader> {
+        let mut reader: Box<dyn IndexInput> = input.as_ref().clone()?;
         let version = codec_util::check_header(
             reader.as_mut(),
             BKD_CODEC_NAME,
@@ -211,15 +213,15 @@ impl BKDReader {
         (math::log(self.num_leaves as i64, 2) + 2) as usize
     }
 
-    pub fn intersect(&self, visitor: &mut IntersectVisitor) -> Result<()> {
+    pub fn intersect(&self, visitor: &mut impl IntersectVisitor) -> Result<()> {
         let mut state = self.create_intersect_state(visitor)?;
 
         self.intersect_with_state(&mut state, &self.min_packed_value, &self.max_packed_value)
     }
 
-    fn intersect_with_state(
+    fn intersect_with_state<'a, IV: IntersectVisitor + 'a>(
         &self,
-        state: &mut IntersectState,
+        state: &mut IntersectState<'a, IV>,
         cell_min_packed: &[u8],
         cell_max_packed: &[u8],
     ) -> Result<()> {
@@ -325,11 +327,11 @@ impl BKDReader {
         Ok(())
     }
 
-    pub fn create_intersect_state<'a>(
+    pub fn create_intersect_state<'a, IV: IntersectVisitor + 'a>(
         &self,
-        visitor: &'a mut IntersectVisitor,
-    ) -> Result<IntersectState<'a>> {
-        let index_tree: Box<IndexTree> = if !self.packed_index.is_empty() {
+        visitor: &'a mut IV,
+    ) -> Result<IntersectState<'a, IV>> {
+        let index_tree: Box<dyn IndexTree> = if !self.packed_index.is_empty() {
             Box::new(PackedIndexTree::new(
                 self.bytes_per_dim,
                 self.num_dims,
@@ -363,7 +365,10 @@ impl BKDReader {
 
     /// Fast path: this is called when the query box fully encompasses all cells under this
     /// node.
-    fn add_all(&self, state: &mut IntersectState) -> Result<()> {
+    fn add_all<'a, IV: IntersectVisitor + 'a>(
+        &self,
+        state: &mut IntersectState<'a, IV>,
+    ) -> Result<()> {
         if state.index_tree.is_leaf_node() {
             if state.index_tree.node_exists() {
                 self.visit_doc_ids(
@@ -387,10 +392,10 @@ impl BKDReader {
     }
 
     /// Visits all docIDs and packed values in a single leaf block
-    pub fn visit_leaf_block_values(
+    pub fn visit_leaf_block_values<'a, IV: IntersectVisitor + 'a>(
         &self,
         index_tree: &SimpleIndexTree,
-        state: &mut IntersectState,
+        state: &mut IntersectState<'a, IV>,
     ) -> Result<()> {
         // Leaf node; scan and filter all points in this block:
         let count = self.read_doc_ids(
@@ -412,9 +417,9 @@ impl BKDReader {
 
     fn visit_doc_ids(
         &self,
-        input: &mut IndexInput,
+        input: &mut dyn IndexInput,
         block_fp: i64,
-        visitor: &mut IntersectVisitor,
+        visitor: &mut impl IntersectVisitor,
     ) -> Result<()> {
         // Leaf node
         input.seek(block_fp)?;
@@ -432,7 +437,7 @@ impl BKDReader {
 
     fn read_doc_ids(
         &self,
-        input: &mut IndexInput,
+        input: &mut dyn IndexInput,
         block_fp: i64,
         doc_ids: &mut [DocId],
     ) -> Result<usize> {
@@ -455,10 +460,10 @@ impl BKDReader {
         &self,
         common_prefix_lengths: &mut [i32],
         scratch_packed_value: &mut [u8],
-        input: &mut IndexInput,
+        input: &mut dyn IndexInput,
         doc_ids: &[DocId],
         count: usize,
-        visitor: &mut IntersectVisitor,
+        visitor: &mut impl IntersectVisitor,
     ) -> Result<()> {
         visitor.grow(count);
 
@@ -499,10 +504,10 @@ impl BKDReader {
         &self,
         common_prefix_lengths: &[i32],
         scratch_packed_value: &mut [u8],
-        input: &mut IndexInput,
+        input: &mut dyn IndexInput,
         doc_ids: &[DocId],
         count: usize,
-        visitor: &mut IntersectVisitor,
+        visitor: &mut impl IntersectVisitor,
     ) -> Result<()> {
         for doc in doc_ids.iter().take(count) {
             for (dim, length) in common_prefix_lengths.iter().enumerate().take(self.num_dims) {
@@ -526,10 +531,10 @@ impl BKDReader {
         &self,
         common_prefix_lengths: &mut [i32],
         scratch_packed_value: &mut [u8],
-        input: &mut IndexInput,
+        input: &mut dyn IndexInput,
         doc_ids: &[DocId],
         count: usize,
-        visitor: &mut IntersectVisitor,
+        visitor: &mut impl IntersectVisitor,
         compressed_dim: usize,
     ) -> Result<()> {
         // the byte at `compressedByteOffset` is compressed using run-length compression,
@@ -570,7 +575,7 @@ impl BKDReader {
         Ok(())
     }
 
-    fn read_compressed_dim(&self, input: &mut IndexInput) -> Result<i32> {
+    fn read_compressed_dim(&self, input: &mut dyn IndexInput) -> Result<i32> {
         let compressed_dim = i32::from(input.read_byte()? as i8);
 
         if compressed_dim < -1 || compressed_dim >= self.num_dims as i32 {
@@ -587,7 +592,7 @@ impl BKDReader {
         &self,
         common_prefix_lengths: &mut [i32],
         scratch_packed_value: &mut [u8],
-        input: &mut IndexInput,
+        input: &mut dyn IndexInput,
     ) -> Result<()> {
         for (dim, length) in common_prefix_lengths
             .iter_mut()
@@ -1120,10 +1125,10 @@ impl IndexTree for PackedIndexTree {
     }
 }
 
-pub struct MergeReader<'a> {
+pub struct MergeReader<'a, IV: IntersectVisitor + 'a> {
     reader: &'a BKDReader,
     doc_map: Option<&'a LiveDocsDocMap>,
-    pub state: IntersectState<'a>,
+    pub state: IntersectState<'a, IV>,
     pub doc_id: DocId,
     doc_block_upto: usize,
     docs_in_block: usize,
@@ -1132,11 +1137,11 @@ pub struct MergeReader<'a> {
     bytes_per_dim: usize,
 }
 
-impl<'a> MergeReader<'a> {
+impl<'a, IV: IntersectVisitor + 'a> MergeReader<'a, IV> {
     pub fn new(
         reader: &'a BKDReader,
         doc_map: Option<&'a LiveDocsDocMap>,
-        visitor: &'a mut IntersectVisitor,
+        visitor: &'a mut IV,
     ) -> Result<Self> {
         let mut state = IntersectState::new(
             reader.input.as_ref().clone()?,
@@ -1211,15 +1216,15 @@ impl<'a> MergeReader<'a> {
     }
 }
 
-impl<'a> Eq for MergeReader<'a> {}
+impl<'a, IV: IntersectVisitor + 'a> Eq for MergeReader<'a, IV> {}
 
-impl<'a> PartialEq for MergeReader<'a> {
-    fn eq(&self, other: &MergeReader) -> bool {
+impl<'a, IV: IntersectVisitor + 'a> PartialEq for MergeReader<'a, IV> {
+    fn eq(&self, other: &MergeReader<'a, IV>) -> bool {
         self.reader as *const BKDReader == other.reader as *const BKDReader
     }
 }
 
-impl<'a> Ord for MergeReader<'a> {
+impl<'a, IV: IntersectVisitor + 'a> Ord for MergeReader<'a, IV> {
     fn cmp(&self, other: &Self) -> Ordering {
         // reverse order for BinaryHeap
         let cmp = other.state.scratch_packed_value[..self.bytes_per_dim]
@@ -1232,24 +1237,24 @@ impl<'a> Ord for MergeReader<'a> {
     }
 }
 
-impl<'a> PartialOrd for MergeReader<'a> {
-    fn partial_cmp(&self, other: &MergeReader<'a>) -> Option<Ordering> {
+impl<'a, IV: IntersectVisitor + 'a> PartialOrd for MergeReader<'a, IV> {
+    fn partial_cmp(&self, other: &MergeReader<'a, IV>) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-struct MergeIntersectVisitor<'a> {
+struct MergeIntersectVisitor<'a, IV: IntersectVisitor + 'a> {
     packed_values: *mut Vec<u8>,
     packed_bytes_length: usize,
-    state: *const IntersectState<'a>,
+    state: *const IntersectState<'a, IV>,
     idx: usize,
 }
 
-impl<'a> MergeIntersectVisitor<'a> {
+impl<'a, IV: IntersectVisitor + 'a> MergeIntersectVisitor<'a, IV> {
     fn new(
         packed_values: &mut Vec<u8>,
         packed_bytes_length: usize,
-        state: &IntersectState<'a>,
+        state: &IntersectState<'a, IV>,
     ) -> Self {
         MergeIntersectVisitor {
             packed_values,
@@ -1260,7 +1265,7 @@ impl<'a> MergeIntersectVisitor<'a> {
     }
 }
 
-impl<'a> IntersectVisitor for MergeIntersectVisitor<'a> {
+impl<'a, IV: IntersectVisitor + 'a> IntersectVisitor for MergeIntersectVisitor<'a, IV> {
     fn visit(&mut self, _doc_id: i32) -> Result<()> {
         unreachable!()
     }

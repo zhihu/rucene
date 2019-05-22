@@ -2,14 +2,14 @@ use core::search::collector::Collector;
 use core::search::{Scorer, NO_MORE_DOCS};
 use core::util::Bits;
 use core::util::DocId;
-use error::*;
+use error::Result;
 
-pub struct BulkScorer<'a> {
-    pub scorer: &'a mut Scorer,
+pub struct BulkScorer<'a, S: Scorer + ?Sized + 'a> {
+    pub scorer: &'a mut S,
 }
 
-impl<'a> BulkScorer<'a> {
-    pub fn new(scorer: &'a mut Scorer) -> BulkScorer {
+impl<'a, S: Scorer + ?Sized + 'a> BulkScorer<'a, S> {
+    pub fn new(scorer: &'a mut S) -> BulkScorer<'a, S> {
         BulkScorer { scorer }
     }
 
@@ -31,10 +31,10 @@ impl<'a> BulkScorer<'a> {
     /// Although `max` would be a legal return value for this method, higher
     /// values might help callers skip more efficiently over non-matching portions
     /// of the docID space.
-    pub fn score<T: Collector + ?Sized>(
+    pub fn score<T: Collector + ?Sized, B: Bits + ?Sized>(
         &mut self,
         collector: &mut T,
-        accept_docs: Option<&Bits>,
+        accept_docs: Option<&B>,
         min: DocId,
         max: DocId,
     ) -> Result<DocId> {
@@ -47,10 +47,10 @@ impl<'a> BulkScorer<'a> {
         self.score_range(collector, accept_docs, current_doc, max)
     }
 
-    fn score_range<T: Collector + ?Sized>(
+    fn score_range<T: Collector + ?Sized, B: Bits + ?Sized>(
         &mut self,
         collector: &mut T,
-        accept_docs: Option<&Bits>,
+        accept_docs: Option<&B>,
         min: DocId,
         max: DocId,
     ) -> Result<DocId> {
@@ -61,10 +61,10 @@ impl<'a> BulkScorer<'a> {
         }
     }
 
-    fn score_range_in_docs_set<T: Collector + ?Sized>(
+    fn score_range_in_docs_set<T: Collector + ?Sized, B: Bits + ?Sized>(
         &mut self,
         collector: &mut T,
-        accept_docs: &Bits,
+        accept_docs: &B,
         min: DocId,
         max: DocId,
     ) -> Result<DocId> {
@@ -118,7 +118,6 @@ mod tests {
 
     use core::index::tests::*;
     use core::index::IndexReader;
-    use core::index::LeafReaderContext;
     use core::search::collector::top_docs::*;
     use core::search::collector::SearchCollector;
     use core::util::*;
@@ -133,7 +132,7 @@ mod tests {
         let leaf_reader_context = index_reader.leaves();
         let mut top_collector = TopDocsCollector::new(3);
         {
-            let mut bulk_scorer = BulkScorer::new(scorer_box.as_mut());
+            let mut bulk_scorer = BulkScorer::new(&mut scorer_box);
             top_collector
                 .set_next_reader(&leaf_reader_context[0])
                 .unwrap();

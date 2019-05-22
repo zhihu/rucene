@@ -1,8 +1,8 @@
-use error::*;
+use error::Result;
 
-use core::store::IndexOutput;
-use core::util::bkd::PointType;
+use core::store::{IndexOutputRef, InvalidIndexOutput};
 use core::util::bkd::{PointReader, PointWriter};
+use core::util::bkd::{PointReaderEnum, PointType};
 use core::util::DocId;
 
 use std::cell::RefCell;
@@ -79,7 +79,7 @@ pub struct HeapPointWriter {
     pub single_value_per_doc: bool,
     pub blocks: Vec<Vec<u8>>,
     pub closed: bool,
-    pub shared_reader: Option<Box<PointReader>>,
+    pub shared_reader: Option<PointReaderEnum>,
 }
 
 impl HeapPointWriter {
@@ -188,6 +188,8 @@ impl HeapPointWriter {
 }
 
 impl PointWriter for HeapPointWriter {
+    type IndexOutput = IndexOutputRef<InvalidIndexOutput>;
+
     fn append(&mut self, packed_value: &[u8], ord: i64, doc_id: DocId) -> Result<()> {
         debug_assert!(!self.closed);
         debug_assert_eq!(packed_value.len(), self.packed_bytes_length);
@@ -209,16 +211,42 @@ impl PointWriter for HeapPointWriter {
         Ok(())
     }
 
-    fn point_type(&self) -> PointType {
-        PointType::Heap
-    }
-
     fn destory(&mut self) -> Result<()> {
         Ok(())
     }
 
-    fn index_output(&mut self) -> &mut IndexOutput {
-        unimplemented!()
+    fn point_reader(&self, start: usize, length: usize) -> Result<PointReaderEnum> {
+        debug_assert!(start + length <= self.doc_ids.len());
+        debug_assert!(start + length <= self.next_write);
+
+        Ok(PointReaderEnum::Heap(HeapPointReader::new(
+            self,
+            start,
+            start + length,
+        )))
+    }
+
+    fn shared_point_reader(
+        &mut self,
+        start: usize,
+        _length: usize,
+        _to_close_heroically: &mut Vec<PointReaderEnum>,
+    ) -> Result<&mut PointReaderEnum> {
+        self.shared_reader = Some(PointReaderEnum::Heap(HeapPointReader::new(
+            self,
+            start,
+            self.next_write,
+        )));
+
+        Ok(self.shared_reader.as_mut().unwrap())
+    }
+
+    fn point_type(&self) -> PointType {
+        PointType::Heap
+    }
+
+    fn index_output(&mut self) -> Self::IndexOutput {
+        unreachable!()
     }
     fn set_count(&mut self, _count: i64) {
         unimplemented!()
@@ -228,31 +256,13 @@ impl PointWriter for HeapPointWriter {
         Ok(())
     }
 
-    fn point_reader(&self, start: usize, length: usize) -> Result<Box<PointReader>> {
-        debug_assert!(start + length <= self.doc_ids.len());
-        debug_assert!(start + length <= self.next_write);
-
-        Ok(Box::new(HeapPointReader::new(self, start, start + length)))
-    }
-
-    fn shared_point_reader(
-        &mut self,
-        start: usize,
-        _length: usize,
-        _to_close_heroically: &mut Vec<Box<PointReader>>,
-    ) -> Result<&mut PointReader> {
-        self.shared_reader = Some(Box::new(HeapPointReader::new(self, start, self.next_write)));
-
-        Ok(self.shared_reader.as_mut().unwrap().as_mut())
-    }
-
     fn try_as_heap_writer(&mut self) -> &mut HeapPointWriter {
         debug_assert!(self.point_type() == PointType::Heap);
         self
     }
 
-    fn clone(&self) -> Box<PointWriter> {
-        Box::new(HeapPointWriter {
+    fn clone(&self) -> Self {
+        HeapPointWriter {
             doc_ids: self.doc_ids.clone(),
             ords_long: self.ords_long.clone(),
             ords: self.ords.clone(),
@@ -264,6 +274,6 @@ impl PointWriter for HeapPointWriter {
             blocks: self.blocks.clone(),
             closed: self.closed,
             shared_reader: None,
-        })
+        }
     }
 }

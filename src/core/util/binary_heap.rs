@@ -203,14 +203,6 @@ impl<T: Ord> BinaryHeapPub<T> {
     pub fn clear(&mut self) {
         self.data.clear();
     }
-
-    fn rebuild(&mut self) {
-        let mut n = self.len() / 2;
-        while n > 0 {
-            n -= 1;
-            self.sift_down(n);
-        }
-    }
 }
 
 struct Hole<'a, T: 'a> {

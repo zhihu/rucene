@@ -1,9 +1,10 @@
+use core::codec::{Codec, CodecPostingIterator, CodecTermState};
 use core::index::{LeafReaderContext, TermIterator};
-use core::index::{Term, TermContext};
+use core::index::{Term, TermContext, Terms};
 use core::search::explanation::Explanation;
 use core::search::posting_iterator::PostingIterator;
-use core::search::searcher::IndexSearcher;
-use core::search::spans::span::{build_sim_weight, PostingsFlag, NO_MORE_POSITIONS};
+use core::search::searcher::SearchPlanBuilder;
+use core::search::spans::span::{build_sim_weight, PostingsFlag, SpansEnum, NO_MORE_POSITIONS};
 use core::search::spans::span::{SpanCollector, SpanQuery, SpanWeight, Spans};
 use core::search::term_query::TermQuery;
 use core::search::{DocIterator, Query, Scorer, SimWeight, Weight, NO_MORE_DOCS};
@@ -31,8 +32,12 @@ impl SpanTermQuery {
     }
 }
 
-impl Query for SpanTermQuery {
-    fn create_weight(&self, searcher: &IndexSearcher, needs_scores: bool) -> Result<Box<Weight>> {
+impl<C: Codec> Query<C> for SpanTermQuery {
+    fn create_weight(
+        &self,
+        searcher: &dyn SearchPlanBuilder<C>,
+        needs_scores: bool,
+    ) -> Result<Box<dyn Weight<C>>> {
         let term_context = searcher.term_state(&self.term)?;
         Ok(Box::new(SpanTermWeight::new(
             self,
@@ -60,20 +65,26 @@ impl Query for SpanTermQuery {
     }
 }
 
-impl SpanQuery for SpanTermQuery {
-    fn field(&self) -> &str {
-        self.term.field()
-    }
+impl<C: Codec> SpanQuery<C> for SpanTermQuery {
+    type Weight = SpanTermWeight<C>;
 
-    fn span_weight(&self, searcher: &IndexSearcher, needs_scores: bool) -> Result<Box<SpanWeight>> {
+    fn span_weight(
+        &self,
+        searcher: &dyn SearchPlanBuilder<C>,
+        needs_scores: bool,
+    ) -> Result<Self::Weight> {
         let term_context = searcher.term_state(&self.term)?;
-        Ok(Box::new(SpanTermWeight::new(
+        Ok(SpanTermWeight::new(
             self,
             term_context,
             searcher,
             self.ctx.clone(),
             needs_scores,
-        )?))
+        )?)
+    }
+
+    fn field(&self) -> &str {
+        &self.term.field
     }
 
     fn ctx(&self) -> Option<KeyedContext> {
@@ -92,8 +103,8 @@ impl fmt::Display for SpanTermQuery {
     }
 }
 
-pub struct TermSpans {
-    postings: Box<PostingIterator>,
+pub struct TermSpans<T: PostingIterator> {
+    postings: T,
     term: Term,
     doc: DocId,
     freq: i32,
@@ -102,8 +113,8 @@ pub struct TermSpans {
     positions_cost: f32,
 }
 
-impl TermSpans {
-    pub fn new(postings: Box<PostingIterator>, term: Term, positions_cost: f32) -> Self {
+impl<T: PostingIterator> TermSpans<T> {
+    pub fn new(postings: T, term: Term, positions_cost: f32) -> Self {
         TermSpans {
             postings,
             term,
@@ -126,7 +137,7 @@ impl TermSpans {
     }
 }
 
-impl DocIterator for TermSpans {
+impl<T: PostingIterator> DocIterator for TermSpans<T> {
     fn doc_id(&self) -> i32 {
         self.doc
     }
@@ -149,7 +160,7 @@ impl DocIterator for TermSpans {
     }
 }
 
-impl Spans for TermSpans {
+impl<T: PostingIterator> Spans for TermSpans<T> {
     fn next_start_position(&mut self) -> Result<i32> {
         if self.count == self.freq {
             assert_ne!(self.position, NO_MORE_POSITIONS);
@@ -182,8 +193,8 @@ impl Spans for TermSpans {
         0
     }
 
-    fn collect(&mut self, collector: &mut SpanCollector) -> Result<()> {
-        collector.collect_leaf(self.postings.as_mut(), self.position, &self.term)
+    fn collect(&mut self, collector: &mut impl SpanCollector) -> Result<()> {
+        collector.collect_leaf(&mut self.postings, self.position, &self.term)
     }
 
     fn positions_cost(&self) -> f32 {
@@ -201,17 +212,17 @@ const PHRASE_TO_SPAN_TERM_POSITIONS_COST: f32 = 4.0;
 const TERM_POSNS_SEEK_OPS_PER_DOC: i32 = 128;
 const TERM_OPS_PER_POS: i32 = 7;
 
-pub struct SpanTermWeight {
+pub struct SpanTermWeight<C: Codec> {
     term: Term,
-    sim_weight: Option<Box<SimWeight>>,
-    term_context: Arc<TermContext>,
+    sim_weight: Option<Box<dyn SimWeight<C>>>,
+    term_context: Arc<TermContext<CodecTermState<C>>>,
 }
 
-impl SpanTermWeight {
-    pub fn new(
+impl<C: Codec> SpanTermWeight<C> {
+    pub fn new<IS: SearchPlanBuilder<C> + ?Sized>(
         query: &SpanTermQuery,
-        term_context: Arc<TermContext>,
-        searcher: &IndexSearcher,
+        term_context: Arc<TermContext<CodecTermState<C>>>,
+        searcher: &IS,
         ctx: Option<KeyedContext>,
         needs_scores: bool,
     ) -> Result<Self> {
@@ -227,7 +238,7 @@ impl SpanTermWeight {
         })
     }
 
-    fn term_positions_cost(terms_iter: &mut TermIterator) -> Result<f32> {
+    fn term_positions_cost(terms_iter: &mut impl TermIterator) -> Result<f32> {
         let doc_freq = terms_iter.doc_freq()?;
         assert!(doc_freq > 0);
         let total_term_freq = terms_iter.total_term_freq()?; // -1 when not available
@@ -241,12 +252,12 @@ impl SpanTermWeight {
     }
 }
 
-impl SpanWeight for SpanTermWeight {
-    fn sim_weight(&self) -> Option<&SimWeight> {
+impl<C: Codec> SpanWeight<C> for SpanTermWeight<C> {
+    fn sim_weight(&self) -> Option<&SimWeight<C>> {
         self.sim_weight.as_ref().map(|x| &**x)
     }
 
-    fn sim_weight_mut(&mut self) -> Option<&mut SimWeight> {
+    fn sim_weight_mut(&mut self) -> Option<&mut SimWeight<C>> {
         if let Some(ref mut sim_weight) = self.sim_weight {
             Some(sim_weight.as_mut())
         } else {
@@ -256,9 +267,9 @@ impl SpanWeight for SpanTermWeight {
 
     fn get_spans(
         &self,
-        reader: &LeafReaderContext,
+        reader: &LeafReaderContext<'_, C>,
         required_postings: &PostingsFlag,
-    ) -> Result<Option<Box<Spans>>> {
+    ) -> Result<Option<SpansEnum<CodecPostingIterator<C>>>> {
         if let Some(state) = self.term_context.get_term_state(reader) {
             if let Some(terms) = reader.reader.terms(self.term.field())? {
                 if !terms.has_positions()? {
@@ -273,9 +284,9 @@ impl SpanWeight for SpanTermWeight {
                 terms_iter.seek_exact_state(&self.term.bytes, state)?;
                 let postings =
                     terms_iter.postings_with_flags(required_postings.required_postings())?;
-                let positions_cost = Self::term_positions_cost(terms_iter.as_mut())?
+                let positions_cost = Self::term_positions_cost(&mut terms_iter)?
                     + PHRASE_TO_SPAN_TERM_POSITIONS_COST;
-                return Ok(Some(Box::new(TermSpans::new(
+                return Ok(Some(SpansEnum::Term(TermSpans::new(
                     postings,
                     self.term.clone(),
                     positions_cost,
@@ -285,13 +296,16 @@ impl SpanWeight for SpanTermWeight {
         Ok(None)
     }
 
-    fn extract_term_contexts(&self, contexts: &mut HashMap<Term, Arc<TermContext>>) {
+    fn extract_term_contexts(
+        &self,
+        contexts: &mut HashMap<Term, Arc<TermContext<CodecTermState<C>>>>,
+    ) {
         contexts.insert(self.term.clone(), Arc::clone(&self.term_context));
     }
 }
 
-impl Weight for SpanTermWeight {
-    fn create_scorer(&self, ctx: &LeafReaderContext) -> Result<Box<Scorer>> {
+impl<C: Codec> Weight<C> for SpanTermWeight<C> {
+    fn create_scorer(&self, ctx: &LeafReaderContext<'_, C>) -> Result<Option<Box<dyn Scorer>>> {
         self.do_create_scorer(ctx)
     }
 
@@ -311,12 +325,12 @@ impl Weight for SpanTermWeight {
         true
     }
 
-    fn explain(&self, reader: &LeafReaderContext, doc: DocId) -> Result<Explanation> {
+    fn explain(&self, reader: &LeafReaderContext<'_, C>, doc: DocId) -> Result<Explanation> {
         self.explain_span(reader, doc)
     }
 }
 
-impl fmt::Display for SpanTermWeight {
+impl<C: Codec> fmt::Display for SpanTermWeight<C> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,

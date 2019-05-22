@@ -1,12 +1,13 @@
 use std::cmp::max;
 use std::sync::Mutex;
 
+use core::codec::Codec;
 use core::search::match_all::{CONSTANT, MATCH_ALL};
 use core::search::point_range::POINT_RANGE;
 use core::search::term_query::TERM;
 use core::search::Weight;
 
-use error::*;
+use error::Result;
 
 ///
 // A policy defining which filters should be cached.
@@ -18,11 +19,11 @@ use error::*;
 // @lucene.experimental
 //
 // TODO: add APIs for integration with IndexWriter.IndexReaderWarmer
-pub trait QueryCachingPolicy: Send + Sync {
+pub trait QueryCachingPolicy<C: Codec>: Send + Sync {
     /// Callback that is called every time that a cached filter is used.
     //  This is typically useful if the policy wants to track usage statistics
     //  in order to make decisions.
-    fn on_use(&self, weight: &Weight);
+    fn on_use(&self, weight: &dyn Weight<C>);
 
     /// Whether the given {@link Query} is worth caching.
     //  This method will be called by the {@link QueryCache} to know whether to
@@ -30,7 +31,7 @@ pub trait QueryCachingPolicy: Send + Sync {
     //  If it is not cached yet and this method returns <tt>true</tt> then a
     //  cache entry will be generated. Otherwise an uncached scorer will be
     //  returned.
-    fn should_cache(&self, weight: &Weight) -> Result<bool>;
+    fn should_cache(&self, weight: &dyn Weight<C>) -> Result<bool>;
 }
 
 pub struct AlwaysCacheQueryCachingPolicy;
@@ -41,10 +42,10 @@ impl Default for AlwaysCacheQueryCachingPolicy {
     }
 }
 
-impl QueryCachingPolicy for AlwaysCacheQueryCachingPolicy {
-    fn on_use(&self, _weight: &Weight) {}
+impl<C: Codec> QueryCachingPolicy<C> for AlwaysCacheQueryCachingPolicy {
+    fn on_use(&self, _weight: &dyn Weight<C>) {}
 
-    fn should_cache(&self, _weight: &Weight) -> Result<bool> {
+    fn should_cache(&self, _weight: &dyn Weight<C>) -> Result<bool> {
         Ok(true)
     }
 }
@@ -66,16 +67,16 @@ impl UsageTrackingQueryCachingPolicy {
         }
     }
 
-    fn is_costly(w: &Weight) -> bool {
+    fn is_costly<C: Codec>(w: &dyn Weight<C>) -> bool {
         // TODO currently only PointRangeQuery is costly
         w.actual_query_type() == POINT_RANGE
     }
 
-    fn is_cheap(w: &Weight) -> bool {
+    fn is_cheap<C: Codec>(w: &dyn Weight<C>) -> bool {
         w.actual_query_type() == TERM
     }
 
-    fn cache_min_frequency(&self, w: &Weight) -> u32 {
+    fn cache_min_frequency<C: Codec>(&self, w: &dyn Weight<C>) -> u32 {
         if Self::is_costly(w) {
             2
         } else if Self::is_cheap(w) {
@@ -85,7 +86,7 @@ impl UsageTrackingQueryCachingPolicy {
         }
     }
 
-    pub fn frequency(&self, w: &Weight) -> u32 {
+    pub fn frequency<C: Codec>(&self, w: &dyn Weight<C>) -> u32 {
         debug_assert!(w.actual_query_type() != CONSTANT);
         let hash_code = w.hash_code();
         if let Ok(recently_used_filters) = self.recently_used_filters.lock() {
@@ -96,8 +97,8 @@ impl UsageTrackingQueryCachingPolicy {
     }
 }
 
-impl QueryCachingPolicy for UsageTrackingQueryCachingPolicy {
-    fn on_use(&self, weight: &Weight) {
+impl<C: Codec> QueryCachingPolicy<C> for UsageTrackingQueryCachingPolicy {
+    fn on_use(&self, weight: &dyn Weight<C>) {
         debug_assert!(weight.query_type() != CONSTANT);
         let hash_code = weight.hash_code();
         if let Ok(mut recently_used_filters) = self.recently_used_filters.lock() {
@@ -105,7 +106,7 @@ impl QueryCachingPolicy for UsageTrackingQueryCachingPolicy {
         }
     }
 
-    fn should_cache(&self, weight: &Weight) -> Result<bool> {
+    fn should_cache(&self, weight: &dyn Weight<C>) -> Result<bool> {
         if weight.actual_query_type() == MATCH_ALL {
             return Ok(false);
         }

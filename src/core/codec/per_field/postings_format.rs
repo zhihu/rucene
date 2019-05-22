@@ -4,13 +4,16 @@ use std::fmt;
 use std::mem;
 use std::sync::Arc;
 
+use core::codec::blocktree::FieldReaderRef;
+use core::codec::consumer::FieldsConsumerEnum;
 use core::codec::format::{postings_format_for_name, PostingsFormat};
 use core::codec::lucene50::Lucene50PostingsFormat;
-use core::codec::{FieldsConsumer, FieldsProducer, FieldsProducerRef};
+use core::codec::producer::FieldsProducerEnum;
+use core::codec::{Codec, FieldsConsumer, FieldsProducer};
 use core::index::Fields;
-use core::index::TermsRef;
 use core::index::{IndexOptions, SegmentReadState, SegmentWriteState};
-use error::*;
+use core::store::Directory;
+use error::Result;
 
 /// Name of this {@link PostingsFormat}. */
 // const PER_FIELD_NAME: &str = "PerField40";
@@ -38,8 +41,8 @@ fn get_suffix(format: &str, suffix: &str) -> String {
 /// filenames would look like <tt>_1_Lucene40_0.prx</tt>.
 /// @see ServiceLoader
 /// @lucene.experimental
-#[derive(Hash, Ord, PartialOrd, Eq, PartialEq)]
-pub struct PerFieldPostingsFormat {}
+#[derive(Copy, Clone)]
+pub struct PerFieldPostingsFormat;
 
 impl Default for PerFieldPostingsFormat {
     fn default() -> PerFieldPostingsFormat {
@@ -48,12 +51,21 @@ impl Default for PerFieldPostingsFormat {
 }
 
 impl PostingsFormat for PerFieldPostingsFormat {
-    fn fields_producer(&self, state: &SegmentReadState) -> Result<Box<FieldsProducer>> {
-        Ok(Box::new(PerFieldFieldsReader::new(state)?))
+    type FieldsProducer = Arc<PerFieldFieldsReader>;
+    fn fields_producer<D: Directory, DW: Directory, C: Codec>(
+        &self,
+        state: &SegmentReadState<'_, D, DW, C>,
+    ) -> Result<Self::FieldsProducer> {
+        Ok(Arc::new(PerFieldFieldsReader::new(state)?))
     }
 
-    fn fields_consumer(&self, state: &SegmentWriteState) -> Result<Box<FieldsConsumer>> {
-        Ok(Box::new(PerFieldFieldsWriter::new(state)))
+    fn fields_consumer<D: Directory, DW: Directory, C: Codec>(
+        &self,
+        state: &SegmentWriteState<D, DW, C>,
+    ) -> Result<FieldsConsumerEnum<D, DW, C>> {
+        Ok(FieldsConsumerEnum::PerField(PerFieldFieldsWriter::new(
+            state,
+        )))
     }
 
     fn name(&self) -> &str {
@@ -61,13 +73,15 @@ impl PostingsFormat for PerFieldPostingsFormat {
     }
 }
 
-struct PerFieldFieldsReader {
-    fields: BTreeMap<String, FieldsProducerRef>,
+pub struct PerFieldFieldsReader {
+    fields: BTreeMap<String, FieldsProducerEnum>,
     segment: String,
 }
 
 impl PerFieldFieldsReader {
-    fn new(state: &SegmentReadState) -> Result<PerFieldFieldsReader> {
+    fn new<D: Directory, DW: Directory, C: Codec>(
+        state: &SegmentReadState<'_, D, DW, C>,
+    ) -> Result<PerFieldFieldsReader> {
         let mut fields = BTreeMap::new();
         let mut formats = HashMap::new();
         for (name, info) in &state.field_infos.by_name {
@@ -89,14 +103,10 @@ impl PerFieldFieldsReader {
                     if !formats.contains_key(suffix) {
                         formats.insert(suffix.clone(), postings_format_for_name(format)?);
                     }
-                    let postings_format = formats.get(suffix);
-                    let postings_format = postings_format.as_ref().unwrap();
+                    let postings_format = formats.get(suffix).unwrap();
                     let suffix = get_suffix(format, suffix);
                     let state = SegmentReadState::with_suffix(state, &suffix);
-                    fields.insert(
-                        name.clone(),
-                        Arc::from(postings_format.fields_producer(&state)?),
-                    );
+                    fields.insert(name.clone(), postings_format.fields_producer(&state)?);
                 } else {
                     bail!(
                         "Illegal State: missing attribute: {} for field {}",
@@ -110,7 +120,7 @@ impl PerFieldFieldsReader {
         Ok(PerFieldFieldsReader { fields, segment })
     }
 
-    fn terms_impl(&self, field: &str) -> Result<Option<TermsRef>> {
+    fn terms_impl(&self, field: &str) -> Result<Option<FieldReaderRef>> {
         match self.fields.get(field) {
             Some(producer) => producer.terms(field),
             None => Ok(None),
@@ -138,10 +148,11 @@ impl FieldsProducer for PerFieldFieldsReader {
 }
 
 impl Fields for PerFieldFieldsReader {
+    type Terms = FieldReaderRef;
     fn fields(&self) -> Vec<String> {
         self.fields.keys().cloned().collect()
     }
-    fn terms(&self, field: &str) -> Result<Option<TermsRef>> {
+    fn terms(&self, field: &str) -> Result<Option<Self::Terms>> {
         self.terms_impl(field)
     }
     fn size(&self) -> usize {
@@ -150,18 +161,18 @@ impl Fields for PerFieldFieldsReader {
 }
 
 #[allow(dead_code)]
-struct FieldsGroup {
+struct FieldsGroup<D: Directory, DW: Directory, C: Codec> {
     fields: BTreeSet<String>,
     suffix: usize,
-    state: SegmentWriteState,
+    state: SegmentWriteState<D, DW, C>,
 }
 
-struct PerFieldFieldsWriter {
-    write_state: SegmentWriteState,
+pub struct PerFieldFieldsWriter<D: Directory, DW: Directory, C: Codec> {
+    write_state: SegmentWriteState<D, DW, C>,
 }
 
-impl PerFieldFieldsWriter {
-    pub fn new(write_state: &SegmentWriteState) -> Self {
+impl<D: Directory, DW: Directory, C: Codec> PerFieldFieldsWriter<D, DW, C> {
+    pub fn new(write_state: &SegmentWriteState<D, DW, C>) -> Self {
         PerFieldFieldsWriter {
             write_state: write_state.clone(),
         }
@@ -173,12 +184,12 @@ impl PerFieldFieldsWriter {
     }
 }
 
-impl FieldsConsumer for PerFieldFieldsWriter {
+impl<D: Directory, DW: Directory, C: Codec> FieldsConsumer for PerFieldFieldsWriter<D, DW, C> {
     // TODO this is only one postings format currently (lucene50).
     // And we assume that we always use one format all the time.
     // so we won't implement this like lucene
     // when the format changes, it's easy to change the hard code then.
-    fn write(&mut self, fields: &Fields) -> Result<()> {
+    fn write(&mut self, fields: &impl Fields) -> Result<()> {
         // this is only one format, so suffix is always "0"
         let segment_suffix =
             self.get_full_segment_suffix(&self.write_state.segment_suffix, "Lucene50_0".into());

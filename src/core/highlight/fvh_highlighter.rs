@@ -1,12 +1,15 @@
+use core::codec::Codec;
 use core::highlight::frag_list_builder::SimpleFragListBuilder;
 use core::highlight::fragments_builder::BaseFragmentsBuilder;
-use core::highlight::{Encoder, FieldFragList, FieldPhraseList, FieldQuery, FieldTermStack,
-                      FragListBuilder, FragmentsBuilder};
+use core::highlight::{
+    Encoder, FieldFragList, FieldPhraseList, FieldQuery, FieldTermStack, FragListBuilder,
+    FragmentsBuilder,
+};
 
 use core::index::{IndexReader, LeafReaderContext};
 use core::search::Query;
 use core::util::DocId;
-use error::*;
+use error::Result;
 
 use std::i32;
 
@@ -17,7 +20,7 @@ const DEFAULT_PHRASE_LIMIT: i32 = 256;
 pub struct FastVectorHighlighter {
     pub phrase_highlight: bool,
     pub field_match: bool,
-    frag_list_builder: Box<FragListBuilder>,
+    frag_list_builder: Box<dyn FragListBuilder>,
     fragments_builder: BaseFragmentsBuilder,
     pub phrase_limit: i32,
 }
@@ -26,7 +29,7 @@ impl FastVectorHighlighter {
     pub fn new(
         phrase_highlight: Option<bool>,
         field_match: Option<bool>,
-        frag_list_builder: Option<Box<FragListBuilder>>,
+        frag_list_builder: Option<Box<dyn FragListBuilder>>,
         fragments_builder: Option<BaseFragmentsBuilder>,
         phrase_limit: Option<i32>,
     ) -> FastVectorHighlighter {
@@ -55,10 +58,10 @@ impl FastVectorHighlighter {
     }
 
     #[allow(too_many_arguments)]
-    pub fn get_best_fragments(
+    pub fn get_best_fragments<C: Codec>(
         &mut self,
         field_query: &mut FieldQuery,
-        reader: &LeafReaderContext,
+        reader: &LeafReaderContext<'_, C>,
         doc_id: DocId,
         field_name: &str,
         frag_char_size: i32,
@@ -103,10 +106,10 @@ impl FastVectorHighlighter {
     }
 
     #[allow(too_many_arguments)]
-    pub fn get_best_fragments_with_tags_fields(
+    pub fn get_best_fragments_with_tags_fields<C: Codec>(
         &mut self,
         field_query: &mut FieldQuery,
-        reader: &LeafReaderContext,
+        reader: &LeafReaderContext<'_, C>,
         doc_id: DocId,
         stored_field: &str,
         matched_fields: &[String],
@@ -141,23 +144,23 @@ impl FastVectorHighlighter {
         )
     }
 
-    pub fn get_field_query(
+    pub fn get_field_query<C: Codec>(
         &self,
-        query: &Query,
-        reader: Option<&IndexReader>,
+        query: &dyn Query<C>,
+        reader: Option<&IndexReader<Codec = C>>,
     ) -> Result<FieldQuery> {
         FieldQuery::new(query, reader, self.phrase_highlight, self.field_match)
     }
 
-    fn get_field_frag_list(
+    fn get_field_frag_list<C: Codec>(
         &self,
         frag_list_builder: &FragListBuilder,
         field_query: &FieldQuery,
-        reader: &LeafReaderContext,
+        reader: &LeafReaderContext<'_, C>,
         doc_id: DocId,
         field: &str,
         frag_char_size: i32,
-    ) -> Result<Box<FieldFragList>> {
+    ) -> Result<Box<dyn FieldFragList>> {
         let mut field_term_stack = FieldTermStack::new(reader, doc_id, field, field_query)?;
         let field_phrase_list =
             FieldPhraseList::new(&mut field_term_stack, field_query, self.phrase_limit);
@@ -165,15 +168,15 @@ impl FastVectorHighlighter {
         frag_list_builder.create_field_frag_list(&field_phrase_list, frag_char_size)
     }
 
-    fn get_fields_frag_list(
+    fn get_fields_frag_list<C: Codec>(
         &self,
         frag_list_builder: &FragListBuilder,
         field_query: &FieldQuery,
-        reader: &LeafReaderContext,
+        reader: &LeafReaderContext<'_, C>,
         doc_id: DocId,
         matched_fields: &[String],
         frag_char_size: i32,
-    ) -> Result<Box<FieldFragList>> {
+    ) -> Result<Box<dyn FieldFragList>> {
         assert!(!matched_fields.is_empty());
 
         let mut to_merge: Vec<FieldPhraseList> = Vec::with_capacity(matched_fields.len());

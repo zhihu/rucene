@@ -14,19 +14,27 @@ pub trait BinaryDocValues: Send + Sync {
     fn get(&self, doc_id: DocId) -> Result<Vec<u8>>;
 }
 
-pub type BinaryDocValuesRef = Arc<BinaryDocValues>;
+pub type BinaryDocValuesRef = Arc<dyn BinaryDocValues>;
+
+pub struct EmptyBinaryDocValues;
+
+impl BinaryDocValues for EmptyBinaryDocValues {
+    fn get(&self, _doc_id: DocId) -> Result<Vec<u8>> {
+        Ok(Vec::with_capacity(0))
+    }
+}
 
 pub trait LongBinaryDocValues: BinaryDocValues {
     fn get64(&self, doc_id: i64) -> Result<Vec<u8>>;
 }
 
 pub struct FixedBinaryDocValues {
-    data: Box<IndexInput>,
+    data: Box<dyn IndexInput>,
     buffer_len: usize,
 }
 
 impl FixedBinaryDocValues {
-    pub fn new(data: Box<IndexInput>, buffer_len: usize) -> Self {
+    pub fn new(data: Box<dyn IndexInput>, buffer_len: usize) -> Self {
         FixedBinaryDocValues { data, buffer_len }
     }
 }
@@ -48,18 +56,18 @@ impl BinaryDocValues for FixedBinaryDocValues {
     }
 }
 
-pub struct VariableBinaryDocValues {
-    addresses: Box<LongValues>,
-    data: Box<IndexInput>,
+pub struct VariableBinaryDocValues<T: LongValues> {
+    addresses: T,
+    data: Box<dyn IndexInput>,
 }
 
-impl VariableBinaryDocValues {
-    pub fn new(addresses: Box<LongValues>, data: Box<IndexInput>, _length: usize) -> Self {
+impl<T: LongValues> VariableBinaryDocValues<T> {
+    pub fn new(addresses: T, data: Box<dyn IndexInput>, _length: usize) -> Self {
         VariableBinaryDocValues { addresses, data }
     }
 }
 
-impl LongBinaryDocValues for VariableBinaryDocValues {
+impl<T: LongValues> LongBinaryDocValues for VariableBinaryDocValues<T> {
     fn get64(&self, id: i64) -> Result<Vec<u8>> {
         let start_address = self.addresses.get64(id)?;
         let end_address = self.addresses.get64(id + 1)?;
@@ -72,7 +80,7 @@ impl LongBinaryDocValues for VariableBinaryDocValues {
     }
 }
 
-impl BinaryDocValues for VariableBinaryDocValues {
+impl<T: LongValues> BinaryDocValues for VariableBinaryDocValues<T> {
     fn get(&self, doc_id: DocId) -> Result<Vec<u8>> {
         VariableBinaryDocValues::get64(self, i64::from(doc_id))
     }
@@ -83,7 +91,7 @@ pub struct CompressedBinaryDocValues {
     num_index_values: i64,
     num_reverse_index_values: i64,
     max_term_length: i32,
-    data: Box<IndexInput>,
+    data: Box<dyn IndexInput>,
     reverse_index: ReverseTermsIndexRef,
     addresses: MonotonicBlockPackedReaderRef,
 }
@@ -93,7 +101,7 @@ impl CompressedBinaryDocValues {
         bytes: &BinaryEntry,
         addresses: MonotonicBlockPackedReaderRef,
         reverse_index: ReverseTermsIndexRef,
-        data: Box<IndexInput>,
+        data: Box<dyn IndexInput>,
     ) -> Result<CompressedBinaryDocValues> {
         let max_term_length = bytes.max_length;
         let num_reverse_index_values = reverse_index.term_addresses.size() as i64;
@@ -154,6 +162,6 @@ impl BinaryDocValues for CompressedBinaryDocValues {
 }
 
 pub enum BoxedBinaryDocValuesEnum {
-    General(Box<LongBinaryDocValues>),
-    Compressed(Box<CompressedBinaryDocValues>),
+    General(Box<dyn LongBinaryDocValues>),
+    Compressed(CompressedBinaryDocValues),
 }

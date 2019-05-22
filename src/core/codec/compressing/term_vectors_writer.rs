@@ -6,18 +6,20 @@ use core::codec::compressing::Compress;
 use core::codec::compressing::CompressingStoredFieldsIndexWriter;
 use core::codec::compressing::{CompressionMode, Compressor};
 use core::codec::writer::{merge_term_vectors, TermVectorsWriter};
+use core::codec::{Codec, TermVectorsReader};
 use core::index::MergeState;
 use core::index::{segment_file_name, SegmentInfo};
 use core::index::{FieldInfo, FieldInfos};
-use core::store::{DataInput, DataOutput, DirectoryRc, GrowableByteArrayDataOutput, IOContext,
-                  IndexOutput};
-use core::util::bit_util::UnsignedShift;
-use core::util::byte_ref::BytesRef;
+use core::store::{
+    DataInput, DataOutput, Directory, GrowableByteArrayDataOutput, IOContext, IndexOutput,
+};
+use core::util::bit_util::{BitsRequired, UnsignedShift};
 use core::util::packed::{AbstractBlockPackedWriter, BlockPackedWriter};
 use core::util::packed_misc::Format;
 use core::util::packed_misc::VERSION_CURRENT as PACKED_VERSION_CURRENT;
-use core::util::packed_misc::{get_writer_no_header, unsigned_bits_required};
+use core::util::packed_misc::{get_writer_no_header, Writer};
 use core::util::string_util::bytes_difference;
+use core::util::BytesRef;
 
 use error::Result;
 
@@ -197,8 +199,8 @@ impl DocData {
         self.fields.len() - 1
     }
 
-    pub fn add_doc_data(
-        writer: &mut CompressingTermVectorsWriter,
+    pub fn add_doc_data<O1: IndexOutput>(
+        writer: &mut CompressingTermVectorsWriter<O1>,
         num_vector_fields: usize,
     ) -> usize {
         let mut pos_start = 0;
@@ -235,10 +237,9 @@ impl DocData {
     }
 }
 
-pub struct CompressingTermVectorsWriter {
-    segment: String,
-    index_writer: CompressingStoredFieldsIndexWriter,
-    vectors_stream: Box<IndexOutput>,
+pub struct CompressingTermVectorsWriter<O: IndexOutput> {
+    index_writer: CompressingStoredFieldsIndexWriter<O>,
+    vectors_stream: O,
     compress_mode: CompressionMode,
     compressor: Compressor,
     chunk_size: usize,
@@ -260,17 +261,17 @@ pub struct CompressingTermVectorsWriter {
     writer: BlockPackedWriter,
 }
 
-impl CompressingTermVectorsWriter {
-    pub fn new(
-        directory: DirectoryRc,
-        si: &SegmentInfo,
+impl<O: IndexOutput> CompressingTermVectorsWriter<O> {
+    pub fn new<D: Directory, DW: Directory<IndexOutput = O>, C: Codec>(
+        directory: &DW,
+        si: &SegmentInfo<D, C>,
         segment_suffix: &str,
         context: &IOContext,
         format_name: &str,
         compress_mode: CompressionMode,
         chunk_size: usize,
         block_size: usize,
-    ) -> Result<CompressingTermVectorsWriter> {
+    ) -> Result<CompressingTermVectorsWriter<O>> {
         let segment = &si.name;
         let mut index_stream = directory.create_output(
             &segment_file_name(segment, segment_suffix, VECTORS_INDEX_EXTENSION),
@@ -284,14 +285,14 @@ impl CompressingTermVectorsWriter {
         let codec_name_idx = format!("{}{}", format_name, CODEC_SFX_IDX);
         let codec_name_dat = format!("{}{}", format_name, CODEC_SFX_DAT);
         write_index_header(
-            index_stream.as_mut(),
+            &mut index_stream,
             &codec_name_idx,
             VERSION_CURRENT,
             si.get_id(),
             segment_suffix,
         )?;
         write_index_header(
-            vectors_stream.as_mut(),
+            &mut vectors_stream,
             &codec_name_dat,
             VERSION_CURRENT,
             si.get_id(),
@@ -313,7 +314,6 @@ impl CompressingTermVectorsWriter {
         vectors_stream.write_vint(chunk_size as i32)?;
 
         Ok(CompressingTermVectorsWriter {
-            segment: si.name.clone(),
             index_writer,
             vectors_stream,
             compress_mode,
@@ -382,7 +382,7 @@ impl CompressingTermVectorsWriter {
                 &self.term_suffixes.bytes,
                 0,
                 self.term_suffixes.position(),
-                self.vectors_stream.as_mut(),
+                &mut self.vectors_stream,
             )?;
         }
 
@@ -404,11 +404,11 @@ impl CompressingTermVectorsWriter {
             let mut total_fields = 0usize;
             for dd in &self.pending_docs {
                 self.writer
-                    .add(dd.num_fields as i64, self.vectors_stream.as_data_output())?;
+                    .add(dd.num_fields as i64, &mut self.vectors_stream)?;
                 total_fields += dd.num_fields;
             }
 
-            self.writer.finish(self.vectors_stream.as_data_output())?;
+            self.writer.finish(&mut self.vectors_stream)?;
 
             return Ok(total_fields);
         }
@@ -429,7 +429,7 @@ impl CompressingTermVectorsWriter {
         for field_num in &field_nums {
             max_field = *field_num;
         }
-        let bits_required = unsigned_bits_required(max_field as i64);
+        let bits_required = max_field.bits_required() as i32;
         let token = ((num_dist_fields - 1).min(0x07) << 5) | bits_required;
         self.vectors_stream.write_byte(token as u8)?;
         if num_dist_fields - 1 >= 0x07 {
@@ -438,9 +438,9 @@ impl CompressingTermVectorsWriter {
 
         let mut writer = get_writer_no_header(Format::Packed, field_nums.len(), bits_required, 1);
         for field_num in &field_nums {
-            writer.add(*field_num as i64, self.vectors_stream.as_data_output())?;
+            writer.add(*field_num as i64, &mut self.vectors_stream)?;
         }
-        writer.finish(self.vectors_stream.as_data_output())?;
+        writer.finish(&mut self.vectors_stream)?;
 
         let mut fns = vec![0i32; field_nums.len()];
         let mut i = 0;
@@ -456,7 +456,7 @@ impl CompressingTermVectorsWriter {
         let mut writer = get_writer_no_header(
             Format::Packed,
             total_fields,
-            unsigned_bits_required(field_nums.len() as i64 - 1),
+            (field_nums.len() as i64 - 1).bits_required() as i32,
             1,
         );
         for dd in &self.pending_docs {
@@ -469,11 +469,11 @@ impl CompressingTermVectorsWriter {
                     }
                 }
                 debug_assert!(field_num_index >= 0);
-                writer.add(field_num_index, self.vectors_stream.as_data_output())?;
+                writer.add(field_num_index, &mut self.vectors_stream)?;
             }
         }
 
-        writer.finish(self.vectors_stream.as_data_output())
+        writer.finish(&mut self.vectors_stream)
     }
 
     fn flush_flags(&mut self, total_fields: usize, field_nums: &[i32]) -> Result<()> {
@@ -508,22 +508,22 @@ impl CompressingTermVectorsWriter {
             let mut writer = get_writer_no_header(Format::Packed, field_flags.len(), FLAGS_BITS, 1);
             for flags in &field_flags {
                 debug_assert!(*flags >= 0);
-                writer.add(*flags as i64, self.vectors_stream.as_data_output())?;
+                writer.add(*flags as i64, &mut self.vectors_stream)?;
             }
             debug_assert!(writer.ord() as usize == field_flags.len() - 1);
-            writer.finish(self.vectors_stream.as_data_output())?;
+            writer.finish(&mut self.vectors_stream)?;
         } else {
             // write one flag for every field instance
             self.vectors_stream.write_vint(1)?;
             let mut writer = get_writer_no_header(Format::Packed, total_fields, FLAGS_BITS, 1);
             for dd in &self.pending_docs {
                 for fd in &dd.fields {
-                    writer.add(fd.flags as i64, self.vectors_stream.as_data_output())?;
+                    writer.add(fd.flags as i64, &mut self.vectors_stream)?;
                 }
             }
 
             debug_assert!(writer.ord() as usize == total_fields - 1);
-            writer.finish(self.vectors_stream.as_data_output())?;
+            writer.finish(&mut self.vectors_stream)?;
         }
 
         Ok(())
@@ -537,17 +537,17 @@ impl CompressingTermVectorsWriter {
             }
         }
 
-        let bits_required = unsigned_bits_required(max_num_terms as i64);
+        let bits_required = max_num_terms.bits_required() as i32;
         self.vectors_stream.write_vint(bits_required)?;
         let mut writer = get_writer_no_header(Format::Packed, total_fields, bits_required, 1);
         for dd in &self.pending_docs {
             for fd in &dd.fields {
-                writer.add(fd.num_terms as i64, self.vectors_stream.as_data_output())?;
+                writer.add(fd.num_terms as i64, &mut self.vectors_stream)?;
             }
         }
 
         debug_assert!(writer.ord() as usize == total_fields - 1);
-        writer.finish(self.vectors_stream.as_data_output())
+        writer.finish(&mut self.vectors_stream)
     }
 
     fn flush_term_lengths(&mut self) -> Result<()> {
@@ -555,27 +555,23 @@ impl CompressingTermVectorsWriter {
         for dd in &self.pending_docs {
             for fd in &dd.fields {
                 for i in 0..fd.num_terms {
-                    self.writer.add(
-                        fd.prefix_lengths[i] as i64,
-                        self.vectors_stream.as_data_output(),
-                    )?;
+                    self.writer
+                        .add(fd.prefix_lengths[i] as i64, &mut self.vectors_stream)?;
                 }
             }
         }
-        self.writer.finish(self.vectors_stream.as_data_output())?;
+        self.writer.finish(&mut self.vectors_stream)?;
 
         self.writer.reset();
         for dd in &self.pending_docs {
             for fd in &dd.fields {
                 for i in 0..fd.num_terms {
-                    self.writer.add(
-                        fd.suffix_lengths[i] as i64,
-                        self.vectors_stream.as_data_output(),
-                    )?;
+                    self.writer
+                        .add(fd.suffix_lengths[i] as i64, &mut self.vectors_stream)?;
                 }
             }
         }
-        self.writer.finish(self.vectors_stream.as_data_output())
+        self.writer.finish(&mut self.vectors_stream)
     }
 
     fn flush_term_freqs(&mut self) -> Result<()> {
@@ -584,11 +580,11 @@ impl CompressingTermVectorsWriter {
             for fd in &dd.fields {
                 for i in 0..fd.num_terms {
                     self.writer
-                        .add(fd.freqs[i] as i64 - 1, self.vectors_stream.as_data_output())?;
+                        .add(fd.freqs[i] as i64 - 1, &mut self.vectors_stream)?;
                 }
             }
         }
-        self.writer.finish(self.vectors_stream.as_data_output())
+        self.writer.finish(&mut self.vectors_stream)
     }
 
     fn flush_positions(&mut self) -> Result<()> {
@@ -602,10 +598,8 @@ impl CompressingTermVectorsWriter {
                         for _ in 0..fd.freqs[i] {
                             let position = self.positions_buf[fd.pos_start + pos] as usize;
                             pos += 1;
-                            self.writer.add(
-                                (position - prev_position) as i64,
-                                self.vectors_stream.as_data_output(),
-                            )?;
+                            self.writer
+                                .add((position - prev_position) as i64, &mut self.vectors_stream)?;
                             prev_position = position;
                         }
                     }
@@ -614,7 +608,7 @@ impl CompressingTermVectorsWriter {
                 }
             }
         }
-        self.writer.finish(self.vectors_stream.as_data_output())
+        self.writer.finish(&mut self.vectors_stream)
     }
 
     fn flush_offsets(&mut self, field_nums: &[i32]) -> Result<()> {
@@ -701,7 +695,7 @@ impl CompressingTermVectorsWriter {
                                 start_offset as i64
                                     - prev_off as i64
                                     - (cpt * (position - prev_pos) as f32) as i64,
-                                self.vectors_stream.as_data_output(),
+                                &mut self.vectors_stream,
                             )?;
                             prev_pos = position;
                             prev_off = start_offset;
@@ -711,7 +705,7 @@ impl CompressingTermVectorsWriter {
                 }
             }
         }
-        self.writer.finish(self.vectors_stream.as_data_output())?;
+        self.writer.finish(&mut self.vectors_stream)?;
 
         // lengths
         self.writer.reset();
@@ -725,7 +719,7 @@ impl CompressingTermVectorsWriter {
                                 (self.lengths_buf[fd.off_start + pos]
                                     - fd.prefix_lengths[i]
                                     - fd.suffix_lengths[i]) as i64,
-                                self.vectors_stream.as_data_output(),
+                                &mut self.vectors_stream,
                             )?;
                             pos += 1;
                         }
@@ -735,7 +729,7 @@ impl CompressingTermVectorsWriter {
                 }
             }
         }
-        self.writer.finish(self.vectors_stream.as_data_output())
+        self.writer.finish(&mut self.vectors_stream)
     }
 
     fn flush_payload_lengths(&mut self) -> Result<()> {
@@ -746,14 +740,14 @@ impl CompressingTermVectorsWriter {
                     for i in 0..fd.total_positions {
                         self.writer.add(
                             self.payload_length_buf[fd.pos_start + i] as i64,
-                            self.vectors_stream.as_data_output(),
+                            &mut self.vectors_stream,
                         )?;
                     }
                 }
             }
         }
 
-        self.writer.finish(self.vectors_stream.as_data_output())
+        self.writer.finish(&mut self.vectors_stream)
     }
 
     /// Returns true if we should recompress this reader, even though
@@ -768,7 +762,7 @@ impl CompressingTermVectorsWriter {
     }
 }
 
-impl TermVectorsWriter for CompressingTermVectorsWriter {
+impl<O: IndexOutput> TermVectorsWriter for CompressingTermVectorsWriter<O> {
     fn start_document(&mut self, num_vector_fields: usize) -> Result<()> {
         self.cur_doc = DocData::add_doc_data(self, num_vector_fields);
         Ok(())
@@ -880,14 +874,14 @@ impl TermVectorsWriter for CompressingTermVectorsWriter {
         self.vectors_stream.write_vlong(self.num_chunks as i64)?;
         self.vectors_stream
             .write_vlong(self.num_dirty_chunks as i64)?;
-        write_footer(self.vectors_stream.as_mut())
+        write_footer(&mut self.vectors_stream)
     }
 
-    fn add_prox(
+    fn add_prox<I: DataInput + ?Sized>(
         &mut self,
         num_prox: usize,
-        positions: Option<&mut DataInput>,
-        offsets: Option<&mut DataInput>,
+        positions: Option<&mut I>,
+        offsets: Option<&mut I>,
     ) -> Result<()> {
         let cur_field: &mut FieldData = &mut self.pending_docs[self.cur_doc].fields[self.cur_field];
         debug_assert!(cur_field.has_positions == positions.is_some());
@@ -956,7 +950,7 @@ impl TermVectorsWriter for CompressingTermVectorsWriter {
         Ok(())
     }
 
-    fn merge(&mut self, merge_state: &mut MergeState) -> Result<i32> {
+    fn merge<D: Directory, C: Codec>(&mut self, merge_state: &mut MergeState<D, C>) -> Result<i32> {
         if merge_state.needs_index_sort {
             // TODO: can we gain back some optos even if index is sorted?
             // E.g. if sort results in large chunks of contiguous docs from one sub
@@ -1054,8 +1048,7 @@ impl TermVectorsWriter for CompressingTermVectorsWriter {
                             vectors_reader.index_reader.start_pointer(doc_id)?
                         };
                         let len = (end - raw_docs.file_pointer()) as usize;
-                        self.vectors_stream
-                            .copy_bytes(raw_docs.as_mut().as_data_input(), len)?;
+                        self.vectors_stream.copy_bytes(raw_docs.as_mut(), len)?;
                     }
 
                     if raw_docs.file_pointer() != vectors_reader.max_pointer {
@@ -1086,10 +1079,7 @@ impl TermVectorsWriter for CompressingTermVectorsWriter {
                             } else {
                                 None
                             };
-                        self.add_all_doc_vectors(
-                            vectors.as_ref().map(|v| v.as_ref()),
-                            merge_state,
-                        )?;
+                        self.add_all_doc_vectors(vectors.as_ref(), merge_state)?;
                         doc_count += 1;
                     }
                 }

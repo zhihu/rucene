@@ -1,19 +1,19 @@
-use error::*;
+use error::Result;
 
 use core::search::{two_phase_next, DocIterator, Scorer};
 use core::util::DocId;
 
 // currently directory merge `ScoreCachingWrappingScorer` into this class
-pub struct MinScoreScorer {
-    origin: Box<Scorer>,
+pub struct MinScoreScorer<S: Scorer> {
+    origin: S,
     min_score: f32,
     // cache these two fields to avoid calculate score twice
     cur_doc: DocId,
     cur_score: f32,
 }
 
-impl MinScoreScorer {
-    pub fn new(origin: Box<Scorer>, min_score: f32) -> MinScoreScorer {
+impl<S: Scorer> MinScoreScorer<S> {
+    pub fn new(origin: S, min_score: f32) -> Self {
         MinScoreScorer {
             origin,
             min_score,
@@ -23,7 +23,7 @@ impl MinScoreScorer {
     }
 }
 
-impl Scorer for MinScoreScorer {
+impl<S: Scorer> Scorer for MinScoreScorer<S> {
     fn score(&mut self) -> Result<f32> {
         let doc = self.origin.doc_id();
         if doc != self.cur_doc {
@@ -37,7 +37,7 @@ impl Scorer for MinScoreScorer {
     }
 }
 
-impl DocIterator for MinScoreScorer {
+impl<S: Scorer> DocIterator for MinScoreScorer<S> {
     fn doc_id(&self) -> DocId {
         self.origin.doc_id()
     }

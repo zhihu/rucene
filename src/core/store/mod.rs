@@ -38,10 +38,6 @@ mod byte_array_data_input;
 
 pub use self::byte_array_data_input::*;
 
-mod byte_buffer_index_input;
-
-pub use self::byte_buffer_index_input::*;
-
 mod directory;
 
 pub use self::directory::*;

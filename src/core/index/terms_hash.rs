@@ -1,29 +1,27 @@
+use core::codec::{Codec, FieldsConsumer, PostingsFormat};
 use core::index::byte_slice_reader::ByteSliceReader;
-use core::index::term::{SeekStatus, TermIterator, Terms, TermsRef};
+use core::index::merge_policy::MergePolicy;
+use core::index::merge_scheduler::MergeScheduler;
+use core::index::term::{SeekStatus, TermIterator, Terms, UnreachableTermState};
 use core::index::term_vector::TermVectorsConsumer;
 use core::index::terms_hash_per_field::{FreqProxTermsWriterPerField, TermsHashPerField};
 use core::index::thread_doc_writer::DocumentsWriterPerThread;
 use core::index::SegmentWriteState;
-use core::index::{FieldInfo, FieldInfosBuilder, FieldInvertState, FieldNumbersRef, Fields,
-                  IndexOptions};
-use core::search::posting_iterator::POSTING_ITERATOR_FLAG_FREQS;
-use core::search::posting_iterator::POSTING_ITERATOR_FLAG_OFFSETS;
-use core::search::posting_iterator::POSTING_ITERATOR_FLAG_POSITIONS;
-use core::search::posting_iterator::{posting_feature_requested, PostingIterator};
+use core::index::{
+    FieldInfo, FieldInfosBuilder, FieldInvertState, FieldNumbersRef, Fields, IndexOptions,
+};
+use core::search::posting_iterator::{PostingIterator, PostingIteratorFlags};
 use core::search::{DocIterator, Payload, NO_MORE_DOCS};
-use core::store::DataInput;
-use core::util::bit_set::FixedBitSet;
+use core::store::{DataInput, Directory};
+use core::util::bit_set::{BitSet, FixedBitSet};
 use core::util::byte_block_pool::{ByteBlockAllocator, ByteBlockPool};
-use core::util::byte_ref::BytesRef;
 use core::util::int_block_pool::IntBlockPool;
-use core::util::{Counter, DocId};
+use core::util::{Bits, BytesRef, Counter, DocId};
 
-use std::any::Any;
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::ptr;
-use std::sync::Arc;
 
 use error::{ErrorKind, Result};
 
@@ -39,7 +37,7 @@ pub struct TermsHashBase {
     pub byte_pool: ByteBlockPool,
     pub term_byte_pool: *mut ByteBlockPool,
     pub bytes_used: Counter,
-    track_allocations: bool,
+    _track_allocations: bool,
 }
 
 impl Default for TermsHashBase {
@@ -49,13 +47,22 @@ impl Default for TermsHashBase {
             byte_pool: ByteBlockPool::default(),
             term_byte_pool: ptr::null_mut(),
             bytes_used: Counter::default(),
-            track_allocations: false,
+            _track_allocations: false,
         }
     }
 }
 
 impl TermsHashBase {
-    pub fn new(doc_writer: &mut DocumentsWriterPerThread, track_allocations: bool) -> Self {
+    pub fn new<D, C, MS, MP>(
+        doc_writer: &mut DocumentsWriterPerThread<D, C, MS, MP>,
+        track_allocations: bool,
+    ) -> Self
+    where
+        D: Directory,
+        C: Codec,
+        MS: MergeScheduler,
+        MP: MergePolicy,
+    {
         let bytes_used = if track_allocations {
             Counter::borrow(&mut doc_writer.bytes_used)
         } else {
@@ -69,7 +76,7 @@ impl TermsHashBase {
             byte_pool,
             term_byte_pool: ptr::null_mut(),
             bytes_used,
-            track_allocations,
+            _track_allocations: track_allocations,
         }
     }
 
@@ -91,7 +98,7 @@ impl TermsHashBase {
     }
 }
 
-pub trait TermsHash {
+pub trait TermsHash<D: Directory, C: Codec> {
     type PerField: TermsHashPerField;
     fn base(&self) -> &TermsHashBase;
     fn base_mut(&mut self) -> &mut TermsHashBase;
@@ -102,10 +109,10 @@ pub trait TermsHash {
         field_info: &FieldInfo,
     ) -> Self::PerField;
 
-    fn flush(
+    fn flush<DW: Directory>(
         &mut self,
         field_to_flush: BTreeMap<&str, &Self::PerField>,
-        state: &mut SegmentWriteState,
+        state: &mut SegmentWriteState<D, DW, C>,
     ) -> Result<()>;
 
     fn abort(&mut self) -> Result<()> {
@@ -121,24 +128,33 @@ pub trait TermsHash {
     ) -> Result<()>;
 }
 
-pub struct FreqProxTermsWriter {
+pub struct FreqProxTermsWriter<
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+> {
     pub base: TermsHashBase,
-    pub next_terms_hash: TermVectorsConsumer,
+    pub next_terms_hash: TermVectorsConsumer<D, C, MS, MP>,
 }
 
-impl Default for FreqProxTermsWriter {
-    fn default() -> Self {
+impl<D, C, MS, MP> FreqProxTermsWriter<D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
+    pub fn new_default() -> Self {
         FreqProxTermsWriter {
             base: TermsHashBase::default(),
-            next_terms_hash: TermVectorsConsumer::default(),
+            next_terms_hash: TermVectorsConsumer::new_default(),
         }
     }
-}
 
-impl FreqProxTermsWriter {
     pub fn new(
-        doc_writer: &mut DocumentsWriterPerThread,
-        term_vectors: TermVectorsConsumer,
+        doc_writer: &mut DocumentsWriterPerThread<D, C, MS, MP>,
+        term_vectors: TermVectorsConsumer<D, C, MS, MP>,
     ) -> Self {
         let base = TermsHashBase::new(doc_writer, true);
         FreqProxTermsWriter {
@@ -154,62 +170,71 @@ impl FreqProxTermsWriter {
         // self.base.init();
         // self.next_terms_hash.init();
     }
+}
 
-    fn apply_deletes(state: &mut SegmentWriteState, fields: &Fields) -> Result<()> {
-        // process any pending Term deletes for this newly flushed segment:
-        if state.seg_updates.is_some() {
-            if !state.seg_updates().deleted_terms.is_empty() {
-                let mut deleted_terms = Vec::with_capacity(state.seg_updates().deleted_terms.len());
-                for k in state.seg_updates().deleted_terms.keys() {
-                    deleted_terms.push(k.clone());
+fn apply_deletes<D: Directory, DW: Directory, C: Codec>(
+    state: &mut SegmentWriteState<D, DW, C>,
+    fields: &impl Fields,
+) -> Result<()> {
+    // process any pending Term deletes for this newly flushed segment:
+    if state.seg_updates.is_some() {
+        if !state.seg_updates().deleted_terms.is_empty() {
+            let mut deleted_terms = Vec::with_capacity(state.seg_updates().deleted_terms.len());
+            for k in state.seg_updates().deleted_terms.keys() {
+                deleted_terms.push(k.clone());
+            }
+            deleted_terms.sort();
+
+            let mut last_field = "";
+            let mut terms_iter = None;
+            for delete_term in &deleted_terms {
+                if delete_term.field() != last_field {
+                    last_field = delete_term.field();
+                    terms_iter = if let Some(terms) = fields.terms(last_field)? {
+                        Some(terms.iterator()?)
+                    } else {
+                        None
+                    };
                 }
-                deleted_terms.sort();
 
-                let mut last_field = "";
-                let mut terms_iter: Option<Box<TermIterator>> = None;
-                for delete_term in &deleted_terms {
-                    if delete_term.field() != last_field {
-                        last_field = delete_term.field();
-                        terms_iter = if let Some(terms) = fields.terms(last_field)? {
-                            Some(terms.iterator()?)
-                        } else {
-                            None
-                        };
-                    }
-
-                    if let Some(ref mut iter) = terms_iter {
-                        if iter.seek_exact(&delete_term.bytes)? {
-                            let mut postings_iter = iter.postings_with_flags(0)?;
-                            let del_doc_limit = state.seg_updates().deleted_terms[delete_term];
-                            debug_assert!(del_doc_limit < NO_MORE_DOCS);
-                            loop {
-                                let mut doc = postings_iter.next()?;
-                                if doc < del_doc_limit {
-                                    let size = state.segment_info.max_doc as usize;
-                                    if state.live_docs.is_empty() {
-                                        state.live_docs = Box::new(FixedBitSet::new(size));
-                                        state.live_docs.as_bit_set_mut().batch_set(0, size);
-                                    }
-                                    debug_assert!(state.live_docs.len() >= size);
-                                    if state.live_docs.get(doc as usize)? {
-                                        state.del_count_on_flush += 1;
-                                        state.live_docs.as_bit_set_mut().clear(doc as usize);
-                                    }
-                                } else {
-                                    break;
+                if let Some(ref mut iter) = terms_iter {
+                    if iter.seek_exact(&delete_term.bytes)? {
+                        let mut postings_iter = iter.postings_with_flags(0)?;
+                        let del_doc_limit = state.seg_updates().deleted_terms[delete_term];
+                        debug_assert!(del_doc_limit < NO_MORE_DOCS);
+                        loop {
+                            let mut doc = postings_iter.next()?;
+                            if doc < del_doc_limit {
+                                let size = state.segment_info.max_doc as usize;
+                                if state.live_docs.is_empty() {
+                                    state.live_docs = FixedBitSet::new(size);
+                                    state.live_docs.batch_set(0, size);
                                 }
+                                debug_assert!(state.live_docs.len() >= size);
+                                if state.live_docs.get(doc as usize)? {
+                                    state.del_count_on_flush += 1;
+                                    state.live_docs.clear(doc as usize);
+                                }
+                            } else {
+                                break;
                             }
                         }
                     }
                 }
             }
         }
-        Ok(())
     }
+    Ok(())
 }
 
-impl TermsHash for FreqProxTermsWriter {
-    type PerField = FreqProxTermsWriterPerField;
+impl<D, C, MS, MP> TermsHash<D, C> for FreqProxTermsWriter<D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
+    type PerField = FreqProxTermsWriterPerField<D, C, MS, MP>;
     fn base(&self) -> &TermsHashBase {
         &self.base
     }
@@ -222,17 +247,17 @@ impl TermsHash for FreqProxTermsWriter {
         &mut self,
         field_invert_state: &FieldInvertState,
         field_info: &FieldInfo,
-    ) -> FreqProxTermsWriterPerField {
+    ) -> FreqProxTermsWriterPerField<D, C, MS, MP> {
         let next_field = self
             .next_terms_hash
             .add_field(field_invert_state, field_info);
         FreqProxTermsWriterPerField::new(&mut self.base, field_info.clone(), next_field)
     }
 
-    fn flush(
+    fn flush<DW: Directory>(
         &mut self,
-        field_to_flush: BTreeMap<&str, &FreqProxTermsWriterPerField>,
-        state: &mut SegmentWriteState,
+        field_to_flush: BTreeMap<&str, &Self::PerField>,
+        state: &mut SegmentWriteState<D, DW, C>,
     ) -> Result<()> {
         let mut next_child_fields = BTreeMap::new();
         for (k, v) in &field_to_flush {
@@ -248,8 +273,8 @@ impl TermsHash for FreqProxTermsWriter {
                 // `HashMap<&str, &mut FreqProxTermsWriterPerField>`
                 // this should be fixed later
                 unsafe {
-                    let pf_ptr =
-                        f as *const FreqProxTermsWriterPerField as *mut FreqProxTermsWriterPerField;
+                    let pf_ptr = f as *const FreqProxTermsWriterPerField<D, C, MS, MP>
+                        as *mut FreqProxTermsWriterPerField<D, C, MS, MP>;
                     (*pf_ptr).base_mut().sort_postings();
                 }
 
@@ -263,7 +288,7 @@ impl TermsHash for FreqProxTermsWriter {
             all_fields.sort();
             let fields = FreqProxFields::new(all_fields);
 
-            FreqProxTermsWriter::apply_deletes(state, &fields)?;
+            apply_deletes(state, &fields)?;
 
             let mut consumer = state
                 .segment_info
@@ -297,12 +322,18 @@ impl TermsHash for FreqProxTermsWriter {
 /// Implements limited (iterators only, no stats) `Fields`
 /// interface over the in-RAM buffered fields/terms/postings,
 /// to flush postings through the PostingsFormat
-struct FreqProxFields<'a> {
-    fields: BTreeMap<String, &'a FreqProxTermsWriterPerField>,
+struct FreqProxFields<'a, D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy> {
+    fields: BTreeMap<String, &'a FreqProxTermsWriterPerField<D, C, MS, MP>>,
 }
 
-impl<'a> FreqProxFields<'a> {
-    fn new(field_list: Vec<&'a FreqProxTermsWriterPerField>) -> Self {
+impl<'a, D, C, MS, MP> FreqProxFields<'a, D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
+    fn new(field_list: Vec<&'a FreqProxTermsWriterPerField<D, C, MS, MP>>) -> Self {
         let mut fields = BTreeMap::new();
         for f in field_list {
             fields.insert(f.base().field_info.name.clone(), f);
@@ -311,18 +342,21 @@ impl<'a> FreqProxFields<'a> {
     }
 }
 
-unsafe impl<'a> Send for FreqProxFields<'a> {}
-
-unsafe impl<'a> Sync for FreqProxFields<'a> {}
-
-impl<'a> Fields for FreqProxFields<'a> {
+impl<'a, D, C, MS, MP> Fields for FreqProxFields<'a, D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
+    type Terms = FreqProxTerms<D, C, MS, MP>;
     fn fields(&self) -> Vec<String> {
         self.fields.keys().cloned().collect()
     }
 
-    fn terms(&self, field: &str) -> Result<Option<TermsRef>> {
+    fn terms(&self, field: &str) -> Result<Option<Self::Terms>> {
         if let Some(perfield) = self.fields.get(field) {
-            Ok(Some(Arc::new(FreqProxTerms::new(*perfield))))
+            Ok(Some(FreqProxTerms::new(*perfield)))
         } else {
             Ok(None)
         }
@@ -333,28 +367,37 @@ impl<'a> Fields for FreqProxFields<'a> {
     }
 }
 
-struct FreqProxTerms {
+struct FreqProxTerms<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy> {
     // TODO use raw pointer because we need to return box
-    terms_writer: *const FreqProxTermsWriterPerField,
+    terms_writer: *const FreqProxTermsWriterPerField<D, C, MS, MP>,
 }
 
-impl FreqProxTerms {
-    fn new(terms_writer: &FreqProxTermsWriterPerField) -> Self {
+impl<D, C, MS, MP> FreqProxTerms<D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
+    fn new(terms_writer: &FreqProxTermsWriterPerField<D, C, MS, MP>) -> Self {
         FreqProxTerms { terms_writer }
     }
 
-    fn terms(&self) -> &FreqProxTermsWriterPerField {
+    fn terms(&self) -> &FreqProxTermsWriterPerField<D, C, MS, MP> {
         unsafe { &*self.terms_writer }
     }
 }
 
-unsafe impl Send for FreqProxTerms {}
-
-unsafe impl Sync for FreqProxTerms {}
-
-impl Terms for FreqProxTerms {
-    fn iterator(&self) -> Result<Box<TermIterator>> {
-        let mut terms_iter = Box::new(FreqProxTermsIterator::new(self.terms()));
+impl<D, C, MS, MP> Terms for FreqProxTerms<D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
+    type Iterator = FreqProxTermsIterator<D, C, MS, MP>;
+    fn iterator(&self) -> Result<Self::Iterator> {
+        let mut terms_iter = FreqProxTermsIterator::new(self.terms());
         terms_iter.reset();
         Ok(terms_iter)
     }
@@ -393,16 +436,23 @@ impl Terms for FreqProxTerms {
     }
 }
 
-struct FreqProxTermsIterator {
+struct FreqProxTermsIterator<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy>
+{
     // TODO use raw pointer because we need to return box
-    terms_writer: *const FreqProxTermsWriterPerField,
+    terms_writer: *const FreqProxTermsWriterPerField<D, C, MS, MP>,
     num_terms: usize,
     ord: isize,
     scratch: BytesRef,
 }
 
-impl FreqProxTermsIterator {
-    fn new(terms_writer: &FreqProxTermsWriterPerField) -> Self {
+impl<D, C, MS, MP> FreqProxTermsIterator<D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
+    fn new(terms_writer: &FreqProxTermsWriterPerField<D, C, MS, MP>) -> Self {
         FreqProxTermsIterator {
             terms_writer,
             num_terms: terms_writer.base.bytes_hash.len(),
@@ -411,7 +461,7 @@ impl FreqProxTermsIterator {
         }
     }
 
-    fn terms(&self) -> &FreqProxTermsWriterPerField {
+    fn terms(&self) -> &FreqProxTermsWriterPerField<D, C, MS, MP> {
         unsafe { &(*self.terms_writer) }
     }
 
@@ -430,7 +480,16 @@ impl FreqProxTermsIterator {
     }
 }
 
-impl TermIterator for FreqProxTermsIterator {
+impl<D, C, MS, MP> TermIterator for FreqProxTermsIterator<D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
+    type Postings = FreqProxPostingIterEnum<D, C, MS, MP>;
+    type TermState = UnreachableTermState;
+
     fn next(&mut self) -> Result<Option<Vec<u8>>> {
         self.ord += 1;
         if self.ord >= self.num_terms as isize {
@@ -497,45 +556,41 @@ impl TermIterator for FreqProxTermsIterator {
         unimplemented!()
     }
 
-    fn postings_with_flags(&mut self, flags: i16) -> Result<Box<PostingIterator>> {
-        if posting_feature_requested(flags, POSTING_ITERATOR_FLAG_POSITIONS) {
+    fn postings_with_flags(&mut self, flags: u16) -> Result<Self::Postings> {
+        if PostingIteratorFlags::feature_requested(flags, PostingIteratorFlags::POSITIONS) {
             if !self.terms().has_prox {
                 // Caller wants positions but we didn't index them;
                 // don't lie:
                 bail!(ErrorKind::IllegalArgument("did not index positions".into()));
             }
             if !self.terms().has_offsets
-                && posting_feature_requested(flags, POSTING_ITERATOR_FLAG_OFFSETS)
+                && PostingIteratorFlags::feature_requested(flags, PostingIteratorFlags::OFFSETS)
             {
                 bail!(ErrorKind::IllegalArgument("did not index offsets".into()));
             }
 
-            let mut pos_iter = Box::new(FreqProxPostingsIterator::new(self.terms()));
+            let mut pos_iter = FreqProxPostingsIterator::new(self.terms());
             pos_iter.reset(self.terms().base.bytes_hash.ids[self.ord as usize] as usize);
-            Ok(pos_iter)
+            Ok(FreqProxPostingIterEnum::Postings(pos_iter))
         } else {
             if !self.terms().has_freq
-                && posting_feature_requested(flags, POSTING_ITERATOR_FLAG_FREQS)
+                && PostingIteratorFlags::feature_requested(flags, PostingIteratorFlags::FREQS)
             {
                 // Caller wants freqs but we didn't index them;
                 // don't lie:
                 bail!(ErrorKind::IllegalArgument("did not index freq".into()));
             }
 
-            let mut pos_iter = Box::new(FreqProxDocsIterator::new(self.terms()));
+            let mut pos_iter = FreqProxDocsIterator::new(self.terms());
             pos_iter.reset(self.terms().base.bytes_hash.ids[self.ord as usize] as usize);
-            Ok(pos_iter)
+            Ok(FreqProxPostingIterEnum::Docs(pos_iter))
         }
-    }
-
-    fn as_any(&self) -> &Any {
-        self
     }
 }
 
-struct FreqProxDocsIterator {
+struct FreqProxDocsIterator<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy> {
     // TODO use raw pointer because we need to return box
-    terms_writer: *const FreqProxTermsWriterPerField,
+    terms_writer: *const FreqProxTermsWriterPerField<D, C, MS, MP>,
     reader: ByteSliceReader,
     read_term_freq: bool,
     doc_id: DocId,
@@ -544,7 +599,13 @@ struct FreqProxDocsIterator {
     term_id: usize,
 }
 
-impl Clone for FreqProxDocsIterator {
+impl<D, C, MS, MP> Clone for FreqProxDocsIterator<D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
     fn clone(&self) -> Self {
         FreqProxDocsIterator {
             terms_writer: self.terms_writer,
@@ -558,8 +619,14 @@ impl Clone for FreqProxDocsIterator {
     }
 }
 
-impl FreqProxDocsIterator {
-    fn new(terms_writer: &FreqProxTermsWriterPerField) -> Self {
+impl<D, C, MS, MP> FreqProxDocsIterator<D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
+    fn new(terms_writer: &FreqProxTermsWriterPerField<D, C, MS, MP>) -> Self {
         FreqProxDocsIterator {
             terms_writer,
             reader: ByteSliceReader::default(),
@@ -571,7 +638,7 @@ impl FreqProxDocsIterator {
         }
     }
 
-    fn terms(&self) -> &FreqProxTermsWriterPerField {
+    fn terms(&self) -> &FreqProxTermsWriterPerField<D, C, MS, MP> {
         unsafe { &*self.terms_writer }
     }
 
@@ -585,15 +652,22 @@ impl FreqProxDocsIterator {
     }
 }
 
-unsafe impl Send for FreqProxDocsIterator {}
+unsafe impl<D, C, MS, MP> Send for FreqProxDocsIterator<D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
+}
 
-unsafe impl Sync for FreqProxDocsIterator {}
-
-impl PostingIterator for FreqProxDocsIterator {
-    fn clone_as_doc_iterator(&self) -> Result<Box<DocIterator>> {
-        Ok(Box::new(self.clone()))
-    }
-
+impl<D, C, MS, MP> PostingIterator for FreqProxDocsIterator<D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
     fn freq(&self) -> Result<i32> {
         // Don't lie here ... don't want codecs writings lots
         // of wasted 1s into the index:
@@ -619,13 +693,15 @@ impl PostingIterator for FreqProxDocsIterator {
     fn payload(&self) -> Result<Payload> {
         Ok(Vec::with_capacity(0))
     }
-
-    fn as_any_mut(&mut self) -> &mut Any {
-        self
-    }
 }
 
-impl DocIterator for FreqProxDocsIterator {
+impl<D, C, MS, MP> DocIterator for FreqProxDocsIterator<D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
     fn doc_id(&self) -> i32 {
         self.doc_id
     }
@@ -673,9 +749,14 @@ impl DocIterator for FreqProxDocsIterator {
     }
 }
 
-struct FreqProxPostingsIterator {
+struct FreqProxPostingsIterator<
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+> {
     // TODO use raw pointer because we need to return box
-    terms_writer: *const FreqProxTermsWriterPerField,
+    terms_writer: *const FreqProxTermsWriterPerField<D, C, MS, MP>,
     reader: ByteSliceReader,
     pos_reader: ByteSliceReader,
     read_offsets: bool,
@@ -691,8 +772,14 @@ struct FreqProxPostingsIterator {
     payload: Vec<u8>,
 }
 
-impl FreqProxPostingsIterator {
-    fn new(terms_writer: &FreqProxTermsWriterPerField) -> Self {
+impl<D, C, MS, MP> FreqProxPostingsIterator<D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
+    fn new(terms_writer: &FreqProxTermsWriterPerField<D, C, MS, MP>) -> Self {
         FreqProxPostingsIterator {
             terms_writer,
             reader: ByteSliceReader::default(),
@@ -711,7 +798,7 @@ impl FreqProxPostingsIterator {
         }
     }
 
-    fn terms(&self) -> &FreqProxTermsWriterPerField {
+    fn terms(&self) -> &FreqProxTermsWriterPerField<D, C, MS, MP> {
         unsafe { &*self.terms_writer }
     }
 
@@ -727,7 +814,13 @@ impl FreqProxPostingsIterator {
     }
 }
 
-impl Clone for FreqProxPostingsIterator {
+impl<D, C, MS, MP> Clone for FreqProxPostingsIterator<D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
     fn clone(&self) -> Self {
         FreqProxPostingsIterator {
             terms_writer: self.terms_writer,
@@ -748,15 +841,22 @@ impl Clone for FreqProxPostingsIterator {
     }
 }
 
-unsafe impl Send for FreqProxPostingsIterator {}
+unsafe impl<D, C, MS, MP> Send for FreqProxPostingsIterator<D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
+}
 
-unsafe impl Sync for FreqProxPostingsIterator {}
-
-impl PostingIterator for FreqProxPostingsIterator {
-    fn clone_as_doc_iterator(&self) -> Result<Box<DocIterator>> {
-        Ok(Box::new(self.clone()))
-    }
-
+impl<D, C, MS, MP> PostingIterator for FreqProxPostingsIterator<D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
     fn freq(&self) -> Result<i32> {
         Ok(self.freq as i32)
     }
@@ -802,13 +902,15 @@ impl PostingIterator for FreqProxPostingsIterator {
         // if self.has_payload is false, just return empty Vec<u8>
         Ok(self.payload.clone())
     }
-
-    fn as_any_mut(&mut self) -> &mut Any {
-        self
-    }
 }
 
-impl DocIterator for FreqProxPostingsIterator {
+impl<D, C, MS, MP> DocIterator for FreqProxPostingsIterator<D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
     fn doc_id(&self) -> i32 {
         self.doc_id
     }
@@ -857,5 +959,125 @@ impl DocIterator for FreqProxPostingsIterator {
 
     fn cost(&self) -> usize {
         unreachable!()
+    }
+}
+
+enum FreqProxPostingIterEnum<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy>
+{
+    Postings(FreqProxPostingsIterator<D, C, MS, MP>),
+    Docs(FreqProxDocsIterator<D, C, MS, MP>),
+}
+
+impl<D, C, MS, MP> PostingIterator for FreqProxPostingIterEnum<D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
+    fn freq(&self) -> Result<i32> {
+        match self {
+            FreqProxPostingIterEnum::Postings(i) => i.freq(),
+            FreqProxPostingIterEnum::Docs(i) => i.freq(),
+        }
+    }
+
+    fn next_position(&mut self) -> Result<i32> {
+        match self {
+            FreqProxPostingIterEnum::Postings(i) => i.next_position(),
+            FreqProxPostingIterEnum::Docs(i) => i.next_position(),
+        }
+    }
+
+    fn start_offset(&self) -> Result<i32> {
+        match self {
+            FreqProxPostingIterEnum::Postings(i) => i.start_offset(),
+            FreqProxPostingIterEnum::Docs(i) => i.start_offset(),
+        }
+    }
+
+    fn end_offset(&self) -> Result<i32> {
+        match self {
+            FreqProxPostingIterEnum::Postings(i) => i.end_offset(),
+            FreqProxPostingIterEnum::Docs(i) => i.end_offset(),
+        }
+    }
+
+    fn payload(&self) -> Result<Payload> {
+        match self {
+            FreqProxPostingIterEnum::Postings(i) => i.payload(),
+            FreqProxPostingIterEnum::Docs(i) => i.payload(),
+        }
+    }
+}
+
+impl<D, C, MS, MP> DocIterator for FreqProxPostingIterEnum<D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
+    fn doc_id(&self) -> DocId {
+        match self {
+            FreqProxPostingIterEnum::Postings(i) => i.doc_id(),
+            FreqProxPostingIterEnum::Docs(i) => i.doc_id(),
+        }
+    }
+
+    fn next(&mut self) -> Result<DocId> {
+        match self {
+            FreqProxPostingIterEnum::Postings(i) => i.next(),
+            FreqProxPostingIterEnum::Docs(i) => i.next(),
+        }
+    }
+
+    fn advance(&mut self, target: i32) -> Result<DocId> {
+        match self {
+            FreqProxPostingIterEnum::Postings(i) => i.advance(target),
+            FreqProxPostingIterEnum::Docs(i) => i.advance(target),
+        }
+    }
+
+    fn slow_advance(&mut self, target: i32) -> Result<DocId> {
+        match self {
+            FreqProxPostingIterEnum::Postings(i) => i.slow_advance(target),
+            FreqProxPostingIterEnum::Docs(i) => i.slow_advance(target),
+        }
+    }
+
+    fn cost(&self) -> usize {
+        match self {
+            FreqProxPostingIterEnum::Postings(i) => i.cost(),
+            FreqProxPostingIterEnum::Docs(i) => i.cost(),
+        }
+    }
+
+    fn matches(&mut self) -> Result<bool> {
+        match self {
+            FreqProxPostingIterEnum::Postings(i) => i.matches(),
+            FreqProxPostingIterEnum::Docs(i) => i.matches(),
+        }
+    }
+
+    fn match_cost(&self) -> f32 {
+        match self {
+            FreqProxPostingIterEnum::Postings(i) => i.match_cost(),
+            FreqProxPostingIterEnum::Docs(i) => i.match_cost(),
+        }
+    }
+
+    fn approximate_next(&mut self) -> Result<DocId> {
+        match self {
+            FreqProxPostingIterEnum::Postings(i) => i.approximate_next(),
+            FreqProxPostingIterEnum::Docs(i) => i.approximate_next(),
+        }
+    }
+
+    fn approximate_advance(&mut self, target: i32) -> Result<DocId> {
+        match self {
+            FreqProxPostingIterEnum::Postings(i) => i.approximate_advance(target),
+            FreqProxPostingIterEnum::Docs(i) => i.approximate_advance(target),
+        }
     }
 }

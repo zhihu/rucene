@@ -3,8 +3,11 @@ use std::sync::{Arc, Once, ONCE_INIT};
 
 use core::codec::lucene50::posting_format::BLOCK_SIZE;
 use core::store::{DataOutput, IndexInput, IndexOutput};
+use core::util::bit_util::BitsRequired;
 use core::util::packed::packed_misc::*;
-use error::*;
+use error::Result;
+
+use smallvec::SmallVec;
 
 /// Special number of bits per value used whenever all values to encode are equal.
 const ALL_VALUES_EQUAL: i32 = 0;
@@ -21,7 +24,7 @@ static mut MAX_DATA_SIZE: usize = 0;
 
 static START: Once = ONCE_INIT;
 
-fn compute_iterations(decoder: &PackedIntDecoder) -> i32 {
+fn compute_iterations(decoder: &impl PackedIntDecoder) -> i32 {
     (BLOCK_SIZE as f32 / decoder.byte_value_count() as f32).ceil() as i32
 }
 
@@ -32,7 +35,7 @@ pub fn max_data_size() -> usize {
             let format = Format::Packed;
             for bpv in 1..33 {
                 if let Ok(decoder) = get_decoder(format, version, bpv) {
-                    let iterations = compute_iterations(decoder.as_ref()) as usize;
+                    let iterations = compute_iterations(&decoder) as usize;
                     max_data_size = max(max_data_size, iterations * decoder.byte_value_count());
                 } else {
                     assert!(
@@ -44,7 +47,7 @@ pub fn max_data_size() -> usize {
             let format = Format::PackedSingleBlock;
             for bpv in 1..33 {
                 if let Ok(decoder) = get_decoder(format, version, bpv) {
-                    let iterations = compute_iterations(decoder.as_ref()) as usize;
+                    let iterations = compute_iterations(&decoder) as usize;
                     max_data_size = max(max_data_size, iterations * decoder.byte_value_count());
                 } else {
                     assert!(
@@ -64,37 +67,34 @@ fn encoded_size(format: Format, version: i32, bits_per_value: i32) -> i32 {
 }
 
 struct ForUtilInstance {
-    encoded_sizes: [i32; 33],
-    decoders: Vec<Box<PackedIntDecoder>>,
-    encoders: Vec<Box<PackedIntEncoder>>,
-    iterations: [i32; 33],
+    encoded_sizes: [i32; 32],
+    decoders: SmallVec<[BulkOperationEnum; 32]>,
+    encoders: SmallVec<[BulkOperationEnum; 32]>,
+    iterations: [i32; 32],
 }
 
 impl ForUtilInstance {
-    fn with_input(input: &mut IndexInput) -> Result<ForUtilInstance> {
+    fn with_input(input: &mut dyn IndexInput) -> Result<ForUtilInstance> {
         let packed_ints_version = input.read_vint()?;
         check_version(packed_ints_version)?;
-        let mut encoded_sizes = [0 as i32; 33];
-        let mut iterations = [0 as i32; 33];
-        let mut decoders = Vec::with_capacity(33);
+        let mut encoded_sizes = [0; 32];
+        let mut iterations = [0; 32];
+        let mut decoders: SmallVec<[BulkOperationEnum; 32]> = SmallVec::new();
 
-        for bpv in 1..33 {
+        for bpv in 0..32 {
             let code = input.read_vint()?;
             let format_id = ((code as usize) >> 5) as i32;
             let bits_per_value = (code & 31) + 1;
             let format = Format::with_id(format_id);
             encoded_sizes[bpv] = encoded_size(format, packed_ints_version, bits_per_value);
-            if bpv == 1 {
-                decoders.push(get_decoder(format, packed_ints_version, bits_per_value)?);
-            }
             decoders.push(get_decoder(format, packed_ints_version, bits_per_value)?);
-            iterations[bpv] = compute_iterations(decoders[bpv].as_ref());
+            iterations[bpv] = compute_iterations(&decoders[bpv]);
         }
 
         Ok(ForUtilInstance {
             encoded_sizes,
             decoders,
-            encoders: Vec::with_capacity(0),
+            encoders: SmallVec::new(),
             // not used when read
             iterations,
         })
@@ -106,10 +106,10 @@ impl ForUtilInstance {
     ) -> Result<Self> {
         output.write_vint(VERSION_CURRENT)?;
 
-        let mut encoders = Vec::with_capacity(33);
-        let mut decoders = Vec::with_capacity(33);
-        let mut iterations = [0i32; 33];
-        let mut encoded_sizes = [0i32; 33];
+        let mut encoders = SmallVec::new();
+        let mut decoders: SmallVec<[BulkOperationEnum; 32]> = SmallVec::new();
+        let mut iterations = [0i32; 32];
+        let mut encoded_sizes = [0i32; 32];
 
         for bpv in 1..33usize {
             let format_and_bits =
@@ -118,36 +118,22 @@ impl ForUtilInstance {
                 .format
                 .is_supported(format_and_bits.bits_per_value));
             debug_assert!(format_and_bits.bits_per_value <= 32);
-            encoded_sizes[bpv] = encoded_size(
+            encoded_sizes[bpv - 1] = encoded_size(
                 format_and_bits.format,
                 VERSION_CURRENT,
                 format_and_bits.bits_per_value,
             );
-            if bpv == 1 {
-                encoders.push(get_encoder(
-                    format_and_bits.format,
-                    VERSION_CURRENT,
-                    format_and_bits.bits_per_value,
-                )?);
-            }
             encoders.push(get_encoder(
                 format_and_bits.format,
                 VERSION_CURRENT,
                 format_and_bits.bits_per_value,
             )?);
-            if bpv == 1 {
-                decoders.push(get_decoder(
-                    format_and_bits.format,
-                    VERSION_CURRENT,
-                    format_and_bits.bits_per_value,
-                )?);
-            }
             decoders.push(get_decoder(
                 format_and_bits.format,
                 VERSION_CURRENT,
                 format_and_bits.bits_per_value,
             )?);
-            iterations[bpv] = compute_iterations(decoders[bpv].as_ref());
+            iterations[bpv - 1] = compute_iterations(&decoders[bpv - 1]);
 
             output.write_vint(
                 format_and_bits.format.get_id() << 5 | (format_and_bits.bits_per_value - 1),
@@ -164,7 +150,7 @@ impl ForUtilInstance {
 
     pub fn read_block(
         &self,
-        input: &mut IndexInput,
+        input: &mut dyn IndexInput,
         encoded: &mut [u8],
         decoded: &mut [i32],
     ) -> Result<()> {
@@ -180,22 +166,22 @@ impl ForUtilInstance {
             return Ok(());
         }
 
-        let encoded_size = self.encoded_sizes[num_bits];
+        let encoded_size = self.encoded_sizes[num_bits - 1];
         input.read_exact(&mut encoded[0..encoded_size as usize])?;
 
-        let decoder = &self.decoders[num_bits];
-        let iters = self.iterations[num_bits] as usize;
+        let decoder = &self.decoders[num_bits - 1];
+        let iters = self.iterations[num_bits - 1] as usize;
         decoder.decode_byte_to_int(encoded, decoded, iters);
         Ok(())
     }
 
-    pub fn skip_block(&self, input: &mut IndexInput) -> Result<()> {
+    pub fn skip_block(&self, input: &mut dyn IndexInput) -> Result<()> {
         let num_bits = input.read_byte()? as usize;
         if num_bits as i32 == ALL_VALUES_EQUAL {
             input.read_vint()?;
             return Ok(());
         }
-        let encoded_size = self.encoded_sizes[num_bits];
+        let encoded_size = self.encoded_sizes[num_bits - 1];
         let fp = input.file_pointer();
         input.seek(fp + i64::from(encoded_size))
     }
@@ -207,7 +193,7 @@ pub struct ForUtil {
 }
 
 impl ForUtil {
-    pub fn with_input(input: &mut IndexInput) -> Result<ForUtil> {
+    pub fn with_input(input: &mut dyn IndexInput) -> Result<ForUtil> {
         Ok(ForUtil {
             instance: Arc::new(ForUtilInstance::with_input(input)?),
         })
@@ -227,7 +213,7 @@ impl ForUtil {
 
     pub fn read_block(
         &self,
-        input: &mut IndexInput,
+        input: &mut dyn IndexInput,
         encoded: &mut [u8],
         decoded: &mut [i32],
     ) -> Result<()> {
@@ -253,14 +239,14 @@ impl ForUtil {
         }
 
         debug_assert!(or >= 0);
-        unsigned_bits_required(or as i64)
+        or.bits_required() as i32
     }
 
     pub fn write_block(
         &self,
         data: &[i32],
         encoded: &mut [u8],
-        out: &mut IndexOutput,
+        out: &mut impl IndexOutput,
     ) -> Result<()> {
         if Self::is_all_equal(data) {
             out.write_byte(0)?;
@@ -270,10 +256,10 @@ impl ForUtil {
         let num_bits = Self::bits_required(data) as usize;
         assert!(num_bits > 0 && num_bits <= 32);
 
-        let iters = self.instance.iterations[num_bits];
-        let encoder = &self.instance.encoders[num_bits];
+        let iters = self.instance.iterations[num_bits - 1];
+        let encoder = &self.instance.encoders[num_bits - 1];
         assert!(iters * encoder.byte_value_count() as i32 >= BLOCK_SIZE);
-        let encoded_size = self.instance.encoded_sizes[num_bits];
+        let encoded_size = self.instance.encoded_sizes[num_bits - 1];
         debug_assert!(iters * encoder.byte_block_count() as i32 >= encoded_size);
 
         out.write_byte(num_bits as u8)?;
@@ -281,7 +267,7 @@ impl ForUtil {
         out.write_bytes(encoded, 0, encoded_size as usize)
     }
 
-    pub fn skip_block(&self, input: &mut IndexInput) -> Result<()> {
+    pub fn skip_block(&self, input: &mut dyn IndexInput) -> Result<()> {
         self.instance.skip_block(input)
     }
 }

@@ -44,7 +44,7 @@ impl Fieldable for NumericDocValuesField {
         self.field.fields_data()
     }
 
-    fn token_stream(&mut self) -> Result<Box<TokenStream>> {
+    fn token_stream(&mut self) -> Result<Box<dyn TokenStream>> {
         unreachable!()
     }
 

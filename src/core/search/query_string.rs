@@ -1,9 +1,10 @@
-use error::*;
+use error::{ErrorKind::IllegalArgument, Result};
 use std::option::Option::{None, Some};
 use std::result::Result::Ok;
 use std::str::Chars;
 use std::vec::Vec;
 
+use core::codec::Codec;
 use core::index::Term;
 use core::search::boolean_query::BooleanQuery;
 use core::search::boost::BoostQuery;
@@ -35,15 +36,19 @@ impl QueryStringQueryBuilder {
         }
     }
 
-    pub fn build(&self) -> Result<Box<Query>> {
+    pub fn build<C: Codec>(&self) -> Result<Box<dyn Query<C>>> {
         match self.parse_query(&mut self.query_string.chars(), None) {
             Ok(Some(q)) => Ok(q),
-            Ok(None) => Err("empty query string!".into()),
+            Ok(None) => bail!(IllegalArgument("empty query string!".into())),
             Err(e) => Err(e),
         }
     }
 
-    fn parse_query(&self, chars: &mut Chars, end_char: Option<char>) -> Result<Option<Box<Query>>> {
+    fn parse_query<C: Codec>(
+        &self,
+        chars: &mut Chars,
+        end_char: Option<char>,
+    ) -> Result<Option<Box<dyn Query<C>>>> {
         let mut musts = Vec::new();
         let mut shoulds = Vec::new();
         let mut is_option = true;
@@ -102,7 +107,7 @@ impl QueryStringQueryBuilder {
                 ' ' => is_option = true,
                 ')' => {
                     if end_char.is_none() || end_char.unwrap() != ')' {
-                        panic!("parenthesis not match!");
+                        bail!(IllegalArgument("parenthesis not match!".into()));
                     }
                     break;
                 }
@@ -116,7 +121,7 @@ impl QueryStringQueryBuilder {
                         }
                         if c == ')' {
                             if end_char.is_none() || end_char.unwrap() != ')' {
-                                panic!("parenthesis not match!");
+                                bail!(IllegalArgument("parenthesis not match!".into()));
                             }
                             should_return = true;
                             break;
@@ -146,7 +151,7 @@ impl QueryStringQueryBuilder {
                 }
             }
         }
-        let query: Box<Query> = if musts.len() + shoulds.len() == 1 {
+        let query: Box<dyn Query<C>> = if musts.len() + shoulds.len() == 1 {
             if !musts.is_empty() {
                 musts.remove(0)
             } else {
@@ -158,11 +163,11 @@ impl QueryStringQueryBuilder {
         Ok(Some(query))
     }
 
-    fn term_query(&self, term: String, field: String, boost: f32) -> Box<Query> {
+    fn term_query<C: Codec>(&self, term: String, field: String, boost: f32) -> Box<dyn Query<C>> {
         Box::new(TermQuery::new(Term::new(field, term.into()), boost, None))
     }
 
-    fn build_field_query(&self, term_boost: String) -> Result<Box<Query>> {
+    fn build_field_query<C: Codec>(&self, term_boost: String) -> Result<Box<dyn Query<C>>> {
         let mut queries = if term_boost.find('~').is_some() {
             self.field_phrase_query(&term_boost)?
         } else {
@@ -177,7 +182,7 @@ impl QueryStringQueryBuilder {
         Ok(res)
     }
 
-    fn field_term_query(&self, query: String) -> Result<Vec<Box<Query>>> {
+    fn field_term_query<C: Codec>(&self, query: String) -> Result<Vec<Box<dyn Query<C>>>> {
         let (term, boost) = if let Some(i) = query.find('^') {
             let (t, b) = query.split_at(i as usize);
             let boost_str: String = b.chars().skip(1).collect();
@@ -198,14 +203,16 @@ impl QueryStringQueryBuilder {
         Ok(queries)
     }
 
-    fn field_phrase_query(&self, query: &str) -> Result<Vec<Box<Query>>> {
+    fn field_phrase_query<C: Codec>(&self, query: &str) -> Result<Vec<Box<dyn Query<C>>>> {
         if let Some(idx) = query.find('~') {
             let (t, s) = query.split_at(idx);
             let slop_str: String = s.chars().skip(1).collect();
             let slop = slop_str.parse::<i32>()?;
             let term_strs: Vec<&str> = t.split_whitespace().collect();
             if term_strs.len() < 2 {
-                bail!("phrase query terms size must not small than 2");
+                bail!(IllegalArgument(
+                    "phrase query terms size must not small than 2".into()
+                ));
             }
             let mut queries = Vec::with_capacity(self.fields.len());
             for fb in &self.fields {
@@ -221,7 +228,10 @@ impl QueryStringQueryBuilder {
 
             Ok(queries)
         } else {
-            bail!("invalid query string '{}' for phrase query", &query);
+            bail!(IllegalArgument(format!(
+                "invalid query string '{}' for phrase query",
+                &query
+            )));
         }
     }
 }
@@ -229,13 +239,17 @@ impl QueryStringQueryBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::codec::tests::TestCodec;
 
     #[test]
     fn test_query_string_query() {
         let term = String::from("test");
         let field = String::from("title");
-        let q = QueryStringQueryBuilder::new(term.clone(), vec![(field, 1.0)], 1, 1.0).build();
-        let term_str: String = q.unwrap().to_string();
+        let q: Box<dyn Query<TestCodec>> =
+            QueryStringQueryBuilder::new(term.clone(), vec![(field, 1.0)], 1, 1.0)
+                .build()
+                .unwrap();
+        let term_str: String = q.to_string();
         assert_eq!(
             term_str,
             String::from("TermQuery(field: title, term: test, boost: 1)")
@@ -243,8 +257,11 @@ mod tests {
 
         let term = String::from("(test^0.2 | 测试^2)");
         let field = String::from("title");
-        let q = QueryStringQueryBuilder::new(term.clone(), vec![(field, 1.0)], 1, 2.0).build();
-        let term_str: String = q.unwrap().to_string();
+        let q: Box<dyn Query<TestCodec>> =
+            QueryStringQueryBuilder::new(term.clone(), vec![(field, 1.0)], 1, 2.0)
+                .build()
+                .unwrap();
+        let term_str: String = q.to_string();
         assert_eq!(
             term_str,
             String::from(
@@ -255,8 +272,11 @@ mod tests {
 
         let term = String::from("test^0.2 \"测试\"^2");
         let field = String::from("title");
-        let q = QueryStringQueryBuilder::new(term.clone(), vec![(field, 1.0)], 1, 2.0).build();
-        let term_str: String = q.unwrap().to_string();
+        let q: Box<dyn Query<TestCodec>> =
+            QueryStringQueryBuilder::new(term.clone(), vec![(field, 1.0)], 1, 2.0)
+                .build()
+                .unwrap();
+        let term_str: String = q.to_string();
         assert_eq!(
             term_str,
             String::from(
@@ -266,9 +286,11 @@ mod tests {
         );
 
         let field = String::from("title");
-        let q =
-            QueryStringQueryBuilder::new(String::from("+test"), vec![(field, 1.0)], 1, 1.0).build();
-        let term_str: String = q.unwrap().to_string();
+        let q: Box<dyn Query<TestCodec>> =
+            QueryStringQueryBuilder::new(String::from("+test"), vec![(field, 1.0)], 1, 1.0)
+                .build()
+                .unwrap();
+        let term_str: String = q.to_string();
         assert_eq!(
             term_str,
             String::from("TermQuery(field: title, term: test, boost: 1)")
@@ -276,9 +298,11 @@ mod tests {
 
         let query_string = String::from("test search");
         let field = String::from("title");
-        let q =
-            QueryStringQueryBuilder::new(query_string.clone(), vec![(field, 1.0)], 1, 1.0).build();
-        let term_str: String = q.unwrap().to_string();
+        let q: Box<dyn Query<TestCodec>> =
+            QueryStringQueryBuilder::new(query_string.clone(), vec![(field, 1.0)], 1, 1.0)
+                .build()
+                .unwrap();
+        let term_str: String = q.to_string();
         assert_eq!(
             term_str,
             String::from(
@@ -289,9 +313,11 @@ mod tests {
 
         let query_string = String::from("test +search");
         let field = String::from("title");
-        let q =
-            QueryStringQueryBuilder::new(query_string.clone(), vec![(field, 1.0)], 1, 1.0).build();
-        let term_str: String = q.unwrap().to_string();
+        let q: Box<dyn Query<TestCodec>> =
+            QueryStringQueryBuilder::new(query_string.clone(), vec![(field, 1.0)], 1, 1.0)
+                .build()
+                .unwrap();
+        let term_str: String = q.to_string();
         assert_eq!(
             term_str,
             String::from(
@@ -302,9 +328,11 @@ mod tests {
 
         let query_string = String::from("test +(search 搜索)");
         let field = String::from("title");
-        let q =
-            QueryStringQueryBuilder::new(query_string.clone(), vec![(field, 1.0)], 1, 1.0).build();
-        let term_str: String = q.unwrap().to_string();
+        let q: Box<dyn Query<TestCodec>> =
+            QueryStringQueryBuilder::new(query_string.clone(), vec![(field, 1.0)], 1, 1.0)
+                .build()
+                .unwrap();
+        let term_str: String = q.to_string();
         assert_eq!(
             term_str,
             String::from(
@@ -316,14 +344,15 @@ mod tests {
         );
 
         let query_string = String::from("test +search");
-        let q = QueryStringQueryBuilder::new(
+        let q: Box<dyn Query<TestCodec>> = QueryStringQueryBuilder::new(
             query_string.clone(),
             vec![("title".to_string(), 1.0), ("content".to_string(), 1.0)],
             1,
             1.0,
         )
-        .build();
-        let term_str: String = q.unwrap().to_string();
+        .build()
+        .unwrap();
+        let term_str: String = q.to_string();
         assert_eq!(
             term_str,
             String::from(
@@ -339,9 +368,11 @@ mod tests {
             "从 +(市场定位 (+市场 +定位)) 分析 +b2b +((电子商务 电商^0.8) (+电子 +商务)) +网站",
         );
         let field = String::from("title");
-        let q =
-            QueryStringQueryBuilder::new(query_string.clone(), vec![(field, 1.0)], 1, 1.0).build();
-        let term_str: String = q.unwrap().to_string();
+        let q: Box<dyn Query<TestCodec>> =
+            QueryStringQueryBuilder::new(query_string.clone(), vec![(field, 1.0)], 1, 1.0)
+                .build()
+                .unwrap();
+        let term_str: String = q.to_string();
         assert_eq!(
             term_str,
             String::from(

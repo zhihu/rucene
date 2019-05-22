@@ -1,11 +1,15 @@
+use core::codec::Codec;
 use core::index::index_writer::IndexWriter;
 use core::index::merge_rate_limiter::MergeRateLimiter;
+use core::index::merge_scheduler::MergeScheduler;
 use core::index::{SegmentCommitInfo, SegmentInfos, SegmentReader};
-use core::store::MergeInfo;
+use core::store::{Directory, MergeInfo};
 use core::util::ptr_eq;
 
-use error::ErrorKind::IllegalArgument;
-use error::Result;
+use error::{
+    ErrorKind::{IllegalArgument, RuntimeError},
+    Result,
+};
 
 use std::cell::Cell;
 use std::cmp::Ordering;
@@ -58,7 +62,7 @@ pub enum MergerTrigger {
 /// ConcurrentMergeScheduler} they will be run concurrently.
 ///
 /// The default MergePolicy is {@link TieredMergePolicy}.
-pub trait MergePolicy {
+pub trait MergePolicy: 'static {
     // Determine what set of merge operations are now necessary on the index.
     // {@link IndexWriter} calls this whenever there is a change to the segments.
     // This call is always synchronized on the {@link IndexWriter} instance so
@@ -68,12 +72,12 @@ pub trait MergePolicy {
     //          the total set of segments in the index
     // @param writer the IndexWriter to find the merges on
     //
-    fn find_merges(
+    fn find_merges<D: Directory, C: Codec, MS: MergeScheduler, MP: MergePolicy>(
         &self,
         merge_trigger: MergerTrigger,
-        segment_infos: &SegmentInfos,
-        writer: &IndexWriter,
-    ) -> Result<Option<MergeSpecification>>;
+        segment_infos: &SegmentInfos<D, C>,
+        writer: &IndexWriter<D, C, MS, MP>,
+    ) -> Result<Option<MergeSpecification<D, C>>>;
 
     ///
     // Determine what set of merge operations is necessary in
@@ -81,21 +85,21 @@ pub trait MergePolicy {
     // when its {@link IndexWriter#forceMerge} method is called. This call is always
     // synchronized on the {@link IndexWriter} instance so only one thread at a
     // time will call this method.
-    fn find_forced_merges(
+    fn find_forced_merges<D: Directory, C: Codec, MS: MergeScheduler, MP: MergePolicy>(
         &self,
-        segment_infos: &SegmentInfos,
+        segment_infos: &SegmentInfos<D, C>,
         max_segment_count: u32,
-        segments_to_merge: &HashMap<Arc<SegmentCommitInfo>, bool>,
-        writer: &IndexWriter,
-    ) -> Result<Option<MergeSpecification>>;
+        segments_to_merge: &HashMap<Arc<SegmentCommitInfo<D, C>>, bool>,
+        writer: &IndexWriter<D, C, MS, MP>,
+    ) -> Result<Option<MergeSpecification<D, C>>>;
 
     /// Determine what set of merge operations is necessary in order to expunge
     /// all deletes from the index.
-    fn find_forced_deletes_mergers(
+    fn find_forced_deletes_mergers<D: Directory, C: Codec, MS: MergeScheduler, MP: MergePolicy>(
         &self,
-        segments_infos: &SegmentInfos,
-        writer: &IndexWriter,
-    ) -> Result<Option<MergeSpecification>>;
+        segments_infos: &SegmentInfos<D, C>,
+        writer: &IndexWriter<D, C, MS, MP>,
+    ) -> Result<Option<MergeSpecification<D, C>>>;
 
     fn max_cfs_segment_size(&self) -> u64;
 
@@ -108,11 +112,11 @@ pub trait MergePolicy {
     // {@link #getMaxCFSSegmentSizeMB()} and the size is less or equal to the
     // TotalIndexSize * {@link #getNoCFSRatio()} otherwise <code>false</code>.
     //
-    fn use_compound_file(
+    fn use_compound_file<D: Directory, C: Codec, MS: MergeScheduler, MP: MergePolicy>(
         &self,
-        infos: &SegmentInfos,
-        merged_info: &SegmentCommitInfo,
-        writer: &IndexWriter,
+        infos: &SegmentInfos<D, C>,
+        merged_info: &SegmentCommitInfo<D, C>,
+        writer: &IndexWriter<D, C, MS, MP>,
     ) -> bool {
         let no_cfs_ratio = self.no_cfs_ratio();
         if no_cfs_ratio == 0.0 {
@@ -136,7 +140,11 @@ pub trait MergePolicy {
         merged_info_size as f64 <= no_cfs_ratio * total_size as f64
     }
 
-    fn size(&self, info: &SegmentCommitInfo, writer: &IndexWriter) -> i64 {
+    fn size<D: Directory, C: Codec, MS: MergeScheduler, MP: MergePolicy>(
+        &self,
+        info: &SegmentCommitInfo<D, C>,
+        writer: &IndexWriter<D, C, MS, MP>,
+    ) -> i64 {
         let byte_size = info.size_in_bytes();
         let del_count = writer.num_deleted_docs(info);
         let del_ratio = if info.info.max_doc < 0 {
@@ -154,11 +162,11 @@ pub trait MergePolicy {
     /// Returns true if this single info is already fully merged (has no
     /// pending deletes, is in the same dir as the writer, and matches the
     /// current compound file setting
-    fn is_merged(
+    fn is_merged<D: Directory, C: Codec, MS: MergeScheduler, MP: MergePolicy>(
         &self,
-        infos: &SegmentInfos,
-        info: &SegmentCommitInfo,
-        writer: &IndexWriter,
+        infos: &SegmentInfos<D, C>,
+        info: &SegmentCommitInfo<D, C>,
+        writer: &IndexWriter<D, C, MS, MP>,
     ) -> bool {
         let has_deletions = writer.num_deleted_docs(info) > 0;
         !has_deletions
@@ -172,18 +180,18 @@ pub trait MergePolicy {
 // necessary to perform multiple merges.  It simply
 // contains a list of {@link OneMerge} instances.
 //
-pub struct MergeSpecification {
-    pub merges: Vec<OneMerge>,
+pub struct MergeSpecification<D: Directory + 'static, C: Codec> {
+    pub merges: Vec<OneMerge<D, C>>,
 }
 
-impl Default for MergeSpecification {
+impl<D: Directory, C: Codec> Default for MergeSpecification<D, C> {
     fn default() -> Self {
         MergeSpecification { merges: vec![] }
     }
 }
 
-impl MergeSpecification {
-    fn add(&mut self, merge: OneMerge) {
+impl<D: Directory, C: Codec> MergeSpecification<D, C> {
+    fn add(&mut self, merge: OneMerge<D, C>) {
         self.merges.push(merge);
     }
 }
@@ -193,9 +201,9 @@ impl MergeSpecification {
 /// a single new segment.  The merge spec includes the
 /// subset of segments to be merged as well as whether the
 /// new segment should use the compound file format.
-pub struct OneMerge {
+pub struct OneMerge<D: Directory + 'static, C: Codec> {
     pub id: u32,
-    pub info: Option<Arc<SegmentCommitInfo>>,
+    pub info: Option<Arc<SegmentCommitInfo<D, C>>>,
     pub register_done: bool,
     pub merge_gen: u64,
     pub is_external: bool,
@@ -204,9 +212,9 @@ pub struct OneMerge {
     pub estimated_merge_bytes: u64,
     // Sum of sizeInBytes of all SegmentInfos; set by IW.mergeInit
     pub total_merge_bytes: u64,
-    pub readers: Vec<Arc<SegmentReader>>,
+    pub readers: Vec<Arc<SegmentReader<D, C>>>,
     /// segments to be merged
-    pub segments: Vec<Arc<SegmentCommitInfo>>,
+    pub segments: Vec<Arc<SegmentCommitInfo<D, C>>>,
     /// a private `RateLimiter` for this merge, used to rate limit writes and abort.
     pub rate_limiter: Arc<MergeRateLimiter>,
     // merge_start: SystemTime,
@@ -215,10 +223,10 @@ pub struct OneMerge {
     // error: Result<()>
 }
 
-impl OneMerge {
-    pub fn new(segments: Vec<Arc<SegmentCommitInfo>>, id: u32) -> Result<Self> {
+impl<D: Directory + 'static, C: Codec> OneMerge<D, C> {
+    pub fn new(segments: Vec<Arc<SegmentCommitInfo<D, C>>>, id: u32) -> Result<Self> {
         if segments.is_empty() {
-            bail!("segments must not be empty!");
+            bail!(RuntimeError("segments must not be empty!".into()));
         }
 
         let count: i32 = segments.iter().map(|s| s.info.max_doc).sum();
@@ -240,7 +248,7 @@ impl OneMerge {
         })
     }
 
-    pub fn running_info(&self) -> OneMergeRunningInfo {
+    pub fn running_info(&self) -> OneMergeRunningInfo<D, C> {
         OneMergeRunningInfo {
             id: self.id,
             info: self.info.clone(),
@@ -259,25 +267,25 @@ impl OneMerge {
     }
 }
 
-impl Hash for OneMerge {
+impl<D: Directory + 'static, C: Codec> Hash for OneMerge<D, C> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         // use id for hash
         state.write_u32(self.id);
     }
 }
 
-impl Eq for OneMerge {}
+impl<D: Directory + 'static, C: Codec> Eq for OneMerge<D, C> {}
 
-impl PartialEq for OneMerge {
-    fn eq(&self, other: &OneMerge) -> bool {
+impl<D: Directory + 'static, C: Codec> PartialEq for OneMerge<D, C> {
+    fn eq(&self, other: &OneMerge<D, C>) -> bool {
         self.id == other.id
     }
 }
 
 /// used in IndexWriter for OneMerge running status
-pub struct OneMergeRunningInfo {
+pub struct OneMergeRunningInfo<D: Directory, C: Codec> {
     pub id: u32,
-    pub info: Option<Arc<SegmentCommitInfo>>,
+    pub info: Option<Arc<SegmentCommitInfo<D, C>>>,
     pub max_num_segments: Arc<Cell<Option<u32>>>,
     pub rate_limiter: Arc<MergeRateLimiter>,
 }
@@ -393,12 +401,12 @@ impl TieredMergePolicy {
     }
 
     /// Expert: scores one merge; subclasses can override.
-    fn score(
+    fn score<D: Directory, C: Codec, MS: MergeScheduler, MP: MergePolicy>(
         &self,
-        candidate: &[&Arc<SegmentCommitInfo>],
+        candidate: &[&Arc<SegmentCommitInfo<D, C>>],
         hit_too_large: bool,
         _merging_bytes: i64,
-        writer: &IndexWriter,
+        writer: &IndexWriter<D, C, MS, MP>,
     ) -> MergeScore {
         let mut total_before_merge_bytes = 0;
         let mut total_after_merge_bytes = 0;
@@ -446,17 +454,17 @@ impl TieredMergePolicy {
 }
 
 impl MergePolicy for TieredMergePolicy {
-    fn find_merges(
+    fn find_merges<D: Directory, C: Codec, MS: MergeScheduler, MP: MergePolicy>(
         &self,
         _merge_trigger: MergerTrigger,
-        segment_infos: &SegmentInfos,
-        writer: &IndexWriter,
-    ) -> Result<Option<MergeSpecification>> {
+        segment_infos: &SegmentInfos<D, C>,
+        writer: &IndexWriter<D, C, MS, MP>,
+    ) -> Result<Option<MergeSpecification<D, C>>> {
         if segment_infos.len() == 0 {
             return Ok(None);
         }
 
-        let merging = &writer.merging_segments;
+        let merging = &writer.merging_segments();
         let mut to_be_merged = HashSet::new();
 
         let mut infos_sorted = segment_infos.segments.clone();
@@ -568,8 +576,8 @@ impl MergePolicy for TieredMergePolicy {
                 // OK we are over budget -- find best merge!
                 let mut best_score = MergeScore::new(f64::INFINITY, 0.0, 0.0);
                 let mut best = vec![];
-                let mut _best_too_large = false;
-                let mut _best_merge_bytes = 0;
+                let mut best_too_large = false;
+                let mut best_merge_bytes = 0;
 
                 // Consider all merge starts:
                 if eligible.len() >= self.max_merge_at_once as usize {
@@ -608,6 +616,14 @@ impl MergePolicy for TieredMergePolicy {
                         debug_assert!(!candidate.is_empty());
 
                         let score = self.score(&candidate, hit_too_large, merging_bytes, writer);
+                        debug!(
+                            "maybe={:?}, score={} {}, too_large={} size={} MB",
+                            &candidate,
+                            score.score(),
+                            score.explanation(),
+                            hit_too_large,
+                            (total_after_merge_bytes as f64) / 1024.0 / 1024.0
+                        );
                         // If we are already running a max sized merge
                         // (maxMergeIsRunning), don't allow another max
                         // sized merge to kick off:
@@ -616,8 +632,8 @@ impl MergePolicy for TieredMergePolicy {
                         {
                             best = candidate;
                             best_score = score;
-                            _best_too_large = hit_too_large;
-                            _best_merge_bytes = total_after_merge_bytes;
+                            best_too_large = hit_too_large;
+                            best_merge_bytes = total_after_merge_bytes;
                         }
 
                         start_idx += 1;
@@ -633,6 +649,14 @@ impl MergePolicy for TieredMergePolicy {
                     for info in &merge.segments {
                         to_be_merged.insert(Arc::clone(info));
                     }
+                    debug!(
+                        "add merge={:?} size={} MB, score={} {}, {}",
+                        &merge.segments,
+                        (best_merge_bytes as f64) / 1024.0 / 1024.0,
+                        best_score.score(),
+                        best_score.explanation(),
+                        if best_too_large { "[max merge]" } else { "" }
+                    );
                     spec.add(merge);
                 } else {
                     if spec.merges.is_empty() {
@@ -651,16 +675,16 @@ impl MergePolicy for TieredMergePolicy {
         }
     }
 
-    fn find_forced_merges(
+    fn find_forced_merges<D: Directory, C: Codec, MS: MergeScheduler, MP: MergePolicy>(
         &self,
-        segment_infos: &SegmentInfos,
+        segment_infos: &SegmentInfos<D, C>,
         max_segment_count: u32,
-        segments_to_merge: &HashMap<Arc<SegmentCommitInfo>, bool>,
-        writer: &IndexWriter,
-    ) -> Result<Option<MergeSpecification>> {
+        segments_to_merge: &HashMap<Arc<SegmentCommitInfo<D, C>>, bool>,
+        writer: &IndexWriter<D, C, MS, MP>,
+    ) -> Result<Option<MergeSpecification<D, C>>> {
         let mut eligible = vec![];
         let mut force_merge_running = false;
-        let merging = &writer.merging_segments;
+        let merging = &writer.merging_segments();
         let mut segment_is_original = false;
 
         for info in &segment_infos.segments {
@@ -725,13 +749,13 @@ impl MergePolicy for TieredMergePolicy {
         }
     }
 
-    fn find_forced_deletes_mergers(
+    fn find_forced_deletes_mergers<D: Directory, C: Codec, MS: MergeScheduler, MP: MergePolicy>(
         &self,
-        segments_infos: &SegmentInfos,
-        writer: &IndexWriter,
-    ) -> Result<Option<MergeSpecification>> {
+        segments_infos: &SegmentInfos<D, C>,
+        writer: &IndexWriter<D, C, MS, MP>,
+    ) -> Result<Option<MergeSpecification<D, C>>> {
         let mut eligible = vec![];
-        let merging = &writer.merging_segments;
+        let merging = &writer.merging_segments();
 
         for info in &segments_infos.segments {
             let pct_deletes =
@@ -786,19 +810,37 @@ impl MergePolicy for TieredMergePolicy {
     }
 }
 
-struct SegmentByteSizeDescending<'a> {
-    writer: &'a IndexWriter,
+struct SegmentByteSizeDescending<
+    'a,
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+> {
+    writer: &'a IndexWriter<D, C, MS, MP>,
     policy: &'a TieredMergePolicy,
 }
 
-impl<'a> SegmentByteSizeDescending<'a> {
-    fn new(writer: &'a IndexWriter, policy: &'a TieredMergePolicy) -> Self {
+impl<'a, D, C, MS, MP> SegmentByteSizeDescending<'a, D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
+    fn new(writer: &'a IndexWriter<D, C, MS, MP>, policy: &'a TieredMergePolicy) -> Self {
         SegmentByteSizeDescending { writer, policy }
     }
 }
 
-impl<'a> SegmentByteSizeDescending<'a> {
-    fn compare(&self, o1: &SegmentCommitInfo, o2: &SegmentCommitInfo) -> Ordering {
+impl<'a, D, C, MS, MP> SegmentByteSizeDescending<'a, D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
+    fn compare(&self, o1: &SegmentCommitInfo<D, C>, o2: &SegmentCommitInfo<D, C>) -> Ordering {
         let sz1 = self.policy.size(o1, self.writer);
         let sz2 = self.policy.size(o2, self.writer);
         let cmp = sz2.cmp(&sz1);

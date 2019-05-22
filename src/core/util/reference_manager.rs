@@ -1,7 +1,12 @@
-use std::{mem,
-          sync::{Arc, Mutex, MutexGuard}};
+use std::{
+    mem,
+    sync::{Arc, Mutex, MutexGuard},
+};
 
-use error::Result;
+use error::{
+    ErrorKind::{AlreadyClosed, IllegalState},
+    Result,
+};
 
 pub struct ReferenceManagerBase<T: ?Sized> {
     lock: Mutex<()>,
@@ -19,7 +24,7 @@ impl<T: ?Sized> ReferenceManagerBase<T> {
     }
     fn ensure_open(&self) -> Result<()> {
         if self.current.is_none() {
-            bail!("this ReferenceManager is closed");
+            bail!(AlreadyClosed("this ReferenceManager is closed".into()));
         }
         Ok(())
     }
@@ -70,7 +75,11 @@ pub trait ReferenceManager<T: ?Sized, RL: RefreshListener> {
                 }
             // TODO double check for ref count
             } else {
-                bail!("this ReferenceManager is closed");
+                bail!(IllegalState(
+                    "this ReferenceManager is closed - this is likely a bug when the reference \
+                     count is modified outside of the ReferenceManager"
+                        .into()
+                ));
             }
         }
     }

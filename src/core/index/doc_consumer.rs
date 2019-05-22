@@ -1,5 +1,8 @@
 use core::analysis::TokenStream;
-use core::codec::StoredFieldsWriter;
+use core::codec::{
+    Codec, DocValuesFormat, FieldInfosFormat, NormsFormat, PointsFormat, PointsWriter,
+    StoredFieldsFormat, StoredFieldsWriter, StoredFieldsWriterEnum,
+};
 use core::doc::FieldType;
 use core::index::doc_values_type::DocValuesType;
 use core::index::doc_values_writer::BinaryDocValuesWriter;
@@ -9,25 +12,28 @@ use core::index::doc_values_writer::SortedNumericDocValuesWriter;
 use core::index::doc_values_writer::SortedSetDocValuesWriter;
 use core::index::doc_values_writer::{DocValuesWriter, DocValuesWriterEnum};
 use core::index::index_writer;
+use core::index::merge_policy::MergePolicy;
 use core::index::norm_values_writer::NormValuesWriter;
 use core::index::point_values_writer::PointValuesWriter;
 use core::index::term_vector::TermVectorsConsumer;
 use core::index::terms_hash::{FreqProxTermsWriter, TermsHash};
 use core::index::terms_hash_per_field::{FreqProxTermsWriterPerField, TermsHashPerField};
 use core::index::thread_doc_writer::{DocState, DocumentsWriterPerThread};
-use core::index::IndexOptions;
-use core::index::SegmentWriteState;
-use core::index::{FieldInfo, FieldInfosBuilder, FieldInvertState, FieldNumbersRef, Fieldable};
-use core::store::IOContext;
-use core::util::byte_ref::BytesRef;
-use core::util::Counter;
-use core::util::DocId;
-use core::util::VariantValue;
+use core::index::{
+    FieldInfo, FieldInfosBuilder, FieldInvertState, FieldNumbersRef, Fieldable, IndexOptions,
+    SegmentWriteState,
+};
+use core::store::{Directory, IOContext};
+use core::util::{BytesRef, Counter, DocId, VariantValue};
 
 use core::search::bm25_similarity::BM25Similarity;
 
-use error::{ErrorKind, Result};
+use error::{
+    ErrorKind::{IllegalArgument, UnsupportedOperation},
+    Result,
+};
 
+use core::index::merge_scheduler::MergeScheduler;
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -35,46 +41,59 @@ use std::ptr;
 
 const MAX_FIELD_COUNT: usize = 65536;
 
-pub trait DocConsumer {
-    fn process_document(
+pub trait DocConsumer<D: Directory, C: Codec> {
+    fn process_document<F: Fieldable>(
         &mut self,
         doc_state: &mut DocState,
-        doc: &mut [Box<Fieldable>],
+        doc: &mut [F],
     ) -> Result<()>;
 
-    fn flush(&mut self, state: &mut SegmentWriteState) -> Result<()>;
+    fn flush<DW>(&mut self, state: &mut SegmentWriteState<D, DW, C>) -> Result<()>
+    where
+        DW: Directory + 'static;
 
     fn abort(&mut self) -> Result<()>;
 }
 
-pub struct DefaultIndexingChain {
+pub struct DefaultIndexingChain<
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+> {
     pub bytes_used: Counter,
     pub field_infos: FieldInfosBuilder<FieldNumbersRef>,
     // Writes postings and term vectors
-    pub terms_hash: FreqProxTermsWriter,
+    pub terms_hash: FreqProxTermsWriter<D, C, MS, MP>,
     // TODO, maybe we should use `TermsHash` instead
     // lazy init:
-    stored_fields_writer: Option<Box<StoredFieldsWriter>>,
+    stored_fields_writer: Option<StoredFieldsWriterEnum<D::IndexOutput>>,
     last_stored_doc_id: DocId,
     // NOTE: I tried using Hash Map<String,PerField>
     // but it was ~2% slower on Wiki and Geonames with Java
     // but we will use may anyway.
     // TODO, maybe we should use `TermsHashPerField` instead
-    pub field_hash: Vec<PerField<FreqProxTermsWriterPerField>>,
+    pub field_hash: Vec<PerField<FreqProxTermsWriterPerField<D, C, MS, MP>>>,
     total_field_count: u32,
     next_field_gen: i64,
     inited: bool,
     // Holds fields seen in each document
     fields: Vec<usize>,
-    parent: *mut DocumentsWriterPerThread,
+    parent: *mut DocumentsWriterPerThread<D, C, MS, MP>,
 }
 
-impl Default for DefaultIndexingChain {
+impl<D, C, MS, MP> Default for DefaultIndexingChain<D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
     fn default() -> Self {
         DefaultIndexingChain {
             bytes_used: Counter::default(),
             field_infos: FieldInfosBuilder::new(FieldNumbersRef::default()),
-            terms_hash: FreqProxTermsWriter::default(),
+            terms_hash: FreqProxTermsWriter::new_default(),
             stored_fields_writer: None,
             last_stored_doc_id: 0,
             field_hash: Vec::with_capacity(MAX_FIELD_COUNT),
@@ -87,9 +106,15 @@ impl Default for DefaultIndexingChain {
     }
 }
 
-impl DefaultIndexingChain {
+impl<D, C, MS, MP> DefaultIndexingChain<D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
     pub fn new(
-        doc_writer: &mut DocumentsWriterPerThread,
+        doc_writer: &mut DocumentsWriterPerThread<D, C, MS, MP>,
         field_infos: FieldInfosBuilder<FieldNumbersRef>,
     ) -> Self {
         let term_vectors_writer = TermVectorsConsumer::new(doc_writer);
@@ -116,17 +141,20 @@ impl DefaultIndexingChain {
         self.inited = true;
     }
 
-    pub fn reset_doc_writer(&mut self, parent: *mut DocumentsWriterPerThread) {
+    pub fn reset_doc_writer(&mut self, parent: *mut DocumentsWriterPerThread<D, C, MS, MP>) {
         debug_assert!(self.inited);
         self.parent = parent;
     }
 
-    fn doc_writer(&self) -> &mut DocumentsWriterPerThread {
+    fn doc_writer(&self) -> &mut DocumentsWriterPerThread<D, C, MS, MP> {
         unsafe { &mut *self.parent }
     }
 
     /// Writes all buffered points.
-    fn write_points(&mut self, state: &SegmentWriteState) -> Result<()> {
+    fn write_points<DW: Directory + 'static>(
+        &mut self,
+        state: &SegmentWriteState<D, DW, C>,
+    ) -> Result<()> {
         let mut points_writer = None;
         for per_field in &mut self.field_hash {
             if per_field.point_values_writer.is_some() {
@@ -145,7 +173,7 @@ impl DefaultIndexingChain {
                     .point_values_writer
                     .as_mut()
                     .unwrap()
-                    .flush(state, points_writer.as_mut().unwrap().as_mut())?;
+                    .flush(state, points_writer.as_mut().unwrap())?;
                 per_field.point_values_writer = None;
             } else {
                 debug_assert_eq!(per_field.field_info().point_dimension_count, 0);
@@ -158,7 +186,10 @@ impl DefaultIndexingChain {
     }
 
     /// Writes all buffered doc values (called from {@link #flush}).
-    fn write_doc_values(&mut self, state: &SegmentWriteState) -> Result<()> {
+    fn write_doc_values<DW: Directory>(
+        &mut self,
+        state: &SegmentWriteState<D, DW, C>,
+    ) -> Result<()> {
         let max_doc = state.segment_info.max_doc;
         let mut dv_consumer = None;
         for per_field in &mut self.field_hash {
@@ -182,7 +213,7 @@ impl DefaultIndexingChain {
                     .doc_values_writer
                     .as_mut()
                     .unwrap()
-                    .flush(state, dv_consumer.as_mut().unwrap().as_mut())?;
+                    .flush(state, dv_consumer.as_mut().unwrap())?;
                 per_field.doc_values_writer = None;
             } else {
                 debug_assert_eq!(per_field.field_info().doc_values_type, DocValuesType::Null);
@@ -244,7 +275,10 @@ impl DefaultIndexingChain {
         Ok(())
     }
 
-    fn write_norms(&mut self, state: &SegmentWriteState) -> Result<()> {
+    fn write_norms<D1: Directory, D2: Directory, C1: Codec>(
+        &mut self,
+        state: &SegmentWriteState<D1, D2, C1>,
+    ) -> Result<()> {
         let max_doc = state.segment_info.max_doc;
         if state.field_infos.has_norms {
             let norms_format = state.segment_info.codec().norms_format();
@@ -260,7 +294,7 @@ impl DefaultIndexingChain {
                             pf.norms
                                 .as_mut()
                                 .unwrap()
-                                .flush(state, norms_consumer.as_mut())?;
+                                .flush(state, &mut norms_consumer)?;
                         }
                     }
                 }
@@ -271,7 +305,7 @@ impl DefaultIndexingChain {
 
     unsafe fn process_field(
         &mut self,
-        field: &mut Fieldable,
+        field: &mut impl Fieldable,
         doc_state: &DocState,
         field_gen: i64,
         field_count: usize,
@@ -283,7 +317,7 @@ impl DefaultIndexingChain {
         if field.field_type().index_options != IndexOptions::Null {
             // if the field omits norms, the boost cannot be indexed.
             if field.field_type().omit_norms && field.boost() != 1.0f32 {
-                bail!(ErrorKind::UnsupportedOperation(Cow::Borrowed(
+                bail!(UnsupportedOperation(Cow::Borrowed(
                     "You cannot set an index-time boost: norms are omitted"
                 )));
             }
@@ -291,10 +325,8 @@ impl DefaultIndexingChain {
             let idx = self.get_or_add_field(field.name(), field.field_type(), true)?;
             let first = self.field_hash[idx].field_gen != field_gen;
 
-            let ptr = self as *mut DefaultIndexingChain;
-            unsafe {
-                self.field_hash[idx].invert(field, doc_state, first, &mut *ptr)?;
-            }
+            let ptr = self as *mut DefaultIndexingChain<D, C, MS, MP>;
+            self.field_hash[idx].invert(field, doc_state, first, &mut *ptr)?;
 
             if first {
                 self.fields.push(idx);
@@ -314,7 +346,7 @@ impl DefaultIndexingChain {
             if field.field_type().stored() {
                 if let Some(VariantValue::VString(ref s)) = field.fields_data() {
                     if s.len() > 16 * 1024 * 1024 {
-                        bail!("stored field is too large");
+                        bail!(IllegalArgument("stored field is too large".into()));
                     }
                 }
                 self.stored_fields_writer
@@ -344,22 +376,22 @@ impl DefaultIndexingChain {
 
     fn verify_uninverted_field_type(_name: &str, ft: &FieldType) -> Result<()> {
         if ft.store_term_vectors {
-            bail!(ErrorKind::IllegalArgument(
+            bail!(IllegalArgument(
                 "cannot store term vectors for not indexed field!".into()
             ));
         }
         if ft.store_term_vector_positions {
-            bail!(ErrorKind::IllegalArgument(
+            bail!(IllegalArgument(
                 "cannot store term vectors positions for not indexed field!".into()
             ));
         }
         if ft.store_term_vector_offsets {
-            bail!(ErrorKind::IllegalArgument(
+            bail!(IllegalArgument(
                 "cannot store term vectors offsets for not indexed field!".into()
             ));
         }
         if ft.store_term_vector_payloads {
-            bail!(ErrorKind::IllegalArgument(
+            bail!(IllegalArgument(
                 "cannot store term vectors payloads for not indexed field!".into()
             ));
         }
@@ -436,7 +468,7 @@ impl DefaultIndexingChain {
         &mut self,
         field_idx: usize,
         dv_type: DocValuesType,
-        field: &Fieldable,
+        field: &impl Fieldable,
         doc_state: &DocState,
     ) -> Result<()> {
         let per_field = &mut self.field_hash[field_idx];
@@ -447,7 +479,7 @@ impl DefaultIndexingChain {
             // the DV type of this field, will throw an IllegalArgExc:
             self.field_infos
                 .global_field_numbers
-                .as_mut()
+                .as_ref()
                 .set_doc_values_type(
                     per_field.field_info().number,
                     &per_field.field_info().name,
@@ -484,13 +516,12 @@ impl DefaultIndexingChain {
             }
             DocValuesType::Sorted => {
                 if per_field.doc_values_writer.is_none() {
-                    per_field.doc_values_writer = unsafe {
-                        Some(DocValuesWriterEnum::Sorted(SortedDocValuesWriter::new(
-                            per_field.field_info(),
-                            self.bytes_used.shallow_copy(),
-                        )))
-                    };
-                }
+                    per_field.doc_values_writer = Some(DocValuesWriterEnum::Sorted(
+                        SortedDocValuesWriter::new(per_field.field_info(), unsafe {
+                            self.bytes_used.shallow_copy()
+                        }),
+                    ))
+                };
                 let doc_value_writer = per_field.doc_values_writer.as_mut().unwrap();
                 debug_assert_eq!(doc_value_writer.doc_values_type(), DocValuesType::Sorted);
                 if let DocValuesWriterEnum::Sorted(ref mut s) = doc_value_writer {
@@ -540,7 +571,7 @@ impl DefaultIndexingChain {
     fn index_point(
         &mut self,
         field_idx: usize,
-        field: &Fieldable,
+        field: &impl Fieldable,
         doc_state: &DocState,
     ) -> Result<()> {
         let doc_writer = unsafe { &mut (*self.parent) };
@@ -553,7 +584,7 @@ impl DefaultIndexingChain {
         if per_field.field_info().point_dimension_count == 0 {
             self.field_infos
                 .global_field_numbers
-                .as_mut()
+                .as_ref()
                 .set_dimensions(
                     per_field.field_info().number,
                     &per_field.field_info().name,
@@ -581,11 +612,17 @@ impl DefaultIndexingChain {
     }
 }
 
-impl DocConsumer for DefaultIndexingChain {
-    fn process_document(
+impl<D, C, MS, MP> DocConsumer<D, C> for DefaultIndexingChain<D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
+    fn process_document<F: Fieldable>(
         &mut self,
         doc_state: &mut DocState,
-        doc: &mut [Box<Fieldable>],
+        doc: &mut [F],
     ) -> Result<()> {
         // debug_assert!(self.inited);
         // How many indexed field names we've seen (collapses
@@ -606,8 +643,7 @@ impl DocConsumer for DefaultIndexingChain {
         self.fill_stored_fields(doc_state.doc_id)?;
         self.start_stored_fields()?;
         for field in doc {
-            field_count =
-                unsafe { self.process_field(field.as_mut(), doc_state, field_gen, field_count)? };
+            field_count = unsafe { self.process_field(field, doc_state, field_gen, field_count)? };
         }
         // Finish each indexed field name seen in the document:
         for i in 0..field_count {
@@ -622,7 +658,10 @@ impl DocConsumer for DefaultIndexingChain {
         res
     }
 
-    fn flush(&mut self, state: &mut SegmentWriteState) -> Result<()> {
+    fn flush<DW: Directory + 'static>(
+        &mut self,
+        state: &mut SegmentWriteState<D, DW, C>,
+    ) -> Result<()> {
         debug_assert!(self.inited);
         // NOTE: caller (DocumentsWriterPerThread) handles
         // aborting on any exception from this method
@@ -706,10 +745,10 @@ pub struct PerField<T: TermsHashPerField> {
 }
 
 impl<T: TermsHashPerField> PerField<T> {
-    fn new(
+    fn new<D: Directory, C: Codec, TH: TermsHash<D, C, PerField = T>>(
         field_info: &mut FieldInfo,
         invert: bool,
-        terms_hash: &mut TermsHash<PerField = T>,
+        terms_hash: &mut TH,
     ) -> Self {
         let term_hash_per_field: Option<T> = None;
         let invert_state = FieldInvertState::with_name(field_info.name.clone());
@@ -744,7 +783,10 @@ impl<T: TermsHashPerField> PerField<T> {
         self.field_info = field_info;
     }
 
-    fn set_invert_state(&mut self, terms_hash: &mut TermsHash<PerField = T>) {
+    fn set_invert_state<D: Directory, C: Codec, TH: TermsHash<D, C, PerField = T>>(
+        &mut self,
+        terms_hash: &mut TH,
+    ) {
         // self.invert_state.name = self.field_info.name.clone();
         let pf = terms_hash.add_field(&self.invert_state, self.field_info());
         self.term_hash_per_field = Some(pf);
@@ -783,12 +825,12 @@ impl<T: TermsHashPerField> PerField<T> {
         Ok(())
     }
 
-    fn invert(
+    fn invert<D: Directory, C: Codec, MS: MergeScheduler, MP: MergePolicy>(
         &mut self,
-        field: &mut Fieldable,
+        field: &mut impl Fieldable,
         doc_state: &DocState,
         first: bool,
-        index_chain: &mut DefaultIndexingChain,
+        index_chain: &mut DefaultIndexingChain<D, C, MS, MP>,
     ) -> Result<()> {
         if first {
             // First time we're seeing this field (indexed) in
@@ -822,7 +864,7 @@ impl<T: TermsHashPerField> PerField<T> {
         // write the field name to the infostream when we fail. We expect some caller to
         // eventually deal with the real exception, so we don't want any 'catch' clauses,
         // but rather a finally that takes note of the problem.
-        let mut token_stream: Box<TokenStream> = field.token_stream()?;
+        let mut token_stream: Box<dyn TokenStream> = field.token_stream()?;
         token_stream.reset()?;
 
         self.term_hash_per_field
@@ -848,16 +890,16 @@ impl<T: TermsHashPerField> PerField<T> {
             self.invert_state.position += pos_incr as i32;
             if self.invert_state.position < self.invert_state.last_position {
                 if pos_incr == 0 {
-                    bail!(ErrorKind::IllegalArgument(
+                    bail!(IllegalArgument(
                         "first position increment must be > 0 (got 0)".into()
                     ));
                 } else {
-                    bail!(ErrorKind::IllegalArgument(
+                    bail!(IllegalArgument(
                         "position overflowed Integer.MAX_VALUE".into()
                     ));
                 }
             } else if self.invert_state.position > index_writer::INDEX_MAX_POSITION {
-                bail!(ErrorKind::IllegalArgument(
+                bail!(IllegalArgument(
                     "position is exceed field max allowed position".into()
                 ));
             }
@@ -874,7 +916,7 @@ impl<T: TermsHashPerField> PerField<T> {
                 if (start_offset as i32) < self.invert_state.last_start_offset
                     || end_offset < start_offset
                 {
-                    bail!(ErrorKind::IllegalArgument(
+                    bail!(IllegalArgument(
                         "startOffset must be non-negative, and endOffset must be >= startOffset, \
                          and offsets must not go backwards"
                             .into()
@@ -885,9 +927,7 @@ impl<T: TermsHashPerField> PerField<T> {
 
             self.invert_state.length += 1;
             if self.invert_state.length < 0 {
-                bail!(ErrorKind::IllegalArgument(
-                    "too many tokens in field".into()
-                ));
+                bail!(IllegalArgument("too many tokens in field".into()));
             }
 
             // If we hit an exception in here, we abort

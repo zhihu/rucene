@@ -1,19 +1,24 @@
+use core::codec::Codec;
 use core::index::LeafReaderContext;
 use core::search::explanation::Explanation;
-use core::search::searcher::IndexSearcher;
+use core::search::searcher::SearchPlanBuilder;
 use core::search::term_query::TermQuery;
 use core::search::two_phase_next;
 use core::search::{DocIterator, Query, Scorer, Weight, NO_MORE_DOCS};
 use core::util::DocId;
-use error::*;
+use error::Result;
 use std::fmt;
 
 pub const MATCH_ALL: &str = "match_all";
 
 pub struct MatchAllDocsQuery;
 
-impl Query for MatchAllDocsQuery {
-    fn create_weight(&self, _searcher: &IndexSearcher, _needs_scores: bool) -> Result<Box<Weight>> {
+impl<C: Codec> Query<C> for MatchAllDocsQuery {
+    fn create_weight(
+        &self,
+        _searcher: &dyn SearchPlanBuilder<C>,
+        _needs_scores: bool,
+    ) -> Result<Box<dyn Weight<C>>> {
         Ok(Box::new(MatchAllDocsWeight::default()))
     }
 
@@ -50,14 +55,17 @@ impl Default for MatchAllDocsWeight {
     }
 }
 
-impl Weight for MatchAllDocsWeight {
-    fn create_scorer(&self, leaf_reader: &LeafReaderContext) -> Result<Box<Scorer>> {
+impl<C: Codec> Weight<C> for MatchAllDocsWeight {
+    fn create_scorer(
+        &self,
+        leaf_reader: &LeafReaderContext<'_, C>,
+    ) -> Result<Option<Box<dyn Scorer>>> {
         let max_doc = leaf_reader.reader.max_doc();
-        Ok(Box::new(ConstantScoreScorer {
+        Ok(Some(Box::new(ConstantScoreScorer {
             score: self.weight,
-            iterator: Box::new(AllDocsIterator::new(max_doc)),
+            iterator: AllDocsIterator::new(max_doc),
             cost: max_doc as usize,
-        }))
+        })))
     }
 
     fn query_type(&self) -> &'static str {
@@ -77,7 +85,7 @@ impl Weight for MatchAllDocsWeight {
         false
     }
 
-    fn explain(&self, _reader: &LeafReaderContext, _doc: DocId) -> Result<Explanation> {
+    fn explain(&self, _reader: &LeafReaderContext<'_, C>, _doc: DocId) -> Result<Explanation> {
         Ok(Explanation::new(
             true,
             self.weight,
@@ -96,14 +104,14 @@ impl fmt::Display for MatchAllDocsWeight {
     }
 }
 
-pub struct ConstantScoreScorer<T: DocIterator + Send + Sync + ?Sized> {
+pub struct ConstantScoreScorer<T: DocIterator> {
     score: f32,
-    iterator: Box<T>,
+    iterator: T,
     cost: usize,
 }
 
-impl<T: DocIterator + Send + Sync + ?Sized> ConstantScoreScorer<T> {
-    pub fn new(score: f32, iterator: Box<T>, cost: usize) -> ConstantScoreScorer<T> {
+impl<T: DocIterator> ConstantScoreScorer<T> {
+    pub fn new(score: f32, iterator: T, cost: usize) -> ConstantScoreScorer<T> {
         ConstantScoreScorer {
             score,
             iterator,
@@ -112,13 +120,13 @@ impl<T: DocIterator + Send + Sync + ?Sized> ConstantScoreScorer<T> {
     }
 }
 
-impl<T: DocIterator + Send + Sync + ?Sized> Scorer for ConstantScoreScorer<T> {
+impl<T: DocIterator> Scorer for ConstantScoreScorer<T> {
     fn score(&mut self) -> Result<f32> {
         Ok(self.score)
     }
 }
 
-impl<T: DocIterator + Send + Sync + ?Sized> DocIterator for ConstantScoreScorer<T> {
+impl<T: DocIterator> DocIterator for ConstantScoreScorer<T> {
     fn doc_id(&self) -> DocId {
         self.iterator.doc_id()
     }
@@ -131,8 +139,20 @@ impl<T: DocIterator + Send + Sync + ?Sized> DocIterator for ConstantScoreScorer<
         self.iterator.advance(target)
     }
 
+    fn slow_advance(&mut self, target: i32) -> Result<DocId> {
+        self.iterator.slow_advance(target)
+    }
+
     fn cost(&self) -> usize {
         self.cost
+    }
+
+    fn approximate_next(&mut self) -> Result<DocId> {
+        self.iterator.approximate_next()
+    }
+
+    fn approximate_advance(&mut self, target: i32) -> Result<DocId> {
+        self.iterator.approximate_advance(target)
     }
 }
 
@@ -180,26 +200,26 @@ impl DocIterator for AllDocsIterator {
 
 pub const CONSTANT: &str = "constant";
 
-pub struct ConstantScoreQuery {
-    pub query: Box<Query>,
+pub struct ConstantScoreQuery<C: Codec> {
+    pub query: Box<dyn Query<C>>,
     boost: f32,
 }
 
-impl ConstantScoreQuery {
-    pub fn new(query: Box<Query>) -> ConstantScoreQuery {
+impl<C: Codec> ConstantScoreQuery<C> {
+    pub fn new(query: Box<dyn Query<C>>) -> ConstantScoreQuery<C> {
         ConstantScoreQuery { query, boost: 0f32 }
     }
 
-    pub fn with_boost(query: Box<Query>, boost: f32) -> ConstantScoreQuery {
+    pub fn with_boost(query: Box<dyn Query<C>>, boost: f32) -> ConstantScoreQuery<C> {
         ConstantScoreQuery { query, boost }
     }
 
-    pub fn get_raw_query(&self) -> &Query {
+    pub fn get_raw_query(&self) -> &dyn Query<C> {
         self.query.as_ref()
     }
 }
 
-impl fmt::Display for ConstantScoreQuery {
+impl<C: Codec> fmt::Display for ConstantScoreQuery<C> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
@@ -209,8 +229,12 @@ impl fmt::Display for ConstantScoreQuery {
     }
 }
 
-impl Query for ConstantScoreQuery {
-    fn create_weight(&self, searcher: &IndexSearcher, needs_scores: bool) -> Result<Box<Weight>> {
+impl<C: Codec> Query<C> for ConstantScoreQuery<C> {
+    fn create_weight(
+        &self,
+        searcher: &dyn SearchPlanBuilder<C>,
+        needs_scores: bool,
+    ) -> Result<Box<dyn Weight<C>>> {
         let weight = searcher.create_weight(self.query.as_ref(), false)?;
         if needs_scores {
             Ok(Box::new(ConstantScoreWeight::new(weight, self.boost)))
@@ -232,14 +256,14 @@ impl Query for ConstantScoreQuery {
     }
 }
 
-pub struct ConstantScoreWeight {
-    sub_weight: Box<Weight>,
+pub struct ConstantScoreWeight<C: Codec> {
+    sub_weight: Box<dyn Weight<C>>,
     query_norm: f32,
     query_weight: f32,
 }
 
-impl ConstantScoreWeight {
-    pub fn new(sub_weight: Box<Weight>, boost: f32) -> ConstantScoreWeight {
+impl<C: Codec> ConstantScoreWeight<C> {
+    pub fn new(sub_weight: Box<dyn Weight<C>>, boost: f32) -> ConstantScoreWeight<C> {
         ConstantScoreWeight {
             sub_weight,
             query_weight: boost,
@@ -248,15 +272,18 @@ impl ConstantScoreWeight {
     }
 }
 
-impl Weight for ConstantScoreWeight {
-    fn create_scorer(&self, reader: &LeafReaderContext) -> Result<Box<Scorer>> {
-        let inner_scorer = self.sub_weight.create_scorer(reader)?;
-        let cost = inner_scorer.cost();
-        Ok(Box::new(ConstantScoreScorer {
-            score: self.query_weight,
-            iterator: inner_scorer,
-            cost,
-        }))
+impl<C: Codec> Weight<C> for ConstantScoreWeight<C> {
+    fn create_scorer(&self, reader: &LeafReaderContext<'_, C>) -> Result<Option<Box<dyn Scorer>>> {
+        if let Some(inner_scorer) = self.sub_weight.create_scorer(reader)? {
+            let cost = inner_scorer.cost();
+            Ok(Some(Box::new(ConstantScoreScorer {
+                score: self.query_weight,
+                iterator: inner_scorer,
+                cost,
+            })))
+        } else {
+            Ok(None)
+        }
     }
 
     fn query_type(&self) -> &'static str {
@@ -276,12 +303,15 @@ impl Weight for ConstantScoreWeight {
         false
     }
 
-    fn explain(&self, reader: &LeafReaderContext, doc: DocId) -> Result<Explanation> {
-        let mut iterator = self.sub_weight.create_scorer(reader)?;
-        let exists = if iterator.support_two_phase() {
-            two_phase_next(iterator.as_mut())? == doc && iterator.matches()?
+    fn explain(&self, reader: &LeafReaderContext<'_, C>, doc: DocId) -> Result<Explanation> {
+        let exists = if let Some(mut iterator) = self.sub_weight.create_scorer(reader)? {
+            if iterator.support_two_phase() {
+                two_phase_next(iterator.as_mut())? == doc && iterator.matches()?
+            } else {
+                iterator.advance(doc)? == doc
+            }
         } else {
-            iterator.advance(doc)? == doc
+            false
         };
 
         if exists {
@@ -305,7 +335,7 @@ impl Weight for ConstantScoreWeight {
     }
 }
 
-impl fmt::Display for ConstantScoreWeight {
+impl<C: Codec> fmt::Display for ConstantScoreWeight<C> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,

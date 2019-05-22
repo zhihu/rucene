@@ -1,5 +1,6 @@
-use core::index::{NumericDocValues, NumericDocValuesRef, SortedNumericDocValues,
-                  SortedNumericDocValuesContext};
+use core::index::{
+    NumericDocValues, NumericDocValuesRef, SortedNumericDocValues, SortedNumericDocValuesContext,
+};
 use core::util::{BitsRef, DocId};
 use error::Result;
 
@@ -11,7 +12,7 @@ pub struct SingletonSortedNumericDocValues {
 }
 
 impl SingletonSortedNumericDocValues {
-    pub fn new(numeric_doc_values_in: Box<NumericDocValues>, docs_with_field: BitsRef) -> Self {
+    pub fn new(numeric_doc_values_in: Box<dyn NumericDocValues>, docs_with_field: BitsRef) -> Self {
         SingletonSortedNumericDocValues {
             numeric_doc_values_in: Arc::from(numeric_doc_values_in),
             docs_with_field,

@@ -32,8 +32,9 @@ pub trait Bits: Send + Sync {
     }
 }
 
-pub type BitsRef = Arc<Bits>;
+pub type BitsRef = Arc<dyn Bits>;
 
+#[derive(Clone)]
 pub struct MatchAllBits {
     len: usize,
 }
@@ -62,6 +63,7 @@ impl Bits for MatchAllBits {
     }
 }
 
+#[derive(Clone)]
 pub struct MatchNoBits {
     len: usize,
 }
@@ -83,12 +85,12 @@ impl Bits for MatchNoBits {
 }
 
 pub struct LiveBits {
-    input: Box<RandomAccessInput>,
+    input: Box<dyn RandomAccessInput>,
     count: usize,
 }
 
 impl LiveBits {
-    pub fn new(data: &IndexInput, offset: i64, count: usize) -> Result<LiveBits> {
+    pub fn new(data: &dyn IndexInput, offset: i64, count: usize) -> Result<LiveBits> {
         let length = (count + 7) >> 3;
         let input = data.random_access_slice(offset, length as i64)?;
         Ok(LiveBits { input, count })

@@ -1,12 +1,13 @@
 use core::index::{NumericDocValues, NumericDocValuesContext};
+use core::util::bit_util::BitsRequired;
 use core::util::packed::MonotonicBlockPackedReader;
-use core::util::packed_misc::{check_block_size, get_mutable_by_ratio, unsigned_bits_required};
-use core::util::packed_misc::{Mutable, PackedIntsNullMutable};
-use core::util::DocId;
-use core::util::{LongValues, LongValuesContext, ReusableIterator};
+use core::util::packed_misc::{
+    check_block_size, get_mutable_by_ratio, Mutable, MutableEnum, PackedIntsNullMutable, Reader,
+};
+use core::util::{DocId, LongValues, LongValuesContext, ReusableIterator};
 
-use error::*;
-use std::marker::{Send, Sync};
+use error::Result;
+use std::mem;
 
 pub const DEFAULT_PAGE_SIZE: usize = 1024;
 pub const MIN_PAGE_SIZE: usize = 64;
@@ -22,45 +23,67 @@ pub enum PackedLongValuesBuilderType {
 }
 
 pub struct PackedLongValues {
-    builder: *const PackedLongValuesBuilder,
+    page_shift: usize,
+    page_mask: usize,
+    size: i64,
+    values: Vec<MutableEnum>,
+    mins: Vec<i64>,
+    averages: Vec<f32>,
+    builder_type: PackedLongValuesBuilderType,
 }
 
 impl PackedLongValues {
-    pub fn new(builder: &PackedLongValuesBuilder) -> PackedLongValues {
-        debug_assert!(builder.finished());
-        match builder.builder_type {
-            PackedLongValuesBuilderType::Delta => {
-                debug_assert!(builder.values.len() == builder.mins.len())
-            }
-            PackedLongValuesBuilderType::Monotonic => {
-                debug_assert!(builder.values.len() == builder.averages.len())
-            }
-            _ => {}
+    pub fn new(
+        page_shift: usize,
+        page_mask: usize,
+        size: i64,
+        values: Vec<MutableEnum>,
+        mins: Vec<i64>,
+        averages: Vec<f32>,
+        builder_type: PackedLongValuesBuilderType,
+    ) -> Self {
+        Self {
+            page_shift,
+            page_mask,
+            size,
+            values,
+            mins,
+            averages,
+            builder_type,
         }
-
-        PackedLongValues { builder }
-    }
-
-    fn builder(&self) -> &PackedLongValuesBuilder {
-        unsafe { &(*self.builder) }
     }
 
     /// Get the number of values in this array.
     pub fn size(&self) -> i64 {
-        self.builder().size
+        self.size
+    }
+
+    pub fn ram_bytes_used_estimate(&self) -> usize {
+        let mut size = self.values.capacity() * 16; // fat pointer
+        match self.builder_type {
+            PackedLongValuesBuilderType::Monotonic => {
+                size += self.mins.capacity() * 8;
+                size += self.averages.capacity() * 4;
+            }
+            PackedLongValuesBuilderType::Delta => {
+                size += self.mins.capacity() * 8;
+            }
+            PackedLongValuesBuilderType::Default => {}
+        }
+        size
     }
 
     fn decode_block(&self, block: usize, dest: &mut Vec<i64>) -> i32 {
-        let vals = &self.builder().values[block];
+        let vals = &self.values[block];
         let size = vals.size();
         let mut k = 0usize;
         while k < size {
             k += vals.bulk_get(k, &mut dest[k..size], size - k);
         }
 
-        match self.builder().builder_type {
+        match self.builder_type {
             PackedLongValuesBuilderType::Delta | PackedLongValuesBuilderType::Monotonic => {
-                let min = self.builder().mins[block];
+                let min = self.mins[block];
                 k = 0;
                 while k < size {
                     dest[k] = dest[k].wrapping_add(min);
@@ -70,9 +93,9 @@ impl PackedLongValues {
             _ => {}
         }
 
-        match self.builder().builder_type {
+        match self.builder_type {
             PackedLongValuesBuilderType::Monotonic => {
-                let average = self.builder().averages[block];
+                let average = self.averages[block];
                 k = 0;
                 while k < size {
                     dest[k] = dest[k]
@@ -87,13 +110,13 @@ impl PackedLongValues {
     }
 
     fn get_by_block(&self, block: usize, element: usize) -> i64 {
-        let mut v = self.builder().values[block].get(element);
-        match self.builder().builder_type {
-            PackedLongValuesBuilderType::Delta => v += self.builder().mins[block],
+        let mut v = self.values[block].get(element);
+        match self.builder_type {
+            PackedLongValuesBuilderType::Delta => v += self.mins[block],
             PackedLongValuesBuilderType::Monotonic => {
                 v += MonotonicBlockPackedReader::expected(
-                    self.builder().mins[block],
-                    self.builder().averages[block],
+                    self.mins[block],
+                    self.averages[block],
                     element as i32,
                 )
             }
@@ -115,8 +138,8 @@ impl LongValues for PackedLongValues {
         index: i64,
     ) -> Result<(i64, LongValuesContext)> {
         debug_assert!(index >= 0 && index < self.size());
-        let block = (index >> self.builder().page_shift as i64) as usize;
-        let element = (index & self.builder().page_mask as i64) as usize;
+        let block = (index >> self.page_shift as i64) as usize;
+        let element = (index & self.page_mask as i64) as usize;
 
         Ok((self.get_by_block(block, element), ctx))
     }
@@ -132,23 +155,19 @@ impl NumericDocValues for PackedLongValues {
     }
 }
 
-unsafe impl Send for PackedLongValues {}
-
-unsafe impl Sync for PackedLongValues {}
-
-pub struct LongValuesIterator {
+pub struct LongValuesIterator<'a> {
     current_values: Vec<i64>,
     v_off: usize,
     p_off: usize,
     // number of entries of the current page
     current_count: usize,
-    packed_values: *const PackedLongValues,
+    packed_values: &'a PackedLongValues,
 }
 
-impl LongValuesIterator {
-    pub fn new(packed_values: &PackedLongValues) -> LongValuesIterator {
+impl<'a> LongValuesIterator<'a> {
+    pub fn new(packed_values: &'a PackedLongValues) -> LongValuesIterator<'a> {
         let mut iter = LongValuesIterator {
-            current_values: vec![0i64; packed_values.builder().page_mask as usize + 1],
+            current_values: vec![0i64; packed_values.page_mask as usize + 1],
             v_off: 0,
             p_off: 0,
             current_count: 0,
@@ -161,13 +180,13 @@ impl LongValuesIterator {
     }
 
     fn fill_block(&mut self) {
-        let packed_values = unsafe { &(*self.packed_values) };
-
-        if self.v_off == packed_values.builder().values.len() {
+        if self.v_off == self.packed_values.values.len() {
             self.current_count = 0;
         } else {
-            self.current_count =
-                packed_values.decode_block(self.v_off, self.current_values.as_mut()) as usize;
+            self.current_count = self
+                .packed_values
+                .decode_block(self.v_off, self.current_values.as_mut())
+                as usize;
             debug_assert!(self.current_count > 0);
         }
     }
@@ -177,7 +196,7 @@ impl LongValuesIterator {
     }
 }
 
-impl Iterator for LongValuesIterator {
+impl<'a> Iterator for LongValuesIterator<'a> {
     type Item = i64;
 
     fn next(&mut self) -> Option<i64> {
@@ -197,7 +216,7 @@ impl Iterator for LongValuesIterator {
     }
 }
 
-impl ReusableIterator for LongValuesIterator {
+impl<'a> ReusableIterator for LongValuesIterator<'a> {
     fn reset(&mut self) {
         self.v_off = 0;
         self.p_off = 0;
@@ -213,7 +232,7 @@ pub struct PackedLongValuesBuilder {
     page_mask: usize,
     acceptable_over_head_ratio: f32,
     size: i64,
-    values: Vec<Box<Mutable>>,
+    values: Vec<MutableEnum>,
     values_off: usize,
     pending: Vec<i64>,
     pending_off: usize,
@@ -247,7 +266,25 @@ impl PackedLongValuesBuilder {
         self.finish();
         self.pending = vec![];
 
-        PackedLongValues::new(self)
+        match self.builder_type {
+            PackedLongValuesBuilderType::Delta => {
+                debug_assert_eq!(self.values.len(), self.mins.len())
+            }
+            PackedLongValuesBuilderType::Monotonic => {
+                debug_assert_eq!(self.values.len(), self.averages.len())
+            }
+            _ => {}
+        }
+
+        PackedLongValues::new(
+            self.page_shift,
+            self.page_mask,
+            self.size,
+            mem::replace(&mut self.values, vec![]),
+            mem::replace(&mut self.mins, vec![]),
+            mem::replace(&mut self.averages, vec![]),
+            self.builder_type,
+        )
     }
 
     pub fn add(&mut self, l: i64) {
@@ -267,11 +304,6 @@ impl PackedLongValuesBuilder {
         if self.pending_off > 0 {
             self.pack();
         }
-    }
-
-    // used in assert
-    fn finished(&self) -> bool {
-        self.pending_off == 0
     }
 
     fn pack(&mut self) {
@@ -322,12 +354,14 @@ impl PackedLongValuesBuilder {
         // build a new packed reader
         if min_value == 0 && max_value == 0 {
             self.values
-                .push(Box::new(PackedIntsNullMutable::new(self.pending_off)));
+                .push(MutableEnum::PackedIntsNull(PackedIntsNullMutable::new(
+                    self.pending_off,
+                )));
         } else {
             let bits_required = if min_value < 0 {
                 64
             } else {
-                unsigned_bits_required(max_value)
+                max_value.bits_required() as i32
             };
 
             let mut mutable = get_mutable_by_ratio(
@@ -361,9 +395,7 @@ impl PackedLongValuesBuilder {
         self.values_off += 1;
         self.pending_off = 0;
     }
-}
 
-impl PackedLongValuesBuilder {
     /// Get the number of values in this array.
     pub fn size(&self) -> i64 {
         self.size
@@ -382,152 +414,5 @@ impl PackedLongValuesBuilder {
             PackedLongValuesBuilderType::Default => {}
         }
         size
-    }
-
-    pub fn iter(&self) -> PackedLongValuesIter {
-        PackedLongValuesIter::new(self)
-    }
-
-    fn decode_block(&self, block: usize, dest: &mut Vec<i64>) -> i32 {
-        let vals = &self.values[block];
-        let size = vals.size();
-        let mut k = 0usize;
-        while k < size {
-            k += vals.bulk_get(k, &mut dest[k..size], size - k);
-        }
-
-        match self.builder_type {
-            PackedLongValuesBuilderType::Delta | PackedLongValuesBuilderType::Monotonic => {
-                let min = self.mins[block];
-                k = 0;
-                while k < size {
-                    dest[k] = dest[k].wrapping_add(min);
-                    k += 1;
-                }
-            }
-            _ => {}
-        }
-
-        match self.builder_type {
-            PackedLongValuesBuilderType::Monotonic => {
-                let average = self.averages[block];
-                k = 0;
-                while k < size {
-                    dest[k] = dest[k]
-                        .wrapping_add(MonotonicBlockPackedReader::expected(0, average, k as i32));
-                    k += 1;
-                }
-            }
-            _ => {}
-        }
-
-        size as i32
-    }
-
-    fn get_by_block(&self, block: usize, element: usize) -> i64 {
-        let mut v = self.values[block].get(element);
-        match self.builder_type {
-            PackedLongValuesBuilderType::Delta => v += self.mins[block],
-            PackedLongValuesBuilderType::Monotonic => {
-                v = v.wrapping_add(MonotonicBlockPackedReader::expected(
-                    self.mins[block],
-                    self.averages[block],
-                    element as i32,
-                ))
-            }
-            _ => {}
-        }
-
-        v
-    }
-}
-
-impl LongValues for PackedLongValuesBuilder {
-    fn get64_with_ctx(
-        &self,
-        ctx: LongValuesContext,
-        index: i64,
-    ) -> Result<(i64, LongValuesContext)> {
-        debug_assert!(index >= 0 && index < self.size());
-        let block = (index >> self.page_shift as i64) as usize;
-        let element = (index & self.page_mask as i64) as usize;
-
-        Ok((self.get_by_block(block, element), ctx))
-    }
-}
-
-impl NumericDocValues for PackedLongValuesBuilder {
-    fn get_with_ctx(
-        &self,
-        ctx: NumericDocValuesContext,
-        doc_id: DocId,
-    ) -> Result<(i64, NumericDocValuesContext)> {
-        Ok((self.get64(doc_id as i64)?, ctx))
-    }
-}
-
-pub struct PackedLongValuesIter<'a> {
-    builder: &'a PackedLongValuesBuilder,
-    current_values: Vec<i64>,
-    v_off: usize,
-    p_off: usize,
-    current_count: usize,
-    // number of entries of the current page
-}
-
-impl<'a> PackedLongValuesIter<'a> {
-    pub fn new(builder: &'a PackedLongValuesBuilder) -> Self {
-        debug_assert!(builder.finished());
-        let mut iter = PackedLongValuesIter {
-            builder,
-            current_values: vec![0; builder.page_mask + 1],
-            v_off: 0,
-            p_off: 0,
-            current_count: 0,
-        };
-        iter.fill_block();
-        iter
-    }
-
-    fn fill_block(&mut self) {
-        if self.v_off == self.builder.values_off {
-            self.current_count = 0;
-        } else {
-            let cnt = self
-                .builder
-                .decode_block(self.v_off, &mut self.current_values);
-            debug_assert!(cnt > 0);
-            self.current_count = cnt as usize;
-        }
-    }
-
-    fn has_next(&self) -> bool {
-        self.p_off < self.current_count
-    }
-}
-
-impl<'a> Iterator for PackedLongValuesIter<'a> {
-    type Item = i64;
-
-    fn next(&mut self) -> Option<i64> {
-        if !self.has_next() {
-            return None;
-        }
-        let res = self.current_values[self.p_off];
-        self.p_off += 1;
-        if self.p_off == self.current_count {
-            self.v_off += 1;
-            self.p_off = 0;
-            self.fill_block();
-        }
-        Some(res)
-    }
-}
-
-impl<'a> ReusableIterator for PackedLongValuesIter<'a> {
-    fn reset(&mut self) {
-        self.v_off = 0;
-        self.p_off = 0;
-        self.fill_block();
     }
 }

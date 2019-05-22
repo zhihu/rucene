@@ -1,6 +1,8 @@
 use core::store::{DataInput, DataOutput, IndexInput, RandomAccessInput};
 use core::util::fst::BytesReader;
-use error::*;
+
+use error::{ErrorKind, Result};
+
 use std::cmp::min;
 use std::io;
 use std::io::{Read, Write};
@@ -489,7 +491,7 @@ impl DataInput for StoreBytesReader {
 }
 
 impl IndexInput for StoreBytesReader {
-    fn clone(&self) -> Result<Box<IndexInput>> {
+    fn clone(&self) -> Result<Box<dyn IndexInput>> {
         unreachable!()
     }
 
@@ -513,12 +515,12 @@ impl IndexInput for StoreBytesReader {
         "IndexInput(BytesStore)"
     }
 
-    fn random_access_slice(&self, _offset: i64, _length: i64) -> Result<Box<RandomAccessInput>> {
+    fn random_access_slice(
+        &self,
+        _offset: i64,
+        _length: i64,
+    ) -> Result<Box<dyn RandomAccessInput>> {
         unreachable!()
-    }
-
-    fn as_data_input(&mut self) -> &mut DataInput {
-        self
     }
 }
 

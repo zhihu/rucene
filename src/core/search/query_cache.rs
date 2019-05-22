@@ -2,29 +2,25 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
-use std::mem;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
-
-use core::search::lru_cache::LRUCache;
 
 use core::index::LeafReaderContext;
 use core::search::bulk_scorer::BulkScorer;
 use core::search::cache_policy::QueryCachingPolicy;
-use core::search::collector::{Collector, LeafCollector, SearchCollector};
+use core::search::collector::Collector;
 use core::search::explanation::Explanation;
+use core::search::lru_cache::LRUCache;
 use core::search::match_all::ConstantScoreScorer;
-use core::search::two_phase_next;
-use core::search::Weight;
-use core::search::{DocIdSet, DocIterator, EmptyDocIterator};
-use core::search::{MatchNoDocScorer, Scorer, NO_MORE_DOCS};
-use core::util::bit_set::{BitSet, FixedBitSet, ImmutableBitSet, ImmutableBitSetRef};
+use core::search::{two_phase_next, DocIdSet, DocIterator, Scorer, Weight, NO_MORE_DOCS};
+use core::util::bit_set::{BitSet, FixedBitSet, ImmutableBitSet};
 use core::util::bit_util::UnsignedShift;
-use core::util::doc_id_set::BitDocIdSet;
-use core::util::Bits;
-use core::util::DocId;
+use core::util::doc_id_set::{BitDocIdSet, BitSetIterator, DocIdSetDocIterEnum, DocIdSetEnum};
+use core::util::external::deferred::Deferred;
+use core::util::{Bits, DocId};
 
-use error::*;
+use core::codec::Codec;
+use error::Result;
 
 ///
 // A cache for queries.
@@ -32,14 +28,18 @@ use error::*;
 // @see LRUQueryCache
 // @lucene.experimental
 //
-pub trait QueryCache: Send + Sync {
+pub trait QueryCache<C: Codec>: Send + Sync {
     ///
     // Return a wrapper around the provided <code>weight</code> that will cache
     // matching docs per-segment accordingly to the given <code>policy</code>.
     // NOTE: The returned weight will only be equivalent if scores are not needed.
     // @see Collector#needsScores()
     //
-    fn do_cache(&self, weight: Box<Weight>, policy: Arc<QueryCachingPolicy>) -> Box<Weight>;
+    fn do_cache(
+        &self,
+        weight: Box<dyn Weight<C>>,
+        policy: Arc<QueryCachingPolicy<C>>,
+    ) -> Box<dyn Weight<C>>;
 }
 
 /// cache nothing
@@ -51,8 +51,12 @@ impl NoCacheQueryCache {
     }
 }
 
-impl QueryCache for NoCacheQueryCache {
-    fn do_cache(&self, weight: Box<Weight>, _policy: Arc<QueryCachingPolicy>) -> Box<Weight> {
+impl<C: Codec> QueryCache<C> for NoCacheQueryCache {
+    fn do_cache(
+        &self,
+        weight: Box<dyn Weight<C>>,
+        _policy: Arc<QueryCachingPolicy<C>>,
+    ) -> Box<dyn Weight<C>> {
         weight
     }
 }
@@ -98,9 +102,9 @@ impl QueryCache for NoCacheQueryCache {
 // @lucene.experimental
 //
 
-pub struct LeafCache {
+struct LeafCache {
     _key: String,
-    leaf_cache: HashMap<String, Box<DocIdSet>>,
+    leaf_cache: HashMap<String, CacheDocIdSetEnum>,
 }
 
 impl LeafCache {
@@ -111,14 +115,14 @@ impl LeafCache {
         }
     }
 
-    pub fn get(&self, query_key: &str) -> Result<Option<Box<DocIterator>>> {
+    pub fn get(&self, query_key: &str) -> Result<Option<CachedDocIdSetIterEnum>> {
         match self.leaf_cache.get(query_key) {
             Some(set) => set.iterator(),
             None => Ok(None),
         }
     }
 
-    pub fn put_if_absent(&mut self, query_key: &str, set: Box<DocIdSet>) {
+    pub fn put_if_absent(&mut self, query_key: &str, set: CacheDocIdSetEnum) {
         if !self.leaf_cache.contains_key(query_key) {
             self.leaf_cache.insert(query_key.to_string(), set);
         }
@@ -129,7 +133,7 @@ impl LeafCache {
     }
 }
 
-pub struct CacheData {
+struct CacheData {
     // maps queries that are contained in the cache to a singleton so that this
     // cache does not store several copies of the same query
     pub unique_queries: LRUCache<String, String>,
@@ -145,7 +149,7 @@ pub struct CacheData {
 }
 
 impl CacheData {
-    fn test(&self, leaf_reader: &LeafReaderContext) -> Result<bool> {
+    fn test<C: Codec>(&self, leaf_reader: &LeafReaderContext<'_, C>) -> Result<bool> {
         if leaf_reader.reader.max_doc() < self.min_size {
             Ok(false)
         } else {
@@ -161,11 +165,11 @@ impl CacheData {
         Ok(self.unique_queries.len() >= self.max_size)
     }
 
-    pub fn get(
+    fn get<C: Codec>(
         &mut self,
         query_key: &str,
-        leaf_reader: &LeafReaderContext,
-    ) -> Result<Option<Box<DocIterator>>> {
+        leaf_reader: &LeafReaderContext<'_, C>,
+    ) -> Result<Option<CachedDocIdSetIterEnum>> {
         if let Some(leaf_cache) = self.cache.get(leaf_reader.reader.core_cache_key()) {
             if let Some(singleton) = self.unique_queries.get(&query_key.to_string()) {
                 // this get call moves the query to the most-recently-used position
@@ -175,12 +179,13 @@ impl CacheData {
         Ok(None)
     }
 
-    pub fn put_if_absent(
+    // return true if new LeafCache is added to process core reader drop listener
+    pub fn put_if_absent<C: Codec>(
         &mut self,
         query_key: &str,
-        leaf_reader: &LeafReaderContext,
-        set: Box<DocIdSet>,
-    ) -> Result<()> {
+        leaf_reader: &LeafReaderContext<'_, C>,
+        set: CacheDocIdSetEnum,
+    ) -> Result<bool> {
         self.evict_if_necessary()?;
 
         let query_key = if self.unique_queries.contains_key(&query_key.to_string()) {
@@ -195,18 +200,20 @@ impl CacheData {
         };
 
         let key = leaf_reader.reader.core_cache_key();
-        if self.cache.contains_key(key) {
+        let new_entry = if self.cache.contains_key(key) {
+            false
         } else {
             let leaf_cache = LeafCache::new(key.into());
             self.cache.insert(key.into(), leaf_cache);
-        }
+            true
+        };
 
         {
             let leaf_cache = self.cache.get_mut(key).unwrap();
             leaf_cache.put_if_absent(&query_key, set);
         }
 
-        Ok(())
+        Ok(new_entry)
     }
 
     fn evict_if_necessary(&mut self) -> Result<()> {
@@ -259,8 +266,12 @@ impl LRUQueryCache {
     }
 }
 
-impl QueryCache for LRUQueryCache {
-    fn do_cache(&self, weight: Box<Weight>, policy: Arc<QueryCachingPolicy>) -> Box<Weight> {
+impl<C: Codec> QueryCache<C> for LRUQueryCache {
+    fn do_cache(
+        &self,
+        weight: Box<dyn Weight<C>>,
+        policy: Arc<QueryCachingPolicy<C>>,
+    ) -> Box<dyn Weight<C>> {
         if weight.query_type() == CACHING_QUERY_TYPE_STR {
             weight
         } else {
@@ -273,21 +284,21 @@ impl QueryCache for LRUQueryCache {
     }
 }
 
-pub struct CachingWrapperWeight {
+pub struct CachingWrapperWeight<C: Codec> {
     cache_data: Arc<RwLock<CacheData>>,
-    weight: Box<Weight>,
-    policy: Arc<QueryCachingPolicy>,
+    weight: Box<dyn Weight<C>>,
+    policy: Arc<QueryCachingPolicy<C>>,
     used: AtomicBool,
     query_key: String,
     hash_code: u32,
 }
 
-impl CachingWrapperWeight {
-    pub fn new(
+impl<C: Codec> CachingWrapperWeight<C> {
+    fn new(
         cache_data: Arc<RwLock<CacheData>>,
-        weight: Box<Weight>,
-        policy: Arc<QueryCachingPolicy>,
-    ) -> CachingWrapperWeight {
+        weight: Box<dyn Weight<C>>,
+        policy: Arc<QueryCachingPolicy<C>>,
+    ) -> CachingWrapperWeight<C> {
         let query_key = format!("{}", weight);
         let mut hasher = DefaultHasher::new();
         query_key.hash(&mut hasher);
@@ -306,72 +317,113 @@ impl CachingWrapperWeight {
     // have a density &lt; 1% and a {@link BitDocIdSet} over a {@link FixedBitSet}
     // otherwise.
     //
-    fn cache_impl(&self, scorer: &mut BulkScorer, max_doc: i32) -> Result<Box<DocIdSet>> {
+    fn cache_impl<'a, S>(
+        &self,
+        scorer: &mut BulkScorer<'a, S>,
+        max_doc: i32,
+    ) -> Result<CacheDocIdSetEnum>
+    where
+        S: Scorer + ?Sized + 'a,
+    {
         // FixedBitSet is faster for dense sets and will enable the random-access
         // optimization in ConjunctionDISI
         if scorer.scorer.cost() * 100 > max_doc as usize {
-            self.cache_into_bitset(scorer, max_doc)
+            Ok(CacheDocIdSetEnum::Bit(
+                self.cache_into_bitset(scorer, max_doc)?,
+            ))
         } else {
-            self.cache_into_roaring_docid_set(scorer, max_doc)
+            Ok(CacheDocIdSetEnum::Roaring(
+                self.cache_into_roaring_docid_set(scorer, max_doc)?,
+            ))
         }
     }
 
-    fn cache_into_bitset(&self, scorer: &mut BulkScorer, max_doc: i32) -> Result<Box<DocIdSet>> {
+    fn cache_into_bitset<'a, S>(
+        &self,
+        scorer: &mut BulkScorer<'a, S>,
+        max_doc: i32,
+    ) -> Result<BitDocIdSet<FixedBitSet>>
+    where
+        S: Scorer + ?Sized + 'a,
+    {
         let mut leaf_collector = BitSetLeafCollector {
             bit_set: FixedBitSet::new(max_doc as usize),
             cost: 0,
         };
 
-        scorer.score(&mut leaf_collector, None, 0, NO_MORE_DOCS)?;
+        let bits: Option<FixedBitSet> = None;
+        scorer.score(&mut leaf_collector, bits.as_ref(), 0, NO_MORE_DOCS)?;
 
-        Ok(Box::new(BitDocIdSet::new(
-            Box::new(leaf_collector.bit_set),
+        Ok(BitDocIdSet::new(
+            Arc::new(leaf_collector.bit_set),
             leaf_collector.cost as usize,
-        )))
+        ))
     }
 
-    fn cache_into_roaring_docid_set(
+    fn cache_into_roaring_docid_set<'a, S>(
         &self,
-        scorer: &mut BulkScorer,
+        scorer: &mut BulkScorer<S>,
         max_doc: i32,
-    ) -> Result<Box<DocIdSet>> {
+    ) -> Result<RoaringDocIdSet>
+    where
+        S: Scorer + ?Sized + 'a,
+    {
         let mut leaf_collector = DocIdSetLeafCollector {
             doc_id_set: RoaringDocIdSetBuilder::new(max_doc),
         };
 
-        scorer.score(&mut leaf_collector, None, 0, NO_MORE_DOCS)?;
+        let bits: Option<FixedBitSet> = None;
+        scorer.score(&mut leaf_collector, bits.as_ref(), 0, NO_MORE_DOCS)?;
 
-        Ok(Box::new(leaf_collector.doc_id_set.build()))
+        Ok(leaf_collector.doc_id_set.build())
     }
 
-    fn should_cache(&self, leaf_reader: &LeafReaderContext) -> Result<bool> {
+    fn should_cache(&self, leaf_reader: &LeafReaderContext<'_, C>) -> Result<bool> {
         self.cache_data.read()?.test(leaf_reader)
     }
 
     fn cache(
         &self,
-        leaf_reader: &LeafReaderContext,
+        leaf_reader: &LeafReaderContext<'_, C>,
         query_key: &str,
-    ) -> Result<Option<Box<DocIterator>>> {
-        let mut scorer = self.weight.create_scorer(leaf_reader)?;
-        let mut bulk_scorer = BulkScorer::new(scorer.as_mut());
-        let max_doc = leaf_reader.reader.max_doc();
+    ) -> Result<Option<CachedDocIdSetIterEnum>> {
+        match self.weight.create_scorer(leaf_reader)? {
+            Some(mut scorer) => {
+                let mut bulk_scorer = BulkScorer::new(scorer.as_mut());
+                let max_doc = leaf_reader.reader.max_doc();
 
-        let doc_id_set = self.cache_impl(&mut bulk_scorer, max_doc)?;
+                let doc_id_set = self.cache_impl(&mut bulk_scorer, max_doc)?;
 
-        let iter = doc_id_set.iterator();
-        self.cache_data
-            .write()?
-            .put_if_absent(query_key, leaf_reader, doc_id_set)?;
+                let iter = doc_id_set.iterator()?;
+                if self
+                    .cache_data
+                    .write()?
+                    .put_if_absent(query_key, leaf_reader, doc_id_set)?
+                {
+                    let key = leaf_reader.reader.core_cache_key().to_owned();
+                    let cache_data = Arc::clone(&self.cache_data);
+                    leaf_reader
+                        .reader
+                        .add_core_drop_listener(Deferred::new(move || {
+                            let core_key = key;
+                            cache_data.write().unwrap().cache.remove(&core_key);
+                        }))
+                }
 
-        iter
+                Ok(iter)
+            }
+            None => Ok(None),
+        }
     }
 }
 
 static CACHING_QUERY_TYPE_STR: &str = "CachingWrapperWeight";
 
-impl Weight for CachingWrapperWeight {
-    fn create_scorer(&self, leaf_reader: &LeafReaderContext) -> Result<Box<Scorer>> {
+impl<C: Codec> Weight<C> for CachingWrapperWeight<C> {
+    fn create_scorer(
+        &self,
+        leaf_reader: &LeafReaderContext<'_, C>,
+    ) -> Result<Option<Box<dyn Scorer>>> {
         if !self.used.compare_and_swap(false, true, Ordering::AcqRel) {
             self.policy.on_use(self)
         }
@@ -388,7 +440,7 @@ impl Weight for CachingWrapperWeight {
                 Ok(mut cache_data) => {
                     if let Some(disi) = cache_data.get(&self.query_key, leaf_reader)? {
                         let cost = disi.cost();
-                        return Ok(Box::new(ConstantScoreScorer::new(0.0f32, disi, cost)));
+                        return Ok(Some(Box::new(ConstantScoreScorer::new(0.0f32, disi, cost))));
                     }
                 }
                 _ => {
@@ -401,9 +453,9 @@ impl Weight for CachingWrapperWeight {
             match self.cache(leaf_reader, &self.query_key)? {
                 Some(disi) => {
                     let cost = disi.cost();
-                    Ok(Box::new(ConstantScoreScorer::new(0.0f32, disi, cost)))
+                    Ok(Some(Box::new(ConstantScoreScorer::new(0.0f32, disi, cost))))
                 }
-                None => Ok(Box::new(MatchNoDocScorer::default())),
+                None => Ok(None),
             }
         } else {
             self.weight.create_scorer(leaf_reader)
@@ -434,12 +486,15 @@ impl Weight for CachingWrapperWeight {
         self.weight.needs_scores()
     }
 
-    fn explain(&self, reader: &LeafReaderContext, doc: DocId) -> Result<Explanation> {
-        let mut iterator = self.weight.create_scorer(reader)?;
-        let exists = if iterator.support_two_phase() {
-            two_phase_next(iterator.as_mut())? == doc && iterator.matches()?
+    fn explain(&self, reader: &LeafReaderContext<'_, C>, doc: DocId) -> Result<Explanation> {
+        let exists = if let Some(mut iterator) = self.weight.create_scorer(reader)? {
+            if iterator.support_two_phase() {
+                two_phase_next(iterator.as_mut())? == doc && iterator.matches()?
+            } else {
+                iterator.advance(doc)? == doc
+            }
         } else {
-            iterator.advance(doc)? == doc
+            false
         };
 
         if exists {
@@ -463,7 +518,7 @@ impl Weight for CachingWrapperWeight {
     }
 }
 
-impl fmt::Display for CachingWrapperWeight {
+impl<C: Codec> fmt::Display for CachingWrapperWeight<C> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "CachingWrapperWeight(weight: {})", self.weight)
     }
@@ -474,30 +529,12 @@ pub struct BitSetLeafCollector {
     cost: i64,
 }
 
-impl SearchCollector for BitSetLeafCollector {
-    fn set_next_reader(&mut self, _reader: &LeafReaderContext) -> Result<()> {
-        Ok(())
-    }
-
-    fn support_parallel(&self) -> bool {
-        false
-    }
-
-    fn leaf_collector(&mut self, _reader: &LeafReaderContext) -> Result<Box<LeafCollector>> {
-        unimplemented!()
-    }
-
-    fn finish(&mut self) -> Result<()> {
-        unimplemented!()
-    }
-}
-
 impl Collector for BitSetLeafCollector {
     fn needs_scores(&self) -> bool {
         false
     }
 
-    fn collect(&mut self, doc: DocId, _scorer: &mut Scorer) -> Result<()> {
+    fn collect<S: Scorer + ?Sized>(&mut self, doc: DocId, _scorer: &mut S) -> Result<()> {
         self.cost += 1;
         self.bit_set.set(doc as usize);
 
@@ -509,30 +546,12 @@ pub struct DocIdSetLeafCollector {
     doc_id_set: RoaringDocIdSetBuilder,
 }
 
-impl SearchCollector for DocIdSetLeafCollector {
-    fn set_next_reader(&mut self, _reader: &LeafReaderContext) -> Result<()> {
-        Ok(())
-    }
-
-    fn support_parallel(&self) -> bool {
-        false
-    }
-
-    fn leaf_collector(&mut self, _reader: &LeafReaderContext) -> Result<Box<LeafCollector>> {
-        unimplemented!()
-    }
-
-    fn finish(&mut self) -> Result<()> {
-        unimplemented!()
-    }
-}
-
 impl Collector for DocIdSetLeafCollector {
     fn needs_scores(&self) -> bool {
         false
     }
 
-    fn collect(&mut self, doc: DocId, _scorer: &mut Scorer) -> Result<()> {
+    fn collect<S: Scorer + ?Sized>(&mut self, doc: DocId, _scorer: &mut S) -> Result<()> {
         self.doc_id_set.add_doc(doc)
     }
 }
@@ -553,22 +572,22 @@ static MAX_ARRAY_LENGTH: usize = 1 << 12;
 //
 // @lucene.internal
 //
-pub struct RoaringDocIdSet {
-    doc_id_sets: Arc<Vec<Option<Box<DocIdSet>>>>,
+struct RoaringDocIdSet {
+    doc_id_sets: Arc<[Option<DocIdSetEnum>]>,
     cardinality: usize,
 }
 
 impl RoaringDocIdSet {
-    pub fn new(doc_id_sets: Vec<Option<Box<DocIdSet>>>, cardinality: usize) -> RoaringDocIdSet {
+    fn new(doc_id_sets: Vec<Option<DocIdSetEnum>>, cardinality: usize) -> RoaringDocIdSet {
         RoaringDocIdSet {
-            doc_id_sets: Arc::new(doc_id_sets),
+            doc_id_sets: Arc::from(doc_id_sets.into_boxed_slice()),
             cardinality,
         }
     }
 }
 
-pub struct RoaringDocIdSetBuilder {
-    doc_id_sets: Vec<Option<Box<DocIdSet>>>,
+struct RoaringDocIdSetBuilder {
+    doc_id_sets: Vec<Option<DocIdSetEnum>>,
     cardinality: usize,
 
     max_doc: i32,
@@ -583,9 +602,9 @@ pub struct RoaringDocIdSetBuilder {
 }
 
 impl RoaringDocIdSetBuilder {
-    pub fn new(max_doc: i32) -> RoaringDocIdSetBuilder {
+    fn new(max_doc: i32) -> RoaringDocIdSetBuilder {
         let length = (max_doc + (1 << 16) - 1).unsigned_shift(16);
-        let mut doc_id_sets: Vec<Option<Box<DocIdSet>>> = Vec::with_capacity(length as usize);
+        let mut doc_id_sets = Vec::with_capacity(length as usize);
         for _ in 0..length {
             doc_id_sets.push(None);
         }
@@ -602,10 +621,6 @@ impl RoaringDocIdSetBuilder {
         }
     }
 
-    pub fn cardinality(&self) -> usize {
-        self.cardinality
-    }
-
     fn flush(&mut self) {
         assert!(self.current_block_cardinality <= BLOCK_SIZE);
 
@@ -619,10 +634,9 @@ impl RoaringDocIdSetBuilder {
                 let mut docs: Vec<u16> = vec![0u16; current_block_cardinality];
                 docs.copy_from_slice(&self.buffer[0..current_block_cardinality]);
 
-                self.doc_id_sets[current_block as usize] = Some(Box::new(ShortArrayDocIdSet::new(
-                    docs,
-                    current_block_cardinality,
-                )));
+                self.doc_id_sets[current_block as usize] = Some(DocIdSetEnum::ShortArray(
+                    ShortArrayDocIdSet::new(docs, current_block_cardinality),
+                ));
             }
         } else {
             assert!(self.dense_buffer.is_some());
@@ -657,17 +671,19 @@ impl RoaringDocIdSetBuilder {
                 );
 
                 let length = exclude_docs.len();
-                self.doc_id_sets[self.current_block as usize] = Some(Box::new(NotDocIdSet::new(
-                    Box::new(ShortArrayDocIdSet::new(exclude_docs, length)),
-                    BLOCK_SIZE as i32,
-                )));
+                self.doc_id_sets[self.current_block as usize] =
+                    Some(DocIdSetEnum::NotDocId(NotDocIdSet::new(
+                        ShortArrayDocIdSet::new(exclude_docs, length),
+                        BLOCK_SIZE as i32,
+                    )));
             } else {
                 // Neither sparse nor super dense, use a fixed bit set
-                let dense_buf = mem::replace(&mut self.dense_buffer, None);
-                self.doc_id_sets[self.current_block as usize] = Some(Box::new(BitDocIdSet::new(
-                    dense_buf.unwrap(),
-                    self.current_block_cardinality as usize,
-                )));
+                let dense_buf = self.dense_buffer.take().unwrap();
+                self.doc_id_sets[self.current_block as usize] =
+                    Some(DocIdSetEnum::BitDocId(BitDocIdSet::new(
+                        Arc::from(dense_buf),
+                        self.current_block_cardinality as usize,
+                    )));
             }
         }
 
@@ -707,12 +723,12 @@ impl RoaringDocIdSetBuilder {
             if self.dense_buffer.is_none() {
                 // the buffer is full, let's move to a fixed bit set
                 let num_bits = (1i32 << 16).min(self.max_doc - (block << 16));
-                let mut fixed_bit_set = FixedBitSet::new(num_bits as usize);
+                let mut fixed_bit_set = Box::new(FixedBitSet::new(num_bits as usize));
                 for doc in &self.buffer {
                     fixed_bit_set.set(*doc as usize);
                 }
 
-                self.dense_buffer = Some(Box::new(fixed_bit_set));
+                self.dense_buffer = Some(fixed_bit_set);
             }
 
             self.dense_buffer
@@ -727,48 +743,43 @@ impl RoaringDocIdSetBuilder {
         Ok(())
     }
 
-    pub fn build(&mut self) -> RoaringDocIdSet {
+    pub fn build(mut self) -> RoaringDocIdSet {
         self.flush();
-        let doc_id_set = mem::replace(&mut self.doc_id_sets, Vec::new());
-        RoaringDocIdSet::new(doc_id_set, self.cardinality)
+        RoaringDocIdSet::new(self.doc_id_sets, self.cardinality)
     }
 }
 
 impl DocIdSet for RoaringDocIdSet {
-    fn iterator(&self) -> Result<Option<Box<DocIterator>>> {
+    type Iter = RoaringDocIterator;
+    fn iterator(&self) -> Result<Option<Self::Iter>> {
         if self.cardinality == 0 {
             Ok(None)
         } else {
-            Ok(Some(Box::new(RoaringDocIterator::new(
+            Ok(Some(RoaringDocIterator::new(
                 self.doc_id_sets.clone(),
                 self.cardinality,
-            ))))
+            )))
         }
-    }
-    fn bits(&self) -> Result<Option<ImmutableBitSetRef>> {
-        unimplemented!()
     }
 }
 
-pub struct RoaringDocIterator {
-    doc_id_sets: Arc<Vec<Option<Box<DocIdSet>>>>,
+struct RoaringDocIterator {
+    doc_id_sets: Arc<[Option<DocIdSetEnum>]>,
     doc: DocId,
     block: i32,
     cardinality: usize,
-    sub: Option<Box<DocIterator>>,
+    sub: Option<DocIdSetDocIterEnum>,
 }
 
 impl RoaringDocIterator {
-    pub fn new(
-        doc_id_sets: Arc<Vec<Option<Box<DocIdSet>>>>,
-        cardinality: usize,
-    ) -> RoaringDocIterator {
+    fn new(doc_id_sets: Arc<[Option<DocIdSetEnum>]>, cardinality: usize) -> Self {
         RoaringDocIterator {
             doc_id_sets,
             doc: -1,
             block: -1,
             cardinality,
-            sub: Some(Box::new(EmptyDocIterator::default())),
+            // init as stub
+            sub: Some(DocIdSetDocIterEnum::default()),
         }
     }
 
@@ -861,14 +872,12 @@ impl ShortArrayDocIdSet {
 }
 
 impl DocIdSet for ShortArrayDocIdSet {
-    fn iterator(&self) -> Result<Option<Box<DocIterator>>> {
-        Ok(Some(Box::new(ShortArrayDocIterator::new(
+    type Iter = ShortArrayDocIterator;
+    fn iterator(&self) -> Result<Option<Self::Iter>> {
+        Ok(Some(ShortArrayDocIterator::new(
             self.docs.clone(),
             self.length,
-        ))))
-    }
-    fn bits(&self) -> Result<Option<ImmutableBitSetRef>> {
-        unimplemented!()
+        )))
     }
 }
 
@@ -931,38 +940,39 @@ impl DocIterator for ShortArrayDocIterator {
     }
 }
 
-pub struct NotDocIdSet {
-    set: Box<DocIdSet>,
+pub struct NotDocIdSet<T: DocIdSet> {
+    set: T,
     max_doc: i32,
 }
 
-impl NotDocIdSet {
-    pub fn new(set: Box<DocIdSet>, max_doc: i32) -> NotDocIdSet {
+impl<T: DocIdSet> NotDocIdSet<T> {
+    pub fn new(set: T, max_doc: i32) -> NotDocIdSet<T> {
         NotDocIdSet { set, max_doc }
     }
 }
 
-impl DocIdSet for NotDocIdSet {
-    fn iterator(&self) -> Result<Option<Box<DocIterator>>> {
+impl<T: DocIdSet> DocIdSet for NotDocIdSet<T> {
+    type Iter = NotDocIterator<T::Iter>;
+    fn iterator(&self) -> Result<Option<Self::Iter>> {
         match self.set.iterator()? {
-            Some(iter) => Ok(Some(Box::new(NotDocIterator::new(iter, self.max_doc)))),
+            Some(iter) => Ok(Some(NotDocIterator::new(iter, self.max_doc))),
             _ => Ok(None),
         }
     }
-    fn bits(&self) -> Result<Option<ImmutableBitSetRef>> {
-        self.set.bits()
-    }
+    //    fn bits(&self) -> Result<Option<ImmutableBitSetRef>> {
+    //        self.set.bits()
+    //    }
 }
 
-pub struct NotDocIterator {
+pub struct NotDocIterator<DI: DocIterator> {
     max_doc: i32,
     doc: DocId,
     next_skipped_doc: i32,
-    iterator: Box<DocIterator>,
+    iterator: DI,
 }
 
-impl NotDocIterator {
-    pub fn new(iterator: Box<DocIterator>, max_doc: i32) -> NotDocIterator {
+impl<DI: DocIterator> NotDocIterator<DI> {
+    pub fn new(iterator: DI, max_doc: i32) -> Self {
         NotDocIterator {
             max_doc,
             doc: -1,
@@ -972,7 +982,7 @@ impl NotDocIterator {
     }
 }
 
-impl DocIterator for NotDocIterator {
+impl<DI: DocIterator> DocIterator for NotDocIterator<DI> {
     fn doc_id(&self) -> DocId {
         self.doc
     }
@@ -1007,5 +1017,103 @@ impl DocIterator for NotDocIterator {
 
     fn cost(&self) -> usize {
         self.max_doc as usize
+    }
+}
+
+enum CacheDocIdSetEnum {
+    Bit(BitDocIdSet<FixedBitSet>),
+    Roaring(RoaringDocIdSet),
+}
+
+impl DocIdSet for CacheDocIdSetEnum {
+    type Iter = CachedDocIdSetIterEnum;
+
+    fn iterator(&self) -> Result<Option<Self::Iter>> {
+        match self {
+            CacheDocIdSetEnum::Bit(i) => {
+                if let Some(iter) = i.iterator()? {
+                    Ok(Some(CachedDocIdSetIterEnum::Bit(iter)))
+                } else {
+                    Ok(None)
+                }
+            }
+            CacheDocIdSetEnum::Roaring(i) => {
+                if let Some(iter) = i.iterator()? {
+                    Ok(Some(CachedDocIdSetIterEnum::Roaring(iter)))
+                } else {
+                    Ok(None)
+                }
+            }
+        }
+    }
+}
+
+enum CachedDocIdSetIterEnum {
+    Bit(BitSetIterator<FixedBitSet>),
+    Roaring(RoaringDocIterator),
+}
+
+impl DocIterator for CachedDocIdSetIterEnum {
+    fn doc_id(&self) -> DocId {
+        match self {
+            CachedDocIdSetIterEnum::Bit(i) => i.doc_id(),
+            CachedDocIdSetIterEnum::Roaring(i) => i.doc_id(),
+        }
+    }
+
+    fn next(&mut self) -> Result<DocId> {
+        match self {
+            CachedDocIdSetIterEnum::Bit(i) => i.next(),
+            CachedDocIdSetIterEnum::Roaring(i) => i.next(),
+        }
+    }
+
+    fn advance(&mut self, target: i32) -> Result<DocId> {
+        match self {
+            CachedDocIdSetIterEnum::Bit(i) => i.advance(target),
+            CachedDocIdSetIterEnum::Roaring(i) => i.advance(target),
+        }
+    }
+
+    fn slow_advance(&mut self, target: i32) -> Result<DocId> {
+        match self {
+            CachedDocIdSetIterEnum::Bit(i) => i.slow_advance(target),
+            CachedDocIdSetIterEnum::Roaring(i) => i.slow_advance(target),
+        }
+    }
+
+    fn cost(&self) -> usize {
+        match self {
+            CachedDocIdSetIterEnum::Bit(i) => i.cost(),
+            CachedDocIdSetIterEnum::Roaring(i) => i.cost(),
+        }
+    }
+
+    fn matches(&mut self) -> Result<bool> {
+        match self {
+            CachedDocIdSetIterEnum::Bit(i) => i.matches(),
+            CachedDocIdSetIterEnum::Roaring(i) => i.matches(),
+        }
+    }
+
+    fn match_cost(&self) -> f32 {
+        match self {
+            CachedDocIdSetIterEnum::Bit(i) => i.match_cost(),
+            CachedDocIdSetIterEnum::Roaring(i) => i.match_cost(),
+        }
+    }
+
+    fn approximate_next(&mut self) -> Result<DocId> {
+        match self {
+            CachedDocIdSetIterEnum::Bit(i) => i.approximate_next(),
+            CachedDocIdSetIterEnum::Roaring(i) => i.approximate_next(),
+        }
+    }
+
+    fn approximate_advance(&mut self, target: i32) -> Result<DocId> {
+        match self {
+            CachedDocIdSetIterEnum::Bit(i) => i.approximate_advance(target),
+            CachedDocIdSetIterEnum::Roaring(i) => i.approximate_advance(target),
+        }
     }
 }

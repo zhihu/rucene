@@ -4,24 +4,30 @@ use core::codec::compressing::{CompressingStoredFieldsIndexReader, CompressingTe
 use core::codec::compressing::{CompressionMode, Decompress, Decompressor};
 use core::codec::format::TermVectorsFormat;
 use core::codec::reader::TermVectorsReader;
-use core::codec::writer::TermVectorsWriter;
-use core::index::segment_file_name;
+use core::codec::Codec;
 use core::index::FieldInfos;
 use core::index::Fields;
 use core::index::SegmentInfo;
-use core::index::{SeekStatus, TermIterator, TermState, Terms, TermsRef};
+use core::index::{segment_file_name, UnreachableTermState};
+use core::index::{SeekStatus, TermIterator, Terms};
 use core::search::posting_iterator::PostingIterator;
 use core::search::{DocIterator, Payload, NO_MORE_DOCS};
-use core::store::{DirectoryRc, IOContext, IndexInput};
-use core::util::bit_util::UnsignedShift;
-use core::util::packed_misc::{get_mutable_by_ratio, get_reader_iterator_no_header,
-                              get_reader_no_header, unsigned_bits_required};
-use core::util::packed_misc::{BlockPackedReaderIterator, Format, Mutable, OffsetAndLength, Reader,
-                              ReaderIterator, COMPACT};
+use core::store::{DataInput, Directory, IOContext, IndexInput};
+use core::util::bit_util::{BitsRequired, UnsignedShift};
+use core::util::packed_misc::{
+    get_mutable_by_ratio, get_reader_iterator_no_header, get_reader_no_header,
+};
+use core::util::packed_misc::{
+    BlockPackedReaderIterator, Format, Mutable, OffsetAndLength, Reader, ReaderIterator, COMPACT,
+};
 use core::util::DocId;
 
-use error::Result;
+use error::{
+    ErrorKind::{CorruptIndex, IllegalState},
+    Result,
+};
 
+use core::codec::TermVectorsWriterEnum;
 use std::any::Any;
 use std::cmp::Ordering;
 use std::sync::Arc;
@@ -43,7 +49,7 @@ pub const PACKED_BLOCK_SIZE: i32 = 64;
 pub const POSITIONS: i32 = 0x01;
 pub const OFFSETS: i32 = 0x02;
 pub const PAYLOADS: i32 = 0x04;
-pub const FLAGS_BITS: i32 = 3; // unsigned_bits_required((POSITIONS | OFFSETS | PAYLOADS) as i64)
+pub const FLAGS_BITS: i32 = 3; // (POSITIONS | OFFSETS | PAYLOADS).bits_required() as i32
 
 #[derive(Clone)]
 pub struct CompressingTermVectorsFormat {
@@ -86,15 +92,16 @@ impl Default for CompressingTermVectorsFormat {
 }
 
 impl TermVectorsFormat for CompressingTermVectorsFormat {
-    fn tv_reader(
+    type TVReader = CompressingTermVectorsReader;
+    fn tv_reader<D: Directory, DW: Directory, C: Codec>(
         &self,
-        directory: DirectoryRc,
-        si: &SegmentInfo,
+        directory: &DW,
+        si: &SegmentInfo<D, C>,
         field_info: Arc<FieldInfos>,
         ioctx: &IOContext,
-    ) -> Result<Box<TermVectorsReader>> {
+    ) -> Result<Self::TVReader> {
         CompressingTermVectorsReader::new(
-            &directory,
+            directory,
             si,
             &self.segment_suffix,
             field_info,
@@ -102,32 +109,33 @@ impl TermVectorsFormat for CompressingTermVectorsFormat {
             &self.format_name,
             self.compression_mode.clone(),
         )
-        .map(|tvf| -> Box<TermVectorsReader> { Box::new(tvf) })
     }
 
-    fn tv_writer(
+    fn tv_writer<D: Directory, DW: Directory, C: Codec>(
         &self,
-        directory: DirectoryRc,
-        segment_info: &SegmentInfo,
+        directory: &DW,
+        segment_info: &SegmentInfo<D, C>,
         context: &IOContext,
-    ) -> Result<Box<TermVectorsWriter>> {
-        Ok(Box::new(CompressingTermVectorsWriter::new(
-            directory,
-            segment_info,
-            &self.segment_suffix,
-            context,
-            &self.format_name,
-            self.compression_mode,
-            self.chunk_size as usize,
-            self.block_size as usize,
-        )?))
+    ) -> Result<TermVectorsWriterEnum<DW::IndexOutput>> {
+        Ok(TermVectorsWriterEnum::Compressing(
+            CompressingTermVectorsWriter::new(
+                directory,
+                segment_info,
+                &self.segment_suffix,
+                context,
+                &self.format_name,
+                self.compression_mode,
+                self.chunk_size as usize,
+                self.block_size as usize,
+            )?,
+        ))
     }
 }
 
 pub struct CompressingTermVectorsReader {
     field_infos: Arc<FieldInfos>,
     pub index_reader: Arc<CompressingStoredFieldsIndexReader>,
-    pub vectors_stream: Arc<IndexInput>,
+    pub vectors_stream: Arc<dyn IndexInput>,
     pub version: i32,
     pub packed_ints_version: i32,
     pub compression_mode: CompressionMode,
@@ -141,9 +149,9 @@ pub struct CompressingTermVectorsReader {
 }
 
 impl CompressingTermVectorsReader {
-    pub fn new(
-        d: &DirectoryRc,
-        si: &SegmentInfo,
+    pub fn new<D: Directory, DW: Directory, C: Codec>(
+        d: &DW,
+        si: &SegmentInfo<D, C>,
         segment_suffix: &str,
         field_infos: Arc<FieldInfos>,
         context: &IOContext,
@@ -154,10 +162,10 @@ impl CompressingTermVectorsReader {
         // let mut index_reader: Option<CompressingStoredFieldsIndexReader> = None;
         // load the index into memory
         let index_name = segment_file_name(&si.name, segment_suffix, VECTORS_INDEX_EXTENSION);
-        let mut input = d.as_ref().open_checksum_input(&index_name, context)?;
+        let mut input = d.open_checksum_input(&index_name, context)?;
         let codec_name_idx = format!("{}{}", format_name, CODEC_SFX_IDX);
         let version = check_index_header(
-            input.as_mut(),
+            &mut input,
             &codec_name_idx,
             VERSION_START,
             VERSION_CURRENT,
@@ -168,10 +176,10 @@ impl CompressingTermVectorsReader {
             index_header_length(&codec_name_idx, segment_suffix),
             input.file_pointer() as usize
         );
-        let index_reader = CompressingStoredFieldsIndexReader::new(input.as_mut(), si)?;
-        let max_pointer = input.as_mut().read_vlong()?;
+        let index_reader = CompressingStoredFieldsIndexReader::new(&mut input, si)?;
+        let max_pointer = input.read_vlong()?;
         // TODO once the input is a `ChecksumIndexInput`, we should check the footer
-        check_footer(input.as_mut())?;
+        check_footer(&mut input)?;
         // check_footer(input, exception);
 
         // open the data file and read metadata
@@ -187,7 +195,9 @@ impl CompressingTermVectorsReader {
             segment_suffix,
         )?;
         if version != version2 {
-            bail!("Corrupt: Version mismatch between stored fields and data!");
+            bail!(CorruptIndex(
+                "Version mismatch between stored fields and data!".into()
+            ));
         }
         debug_assert_eq!(
             index_header_length(&codec_name_dat, segment_suffix),
@@ -202,11 +212,10 @@ impl CompressingTermVectorsReader {
             num_chunks = vectors_stream.read_vlong()?;
             num_dirty_chunks = vectors_stream.read_vlong()?;
             if num_dirty_chunks > num_chunks {
-                bail!(
+                bail!(CorruptIndex(format!(
                     "invalid chunk counts: dirty={}, total={}",
-                    num_dirty_chunks,
-                    num_chunks
-                );
+                    num_dirty_chunks, num_chunks
+                )));
             }
         }
         retrieve_checksum(vectors_stream.as_mut())?;
@@ -242,7 +251,7 @@ impl CompressingTermVectorsReader {
         &self,
         skip: usize,
         num_fields: usize,
-        num_terms: &Reader,
+        num_terms: &impl Reader,
         term_freqs: &[i32],
     ) -> Vec<Vec<i32>> {
         let mut position_index = Vec::with_capacity(num_fields);
@@ -269,11 +278,11 @@ impl CompressingTermVectorsReader {
     #[allow(too_many_arguments)]
     fn read_positions(
         &mut self,
-        vectors_stream: &mut IndexInput,
+        vectors_stream: &mut dyn IndexInput,
         skip: usize,
         num_fields: usize,
-        flags: &Reader,
-        num_terms: &Reader,
+        flags: &impl Reader,
+        num_terms: &impl Reader,
         term_freqs: &[i32],
         flag: i32,
         total_positions: i32,
@@ -346,7 +355,7 @@ impl CompressingTermVectorsReader {
     }
 
     #[allow(cyclomatic_complexity)]
-    fn get_mut(&mut self, doc: i32) -> Result<Option<Box<Fields>>> {
+    fn get_mut(&mut self, doc: i32) -> Result<Option<TVFields>> {
         let mut vectors_stream = self.vectors_stream.as_ref().clone()?;
         let vectors_stream = vectors_stream.as_mut();
 
@@ -362,12 +371,10 @@ impl CompressingTermVectorsReader {
         let doc_base = vectors_stream.read_vint()?;
         let chunk_docs = vectors_stream.read_vint()?;
         if doc < doc_base || doc >= doc_base + chunk_docs || doc_base + chunk_docs > self.num_docs {
-            bail!(
-                "Corrupt: doc_base={}, chunk_docs={}, doc={}",
-                doc_base,
-                chunk_docs,
-                self.num_docs
-            );
+            bail!(CorruptIndex(format!(
+                "doc_base={}, chunk_docs={}, doc={}",
+                doc_base, chunk_docs, self.num_docs
+            )));
         }
 
         // number of fields to skip
@@ -425,7 +432,7 @@ impl CompressingTermVectorsReader {
         };
 
         // read field numbers and flags
-        let bits_per_off = unsigned_bits_required(field_nums.len() as i64 - 1);
+        let bits_per_off = (field_nums.len() - 1).bits_required() as i32;
         let all_field_num_off = get_reader_no_header(
             vectors_stream,
             Format::Packed,
@@ -433,11 +440,8 @@ impl CompressingTermVectorsReader {
             total_fields,
             bits_per_off,
         )?;
-        // FIXME 下面定义的这两个 Option 实际是为了解决无法直接实现 Box<Mutable> -> Box<Reader> 的
-        // work around
-        let mut flags_reader: Option<Box<Reader>> = None;
-        let mut flags_mutable: Option<Box<Mutable>> = None;
-        match vectors_stream.read_vint()? {
+
+        let flags = match vectors_stream.read_vint()? {
             0 => {
                 let field_flags = get_reader_no_header(
                     vectors_stream,
@@ -448,31 +452,24 @@ impl CompressingTermVectorsReader {
                 )?;
                 let mut f = get_mutable_by_ratio(total_fields, FLAGS_BITS, COMPACT);
                 for i in 0..total_fields {
-                    let field_num_off = all_field_num_off.as_ref().get(i) as usize;
+                    let field_num_off = all_field_num_off.get(i) as usize;
                     debug_assert!(field_num_off < field_nums.len());
-                    let fgs = field_flags.as_ref().get(field_num_off);
-                    f.as_mut().set(i, fgs);
+                    let fgs = field_flags.get(field_num_off);
+                    f.set(i, fgs);
                 }
-                flags_mutable = Some(f);
+                f
             }
-            1 => {
-                flags_reader = Some(get_reader_no_header(
-                    vectors_stream,
-                    Format::Packed,
-                    self.packed_ints_version,
-                    total_fields,
-                    FLAGS_BITS,
-                )?);
-            }
+            1 => get_reader_no_header(
+                vectors_stream,
+                Format::Packed,
+                self.packed_ints_version,
+                total_fields,
+                FLAGS_BITS,
+            )?
+            .into_mutable(),
             _ => {
                 unreachable!();
             }
-        }
-        debug_assert!(flags_mutable.is_some() || flags_reader.is_some());
-        let flags = if flags_mutable.is_some() {
-            flags_mutable.as_ref().unwrap().as_ref().as_reader()
-        } else {
-            flags_reader.as_ref().unwrap().as_ref()
         };
 
         let field_num_offs: Vec<_> = (0..num_fields)
@@ -489,9 +486,7 @@ impl CompressingTermVectorsReader {
             bits_required,
         )?;
 
-        let total_terms = (0..total_fields)
-            .map(|i| num_terms.as_ref().get(i) as usize)
-            .sum();
+        let total_terms = (0..total_fields).map(|i| num_terms.get(i) as usize).sum();
 
         // term length
         let mut doc_off = 0;
@@ -505,12 +500,12 @@ impl CompressingTermVectorsReader {
             // skip
             let mut to_skip = 0;
             for i in 0..skip {
-                to_skip += num_terms.as_ref().get(i);
+                to_skip += num_terms.get(i);
             }
             self.reader.skip(vectors_stream, to_skip)?;
             // read prefix lengths
             for i in 0..num_fields {
-                let term_count = num_terms.as_ref().get(skip + i) as usize;
+                let term_count = num_terms.get(skip + i) as usize;
                 let mut field_prefix_lengths = Vec::with_capacity(term_count as usize);
                 let mut j = 0;
                 while j < term_count {
@@ -529,7 +524,7 @@ impl CompressingTermVectorsReader {
 
             // skip
             for i in 0..skip {
-                for _ in 0..num_terms.as_ref().get(i) {
+                for _ in 0..num_terms.get(i) {
                     doc_off += self.reader.next(vectors_stream)?;
                 }
             }
@@ -550,7 +545,7 @@ impl CompressingTermVectorsReader {
 
             total_len = doc_off as i32 + doc_len;
             for i in skip + num_fields..total_fields {
-                for _j in 0..num_terms.as_ref().get(i) {
+                for _j in 0..num_terms.get(i) {
                     total_len += self.reader.next(vectors_stream)? as i32;
                 }
             }
@@ -596,14 +591,14 @@ impl CompressingTermVectorsReader {
             debug_assert!(i != total_fields - 1usize || term_index == total_terms);
         }
 
-        let position_index = self.position_index(skip, num_fields, num_terms.as_ref(), &term_freqs);
+        let position_index = self.position_index(skip, num_fields, &num_terms, &term_freqs);
         let mut positions = if total_positions > 0 {
             self.read_positions(
                 vectors_stream,
                 skip,
                 num_fields,
-                flags,
-                num_terms.as_ref(),
+                &flags,
+                &num_terms,
                 &term_freqs,
                 POSITIONS,
                 total_positions,
@@ -626,8 +621,8 @@ impl CompressingTermVectorsReader {
                 vectors_stream,
                 skip,
                 num_fields,
-                flags,
-                num_terms.as_ref(),
+                &flags,
+                &num_terms,
                 &term_freqs,
                 OFFSETS,
                 total_offsets,
@@ -637,8 +632,8 @@ impl CompressingTermVectorsReader {
                 vectors_stream,
                 skip,
                 num_fields,
-                flags,
-                num_terms.as_ref(),
+                &flags,
+                &num_terms,
                 &term_freqs,
                 OFFSETS,
                 total_offsets,
@@ -704,7 +699,7 @@ impl CompressingTermVectorsReader {
             let mut term_index = 0usize;
             for i in 0..skip {
                 let f = flags.get(i) as i32;
-                let term_count = num_terms.as_ref().get(i) as usize;
+                let term_count = num_terms.get(i) as usize;
                 if (f & PAYLOADS) != 0 {
                     for j in 0..term_count {
                         let freq = term_freqs[term_index + j];
@@ -719,7 +714,7 @@ impl CompressingTermVectorsReader {
             // read doc payload lengths
             for (i, item) in position_index.iter().enumerate().take(num_fields) {
                 let f = flags.get(skip + i) as i32;
-                let term_count = num_terms.as_ref().get(skip + i) as usize;
+                let term_count = num_terms.get(skip + i) as usize;
                 if (f & PAYLOADS) != 0 {
                     let total_freq = item[term_count];
                     let mut cur_payload_index = Vec::with_capacity((total_freq + 1) as usize);
@@ -740,7 +735,7 @@ impl CompressingTermVectorsReader {
             total_payload_length += payload_len;
             for i in skip + num_fields..total_fields {
                 let f = flags.get(i) as i32;
-                let term_count = num_terms.as_ref().get(i) as usize;
+                let term_count = num_terms.get(i) as usize;
                 if (f & PAYLOADS) != 0 {
                     for j in 0..term_count {
                         let freq = term_freqs[term_index + j];
@@ -776,17 +771,17 @@ impl CompressingTermVectorsReader {
             .map(|i| flags.get(skip + i) as i32)
             .collect();
         let field_num_terms: Vec<_> = (0..num_fields)
-            .map(|i| num_terms.as_ref().get(skip + i) as i32)
+            .map(|i| num_terms.get(skip + i) as i32)
             .collect();
 
         let mut field_term_freqs = Vec::with_capacity(num_fields);
         {
             let mut term_idx = 0usize;
             for i in 0..skip {
-                term_idx += num_terms.as_ref().get(i) as usize;
+                term_idx += num_terms.get(i) as usize;
             }
             for i in 0..num_fields {
-                let term_count = num_terms.as_ref().get(skip + i) as usize;
+                let term_count = num_terms.get(skip + i) as usize;
                 let curr_term_freqs = term_freqs[term_idx..term_idx + term_count].to_vec();
                 term_idx += term_count;
                 field_term_freqs.push(curr_term_freqs);
@@ -794,7 +789,7 @@ impl CompressingTermVectorsReader {
         }
 
         debug_assert_eq!(field_lengths.iter().sum::<i32>(), doc_len);
-        Ok(Some(Box::new(TVFields::new(
+        Ok(Some(TVFields::new(
             self.field_infos.clone(),
             field_nums,
             field_flags,
@@ -812,12 +807,13 @@ impl CompressingTermVectorsReader {
             suffix_bytes,
             suffix_bytes_position,
             payload_bytes_position,
-        ))))
+        )))
     }
 }
 
 impl TermVectorsReader for CompressingTermVectorsReader {
-    fn get(&self, doc: i32) -> Result<Option<Box<Fields>>> {
+    type Fields = TVFields;
+    fn get(&self, doc: i32) -> Result<Option<Self::Fields>> {
         self.clone()?.get_mut(doc)
     }
 
@@ -826,7 +822,7 @@ impl TermVectorsReader for CompressingTermVectorsReader {
     }
 }
 
-struct TVFieldsData {
+pub struct TVFieldsData {
     pub prefix_lengths: Vec<Vec<i32>>,
     pub suffix_lengths: Vec<Vec<i32>>,
     pub term_freqs: Vec<Vec<i32>>,
@@ -838,7 +834,7 @@ struct TVFieldsData {
     pub suffix_bytes: Vec<u8>,
 }
 
-struct TVFields {
+pub struct TVFields {
     pub field_infos: Arc<FieldInfos>,
     pub field_nums: Vec<i32>,
     pub field_flags: Vec<i32>,
@@ -899,6 +895,7 @@ impl TVFields {
 }
 
 impl Fields for TVFields {
+    type Terms = TVTerms;
     fn fields(&self) -> Vec<String> {
         let field_names: Vec<_> = self
             .field_num_offs
@@ -912,7 +909,7 @@ impl Fields for TVFields {
         field_names
     }
 
-    fn terms(&self, field: &str) -> Result<Option<TermsRef>> {
+    fn terms(&self, field: &str) -> Result<Option<Self::Terms>> {
         let field_info = self.field_infos.by_name.get(field);
         if field_info.is_none() {
             return Ok(None);
@@ -942,7 +939,7 @@ impl Fields for TVFields {
         }
         debug_assert!(field_len >= 0);
         let index = idx as usize;
-        Ok(Some(Arc::new(TVTerms::new(
+        Ok(Some(TVTerms::new(
             self.num_terms[index],
             self.field_flags[index],
             self.fields_data.clone(),
@@ -952,7 +949,7 @@ impl Fields for TVFields {
                 field_len as usize,
             ),
             self.payload_bytes_position.clone(),
-        ))))
+        )))
     }
 
     fn size(&self) -> usize {
@@ -988,7 +985,7 @@ impl Fields for TVFields {
     }
 }
 
-struct TVTerms {
+pub struct TVTerms {
     num_terms: i32,
     flags: i32,
     fields_data: Arc<TVFieldsData>,
@@ -1019,15 +1016,16 @@ impl TVTerms {
 }
 
 impl Terms for TVTerms {
-    fn iterator(&self) -> Result<Box<TermIterator>> {
-        Ok(Box::new(TVTermsIterator::new(
+    type Iterator = TVTermsIterator;
+    fn iterator(&self) -> Result<Self::Iterator> {
+        Ok(TVTermsIterator::new(
             self.num_terms,
             self.flags,
             self.fields_data.clone(),
             self.data_index,
             self.term_bytes_position.clone(),
             self.payload_bytes_position.clone(),
-        )))
+        ))
     }
 
     fn size(&self) -> Result<i64> {
@@ -1063,7 +1061,7 @@ impl Terms for TVTerms {
     }
 }
 
-struct TVTermsIterator {
+pub struct TVTermsIterator {
     num_terms: i32,
     start_pos: usize,
     ord: i32,
@@ -1103,7 +1101,6 @@ impl TVTermsIterator {
         self.ord = -1;
     }
 
-    // TODO a copy of next() but just return a ref to avoid copy bytes vector
     fn next_local(&mut self) -> Result<Option<&[u8]>> {
         if self.ord == self.num_terms - 1 {
             return Ok(None);
@@ -1124,7 +1121,7 @@ impl TVTermsIterator {
         }
 
         if self.term_bytes_position.0 + suffix_len > self.fields_data.suffix_bytes.len() {
-            bail!("not enough data to copy!");
+            bail!(CorruptIndex("not enough data to copy!".into()));
         } else {
             self.term[prefix_len..term_len].copy_from_slice(
                 &self.fields_data.suffix_bytes
@@ -1139,6 +1136,8 @@ impl TVTermsIterator {
 }
 
 impl TermIterator for TVTermsIterator {
+    type Postings = TVPostingsIterator;
+    type TermState = UnreachableTermState;
     fn next(&mut self) -> Result<Option<Vec<u8>>> {
         Ok(self.next_local()?.map(|s| s.to_vec()))
     }
@@ -1193,26 +1192,18 @@ impl TermIterator for TVTermsIterator {
         ))
     }
 
-    fn postings_with_flags(&mut self, _flags: i16) -> Result<Box<PostingIterator>> {
-        Ok(Box::new(TVPostingsIterator::new(
+    fn postings_with_flags(&mut self, _flags: u16) -> Result<Self::Postings> {
+        Ok(TVPostingsIterator::new(
             self.fields_data.term_freqs[self.data_index][self.ord as usize],
             self.fields_data.position_index[self.data_index][self.ord as usize],
             self.fields_data.clone(),
             self.data_index,
             self.payload_bytes_position.0,
-        )))
-    }
-
-    fn term_state(&mut self) -> Result<Box<TermState>> {
-        unimplemented!()
-    }
-
-    fn as_any(&self) -> &Any {
-        self
+        ))
     }
 }
 
-struct TVPostingsIterator {
+pub struct TVPostingsIterator {
     doc: DocId,
     term_freq: i32,
     position_index: i32,
@@ -1245,9 +1236,9 @@ impl TVPostingsIterator {
 
     fn check_doc(&self) -> Result<()> {
         if self.doc == NO_MORE_DOCS {
-            bail!("DocsEnum exhausted");
+            bail!(IllegalState("DocIterator exhausted".into()));
         } else if self.doc == -1 {
-            bail!("DocsEnum not started");
+            bail!(IllegalState("DocIterator not started".into()));
         }
         Ok(())
     }
@@ -1255,9 +1246,9 @@ impl TVPostingsIterator {
     fn check_position(&self) -> Result<()> {
         self.check_doc()?;
         if self.i < 0 {
-            bail!("Position enum not started");
+            bail!(IllegalState("Position iterator not started".into()));
         } else if self.i >= self.term_freq {
-            bail!("Read past last position");
+            bail!(IllegalState("Read past last position".into()));
         }
         Ok(())
     }
@@ -1274,10 +1265,6 @@ impl TVPostingsIterator {
 }
 
 impl PostingIterator for TVPostingsIterator {
-    fn clone_as_doc_iterator(&self) -> Result<Box<DocIterator>> {
-        Ok(Box::new(self.clone()))
-    }
-
     fn freq(&self) -> Result<i32> {
         self.check_doc()?;
         Ok(self.term_freq)
@@ -1285,9 +1272,9 @@ impl PostingIterator for TVPostingsIterator {
 
     fn next_position(&mut self) -> Result<i32> {
         if self.doc != 0 {
-            bail!("Illegal State!");
+            bail!(IllegalState("".into()));
         } else if self.i > self.term_freq - 1 {
-            bail!("Read past last position");
+            bail!(IllegalState("Read past last position".into()));
         }
 
         self.i += 1;
@@ -1350,10 +1337,6 @@ impl PostingIterator for TVPostingsIterator {
                     [self.payload_position.0..self.payload_position.0 + self.payload_position.1],
             ))
         }
-    }
-
-    fn as_any_mut(&mut self) -> &mut Any {
-        self
     }
 }
 

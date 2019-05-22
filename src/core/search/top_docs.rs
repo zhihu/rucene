@@ -210,7 +210,7 @@ impl TopScoreDocs {
         }
     }
 
-    pub fn score_docs(&self) -> &Vec<ScoreDocHit> {
+    pub fn score_docs(&self) -> &[ScoreDocHit] {
         &self.score_docs
     }
 }
@@ -295,7 +295,7 @@ impl TopDocs {
         }
     }
 
-    pub fn score_docs(&self) -> &Vec<ScoreDocHit> {
+    pub fn score_docs(&self) -> &[ScoreDocHit] {
         match *self {
             TopDocs::Score(ref s) => &s.score_docs,
             TopDocs::Field(ref f) => &f.score_docs,

@@ -225,7 +225,7 @@ impl Lucene50SkipWriter {
     }
 
     /// Writes the buffered skip lists to the given output.
-    pub fn write_skip(&self, output: &mut IndexOutput) -> Result<i64> {
+    pub fn write_skip(&self, output: &mut impl IndexOutput) -> Result<i64> {
         let skip_pointer = output.file_pointer();
 
         if self.skip_buffer.is_empty() {

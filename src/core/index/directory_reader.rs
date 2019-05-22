@@ -1,16 +1,22 @@
+use core::codec::{Codec, CodecTVFields};
 use core::doc::{Document, DocumentStoredFieldVisitor};
-use core::index::field_info::Fields;
 use core::index::index_commit::IndexCommit;
 use core::index::index_writer::IndexWriter;
+use core::index::leaf_reader::{LeafReaderContext, SearchLeafReader};
+use core::index::merge_policy::MergePolicy;
+use core::index::merge_scheduler::MergeScheduler;
 use core::index::INDEX_FILE_SEGMENTS;
 use core::index::{get_segment_file_name, run_with_find_segment_file, SegmentInfos};
 use core::index::{IndexReader, LeafReader, SegmentReader};
-use core::store::{Directory, DirectoryRc, IO_CONTEXT_READ};
+use core::store::{Directory, IOContext};
 use core::util::DocId;
-use error::{ErrorKind::IllegalState, Result};
 
-use core::index::leaf_reader::LeafReaderContext;
-use std::{any::Any, collections::HashMap, fmt, sync::Arc};
+use error::{
+    ErrorKind::{IllegalArgument, IllegalState},
+    Result,
+};
+
+use std::{collections::HashMap, fmt, sync::Arc};
 
 ///
 // Returns <code>true</code> if an index likely exists at
@@ -19,7 +25,7 @@ use std::{any::Any, collections::HashMap, fmt, sync::Arc};
 // @param  directory the directory to check for an index
 // @return <code>true</code> if an index exists; <code>false</code> otherwise
 //
-pub fn index_exist(directory: &Directory) -> Result<bool> {
+pub fn index_exist<D: Directory>(directory: &D) -> Result<bool> {
     // LUCENE-2812, LUCENE-2727, LUCENE-4738: this logic will
     // return true in cases that should arguably be false,
     // such as only IW.prepareCommit has been called, or a
@@ -39,27 +45,36 @@ pub fn index_exist(directory: &Directory) -> Result<bool> {
         .any(|f| f.starts_with(&prefix)))
 }
 
-pub struct StandardDirectoryReader {
-    #[allow(dead_code)]
-    directory: DirectoryRc,
-    #[allow(dead_code)]
-    segment_infos: SegmentInfos,
+pub struct StandardDirectoryReader<
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+> {
+    directory: Arc<D>,
+    segment_infos: SegmentInfos<D, C>,
     max_doc: i32,
     pub num_docs: i32,
     starts: Vec<i32>,
-    readers: Vec<Arc<SegmentReader>>,
+    readers: Vec<Arc<SegmentReader<D, C>>>,
     apply_all_deletes: bool,
     write_all_deletes: bool,
-    writer: Option<Arc<IndexWriter>>,
+    writer: Option<IndexWriter<D, C, MS, MP>>,
 }
 
-impl StandardDirectoryReader {
-    pub fn open(directory: DirectoryRc) -> Result<StandardDirectoryReader> {
+impl<D, C, MS, MP> StandardDirectoryReader<D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
+    pub fn open(directory: Arc<D>) -> Result<Self> {
         let segment_file_name = get_segment_file_name(directory.as_ref())?;
         let segment_infos = SegmentInfos::read_commit(&directory, &segment_file_name)?;
         let mut readers = Vec::with_capacity(segment_infos.segments.len());
         for seg_info in &segment_infos.segments {
-            let s = SegmentReader::open(seg_info, &IO_CONTEXT_READ)?;
+            let s = SegmentReader::open(seg_info, &IOContext::READ)?;
             readers.push(Arc::new(s));
         }
         Ok(Self::new(
@@ -74,11 +89,11 @@ impl StandardDirectoryReader {
 
     /// Used by near real-time searcher
     pub fn open_by_writer(
-        writer: &IndexWriter,
-        infos: &SegmentInfos,
+        writer: IndexWriter<D, C, MS, MP>,
+        infos: &SegmentInfos<D, C>,
         apply_all_deletes: bool,
         write_all_deletes: bool,
-    ) -> Result<StandardDirectoryReader> {
+    ) -> Result<Self> {
         // IndexWriter synchronizes externally before calling
         // us, which ensures infos will not change; so there's
         // no need to process segments in reverse order
@@ -92,8 +107,8 @@ impl StandardDirectoryReader {
             // segmentInfos here, so that we are passing the
             // actual instance of SegmentInfoPerCommit in
             // IndexWriter's segmentInfos:
-            let mut rld = writer.reader_pool.get_or_create(&infos.segments[i])?;
-            let reader = rld.get_readonly_clone(&IO_CONTEXT_READ)?;
+            let mut rld = writer.reader_pool().get_or_create(&infos.segments[i])?;
+            let reader = rld.get_readonly_clone(&IOContext::READ)?;
             if reader.num_docs() > 0 || writer.keep_fully_deleted_segments() {
                 // Steal the ref:
                 readers.push(Arc::new(reader));
@@ -101,23 +116,24 @@ impl StandardDirectoryReader {
             } else {
                 segment_infos.segments.remove(infos_upto);
             }
-            writer.reader_pool.release(&rld, true)?;
+            writer.reader_pool().release(&rld, true)?;
         }
         writer.inc_ref_deleter(&segment_infos)?;
+        let dir = Arc::clone(writer.directory());
         Ok(StandardDirectoryReader::new(
-            Arc::clone(writer.directory()),
+            dir,
             readers,
             segment_infos,
-            None,
+            Some(writer),
             apply_all_deletes,
             write_all_deletes,
         ))
     }
 
     pub fn open_by_readers(
-        directory: DirectoryRc,
-        infos: SegmentInfos,
-        old_readers: &[Arc<SegmentReader>],
+        directory: Arc<D>,
+        infos: SegmentInfos<D, C>,
+        old_readers: &[Arc<SegmentReader<D, C>>],
     ) -> Result<Self> {
         let mut reader_indexes: HashMap<&str, usize> = HashMap::with_capacity(old_readers.len());
         for (i, r) in old_readers.iter().enumerate() {
@@ -166,7 +182,7 @@ impl StandardDirectoryReader {
                     continue;
                 }
             }
-            let new_reader = SegmentReader::open(commit_info, &IO_CONTEXT_READ)?;
+            let new_reader = SegmentReader::open(commit_info, &IOContext::READ)?;
             new_readers.push(Arc::new(new_reader));
         }
         Ok(StandardDirectoryReader::new(
@@ -180,13 +196,13 @@ impl StandardDirectoryReader {
     }
 
     fn new(
-        directory: DirectoryRc,
-        mut readers: Vec<Arc<SegmentReader>>,
-        segment_infos: SegmentInfos,
-        writer: Option<Arc<IndexWriter>>,
+        directory: Arc<D>,
+        mut readers: Vec<Arc<SegmentReader<D, C>>>,
+        segment_infos: SegmentInfos<D, C>,
+        writer: Option<IndexWriter<D, C, MS, MP>>,
         apply_all_deletes: bool,
         write_all_deletes: bool,
-    ) -> StandardDirectoryReader {
+    ) -> Self {
         let mut starts = Vec::with_capacity(readers.len() + 1);
         let mut max_doc = 0;
         let mut num_docs = 0;
@@ -211,19 +227,19 @@ impl StandardDirectoryReader {
         }
     }
 
-    pub fn set_writer(&mut self, writer: Option<Arc<IndexWriter>>) {
+    pub fn set_writer(&mut self, writer: Option<IndexWriter<D, C, MS, MP>>) {
         self.writer = writer;
     }
 
-    pub fn get_writer(&self) -> Option<Arc<IndexWriter>> {
-        self.writer.as_ref().map(Arc::clone)
+    pub fn get_writer(&self) -> Option<IndexWriter<D, C, MS, MP>> {
+        self.writer.clone()
     }
 
     pub fn version(&self) -> i64 {
         self.segment_infos.version
     }
 
-    pub fn open_if_changed(&self, commit: Option<&IndexCommit>) -> Result<Option<Self>> {
+    pub fn open_if_changed(&self, commit: Option<&IndexCommit<D>>) -> Result<Option<Self>> {
         // If we were obtained by writer.getReader(), re-ask the
         // writer to get a new reader.
         if self.writer.is_some() {
@@ -233,7 +249,7 @@ impl StandardDirectoryReader {
         }
     }
 
-    fn open_from_writer(&self, commit: Option<&IndexCommit>) -> Result<Option<Self>> {
+    fn open_from_writer(&self, commit: Option<&IndexCommit<D>>) -> Result<Option<Self>> {
         if commit.is_some() {
             Ok(Some(self.open_from_commit(commit)?))
         } else {
@@ -243,7 +259,7 @@ impl StandardDirectoryReader {
             }
 
             let mut reader = writer.get_reader(self.apply_all_deletes, self.write_all_deletes)?;
-            reader.writer = self.writer.as_ref().map(Arc::clone);
+            reader.writer = self.writer.clone();
             if reader.version() == self.segment_infos.version {
                 return Ok(None);
             }
@@ -251,14 +267,14 @@ impl StandardDirectoryReader {
         }
     }
 
-    fn open_from_commit(&self, commit: Option<&IndexCommit>) -> Result<Self> {
+    fn open_from_commit(&self, commit: Option<&IndexCommit<D>>) -> Result<Self> {
         run_with_find_segment_file(&self.directory, commit, |(dir, file_name)| {
             let infos = SegmentInfos::read_commit(dir, file_name)?;
             Self::open_by_readers(Arc::clone(dir), infos, &self.readers)
         })
     }
 
-    fn do_open_no_writer(&self, commit: Option<&IndexCommit>) -> Result<Option<Self>> {
+    fn do_open_no_writer(&self, commit: Option<&IndexCommit<D>>) -> Result<Option<Self>> {
         if let Some(commit) = commit {
             if let Some(name) = self.segment_infos.segment_file_name() {
                 if commit.segments_file_name() == &name {
@@ -282,7 +298,7 @@ impl StandardDirectoryReader {
                 // IndexWriter.prepareCommit has been called (but not
                 // yet commit), then the reader will still see itself as
                 // current:
-                let sis = SegmentInfos::read_latest_commit(&self.directory)?;
+                let sis = SegmentInfos::<D, C>::read_latest_commit(&self.directory)?;
                 // we loaded SegmentInfos from the directory
                 Ok(sis.version == self.segment_infos.version)
             }
@@ -290,20 +306,27 @@ impl StandardDirectoryReader {
     }
 }
 
-impl IndexReader for StandardDirectoryReader {
-    fn leaves(&self) -> Vec<LeafReaderContext> {
+impl<D, C, MS, MP> IndexReader for StandardDirectoryReader<D, C, MS, MP>
+where
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
+    type Codec = C;
+    fn leaves(&self) -> Vec<LeafReaderContext<'_, C>> {
         self.readers
             .iter()
             .enumerate()
             .map(|(i, r)| {
-                LeafReaderContext::new(self, r.as_ref() as &LeafReader, i, self.starts[i])
+                LeafReaderContext::new(self, r.as_ref() as &SearchLeafReader<C>, i, self.starts[i])
             })
             .collect()
     }
 
-    fn term_vector(&self, doc_id: DocId) -> Result<Option<Box<Fields>>> {
+    fn term_vector(&self, doc_id: DocId) -> Result<Option<CodecTVFields<C>>> {
         if doc_id < 0 || doc_id > self.max_doc {
-            bail!("invalid doc id: {}", doc_id);
+            bail!(IllegalArgument(format!("invalid doc id: {}", doc_id)));
         }
         let i = match self.starts.binary_search_by(|&probe| probe.cmp(&doc_id)) {
             Ok(i) => i,
@@ -315,7 +338,10 @@ impl IndexReader for StandardDirectoryReader {
 
     fn document(&self, doc_id: DocId, fields_load: &[String]) -> Result<Document> {
         if doc_id < 0 || doc_id > self.max_doc {
-            bail!("doc_id {} invalid: [max_doc={}]", doc_id, self.max_doc);
+            bail!(IllegalArgument(format!(
+                "doc_id {} invalid: [max_doc={}]",
+                doc_id, self.max_doc
+            )));
         }
 
         let pos = match self.starts.binary_search_by(|&probe| probe.cmp(&doc_id)) {
@@ -339,16 +365,22 @@ impl IndexReader for StandardDirectoryReader {
         self.num_docs
     }
 
-    fn as_any(&self) -> &Any {
-        self
+    fn refresh(&self) -> Result<Option<Box<dyn IndexReader<Codec = C>>>> {
+        if let Some(reader) = self.open_if_changed(None)? {
+            Ok(Some(Box::new(reader)))
+        } else {
+            Ok(None)
+        }
     }
 }
 
-unsafe impl Sync for StandardDirectoryReader {}
-
-unsafe impl Send for StandardDirectoryReader {}
-
-impl fmt::Debug for StandardDirectoryReader {
+impl<D, C, MS, MP> fmt::Debug for StandardDirectoryReader<D, C, MS, MP>
+where
+    D: Directory,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let seg_infos = if let Some(name) = self.segment_infos.segment_file_name() {
             format!("{}:{}", name, self.segment_infos.version)
@@ -364,13 +396,25 @@ impl fmt::Debug for StandardDirectoryReader {
     }
 }
 
-impl AsRef<IndexReader> for Arc<StandardDirectoryReader> {
-    fn as_ref(&self) -> &(IndexReader + 'static) {
-        &**self as &(IndexReader + 'static)
+impl<D, C, MS, MP> AsRef<IndexReader<Codec = C>> for StandardDirectoryReader<D, C, MS, MP>
+where
+    D: Directory,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
+    fn as_ref(&self) -> &(IndexReader<Codec = C> + 'static) {
+        self
     }
 }
 
-impl Drop for StandardDirectoryReader {
+impl<D, C, MS, MP> Drop for StandardDirectoryReader<D, C, MS, MP>
+where
+    D: Directory,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
     fn drop(&mut self) {
         if let Some(ref writer) = self.writer {
             if let Err(e) = writer.dec_ref_deleter(&self.segment_infos) {

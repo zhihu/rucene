@@ -1,7 +1,7 @@
 use core::index::{NumericDocValues, NumericDocValuesContext};
 use core::store::IndexInput;
 use core::util::packed::PackedIntsNullReader;
-use core::util::packed_misc;
+use core::util::packed_misc::{self, Reader, ReaderEnum};
 use core::util::DocId;
 use core::util::{LongValues, LongValuesContext};
 use error::ErrorKind::{CorruptIndex, IllegalArgument};
@@ -16,7 +16,7 @@ pub struct MonotonicBlockPackedReader {
     value_count: usize,
     min_values: Vec<i64>,
     averages: Vec<f32>,
-    sub_readers: Vec<Box<packed_misc::Reader>>,
+    sub_readers: Vec<ReaderEnum>,
     #[allow(dead_code)]
     sum_bpv: i64,
 }
@@ -29,7 +29,7 @@ impl MonotonicBlockPackedReader {
     }
 
     pub fn new(
-        input: &mut IndexInput,
+        input: &mut dyn IndexInput,
         packed_ints_version: i32,
         block_size: usize,
         value_count: usize,
@@ -44,7 +44,7 @@ impl MonotonicBlockPackedReader {
         let num_blocks = packed_misc::num_blocks(value_count, block_size);
         let mut min_values = vec![0_i64; num_blocks];
         let mut averages = vec![0.0_f32; num_blocks];
-        let mut sub_readers: Vec<Box<packed_misc::Reader>> = Vec::new();
+        let mut sub_readers = Vec::new();
         let mut sum_bpv: i64 = 0;
 
         for i in 0..num_blocks {
@@ -56,7 +56,9 @@ impl MonotonicBlockPackedReader {
                 bail!(CorruptIndex("bits_per_value > 64".to_owned()));
             }
             if bits_per_value == 0 {
-                sub_readers.push(Box::new(PackedIntsNullReader::new(block_size)));
+                sub_readers.push(ReaderEnum::PackedIntsNull(PackedIntsNullReader::new(
+                    block_size,
+                )));
             } else {
                 let left = value_count - i * block_size;
                 let size = ::std::cmp::min(left, block_size);

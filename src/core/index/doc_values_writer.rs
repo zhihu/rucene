@@ -1,26 +1,29 @@
-use core::codec::DocValuesConsumer;
-use core::codec::{INT_BYTES, LONG_BYTES};
-use core::index::numeric_doc_values::NumericDocValues;
-use core::index::DocValuesType;
-use core::index::FieldInfo;
-use core::index::SegmentWriteState;
-use core::index::Term;
+use core::codec::{Codec, DocValuesConsumer, INT_BYTES, LONG_BYTES};
+use core::index::{
+    numeric_doc_values::NumericDocValues, DocValuesType, FieldInfo, SegmentWriteState, Term,
+};
 use core::search::NO_MORE_DOCS;
-use core::store::{DataInput, DataOutput};
+use core::store::{DataInput, DataOutput, Directory};
 use core::util::bit_set::{BitSet, FixedBitSet};
+use core::util::bit_util::BitsRequired;
 use core::util::bits::Bits;
-use core::util::byte_block_pool::{ByteBlockPool, DirectTrackingAllocator, BYTE_BLOCK_SIZE};
-use core::util::byte_ref::BytesRef;
+use core::util::byte_block_pool::{ByteBlockPool, DirectTrackingAllocator};
 use core::util::bytes_ref_hash::{self, BytesRefHash, DirectByteStartArray};
-use core::util::packed::{LongValuesIterator, PackedLongValuesIter};
-use core::util::packed::{PackedLongValuesBuilder, PackedLongValuesBuilderType, DEFAULT_PAGE_SIZE};
-use core::util::packed::{PagedGrowableWriter, PagedMutable, PagedMutableHugeWriter};
-use core::util::packed_misc::{unsigned_bits_required, COMPACT, FAST};
+use core::util::packed::{
+    LongValuesIterator, PackedLongValues, PackedLongValuesBuilder, PackedLongValuesBuilderType,
+    PagedGrowableWriter, PagedMutableHugeWriter, PagedMutableWriter, DEFAULT_PAGE_SIZE,
+};
+use core::util::packed_misc::{COMPACT, FAST};
 use core::util::sorter::{Sorter, BINARY_SORT_THRESHOLD};
-use core::util::{Counter, DocId, Numeric, ReusableIterator};
-use core::util::{PagedBytes, PagedBytesDataInput, VariantValue};
+use core::util::BytesRef;
+use core::util::{
+    Counter, DocId, Numeric, PagedBytes, PagedBytesDataInput, ReusableIterator, VariantValue,
+};
 
-use error::Result;
+use error::{
+    ErrorKind::{IllegalArgument, IllegalState},
+    Result,
+};
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -33,7 +36,12 @@ pub trait DocValuesWriter {
     //    fn as_sorted_numeric(&mut self) -> &mut SortedNumericDocValuesWriter;
     //    fn as_sorted_set(&mut self) -> &mut SortedSetDocValuesWriter;
     fn finish(&mut self, num_doc: i32);
-    fn flush(&mut self, state: &SegmentWriteState, consumer: &mut DocValuesConsumer) -> Result<()>;
+
+    fn flush<D: Directory, DW: Directory, C: Codec, W: DocValuesConsumer>(
+        &mut self,
+        state: &SegmentWriteState<D, DW, C>,
+        consumer: &mut W,
+    ) -> Result<()>;
 }
 
 pub enum DocValuesWriterEnum {
@@ -67,7 +75,11 @@ impl DocValuesWriter for DocValuesWriterEnum {
         }
     }
 
-    fn flush(&mut self, state: &SegmentWriteState, consumer: &mut DocValuesConsumer) -> Result<()> {
+    fn flush<D: Directory, DW: Directory, C: Codec, W: DocValuesConsumer>(
+        &mut self,
+        state: &SegmentWriteState<D, DW, C>,
+        consumer: &mut W,
+    ) -> Result<()> {
         match self {
             DocValuesWriterEnum::Numeric(n) => n.flush(state, consumer),
             DocValuesWriterEnum::Binary(b) => b.flush(state, consumer),
@@ -110,21 +122,23 @@ impl BinaryDocValuesWriter {
 
     pub fn add_value(&mut self, doc_id: DocId, value: &BytesRef) -> Result<()> {
         if doc_id < self.added_values {
-            bail!(
+            bail!(IllegalArgument(format!(
                 "DocValuesField {} appears more than once in this document (only one value is \
                  allowed per field)",
                 self.field_info.name
-            );
+            )));
         }
         if value.len() == 0 {
-            bail!("field={}: null value not allowed", self.field_info.name);
+            bail!(IllegalArgument(format!(
+                "field={}: null value not allowed",
+                self.field_info.name
+            )));
         }
         if value.len() > MAX_ARRAY_LENGTH {
-            bail!(
+            bail!(IllegalArgument(format!(
                 "DocValuesField {} is too large, must be <={}",
-                self.field_info.name,
-                MAX_ARRAY_LENGTH
-            );
+                self.field_info.name, MAX_ARRAY_LENGTH
+            )));
         }
         // Fill in any holes:
         while self.added_values < doc_id {
@@ -147,12 +161,16 @@ impl BinaryDocValuesWriter {
 impl DocValuesWriter for BinaryDocValuesWriter {
     fn finish(&mut self, _num_doc: i32) {}
 
-    fn flush(&mut self, state: &SegmentWriteState, consumer: &mut DocValuesConsumer) -> Result<()> {
+    fn flush<D: Directory, DW: Directory, C: Codec, W: DocValuesConsumer>(
+        &mut self,
+        state: &SegmentWriteState<D, DW, C>,
+        consumer: &mut W,
+    ) -> Result<()> {
         self.bytes.freeze(false)?;
+        let size = self.lengths.size() as usize;
         let values = self.lengths.build();
         let lengths = values.iterator();
         let max_doc = state.segment_info.max_doc;
-        let size = self.lengths.size() as usize;
         debug_assert!(self.bytes.frozen);
         let mut iter =
             BinaryBytesIterator::new(max_doc, lengths, size, &self.bytes, &self.docs_with_field);
@@ -184,11 +202,11 @@ impl NumericDocValuesWriter {
 
     pub fn add_value(&mut self, doc_id: DocId, value: i64) -> Result<()> {
         if (doc_id as i64) < self.pending.size() {
-            bail!(
+            bail!(IllegalArgument(format!(
                 "DocValuesField {} appears more than once in this document (only one value is \
                  allowed per field)",
                 self.field_info.name
-            );
+            )));
         }
         // Fill in any holes:
         for _ in self.pending.size()..doc_id as i64 {
@@ -205,7 +223,11 @@ impl NumericDocValuesWriter {
 impl DocValuesWriter for NumericDocValuesWriter {
     fn finish(&mut self, _num_doc: i32) {}
 
-    fn flush(&mut self, state: &SegmentWriteState, consumer: &mut DocValuesConsumer) -> Result<()> {
+    fn flush<D: Directory, DW: Directory, C: Codec, W: DocValuesConsumer>(
+        &mut self,
+        state: &SegmentWriteState<D, DW, C>,
+        consumer: &mut W,
+    ) -> Result<()> {
         let values = self.pending.build();
         let max_doc = state.segment_info.max_doc() as usize;
 
@@ -221,7 +243,7 @@ impl DocValuesWriter for NumericDocValuesWriter {
 }
 
 struct NumericDocValuesIter<'a> {
-    values_iter: LongValuesIterator,
+    values_iter: LongValuesIterator<'a>,
     docs_with_field: &'a FixedBitSet,
     upto: usize,
     max_doc: usize,
@@ -230,11 +252,11 @@ struct NumericDocValuesIter<'a> {
 
 impl<'a> NumericDocValuesIter<'a> {
     fn new(
-        values_iter: LongValuesIterator,
+        values_iter: LongValuesIterator<'a>,
         docs_with_field: &'a FixedBitSet,
         max_doc: usize,
         size: usize,
-    ) -> NumericDocValuesIter {
+    ) -> Self {
         NumericDocValuesIter {
             values_iter,
             docs_with_field,
@@ -356,28 +378,33 @@ impl DocValuesWriter for SortedNumericDocValuesWriter {
         }
     }
 
-    fn flush(&mut self, state: &SegmentWriteState, consumer: &mut DocValuesConsumer) -> Result<()> {
+    fn flush<D: Directory, DW: Directory, C: Codec, W: DocValuesConsumer>(
+        &mut self,
+        state: &SegmentWriteState<D, DW, C>,
+        consumer: &mut W,
+    ) -> Result<()> {
         debug_assert_eq!(
             self.pending_counts.size() as i32,
             state.segment_info.max_doc
         );
-        self.pending_counts.build();
-        self.pending.build();
-        let mut values_iter = SNValuesIterator::new(&self.pending);
-        let mut counts_iter = SNCountIterator::new(&self.pending_counts);
+        let pending_counts = self.pending_counts.build();
+        let pending = self.pending.build();
+        let mut values_iter = SNValuesIterator::new(&pending);
+        let mut counts_iter = SNCountIterator::new(&pending_counts);
 
         consumer.add_sorted_numeric_field(&self.field_info, &mut values_iter, &mut counts_iter)
     }
 }
 
 struct SNCountIterator<'a> {
-    iter: PackedLongValuesIter<'a>,
+    iter: LongValuesIterator<'a>,
 }
 
 impl<'a> SNCountIterator<'a> {
-    fn new(builder: &'a PackedLongValuesBuilder) -> Self {
-        let iter = PackedLongValuesIter::new(builder);
-        SNCountIterator { iter }
+    fn new(builder: &'a PackedLongValues) -> Self {
+        SNCountIterator {
+            iter: builder.iterator(),
+        }
     }
 }
 
@@ -399,12 +426,12 @@ impl<'a> ReusableIterator for SNCountIterator<'a> {
 }
 
 struct SNValuesIterator<'a> {
-    iter: PackedLongValuesIter<'a>,
+    iter: LongValuesIterator<'a>,
 }
 
 impl<'a> SNValuesIterator<'a> {
-    fn new(builder: &'a PackedLongValuesBuilder) -> Self {
-        let iter = PackedLongValuesIter::new(builder);
+    fn new(values: &'a PackedLongValues) -> Self {
+        let iter = values.iterator();
         SNValuesIterator { iter }
     }
 }
@@ -473,17 +500,17 @@ impl SortedDocValuesWriter {
             );
         }
         if value.len() == 0 {
-            bail!(
+            bail!(IllegalArgument(format!(
                 "DocValuesField {}: null value not allowed",
                 self.field_info.name
-            );
+            )));
         }
-        if value.len() > BYTE_BLOCK_SIZE - 2 {
-            bail!(
+        if value.len() > ByteBlockPool::BYTE_BLOCK_SIZE - 2 {
+            bail!(IllegalArgument(format!(
                 "DocValuesField {} is too large, must be <= {}",
                 self.field_info.name,
-                BYTE_BLOCK_SIZE - 2
-            );
+                ByteBlockPool::BYTE_BLOCK_SIZE - 2
+            )));
         }
 
         while self.pending.size() < doc_id as i64 {
@@ -516,7 +543,11 @@ impl DocValuesWriter for SortedDocValuesWriter {
         }
     }
 
-    fn flush(&mut self, state: &SegmentWriteState, consumer: &mut DocValuesConsumer) -> Result<()> {
+    fn flush<D: Directory, DW: Directory, C: Codec, W: DocValuesConsumer>(
+        &mut self,
+        state: &SegmentWriteState<D, DW, C>,
+        consumer: &mut W,
+    ) -> Result<()> {
         let max_doc = state.segment_info.max_doc();
         debug_assert!(self.pending.size() == max_doc as i64);
 
@@ -529,10 +560,9 @@ impl DocValuesWriter for SortedDocValuesWriter {
             ord_map[idx] = ord as i32;
         }
 
-        self.pending.build();
+        let pending = self.pending.build();
         let mut values_iter = SortedValuesIterator::new(&self.hash.ids, value_count, &self.hash);
-        let mut ords_iter =
-            SortedOrdsIterator::new(&ord_map, max_doc, PackedLongValuesIter::new(&self.pending));
+        let mut ords_iter = SortedOrdsIterator::new(&ord_map, max_doc, pending.iterator());
 
         consumer.add_sorted_field(&mut self.field_info, &mut values_iter, &mut ords_iter)
     }
@@ -577,14 +607,14 @@ impl<'a> ReusableIterator for SortedValuesIterator<'a> {
 }
 
 struct SortedOrdsIterator<'a> {
-    iter: PackedLongValuesIter<'a>,
+    iter: LongValuesIterator<'a>,
     ord_map: &'a [i32],
     max_doc: i32,
     doc_upto: i32,
 }
 
 impl<'a> SortedOrdsIterator<'a> {
-    fn new(ord_map: &'a [i32], max_doc: i32, iter: PackedLongValuesIter<'a>) -> Self {
+    fn new(ord_map: &'a [i32], max_doc: i32, iter: LongValuesIterator<'a>) -> Self {
         SortedOrdsIterator {
             ord_map,
             max_doc,
@@ -673,17 +703,17 @@ impl SortedSetDocValuesWriter {
 
     pub fn add_value(&mut self, doc_id: DocId, value: &BytesRef) -> Result<()> {
         if value.len() == 0 {
-            bail!(
+            bail!(IllegalArgument(format!(
                 "DocValuesField {}: null value not allowed",
                 self.field_info.name
-            );
+            )));
         }
-        if value.len() > BYTE_BLOCK_SIZE - 2 {
-            bail!(
+        if value.len() > ByteBlockPool::BYTE_BLOCK_SIZE - 2 {
+            bail!(IllegalArgument(format!(
                 "DocValuesField {} is too large, must be <= {}",
                 self.field_info.name,
-                BYTE_BLOCK_SIZE - 2
-            );
+                ByteBlockPool::BYTE_BLOCK_SIZE - 2
+            )));
         }
 
         if doc_id != self.current_doc {
@@ -752,14 +782,18 @@ impl DocValuesWriter for SortedSetDocValuesWriter {
         }
     }
 
-    fn flush(&mut self, state: &SegmentWriteState, consumer: &mut DocValuesConsumer) -> Result<()> {
+    fn flush<D: Directory, DW: Directory, C: Codec, W: DocValuesConsumer>(
+        &mut self,
+        state: &SegmentWriteState<D, DW, C>,
+        consumer: &mut W,
+    ) -> Result<()> {
         let max_doc = state.segment_info.max_doc();
         let _max_count_per_doc = self.max_count;
         debug_assert!(self.pending_counts.size() == max_doc as i64);
 
         let value_count = self.hash.len();
-        self.pending.build();
-        self.pending_counts.build();
+        let pending = self.pending.build();
+        let pending_counts = self.pending_counts.build();
 
         self.hash.sort();
         let mut ord_map = vec![0i32; value_count];
@@ -769,12 +803,9 @@ impl DocValuesWriter for SortedSetDocValuesWriter {
         }
 
         let mut value_iter = SortedValuesIterator::new(&self.hash.ids, value_count, &self.hash);
-        let mut ord_iter =
-            SortedSetOrdsIterator::new(&ord_map, &self.pending, &self.pending_counts);
-        let mut ord_count_iter = SortedSetOrdCountIterator::new(
-            max_doc as i32,
-            PackedLongValuesIter::new(&self.pending_counts),
-        );
+        let mut ord_iter = SortedSetOrdsIterator::new(&ord_map, &pending, &pending_counts);
+        let mut ord_count_iter =
+            SortedSetOrdCountIterator::new(max_doc as i32, pending_counts.iterator());
 
         consumer.add_sorted_set_field(
             &mut self.field_info,
@@ -786,8 +817,8 @@ impl DocValuesWriter for SortedSetDocValuesWriter {
 }
 
 struct SortedSetOrdsIterator<'a> {
-    iter: PackedLongValuesIter<'a>,
-    counts: PackedLongValuesIter<'a>,
+    iter: LongValuesIterator<'a>,
+    counts: LongValuesIterator<'a>,
     ord_map: &'a [i32],
     num_ords: i32,
     ord_upto: i32,
@@ -798,15 +829,13 @@ struct SortedSetOrdsIterator<'a> {
 impl<'a> SortedSetOrdsIterator<'a> {
     fn new(
         ord_map: &'a [i32],
-        ords: &'a PackedLongValuesBuilder,
-        ord_counts: &'a PackedLongValuesBuilder,
+        ords: &'a PackedLongValues,
+        ord_counts: &'a PackedLongValues,
     ) -> Self {
         let num_ords = ords.size() as i32;
-        let iter = PackedLongValuesIter::new(ords);
-        let counts = PackedLongValuesIter::new(ord_counts);
         SortedSetOrdsIterator {
-            iter,
-            counts,
+            iter: ords.iterator(),
+            counts: ord_counts.iterator(),
             ord_map,
             num_ords,
             ord_upto: 0,
@@ -852,13 +881,13 @@ impl<'a> ReusableIterator for SortedSetOrdsIterator<'a> {
 }
 
 struct SortedSetOrdCountIterator<'a> {
-    iter: PackedLongValuesIter<'a>,
+    iter: LongValuesIterator<'a>,
     max_doc: i32,
     doc_upto: i32,
 }
 
 impl<'a> SortedSetOrdCountIterator<'a> {
-    fn new(max_doc: i32, iter: PackedLongValuesIter<'a>) -> Self {
+    fn new(max_doc: i32, iter: LongValuesIterator<'a>) -> Self {
         SortedSetOrdCountIterator {
             iter,
             max_doc,
@@ -971,10 +1000,6 @@ impl BinaryDocValuesUpdate {
 }
 
 impl SizeInBytesCalc for BinaryDocValuesUpdate {
-    fn size_in_bytes(&self) -> usize {
-        self.update.base_size_in_bytes() + self.value_size_in_bytes()
-    }
-
     fn value_size_in_bytes(&self) -> usize {
         debug_assert!(self.update.value.get_binary().is_some());
         let raw_value_size_in_bytes = align_object_size(NUM_BYTES_OBJECT_HEADER + INT_BYTES) * 2
@@ -982,6 +1007,10 @@ impl SizeInBytesCalc for BinaryDocValuesUpdate {
             + NUM_BYTES_OBJECT_REF;
 
         raw_value_size_in_bytes as usize + self.update.value.get_binary().as_ref().unwrap().len()
+    }
+
+    fn size_in_bytes(&self) -> usize {
+        self.update.base_size_in_bytes() + self.value_size_in_bytes()
     }
 }
 
@@ -998,12 +1027,12 @@ impl NumericDocValuesUpdate {
 }
 
 impl SizeInBytesCalc for NumericDocValuesUpdate {
-    fn size_in_bytes(&self) -> usize {
-        self.update.base_size_in_bytes() + self.value_size_in_bytes()
-    }
-
     fn value_size_in_bytes(&self) -> usize {
         LONG_BYTES as usize
+    }
+
+    fn size_in_bytes(&self) -> usize {
+        self.update.base_size_in_bytes() + self.value_size_in_bytes()
     }
 }
 
@@ -1093,7 +1122,10 @@ impl Container {
                 .as_ref()
                 .unwrap()
                 .as_base()),
-            _ => bail!("unsupported type: {:?}", doc_values_type),
+            _ => bail!(IllegalArgument(format!(
+                "unsupported type: {:?}",
+                doc_values_type
+            ))),
         }
     }
 
@@ -1128,7 +1160,10 @@ impl Container {
                     .unwrap()
                     .as_base())
             }
-            _ => bail!("unsupported type: {:?}", doc_values_type),
+            _ => bail!(IllegalArgument(format!(
+                "unsupported type: {:?}",
+                doc_values_type
+            ))),
         }
     }
 }
@@ -1139,7 +1174,7 @@ pub trait DocValuesFieldUpdates {
     fn add(&mut self, doc: DocId, value: &DocValuesFieldUpdatesValue) -> Result<()>;
 
     /// Returns an {@link Iterator} over the updated documents and their values.
-    fn iterator(&mut self) -> Result<Box<DocValuesFieldUpdatesIterator>>;
+    fn iterator(&mut self) -> Result<Box<dyn DocValuesFieldUpdatesIterator>>;
 
     /// Returns true if this instance contains any updates.
     fn any(&self) -> bool;
@@ -1292,7 +1327,7 @@ pub struct NumericDocValuesFieldUpdates {
 
 impl NumericDocValuesFieldUpdates {
     pub fn new(field: &str, max_doc: i32) -> NumericDocValuesFieldUpdates {
-        let bits_per_value = unsigned_bits_required(max_doc as i64 - 1);
+        let bits_per_value = (max_doc - 1).bits_required() as i32;
         let docs = PagedMutableHugeWriter::new(1, PAGE_SIZE, bits_per_value, COMPACT);
         let values = PagedGrowableWriter::new(1, PAGE_SIZE, 1, FAST);
 
@@ -1311,7 +1346,9 @@ impl DocValuesFieldUpdates for NumericDocValuesFieldUpdates {
     fn add(&mut self, doc: DocId, value: &DocValuesFieldUpdatesValue) -> Result<()> {
         // TODO: if the Sorter interface changes to take long indexes, we can remove that limitation
         if self.size == i32::max_value() as usize {
-            bail!("cannot support more than Integer.MAX_VALUE doc/value entries")
+            bail!(IllegalState(
+                "cannot support more than Integer.MAX_VALUE doc/value entries".into()
+            ))
         }
 
         debug_assert!(
@@ -1332,7 +1369,7 @@ impl DocValuesFieldUpdates for NumericDocValuesFieldUpdates {
         Ok(())
     }
 
-    fn iterator(&mut self) -> Result<Box<DocValuesFieldUpdatesIterator>> {
+    fn iterator(&mut self) -> Result<Box<dyn DocValuesFieldUpdatesIterator>> {
         let mut sorter = NumericDocValuesInPlaceMergeSorter::new(self);
         sorter.sort(0, self.size as i32);
 
@@ -1347,12 +1384,11 @@ impl DocValuesFieldUpdates for NumericDocValuesFieldUpdates {
         debug_assert!(other.doc_values_type() == self.doc_values_type());
         let other_updates = other.as_numeric();
         if other_updates.size + self.size > i32::max_value() as usize {
-            bail!(
+            bail!(IllegalState(format!(
                 "cannot support more than Integer.MAX_VALUE doc/value entries; size={} \
                  other.size={}",
-                self.size,
-                other_updates.size
-            );
+                self.size, other_updates.size
+            )));
         }
         self.docs = self.docs.grow_by_size(self.size + other_updates.size);
         self.values = self.values.grow_by_size(self.size + other_updates.size);
@@ -1526,7 +1562,7 @@ pub struct BinaryDocValuesFieldUpdates {
 
 impl BinaryDocValuesFieldUpdates {
     pub fn new(field: &str, max_doc: i32) -> BinaryDocValuesFieldUpdates {
-        let bits_per_value = unsigned_bits_required(max_doc as i64 - 1);
+        let bits_per_value = (max_doc - 1).bits_required() as i32;
         let docs = PagedMutableHugeWriter::new(1, PAGE_SIZE, bits_per_value, COMPACT);
         let offsets = PagedGrowableWriter::new(1, PAGE_SIZE, 1, FAST);
         let lengths = PagedGrowableWriter::new(1, PAGE_SIZE, 1, FAST);
@@ -1548,7 +1584,9 @@ impl DocValuesFieldUpdates for BinaryDocValuesFieldUpdates {
     fn add(&mut self, doc: DocId, value: &DocValuesFieldUpdatesValue) -> Result<()> {
         // TODO: if the Sorter interface changes to take long indexes, we can remove that limitation
         if self.size == i32::max_value() as usize {
-            bail!("cannot support more than Integer.MAX_VALUE doc/value entries");
+            bail!(IllegalState(
+                "cannot support more than Integer.MAX_VALUE doc/value entries".into()
+            ));
         }
         debug_assert!(
             value.doc_values_type == DocValuesType::Binary && value.binary_value.is_some()
@@ -1571,7 +1609,7 @@ impl DocValuesFieldUpdates for BinaryDocValuesFieldUpdates {
         Ok(())
     }
 
-    fn iterator(&mut self) -> Result<Box<DocValuesFieldUpdatesIterator>> {
+    fn iterator(&mut self) -> Result<Box<dyn DocValuesFieldUpdatesIterator>> {
         let mut sorter = BinaryDocValuesInPlaceMergeSorter::new(self);
         sorter.sort(0, self.size as i32);
 
@@ -1586,12 +1624,11 @@ impl DocValuesFieldUpdates for BinaryDocValuesFieldUpdates {
         debug_assert!(other.doc_values_type() == self.doc_values_type());
         let other_updates = other.as_binary();
         if other_updates.size + self.size > i32::max_value() as usize {
-            bail!(
+            bail!(IllegalState(format!(
                 "cannot support more than Integer.MAX_VALUE doc/value entries; size={} \
                  other.size={}",
-                self.size,
-                other_updates.size
-            );
+                self.size, other_updates.size
+            )));
         }
 
         let new_size = self.size + other_updates.size;
@@ -1627,36 +1664,9 @@ impl DocValuesFieldUpdates for BinaryDocValuesFieldUpdates {
     }
 }
 
-struct LongValuesIterAsNumericIter {
-    iter: LongValuesIterator,
-}
-
-impl LongValuesIterAsNumericIter {
-    fn new(iter: LongValuesIterator) -> Self {
-        LongValuesIterAsNumericIter { iter }
-    }
-}
-
-impl Iterator for LongValuesIterAsNumericIter {
-    type Item = Result<Numeric>;
-
-    fn next(&mut self) -> Option<Result<Numeric>> {
-        match self.iter.next() {
-            Some(v) => Some(Ok(Numeric::Long(v))),
-            None => None,
-        }
-    }
-}
-
-impl ReusableIterator for LongValuesIterAsNumericIter {
-    fn reset(&mut self) {
-        self.iter.reset();
-    }
-}
-
 struct BinaryBytesIterator<'a> {
     value: Vec<u8>,
-    lengths_iter: LongValuesIterator,
+    lengths_iter: LongValuesIterator<'a>,
     bytes: &'a PagedBytes,
     input: PagedBytesDataInput,
     docs_with_field: &'a FixedBitSet,
@@ -1668,7 +1678,7 @@ struct BinaryBytesIterator<'a> {
 impl<'a> BinaryBytesIterator<'a> {
     fn new(
         max_doc: i32,
-        lengths_iter: LongValuesIterator,
+        lengths_iter: LongValuesIterator<'a>,
         size: usize,
         bytes: &'a PagedBytes,
         docs_with_field: &'a FixedBitSet,

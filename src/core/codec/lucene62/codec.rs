@@ -1,6 +1,4 @@
 use core::codec::compressing::CompressingTermVectorsFormat;
-use core::codec::format::DocValuesFormat;
-use core::codec::format::*;
 use core::codec::lucene50::term_vectors_format;
 use core::codec::lucene50::Lucene50CompoundFormat;
 use core::codec::lucene50::Lucene50LiveDocsFormat;
@@ -12,6 +10,12 @@ use core::codec::lucene60::Lucene60PointsFormat;
 use core::codec::lucene62::Lucene62SegmentInfoFormat;
 use core::codec::Codec;
 use core::codec::{PerFieldDocValuesFormat, PerFieldPostingsFormat};
+
+use error::{Error, ErrorKind};
+
+use core::codec::per_field::PerFieldFieldsReader;
+use std::convert::TryFrom;
+use std::sync::Arc;
 
 pub struct Lucene62Codec {
     postings_format: PerFieldPostingsFormat,
@@ -40,53 +44,80 @@ impl Default for Lucene62Codec {
             )),
             doc_values_format: PerFieldDocValuesFormat::default(),
             norms_format: Lucene53NormsFormat::default(),
-            points_format: Lucene60PointsFormat::default(),
+            points_format: Lucene60PointsFormat {},
         }
     }
 }
 
 impl Codec for Lucene62Codec {
+    type FieldsProducer = Arc<PerFieldFieldsReader>;
+    type PostingFmt = PerFieldPostingsFormat;
+    type DVFmt = PerFieldDocValuesFormat;
+    type StoredFmt = Lucene50StoredFieldsFormat;
+    type TVFmt = CompressingTermVectorsFormat;
+    type FieldFmt = Lucene60FieldInfosFormat;
+    type SegmentFmt = Lucene62SegmentInfoFormat;
+    type NormFmt = Lucene53NormsFormat;
+    type LiveDocFmt = Lucene50LiveDocsFormat;
+    type CompoundFmt = Lucene50CompoundFormat;
+    type PointFmt = Lucene60PointsFormat;
+
     fn name(&self) -> &str {
         "Lucene62"
     }
 
-    fn postings_format(&self) -> &PostingsFormat {
-        &self.postings_format
+    fn postings_format(&self) -> Self::PostingFmt {
+        self.postings_format
     }
 
-    fn doc_values_format(&self) -> &DocValuesFormat {
-        &self.doc_values_format
+    fn doc_values_format(&self) -> Self::DVFmt {
+        self.doc_values_format
     }
 
-    fn stored_fields_format(&self) -> &StoredFieldsFormat {
-        &self.stored_fields_format
+    fn stored_fields_format(&self) -> Self::StoredFmt {
+        self.stored_fields_format
     }
 
-    fn term_vectors_format(&self) -> &TermVectorsFormat {
-        &self.term_vector_format
+    fn term_vectors_format(&self) -> Self::TVFmt {
+        self.term_vector_format.clone()
     }
 
-    fn field_infos_format(&self) -> &FieldInfosFormat {
-        &self.field_infos_format
+    fn field_infos_format(&self) -> Self::FieldFmt {
+        self.field_infos_format
     }
 
-    fn segment_info_format(&self) -> &SegmentInfoFormat {
-        &self.segment_info_format
+    fn segment_info_format(&self) -> Self::SegmentFmt {
+        self.segment_info_format
     }
 
-    fn norms_format(&self) -> &NormsFormat {
-        &self.norms_format
+    fn norms_format(&self) -> Self::NormFmt {
+        self.norms_format
     }
 
-    fn live_docs_format(&self) -> &LiveDocsFormat {
-        &self.live_docs_format
+    fn live_docs_format(&self) -> Self::LiveDocFmt {
+        self.live_docs_format
     }
 
-    fn compound_format(&self) -> &CompoundFormat {
-        &self.compound_format
+    fn compound_format(&self) -> Self::CompoundFmt {
+        self.compound_format
     }
 
-    fn points_format(&self) -> &PointsFormat {
-        &self.points_format
+    fn points_format(&self) -> Self::PointFmt {
+        self.points_format
+    }
+}
+
+impl TryFrom<String> for Lucene62Codec {
+    type Error = Error;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        if value.as_str() == "Lucene62" {
+            Ok(Self::default())
+        } else {
+            bail!(ErrorKind::CorruptIndex(format!(
+                "unknown codec name, expected 'Lucene62' got {:?}",
+                value
+            )))
+        }
     }
 }

@@ -3,12 +3,48 @@ use error::Result;
 use std::io;
 use std::sync::Arc;
 
-pub trait IndexOutput: DataOutput + Drop {
+pub trait IndexOutput: DataOutput {
     fn name(&self) -> &str;
     fn file_pointer(&self) -> i64;
     fn checksum(&self) -> Result<i64>;
+}
 
-    fn as_data_output(&mut self) -> &mut DataOutput;
+pub struct IndexOutputRef<T: IndexOutput> {
+    // TODO: we need GAT for the lifetime declaration
+    // so, currently directly use raw pointer instead
+    output: *mut T,
+}
+
+impl<T: IndexOutput> IndexOutputRef<T> {
+    pub fn new(output: &mut T) -> Self {
+        Self { output }
+    }
+}
+
+impl<T: IndexOutput> IndexOutput for IndexOutputRef<T> {
+    fn name(&self) -> &str {
+        unsafe { (*self.output).name() }
+    }
+
+    fn file_pointer(&self) -> i64 {
+        unsafe { (*self.output).file_pointer() }
+    }
+
+    fn checksum(&self) -> Result<i64> {
+        unsafe { (*self.output).checksum() }
+    }
+}
+
+impl<T: IndexOutput> DataOutput for IndexOutputRef<T> {}
+
+impl<T: IndexOutput> io::Write for IndexOutputRef<T> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        unsafe { (*self.output).write(buf) }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        unsafe { (*self.output).flush() }
+    }
 }
 
 pub struct InvalidIndexOutput {}
@@ -37,19 +73,11 @@ impl IndexOutput for InvalidIndexOutput {
     fn checksum(&self) -> Result<i64> {
         unreachable!()
     }
-
-    fn as_data_output(&mut self) -> &mut DataOutput {
-        unimplemented!()
-    }
 }
 
-impl Drop for InvalidIndexOutput {
-    fn drop(&mut self) {}
-}
-
-pub struct RateLimitIndexOutput {
-    delegate: Box<IndexOutput>,
-    rate_limiter: Arc<RateLimiter>,
+pub struct RateLimitIndexOutput<O: IndexOutput, RL: RateLimiter + ?Sized> {
+    delegate: O,
+    rate_limiter: Arc<RL>,
     /// How many bytes we've written since we last called rateLimiter.pause.
     bytes_since_last_pause: usize,
     /// Cached here not not always have to call RateLimiter#getMinPauseCheckBytes()
@@ -57,8 +85,8 @@ pub struct RateLimitIndexOutput {
     current_min_pause_check_bytes: usize,
 }
 
-impl RateLimitIndexOutput {
-    pub fn new(rate_limiter: Arc<RateLimiter>, delegate: Box<IndexOutput>) -> Self {
+impl<O: IndexOutput, RL: RateLimiter + ?Sized> RateLimitIndexOutput<O, RL> {
+    pub fn new(rate_limiter: Arc<RL>, delegate: O) -> Self {
         let current_min_pause_check_bytes = rate_limiter.min_pause_check_bytes() as usize;
         RateLimitIndexOutput {
             delegate,
@@ -79,7 +107,7 @@ impl RateLimitIndexOutput {
     }
 }
 
-impl IndexOutput for RateLimitIndexOutput {
+impl<O: IndexOutput, RL: RateLimiter + ?Sized> IndexOutput for RateLimitIndexOutput<O, RL> {
     fn name(&self) -> &str {
         self.delegate.name()
     }
@@ -91,15 +119,11 @@ impl IndexOutput for RateLimitIndexOutput {
     fn checksum(&self) -> Result<i64> {
         self.delegate.checksum()
     }
-
-    fn as_data_output(&mut self) -> &mut DataOutput {
-        self
-    }
 }
 
-impl DataOutput for RateLimitIndexOutput {}
+impl<O: IndexOutput, RL: RateLimiter + ?Sized> DataOutput for RateLimitIndexOutput<O, RL> {}
 
-impl io::Write for RateLimitIndexOutput {
+impl<O: IndexOutput, RL: RateLimiter + ?Sized> io::Write for RateLimitIndexOutput<O, RL> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.bytes_since_last_pause += buf.len();
         if let Err(_e) = self.check_rate() {
@@ -111,8 +135,4 @@ impl io::Write for RateLimitIndexOutput {
     fn flush(&mut self) -> io::Result<()> {
         self.delegate.flush()
     }
-}
-
-impl Drop for RateLimitIndexOutput {
-    fn drop(&mut self) {}
 }

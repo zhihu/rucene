@@ -4,14 +4,14 @@ use core::codec::lucene50::posting_reader::*;
 use core::codec::lucene50::skip_writer::Lucene50SkipWriter;
 use core::codec::lucene50::util::*;
 use core::codec::writer::PostingsWriterBase;
-use core::codec::BlockTermState;
+use core::codec::{BlockTermState, Codec};
 use core::index::TermIterator;
 use core::index::INDEX_MAX_POSITION;
 use core::index::{segment_file_name, SegmentWriteState};
 use core::index::{FieldInfo, IndexOptions};
 use core::search::posting_iterator::*;
-use core::search::NO_MORE_DOCS;
-use core::store::{DataOutput, IndexOutput, InvalidIndexOutput};
+use core::search::{DocIterator, NO_MORE_DOCS};
+use core::store::{DataOutput, Directory, IndexOutput};
 use core::util::bit_set::{BitSet, FixedBitSet};
 use core::util::packed_misc::COMPACT;
 use core::util::DocId;
@@ -21,12 +21,10 @@ use error::{ErrorKind, Result};
 /// with postings format.
 ///
 /// Postings list for each term will be stored separately.
-pub struct Lucene50PostingsWriter {
-    doc_out: Box<IndexOutput>,
-    pos_out: Box<IndexOutput>,
-    pos_out_valid: bool,
-    pay_out: Box<IndexOutput>,
-    pay_out_valid: bool,
+pub struct Lucene50PostingsWriter<O: IndexOutput> {
+    doc_out: O,
+    pos_out: Option<O>,
+    pay_out: Option<O>,
     last_state: BlockTermState,
     // Holds starting file pointers for current term:
     doc_start_fp: i64,
@@ -64,7 +62,7 @@ pub struct Lucene50PostingsWriter {
     // fields from PushPostingsWriterBase
     // Reused in writeTerm
     // postings_iterator: Box<PostingIterator>,
-    enum_flags: i16,
+    enum_flags: u16,
     // field_info: FieldInfo,
     // index_options: IndexOptions,
     write_freqs: bool,
@@ -73,8 +71,10 @@ pub struct Lucene50PostingsWriter {
     write_offsets: bool,
 }
 
-impl Lucene50PostingsWriter {
-    pub fn new(state: &SegmentWriteState) -> Result<Self> {
+impl<O: IndexOutput> Lucene50PostingsWriter<O> {
+    pub fn new<D: Directory, DW: Directory<IndexOutput = O>, C: Codec>(
+        state: &SegmentWriteState<D, DW, C>,
+    ) -> Result<Self> {
         let acceptable_overhead_ratio = COMPACT;
 
         let doc_file_name = segment_file_name(
@@ -85,23 +85,21 @@ impl Lucene50PostingsWriter {
         let mut doc_out = state
             .directory
             .create_output(&doc_file_name, &state.context)?;
-        let mut pos_out: Box<IndexOutput> = Box::new(InvalidIndexOutput {});
-        let mut pos_out_valid = false;
-        let mut pay_out: Box<IndexOutput> = Box::new(InvalidIndexOutput {});
-        let mut pay_out_valid = false;
+        let mut pos_out = None;
+        let mut pay_out = None;
         let mut pos_delta_buffer = Vec::with_capacity(0);
         let payload_bytes = vec![0u8; 128];
         let mut payload_length_buffer = Vec::with_capacity(0);
         let mut offset_start_delta_buffer = Vec::with_capacity(0);
         let mut offset_length_buffer = Vec::with_capacity(0);
         write_index_header(
-            doc_out.as_mut(),
+            &mut doc_out,
             DOC_CODEC,
             VERSION_CURRENT,
             state.segment_info.get_id(),
             &state.segment_suffix,
         )?;
-        let for_util = ForUtil::with_output(acceptable_overhead_ratio, doc_out.as_mut())?;
+        let for_util = ForUtil::with_output(acceptable_overhead_ratio, &mut doc_out)?;
         if state.field_infos.has_prox {
             pos_delta_buffer = vec![0i32; max_data_size()];
             let pos_file_name = segment_file_name(
@@ -109,12 +107,13 @@ impl Lucene50PostingsWriter {
                 &state.segment_suffix,
                 POS_EXTENSION,
             );
-            pos_out = state
-                .directory
-                .create_output(&pos_file_name, &state.context)?;
-            pos_out_valid = true;
+            pos_out = Some(
+                state
+                    .directory
+                    .create_output(&pos_file_name, &state.context)?,
+            );
             write_index_header(
-                pos_out.as_mut(),
+                pos_out.as_mut().unwrap(),
                 POS_CODEC,
                 VERSION_CURRENT,
                 state.segment_info.get_id(),
@@ -135,12 +134,13 @@ impl Lucene50PostingsWriter {
                     &state.segment_suffix,
                     PAY_EXTENSION,
                 );
-                pay_out = state
-                    .directory
-                    .create_output(&pay_file_name, &state.context)?;
-                pay_out_valid = true;
+                pay_out = Some(
+                    state
+                        .directory
+                        .create_output(&pay_file_name, &state.context)?,
+                );
                 write_index_header(
-                    pay_out.as_mut(),
+                    pay_out.as_mut().unwrap(),
                     PAY_CODEC,
                     VERSION_CURRENT,
                     state.segment_info.get_id(),
@@ -153,16 +153,14 @@ impl Lucene50PostingsWriter {
             MAX_SKIP_LEVELS,
             BLOCK_SIZE as u32,
             state.segment_info.max_doc() as u32,
-            pos_out_valid,
-            pay_out_valid,
+            pos_out.is_some(),
+            pay_out.is_some(),
         );
 
         Ok(Lucene50PostingsWriter {
             doc_out,
             pos_out,
-            pos_out_valid,
             pay_out,
-            pay_out_valid,
             last_state: BlockTermState::new(),
             doc_start_fp: 0,
             pos_start_fp: 0,
@@ -221,18 +219,18 @@ impl Lucene50PostingsWriter {
         self.enum_flags = if !self.write_freqs {
             0
         } else if !self.write_positions {
-            POSTING_ITERATOR_FLAG_FREQS
+            PostingIteratorFlags::FREQS
         } else if !self.write_offsets {
             if self.write_payloads {
-                POSTING_ITERATOR_FLAG_PAYLOADS
+                PostingIteratorFlags::PAYLOADS
             } else {
-                POSTING_ITERATOR_FLAG_POSITIONS
+                PostingIteratorFlags::POSITIONS
             }
         } else {
             if self.write_payloads {
-                POSTING_ITERATOR_FLAG_PAYLOADS | POSTING_ITERATOR_FLAG_OFFSETS
+                PostingIteratorFlags::ALL
             } else {
-                POSTING_ITERATOR_FLAG_OFFSETS
+                PostingIteratorFlags::OFFSETS
             }
         };
 
@@ -244,17 +242,17 @@ impl Lucene50PostingsWriter {
     pub fn start_term(&mut self) {
         self.doc_start_fp = self.doc_out.file_pointer();
         if self.write_positions {
-            self.pos_start_fp = self.pos_out.file_pointer();
+            self.pos_start_fp = self.pos_out.as_ref().unwrap().file_pointer();
             if self.write_payloads || self.write_offsets {
-                self.pay_start_fp = self.pay_out.file_pointer();
+                self.pay_start_fp = self.pay_out.as_ref().unwrap().file_pointer();
             }
         }
         self.last_doc_id = 0;
         self.last_block_doc_id = -1;
         self.skip_writer.reset_skip(
             self.doc_out.file_pointer(),
-            self.pos_out.file_pointer(),
-            self.pay_out.file_pointer(),
+            self.pos_out.as_ref().unwrap().file_pointer(),
+            self.pay_out.as_ref().unwrap().file_pointer(),
         );
     }
 
@@ -292,13 +290,13 @@ impl Lucene50PostingsWriter {
             self.for_util.write_block(
                 &self.doc_delta_buffer,
                 &mut self.encoded,
-                self.doc_out.as_mut(),
+                &mut self.doc_out,
             )?;
             if self.write_freqs {
                 self.for_util.write_block(
                     &self.freq_buffer,
                     &mut self.encoded,
-                    self.doc_out.as_mut(),
+                    &mut self.doc_out,
                 )?;
             }
             // NOTE: don't set docBufferUpto back to 0 here;
@@ -360,19 +358,20 @@ impl Lucene50PostingsWriter {
             self.for_util.write_block(
                 &self.pos_delta_buffer,
                 &mut self.encoded,
-                self.pos_out.as_mut(),
+                self.pos_out.as_mut().unwrap(),
             )?;
 
             if self.write_payloads {
                 self.for_util.write_block(
                     &self.payload_length_buffer,
                     &mut self.encoded,
-                    self.pay_out.as_mut(),
+                    self.pay_out.as_mut().unwrap(),
                 )?;
                 self.pay_out
                     .as_mut()
+                    .unwrap()
                     .write_vint(self.payload_byte_upto as i32)?;
-                self.pay_out.as_mut().write_bytes(
+                self.pay_out.as_mut().unwrap().write_bytes(
                     &self.payload_bytes,
                     0,
                     self.payload_byte_upto,
@@ -384,12 +383,12 @@ impl Lucene50PostingsWriter {
                 self.for_util.write_block(
                     &self.offset_start_delta_buffer,
                     &mut self.encoded,
-                    self.pay_out.as_mut(),
+                    self.pay_out.as_mut().unwrap(),
                 )?;
                 self.for_util.write_block(
                     &self.offset_length_buffer,
                     &mut self.encoded,
-                    self.pay_out.as_mut(),
+                    self.pay_out.as_mut().unwrap(),
                 )?;
             }
             self.pos_buffer_upto = 0;
@@ -403,11 +402,11 @@ impl Lucene50PostingsWriter {
         // write them to skip file.
         if self.doc_buffer_upto == BLOCK_SIZE as usize {
             self.last_block_doc_id = self.last_doc_id;
-            if self.pos_out_valid {
-                if self.pay_out_valid {
-                    self.last_block_pay_fp = self.pay_out.file_pointer();
+            if self.pos_out.is_some() {
+                if self.pay_out.is_some() {
+                    self.last_block_pay_fp = self.pay_out.as_ref().unwrap().file_pointer();
                 }
-                self.last_block_pos_fp = self.pos_out.file_pointer();
+                self.last_block_pos_fp = self.pos_out.as_ref().unwrap().file_pointer();
                 self.last_block_pos_buffer_upto = self.pos_buffer_upto;
                 self.last_block_payload_byte_upto = self.payload_byte_upto;
             }
@@ -419,7 +418,7 @@ impl Lucene50PostingsWriter {
     pub fn finish_term(&mut self, state: &mut BlockTermState) -> Result<()> {
         assert!(state.doc_freq > 0);
 
-        // TODO: TODO: wasteful we are counting this (counting # docs
+        // TODO: wasteful we are counting this (counting # docs
         // for this term) in two places?
         assert_eq!(state.doc_freq, self.doc_count);
 
@@ -452,7 +451,8 @@ impl Lucene50PostingsWriter {
             debug_assert!(state.total_term_freq != -1);
             if state.total_term_freq > BLOCK_SIZE as i64 {
                 // record file offset for last pos in last block
-                last_pos_block_offset = self.pos_out.file_pointer() - self.pos_start_fp;
+                last_pos_block_offset =
+                    self.pos_out.as_ref().unwrap().file_pointer() - self.pos_start_fp;
             }
 
             if self.pos_buffer_upto > 0 {
@@ -471,14 +471,17 @@ impl Lucene50PostingsWriter {
                         let payload_length = self.payload_length_buffer[i];
                         if payload_length != last_payload_length {
                             last_payload_length = payload_length;
-                            self.pos_out.write_vint(pos_delta << 1 | 1)?;
-                            self.pos_out.write_vint(payload_length)?;
+                            self.pos_out
+                                .as_mut()
+                                .unwrap()
+                                .write_vint(pos_delta << 1 | 1)?;
+                            self.pos_out.as_mut().unwrap().write_vint(payload_length)?;
                         } else {
-                            self.pos_out.write_vint(pos_delta << 1)?;
+                            self.pos_out.as_mut().unwrap().write_vint(pos_delta << 1)?;
                         }
 
                         if payload_length != 0 {
-                            self.pos_out.write_bytes(
+                            self.pos_out.as_mut().unwrap().write_bytes(
                                 &self.payload_bytes,
                                 payload_bytes_read_upto,
                                 payload_length as usize,
@@ -486,17 +489,17 @@ impl Lucene50PostingsWriter {
                             payload_bytes_read_upto += payload_length as usize;
                         }
                     } else {
-                        self.pos_out.write_vint(pos_delta)?;
+                        self.pos_out.as_mut().unwrap().write_vint(pos_delta)?;
                     }
 
                     if self.write_offsets {
                         let delta = self.offset_start_delta_buffer[i];
                         let length = self.offset_length_buffer[i];
                         if length == last_offset_length {
-                            self.pos_out.write_vint(delta << 1)?;
+                            self.pos_out.as_mut().unwrap().write_vint(delta << 1)?;
                         } else {
-                            self.pos_out.write_vint(delta << 1 | 1)?;
-                            self.pos_out.write_vint(length)?;
+                            self.pos_out.as_mut().unwrap().write_vint(delta << 1 | 1)?;
+                            self.pos_out.as_mut().unwrap().write_vint(length)?;
                             last_offset_length = length;
                         }
                     }
@@ -510,7 +513,7 @@ impl Lucene50PostingsWriter {
         }
 
         let skip_offset = if self.doc_count > BLOCK_SIZE {
-            self.skip_writer.write_skip(self.doc_out.as_mut())? - self.doc_start_fp
+            self.skip_writer.write_skip(&mut self.doc_out)? - self.doc_start_fp
         } else {
             -1
         };
@@ -529,8 +532,12 @@ impl Lucene50PostingsWriter {
     }
 }
 
-impl PostingsWriterBase for Lucene50PostingsWriter {
-    fn init(&mut self, terms_out: &mut IndexOutput, state: &SegmentWriteState) -> Result<()> {
+impl<O: IndexOutput> PostingsWriterBase for Lucene50PostingsWriter<O> {
+    fn init<D: Directory, DW: Directory, C: Codec>(
+        &mut self,
+        terms_out: &mut impl IndexOutput,
+        state: &SegmentWriteState<D, DW, C>,
+    ) -> Result<()> {
         write_index_header(
             terms_out,
             TERMS_CODEC,
@@ -542,12 +549,12 @@ impl PostingsWriterBase for Lucene50PostingsWriter {
     }
 
     fn close(&mut self) -> Result<()> {
-        write_footer(self.doc_out.as_mut())?;
-        if self.pos_out_valid {
-            write_footer(self.pos_out.as_mut())?;
+        write_footer(&mut self.doc_out)?;
+        if let Some(ref mut pos_out) = self.pos_out {
+            write_footer(pos_out)?;
         }
-        if self.pay_out_valid {
-            write_footer(self.pay_out.as_mut())?;
+        if let Some(ref mut pay_out) = self.pay_out {
+            write_footer(pay_out)?;
         }
         Ok(())
     }
@@ -555,7 +562,7 @@ impl PostingsWriterBase for Lucene50PostingsWriter {
     fn write_term(
         &mut self,
         _term: &[u8],
-        terms: &mut TermIterator,
+        terms: &mut impl TermIterator,
         docs_seen: &mut FixedBitSet,
     ) -> Result<Option<BlockTermState>> {
         self.start_term();
@@ -618,7 +625,7 @@ impl PostingsWriterBase for Lucene50PostingsWriter {
     fn encode_term(
         &mut self,
         longs: &mut [i64],
-        out: &mut DataOutput,
+        out: &mut impl DataOutput,
         _field_info: &FieldInfo,
         state: &BlockTermState,
         absolute: bool,

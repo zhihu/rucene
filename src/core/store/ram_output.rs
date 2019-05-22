@@ -42,7 +42,7 @@ impl RAMOutputStream {
         }
     }
 
-    pub fn write_to<T: DataOutput + ?Sized>(&self, out: &mut T) -> Result<()> {
+    pub fn write_to(&self, out: &mut impl DataOutput) -> Result<()> {
         // self.flush();
         self.store.write_to(out)
     }
@@ -97,12 +97,4 @@ impl IndexOutput for RAMOutputStream {
             ))
         }
     }
-
-    fn as_data_output(&mut self) -> &mut DataOutput {
-        self
-    }
-}
-
-impl Drop for RAMOutputStream {
-    fn drop(&mut self) {}
 }

@@ -4,22 +4,28 @@ use core::codec::compressing::stored_fields_reader::*;
 use core::codec::compressing::{Compress, CompressionMode, Compressor};
 use core::codec::reader::StoredFieldsReader;
 use core::codec::writer::{merge_store_fields, MergeVisitor, StoredFieldsWriter};
+use core::codec::Codec;
 use core::index::MergeState;
 use core::index::{segment_file_name, SegmentInfo};
 use core::index::{FieldInfo, FieldInfos, Fieldable};
-use core::store::DirectoryRc;
+use core::store::Directory;
 use core::store::{DataOutput, GrowableByteArrayDataOutput, IOContext, IndexOutput};
-use core::util::bit_util::{UnsignedShift, ZigZagEncoding};
+use core::util::bit_util::{BitsRequired, UnsignedShift, ZigZagEncoding};
 use core::util::packed_misc::Format;
 use core::util::packed_misc::VERSION_CURRENT as PACKED_VERSION_CURRENT;
-use core::util::packed_misc::{get_writer_no_header, unsigned_bits_required};
+use core::util::packed_misc::{get_writer_no_header, Writer};
 use core::util::DocId;
 use core::util::Numeric;
 
-use error::Result;
+use error::{
+    ErrorKind::{IllegalArgument, IllegalState, RuntimeError},
+    Result,
+};
 
-pub struct CompressingStoredFieldsIndexWriter {
-    fields_index_output: Box<IndexOutput>,
+use std::sync::Arc;
+
+pub struct CompressingStoredFieldsIndexWriter<O: IndexOutput> {
+    fields_index_output: O,
     block_size: usize,
     total_docs: usize,
     block_docs: usize,
@@ -30,13 +36,10 @@ pub struct CompressingStoredFieldsIndexWriter {
     start_pointer_deltas: Vec<i64>,
 }
 
-impl CompressingStoredFieldsIndexWriter {
-    pub fn new(
-        output: Box<IndexOutput>,
-        block_size: usize,
-    ) -> Result<CompressingStoredFieldsIndexWriter> {
+impl<O: IndexOutput> CompressingStoredFieldsIndexWriter<O> {
+    pub fn new(output: O, block_size: usize) -> Result<CompressingStoredFieldsIndexWriter<O>> {
         if block_size <= 0 {
-            bail!("blockSize must be positive");
+            bail!(IllegalArgument("blockSize must be positive".into()));
         }
 
         let mut writer = CompressingStoredFieldsIndexWriter {
@@ -96,21 +99,18 @@ impl CompressingStoredFieldsIndexWriter {
             doc_base += self.doc_base_deltas[i];
         }
 
-        let bits_per_doc_base = unsigned_bits_required(max_delta as i64);
+        let bits_per_doc_base = max_delta.bits_required() as i32;
         self.fields_index_output.write_vint(bits_per_doc_base)?;
         let mut writer =
             get_writer_no_header(Format::Packed, self.block_chunks, bits_per_doc_base, 1);
         doc_base = 0;
         for i in 0..self.block_chunks {
             let delta = doc_base - avg_chunk_docs * (i as i32);
-            debug_assert!(unsigned_bits_required(delta.encode() as i64) <= writer.bits_per_value());
-            writer.add(
-                delta.encode() as i64,
-                self.fields_index_output.as_data_output(),
-            )?;
+            debug_assert!(delta.encode().bits_required() as i32 <= writer.bits_per_value());
+            writer.add(delta.encode() as i64, &mut self.fields_index_output)?;
             doc_base += self.doc_base_deltas[i];
         }
-        writer.finish(self.fields_index_output.as_data_output())?;
+        writer.finish(&mut self.fields_index_output)?;
 
         // start pointers
         self.fields_index_output
@@ -130,7 +130,7 @@ impl CompressingStoredFieldsIndexWriter {
             max_delta |= delta.encode();
         }
 
-        let bits_per_start_pointer = unsigned_bits_required(max_delta);
+        let bits_per_start_pointer = max_delta.bits_required() as i32;
         self.fields_index_output
             .write_vint(bits_per_start_pointer)?;
         writer = get_writer_no_header(Format::Packed, self.block_chunks, bits_per_start_pointer, 1);
@@ -138,10 +138,10 @@ impl CompressingStoredFieldsIndexWriter {
         for i in 0..self.block_chunks {
             start_pointer += self.start_pointer_deltas[i];
             let delta = start_pointer - avg_chunk_size * (i as i64);
-            debug_assert!(unsigned_bits_required(delta.encode()) <= writer.bits_per_value());
-            writer.add(delta.encode(), self.fields_index_output.as_data_output())?;
+            debug_assert!(delta.encode().bits_required() as i32 <= writer.bits_per_value());
+            writer.add(delta.encode(), &mut self.fields_index_output)?;
         }
-        writer.finish(self.fields_index_output.as_data_output())
+        writer.finish(&mut self.fields_index_output)
     }
 
     pub fn write_index(&mut self, num_docs: usize, start_pointer: i64) -> Result<()> {
@@ -170,7 +170,10 @@ impl CompressingStoredFieldsIndexWriter {
 
     pub fn finish(&mut self, num_docs: usize, max_pointer: i64) -> Result<()> {
         if num_docs != self.total_docs {
-            bail!("Expected {} docs, but got {}", num_docs, self.total_docs);
+            bail!(IllegalState(format!(
+                "Expected {} docs, but got {}",
+                num_docs, self.total_docs
+            )));
         }
 
         if self.block_chunks > 0 {
@@ -179,14 +182,13 @@ impl CompressingStoredFieldsIndexWriter {
 
         self.fields_index_output.write_vint(0)?; // end marker
         self.fields_index_output.write_vlong(max_pointer)?;
-        write_footer(self.fields_index_output.as_mut())
+        write_footer(&mut self.fields_index_output)
     }
 }
 
-pub struct CompressingStoredFieldsWriter {
-    segment: String,
-    index_writer: CompressingStoredFieldsIndexWriter,
-    fields_stream: Box<IndexOutput>,
+pub struct CompressingStoredFieldsWriter<O: IndexOutput> {
+    index_writer: CompressingStoredFieldsIndexWriter<O>,
+    fields_stream: O,
     compress_mode: CompressionMode,
     compressor: Compressor,
     chunk_size: usize,
@@ -207,10 +209,10 @@ pub struct CompressingStoredFieldsWriter {
     num_stored_fields_in_doc: usize,
 }
 
-impl CompressingStoredFieldsWriter {
-    pub fn new(
-        directory: DirectoryRc,
-        si: &SegmentInfo,
+impl<O: IndexOutput + 'static> CompressingStoredFieldsWriter<O> {
+    pub fn new<D: Directory, DW: Directory<IndexOutput = O>, C: Codec>(
+        directory: Arc<DW>,
+        si: &SegmentInfo<D, C>,
         segment_suffix: &str,
         context: &IOContext,
         format_name: &str,
@@ -218,7 +220,7 @@ impl CompressingStoredFieldsWriter {
         chunk_size: usize,
         max_docs_per_chunk: usize,
         block_size: usize,
-    ) -> Result<CompressingStoredFieldsWriter> {
+    ) -> Result<CompressingStoredFieldsWriter<DW::IndexOutput>> {
         let mut index_stream = directory.create_output(
             &segment_file_name(&si.name, segment_suffix, STORED_FIELDS_INDEX_EXTENSION),
             context,
@@ -231,14 +233,14 @@ impl CompressingStoredFieldsWriter {
         let codec_name_dat = format!("{}{}", format_name, CODEC_SFX_DAT);
 
         write_index_header(
-            index_stream.as_mut(),
+            &mut index_stream,
             &codec_name_idx,
             VERSION_CURRENT,
             si.get_id(),
             segment_suffix,
         )?;
         write_index_header(
-            fields_stream.as_mut(),
+            &mut fields_stream,
             &codec_name_dat,
             VERSION_CURRENT,
             si.get_id(),
@@ -258,7 +260,6 @@ impl CompressingStoredFieldsWriter {
         fields_stream.write_vint(PACKED_VERSION_CURRENT as i32)?;
 
         Ok(CompressingStoredFieldsWriter {
-            segment: si.name.clone(),
             index_writer,
             fields_stream,
             compress_mode,
@@ -290,17 +291,17 @@ impl CompressingStoredFieldsWriter {
             .write_vint((self.num_buffered_docs as i32) << 1 | sliced_bit)?;
 
         // save numStoredFields
-        CompressingStoredFieldsWriter::save_ints(
+        CompressingStoredFieldsWriter::<O>::save_ints(
             &self.num_stored_fields,
             self.num_buffered_docs,
-            self.fields_stream.as_data_output(),
+            &mut self.fields_stream,
         )?;
 
         // save lengths
-        CompressingStoredFieldsWriter::save_ints(
+        CompressingStoredFieldsWriter::<O>::save_ints(
             &self.end_offsets,
             self.num_buffered_docs,
-            self.fields_stream.as_data_output(),
+            &mut self.fields_stream,
         )
     }
 
@@ -336,7 +337,7 @@ impl CompressingStoredFieldsWriter {
                     compressed,
                     self.chunk_size
                         .min(self.buffered_docs.position() - compressed),
-                    self.fields_stream.as_data_output(),
+                    &mut self.fields_stream,
                 )?;
                 compressed += self.chunk_size;
             }
@@ -345,7 +346,7 @@ impl CompressingStoredFieldsWriter {
                 &self.buffered_docs.bytes,
                 0,
                 self.buffered_docs.position(),
-                self.fields_stream.as_data_output(),
+                &mut self.fields_stream,
             )?;
         }
 
@@ -358,7 +359,7 @@ impl CompressingStoredFieldsWriter {
         Ok(())
     }
 
-    fn save_ints(values: &[i32], length: usize, out: &mut DataOutput) -> Result<()> {
+    fn save_ints(values: &[i32], length: usize, out: &mut impl DataOutput) -> Result<()> {
         debug_assert!(length > 0);
         if length == 1 {
             out.write_vint(values[0])?;
@@ -380,7 +381,7 @@ impl CompressingStoredFieldsWriter {
                     max |= values[i];
                 }
 
-                let bits_required = unsigned_bits_required(max as i64);
+                let bits_required = max.bits_required() as i32;
                 out.write_vint(bits_required)?;
                 let mut writer = get_writer_no_header(Format::Packed, length, bits_required, 1);
                 for i in 0..length {
@@ -408,7 +409,7 @@ impl CompressingStoredFieldsWriter {
     /// <li>Bytes --&gt; Potential additional bytes to read depending on the
     /// header.
     /// </ul>
-    fn write_zfloat(out: &mut DataOutput, f: f32) -> Result<()> {
+    fn write_zfloat(out: &mut impl DataOutput, f: f32) -> Result<()> {
         let int_val = f as i32;
         let float_bits = f.to_bits() as i32;
         if f == int_val as f32
@@ -446,7 +447,7 @@ impl CompressingStoredFieldsWriter {
     /// <li>Bytes --&gt; Potential additional bytes to read depending on the
     /// header.
     /// </ul>
-    fn write_zdouble(out: &mut DataOutput, d: f64) -> Result<()> {
+    fn write_zdouble(out: &mut impl DataOutput, d: f64) -> Result<()> {
         let int_val = d as i32;
         let double_bits = d.to_bits() as i64;
 
@@ -497,7 +498,7 @@ impl CompressingStoredFieldsWriter {
     /// header.
     /// </ul>
     // T for "timestamp"
-    fn write_tlong(out: &mut DataOutput, l: i64) -> Result<()> {
+    fn write_tlong(out: &mut impl DataOutput, l: i64) -> Result<()> {
         let mut l = l;
         let mut header: i64 = if l % SECOND != 0 {
             0
@@ -543,7 +544,7 @@ impl CompressingStoredFieldsWriter {
     }
 }
 
-impl StoredFieldsWriter for CompressingStoredFieldsWriter {
+impl<O: IndexOutput + 'static> StoredFieldsWriter for CompressingStoredFieldsWriter<O> {
     fn start_document(&mut self) -> Result<()> {
         Ok(())
     }
@@ -566,7 +567,7 @@ impl StoredFieldsWriter for CompressingStoredFieldsWriter {
         Ok(())
     }
 
-    fn write_field(&mut self, field_info: &FieldInfo, field: &Fieldable) -> Result<()> {
+    fn write_field(&mut self, field_info: &FieldInfo, field: &impl Fieldable) -> Result<()> {
         self.num_stored_fields_in_doc += 1;
         let bits = if let Some(v) = field.numeric_value() {
             match v {
@@ -597,15 +598,15 @@ impl StoredFieldsWriter for CompressingStoredFieldsWriter {
                 Numeric::Short(v) => self.buffered_docs.write_zint(v as i32)?,
                 Numeric::Int(v) => self.buffered_docs.write_zint(v as i32)?,
                 Numeric::Long(v) => {
-                    CompressingStoredFieldsWriter::write_tlong(&mut self.buffered_docs, v)?
+                    CompressingStoredFieldsWriter::<O>::write_tlong(&mut self.buffered_docs, v)?
                 }
                 Numeric::Float(v) => {
-                    CompressingStoredFieldsWriter::write_zfloat(&mut self.buffered_docs, v)?
+                    CompressingStoredFieldsWriter::<O>::write_zfloat(&mut self.buffered_docs, v)?
                 }
                 Numeric::Double(v) => {
-                    CompressingStoredFieldsWriter::write_zdouble(&mut self.buffered_docs, v)?
+                    CompressingStoredFieldsWriter::<O>::write_zdouble(&mut self.buffered_docs, v)?
                 }
-                _ => bail!("cannot get here"),
+                Numeric::Null => unreachable!(),
             }
         }
 
@@ -622,11 +623,10 @@ impl StoredFieldsWriter for CompressingStoredFieldsWriter {
         }
 
         if self.doc_base != num_docs as i32 {
-            bail!(
+            bail!(RuntimeError(format!(
                 "Wrote {} docs, finish called with numDocs={}",
-                self.doc_base,
-                num_docs
-            );
+                self.doc_base, num_docs
+            )));
         }
 
         self.index_writer
@@ -634,12 +634,12 @@ impl StoredFieldsWriter for CompressingStoredFieldsWriter {
         self.fields_stream.write_vlong(self.num_chunks as i64)?;
         self.fields_stream
             .write_vlong(self.num_dirty_chunks as i64)?;
-        write_footer(self.fields_stream.as_mut())?;
+        write_footer(&mut self.fields_stream)?;
         debug_assert!(self.buffered_docs.position() == 0);
         Ok(())
     }
 
-    fn merge(&mut self, merge_state: &mut MergeState) -> Result<i32> {
+    fn merge<D: Directory, C: Codec>(&mut self, merge_state: &mut MergeState<D, C>) -> Result<i32> {
         if merge_state.needs_index_sort {
             // TODO: can we gain back some optos even if index is sorted?
             // E.g. if sort results in large chunks of contiguous docs from one sub
@@ -750,8 +750,7 @@ impl StoredFieldsWriter for CompressingStoredFieldsWriter {
                             fields_reader.index_reader.start_pointer(doc_id)?
                         };
                         let len = (end - raw_docs.file_pointer()) as usize;
-                        self.fields_stream
-                            .copy_bytes(raw_docs.as_mut().as_data_input(), len)?;
+                        self.fields_stream.copy_bytes(raw_docs.as_mut(), len)?;
                     }
 
                     if raw_docs.file_pointer() != fields_reader.max_pointer {

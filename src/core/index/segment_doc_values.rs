@@ -1,7 +1,7 @@
-use core::codec::DocValuesProducer;
+use core::codec::{Codec, DocValuesFormat, DocValuesProducer};
 use core::index::FieldInfos;
 use core::index::{SegmentCommitInfo, SegmentReadState};
-use core::store::{DirectoryRc, IO_CONTEXT_READONCE};
+use core::store::{Directory, IOContext};
 use core::util::to_base36;
 use error::ErrorKind::IllegalState;
 use error::Result;
@@ -12,23 +12,35 @@ use std::sync::Arc;
 pub struct SegmentDocValues;
 
 impl SegmentDocValues {
-    pub fn get_doc_values_producer(
+    pub fn get_doc_values_producer<D: Directory, DW: Directory, C: Codec>(
         gen: i64,
-        si: &SegmentCommitInfo,
-        dir: DirectoryRc,
+        si: &SegmentCommitInfo<D, C>,
+        dir: Arc<DW>,
         infos: Arc<FieldInfos>,
-    ) -> Result<Box<DocValuesProducer>> {
-        let (dv_dir, segment_suffix) = if gen != -1 {
-            (Arc::clone(&si.info.directory), to_base36(gen as u64))
+    ) -> Result<Box<dyn DocValuesProducer>> {
+        if gen != -1 {
+            Self::do_get_doc_values_producer(
+                si,
+                Arc::clone(&si.info.directory),
+                infos,
+                to_base36(gen as u64),
+            )
         } else {
-            (dir, "".to_owned())
-        };
+            Self::do_get_doc_values_producer(si, dir, infos, "".into())
+        }
+    }
 
+    fn do_get_doc_values_producer<D: Directory, DW: Directory, C: Codec>(
+        si: &SegmentCommitInfo<D, C>,
+        dv_dir: Arc<DW>,
+        infos: Arc<FieldInfos>,
+        segment_suffix: String,
+    ) -> Result<Box<dyn DocValuesProducer>> {
         let srs = SegmentReadState::new(
             dv_dir,
             &si.info,
             infos,
-            &IO_CONTEXT_READONCE,
+            &IOContext::READ_ONCE,
             segment_suffix,
         );
 

@@ -214,7 +214,7 @@ impl<T: DocIdMergerSub> DocIdMerger for SortedDocIdMerger<T> {
                 }
                 sub.base_mut().mapped_doc_id = mapped_doc_id;
             }
-            self.queue.push(DocIdMergerSubRef { sub });
+            self.queue.push(DocIdMergerSubRef::new(sub));
         }
         Ok(())
     }
@@ -272,7 +272,7 @@ impl<T: DocIdMergerSub> Eq for DocIdMergerSubRef<T> {}
 
 impl<T: DocIdMergerSub> PartialEq for DocIdMergerSubRef<T> {
     fn eq(&self, other: &Self) -> bool {
-        self.sub == other.sub
+        unsafe { (*self.sub).base().mapped_doc_id == (*other.sub).base().mapped_doc_id }
     }
 }
 

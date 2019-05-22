@@ -10,6 +10,7 @@ use std::fmt;
 use std::io::Read;
 
 const MAX_WORD_LEN: usize = 255;
+#[allow(dead_code)]
 const IO_BUFFER_SIZE: usize = 4096;
 
 /// A tokenizer that divides text at whitespace characters as defined by
@@ -25,7 +26,7 @@ pub struct WhitespaceTokenizer {
     term_attr: CharTermAttribute,
     offset_attr: OffsetAttribute,
     io_buffer: CharacterBuffer,
-    reader: Box<Read>,
+    reader: Box<dyn Read>,
 }
 
 impl fmt::Debug for WhitespaceTokenizer {
@@ -63,6 +64,7 @@ impl WhitespaceTokenizer {
     /// Called on each token character to normalize it before it is added to the
     /// token. The default implementation does nothing. Subclasses may use this to,
     /// e.g., lowercase tokens.
+    #[allow(dead_code)]
     fn normalize(&self, c: i32) -> i32 {
         c
     }

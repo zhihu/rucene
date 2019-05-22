@@ -1,13 +1,14 @@
-use core::index::term::{EmptyTermIterator, TermIterator};
-use core::index::BoxedBinaryDocValuesEnum;
-use core::index::SortedSetDocValuesTermIterator;
-use core::index::{CompressedBinaryDocValues, LongBinaryDocValues};
+use core::index::{
+    BoxedBinaryDocValuesEnum, CompressedBinaryDocValues, DocValuesTermIterator,
+    LongBinaryDocValues, NumericDocValues, SortedSetDocValuesTermIterator,
+};
 
 use core::util::bit_util;
 use core::util::DocId;
 use core::util::LongValues;
 use error::Result;
 
+use core::util::packed::MixinMonotonicLongValues;
 use std::sync::Arc;
 
 pub const NO_MORE_ORDS: i64 = -1;
@@ -39,10 +40,10 @@ pub trait SortedSetDocValues: Send + Sync {
         Ok(-(low + 1)) // key not found
     }
 
-    fn term_iterator(&self) -> Result<Box<TermIterator>>;
+    fn term_iterator(&self) -> Result<DocValuesTermIterator>;
 }
 
-pub type SortedSetDocValuesRef = Arc<SortedSetDocValues>;
+pub type SortedSetDocValuesRef = Arc<dyn SortedSetDocValues>;
 
 pub struct EmptySortedSetDocValues;
 
@@ -64,8 +65,8 @@ impl SortedSetDocValues for EmptySortedSetDocValues {
         Ok(-1)
     }
 
-    fn term_iterator(&self) -> Result<Box<TermIterator>> {
-        Ok(Box::new(EmptyTermIterator::default()))
+    fn term_iterator(&self) -> Result<DocValuesTermIterator> {
+        Ok(DocValuesTermIterator::empty())
     }
 }
 
@@ -81,9 +82,9 @@ pub struct AddressedRandomAccessOrds {
 
 impl AddressedRandomAccessOrds {
     pub fn new(
-        binary: Box<LongBinaryDocValues>,
-        ordinals: Box<LongValues>,
-        ord_index: Box<LongValues>,
+        binary: Box<dyn LongBinaryDocValues>,
+        ordinals: Box<dyn LongValues>,
+        ord_index: MixinMonotonicLongValues,
         value_count: usize,
     ) -> Self {
         let inner = AddressedRandomAccessOrdsInner::new(binary, ordinals, ord_index, value_count);
@@ -93,9 +94,9 @@ impl AddressedRandomAccessOrds {
     }
 
     pub fn with_compression(
-        binary: Box<CompressedBinaryDocValues>,
-        ordinals: Box<LongValues>,
-        ord_index: Box<LongValues>,
+        binary: CompressedBinaryDocValues,
+        ordinals: Box<dyn LongValues>,
+        ord_index: MixinMonotonicLongValues,
         value_count: usize,
     ) -> Self {
         let inner = AddressedRandomAccessOrdsInner::with_compression(
@@ -131,15 +132,15 @@ impl SortedSetDocValues for AddressedRandomAccessOrds {
         self.inner.lookup_term(key)
     }
 
-    fn term_iterator(&self) -> Result<Box<TermIterator>> {
+    fn term_iterator(&self) -> Result<DocValuesTermIterator> {
         match self.inner.binary {
             BoxedBinaryDocValuesEnum::Compressed(ref bin) => {
                 let boxed = bin.get_term_iterator()?;
-                Ok(Box::new(boxed))
+                Ok(DocValuesTermIterator::comp_bin(boxed))
             }
             _ => {
                 let ti = SortedSetDocValuesTermIterator::new(self.clone());
-                Ok(Box::new(ti))
+                Ok(DocValuesTermIterator::sorted_set_addr(ti))
             }
         }
     }
@@ -157,16 +158,16 @@ impl RandomAccessOrds for AddressedRandomAccessOrds {
 
 pub struct AddressedRandomAccessOrdsInner {
     binary: BoxedBinaryDocValuesEnum,
-    ordinals: Box<LongValues>,
-    ord_index: Box<LongValues>,
+    ordinals: Box<dyn LongValues>,
+    ord_index: MixinMonotonicLongValues,
     value_count: usize,
 }
 
 impl AddressedRandomAccessOrdsInner {
     fn new(
-        binary: Box<LongBinaryDocValues>,
-        ordinals: Box<LongValues>,
-        ord_index: Box<LongValues>,
+        binary: Box<dyn LongBinaryDocValues>,
+        ordinals: Box<dyn LongValues>,
+        ord_index: MixinMonotonicLongValues,
         value_count: usize,
     ) -> Self {
         AddressedRandomAccessOrdsInner {
@@ -178,9 +179,9 @@ impl AddressedRandomAccessOrdsInner {
     }
 
     fn with_compression(
-        binary: Box<CompressedBinaryDocValues>,
-        ordinals: Box<LongValues>,
-        ord_index: Box<LongValues>,
+        binary: CompressedBinaryDocValues,
+        ordinals: Box<dyn LongValues>,
+        ord_index: MixinMonotonicLongValues,
         value_count: usize,
     ) -> Self {
         AddressedRandomAccessOrdsInner {
@@ -252,8 +253,8 @@ pub struct TabledRandomAccessOrds {
 
 impl TabledRandomAccessOrds {
     pub fn new(
-        binary: Box<LongBinaryDocValues>,
-        ordinals: Box<LongValues>,
+        binary: Box<dyn LongBinaryDocValues>,
+        ordinals: Box<dyn LongValues>,
         table: Vec<i64>,
         table_offsets: Vec<i32>,
         value_count: usize,
@@ -266,8 +267,8 @@ impl TabledRandomAccessOrds {
     }
 
     pub fn with_compression(
-        binary: Box<CompressedBinaryDocValues>,
-        ordinals: Box<LongValues>,
+        binary: CompressedBinaryDocValues,
+        ordinals: Box<dyn LongValues>,
         table: Vec<i64>,
         table_offsets: Vec<i32>,
         value_count: usize,
@@ -304,15 +305,15 @@ impl SortedSetDocValues for TabledRandomAccessOrds {
     fn lookup_term(&self, key: &[u8]) -> Result<i64> {
         self.inner.lookup_term(key)
     }
-    fn term_iterator(&self) -> Result<Box<TermIterator>> {
+    fn term_iterator(&self) -> Result<DocValuesTermIterator> {
         match self.inner.binary {
             BoxedBinaryDocValuesEnum::Compressed(ref bin) => {
                 let boxed = bin.get_term_iterator()?;
-                Ok(Box::new(boxed))
+                Ok(DocValuesTermIterator::comp_bin(boxed))
             }
             _ => {
                 let ti = SortedSetDocValuesTermIterator::new(self.clone());
-                Ok(Box::new(ti))
+                Ok(DocValuesTermIterator::sorted_set_table(ti))
             }
         }
     }
@@ -332,7 +333,7 @@ impl RandomAccessOrds for TabledRandomAccessOrds {
 
 struct TabledRandomAccessOrdsInner {
     binary: BoxedBinaryDocValuesEnum,
-    ordinals: Box<LongValues>,
+    ordinals: Box<dyn LongValues>,
     table: Vec<i64>,
     table_offsets: Vec<i32>,
     value_count: usize,
@@ -340,8 +341,8 @@ struct TabledRandomAccessOrdsInner {
 
 impl TabledRandomAccessOrdsInner {
     pub fn new(
-        binary: Box<LongBinaryDocValues>,
-        ordinals: Box<LongValues>,
+        binary: Box<dyn LongBinaryDocValues>,
+        ordinals: Box<dyn LongValues>,
         table: Vec<i64>,
         table_offsets: Vec<i32>,
         value_count: usize,
@@ -356,8 +357,8 @@ impl TabledRandomAccessOrdsInner {
     }
 
     pub fn with_compression(
-        binary: Box<CompressedBinaryDocValues>,
-        ordinals: Box<LongValues>,
+        binary: CompressedBinaryDocValues,
+        ordinals: Box<dyn LongValues>,
         table: Vec<i64>,
         table_offsets: Vec<i32>,
         value_count: usize,

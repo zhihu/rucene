@@ -1,17 +1,17 @@
-use core::codec::blocktree::SegmentTermIterator;
-use core::codec::{lucene50_decode_term, BlockTermState};
+use core::codec::blocktree::MAX_LONGS_SIZE;
+use core::codec::{lucene50_decode_term, BlockTermState, SegmentTermIteratorInner};
 use core::index::{IndexOptions, SeekStatus};
 use core::store::{ByteArrayDataInput, DataInput};
 use core::util::bit_util::UnsignedShift;
-use core::util::byte_ref::BytesRef;
 use core::util::fst::{Arc, ByteSequenceOutput};
+use core::util::BytesRef;
 
 use error::Result;
 
 use std::cmp::Ordering;
 use std::ptr;
 
-pub struct SegmentTermsIterFrame {
+pub(crate) struct SegmentTermsIterFrame {
     pub ord: isize,
     pub has_terms: bool,
     pub has_terms_orig: bool,
@@ -49,12 +49,12 @@ pub struct SegmentTermsIterFrame {
     pub metadata_upto: i32,
     pub state: BlockTermState,
     // metadata bufffer, holding monotonic values
-    longs: Vec<i64>,
+    longs: [i64; MAX_LONGS_SIZE],
     bytes: Vec<u8>,
     bytes_reader: ByteArrayDataInput<BytesRef>,
     // NOTE: this is pointer to parent, because of set is always Boxed,
     // thus this pointer will be safe
-    pub ste: *mut SegmentTermIterator,
+    pub ste: *mut SegmentTermIteratorInner,
     start_byte_pos: usize,
     suffix: usize,
     sub_code: i64,
@@ -88,7 +88,7 @@ impl Default for SegmentTermsIterFrame {
             num_follow_floor_blocks: 0,
             metadata_upto: 0,
             state: BlockTermState::new(),
-            longs: Vec::with_capacity(0),
+            longs: [0; MAX_LONGS_SIZE],
             bytes: vec![0; 32],
             bytes_reader: ByteArrayDataInput::new(BytesRef::default()),
             ste: ptr::null_mut(),
@@ -100,32 +100,31 @@ impl Default for SegmentTermsIterFrame {
 }
 
 impl SegmentTermsIterFrame {
-    pub fn new(ste: &mut SegmentTermIterator, ord: isize) -> Self {
+    pub(crate) fn new(ste: &mut SegmentTermIteratorInner, ord: isize) -> Self {
         let mut frame = Self::default();
         frame.init(ste, ord);
         frame
     }
 
-    pub fn init(&mut self, ste: &mut SegmentTermIterator, ord: isize) {
+    pub(crate) fn init(&mut self, ste: &mut SegmentTermIteratorInner, ord: isize) {
         {
             let fr = ste.field_reader();
             let mut state = fr.parent.postings_reader.new_term_state();
             state.total_term_freq = -1;
             self.state = state;
-            self.longs = vec![0i64; fr.longs_size as usize];
             self.version_auto_prefix = fr.parent.is_any_auto_prefix_terms();
         }
         self.ste = ste;
         self.ord = ord;
     }
 
-    fn terms_iter(&self) -> &mut SegmentTermIterator {
+    fn terms_iter(&self) -> &mut SegmentTermIteratorInner {
         unsafe { &mut *self.ste }
     }
 
-    pub fn set_floor_data(
+    pub fn set_floor_data<'a>(
         &mut self,
-        input: &mut ByteArrayDataInput<Vec<u8>>,
+        input: &mut ByteArrayDataInput<&'a [u8]>,
         source: &[u8],
     ) -> Result<()> {
         let pos = input.position();
@@ -415,11 +414,11 @@ impl SegmentTermsIterFrame {
             }
 
             // metadata
-            for i in 0..self.terms_iter().field_reader().longs_size as usize {
+            for i in 0..self.terms_iter().field_reader().longs_size {
                 self.longs[i] = self.bytes_reader.read_vlong()?;
             }
             lucene50_decode_term(
-                &self.longs,
+                self.longs.as_ref(),
                 &mut self.bytes_reader,
                 unsafe { (*self.ste).field_reader().field_info() },
                 &mut self.state,

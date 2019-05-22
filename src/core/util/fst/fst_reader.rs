@@ -37,8 +37,7 @@ const VERSION_VINT_TARGET: i32 = 4;
 const VERSION_NO_NODE_ARC_COUNTS: i32 = 5;
 // LUCENE-7531, donot support pack fst anymore
 const VERSION_PACKED_REMOVED: i32 = 6;
-// const VERSION_CURRENT: i32 = VERSION_PACKED_REMOVED;
-const VERSION_CURRENT: i32 = VERSION_NO_NODE_ARC_COUNTS;
+const VERSION_CURRENT: i32 = VERSION_PACKED_REMOVED;
 const FINAL_END_NODE: CompiledAddress = -1;
 const NON_FINAL_END_NODE: CompiledAddress = 0;
 
@@ -832,7 +831,7 @@ impl<F: OutputFactory> FST<F> {
     }
 
     #[allow(dead_code)]
-    fn write_label(&self, out: &mut DataOutput, v: i32) -> Result<()> {
+    fn write_label(&self, out: &mut impl DataOutput, v: i32) -> Result<()> {
         assert!(v > 0);
         match self.input_type {
             InputType::Byte1 => {
@@ -936,7 +935,7 @@ impl<F: OutputFactory> FST<F> {
         Ok(())
     }
 
-    pub fn save<T: DataOutput + ?Sized>(&self, out: &mut T) -> Result<()> {
+    pub fn save(&self, out: &mut impl DataOutput) -> Result<()> {
         if self.start_node == -1 {
             bail!(ErrorKind::IllegalState("call finish first!".into()));
         }
@@ -981,6 +980,23 @@ impl<F: OutputFactory> FST<F> {
             out.write_bytes(&self.bytes_array, 0, self.bytes_array.len())?;
         }
         Ok(())
+    }
+}
+
+// this should only be used for place holder to avoid Option
+impl<F: OutputFactory + Default> Default for FST<F> {
+    fn default() -> Self {
+        FST {
+            input_type: InputType::Byte1,
+            empty_output: None,
+            bytes_store: BytesStore::with_block_bits(1),
+            bytes_array: Vec::with_capacity(0),
+            use_bytes_array: true,
+            start_node: 0,
+            version: VERSION_CURRENT,
+            output_factory: F::default(),
+            cached_root_arcs: Vec::with_capacity(0),
+        }
     }
 }
 

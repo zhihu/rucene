@@ -14,31 +14,125 @@ impl DirectReader {
         slice: Arc<RandomAccessInput>,
         bits_per_value: i32,
         offset: i64,
-    ) -> Result<Box<LongValues>> {
-        let reader: Box<LongValues> = match bits_per_value {
-            1 => Box::new(DirectPackedReader1::new(Arc::clone(&slice), offset)),
-            2 => Box::new(DirectPackedReader2::new(slice, offset)),
-            4 => Box::new(DirectPackedReader4::new(slice, offset)),
-            8 => Box::new(DirectPackedReader8::new(slice, offset)),
-            12 => Box::new(DirectPackedReader12::new(slice, offset)),
-            16 => Box::new(DirectPackedReader16::new(slice, offset)),
-            20 => Box::new(DirectPackedReader20::new(slice, offset)),
-            24 => Box::new(DirectPackedReader24::new(slice, offset)),
-            28 => Box::new(DirectPackedReader28::new(slice, offset)),
-            32 => Box::new(DirectPackedReader32::new(slice, offset)),
-            40 => Box::new(DirectPackedReader40::new(slice, offset)),
-            48 => Box::new(DirectPackedReader48::new(slice, offset)),
-            56 => Box::new(DirectPackedReader56::new(slice, offset)),
-            64 => Box::new(DirectPackedReader64::new(slice, offset)),
-            _ => {
-                bail!(IllegalArgument(format!(
-                    "unsupported bits_per_value: {}",
-                    bits_per_value
-                )));
-            }
-        };
-        Ok(reader)
+    ) -> Result<DirectPackedReader> {
+        match bits_per_value {
+            1 => Ok(DirectPackedReader(DirectPackedReaderEnum::Bit1(
+                DirectPackedReader1::new(slice, offset),
+            ))),
+            2 => Ok(DirectPackedReader(DirectPackedReaderEnum::Bit2(
+                DirectPackedReader2::new(slice, offset),
+            ))),
+            4 => Ok(DirectPackedReader(DirectPackedReaderEnum::Bit4(
+                DirectPackedReader4::new(slice, offset),
+            ))),
+            8 => Ok(DirectPackedReader(DirectPackedReaderEnum::Bit8(
+                DirectPackedReader8::new(slice, offset),
+            ))),
+            12 => Ok(DirectPackedReader(DirectPackedReaderEnum::Bit12(
+                DirectPackedReader12::new(slice, offset),
+            ))),
+            16 => Ok(DirectPackedReader(DirectPackedReaderEnum::Bit16(
+                DirectPackedReader16::new(slice, offset),
+            ))),
+            20 => Ok(DirectPackedReader(DirectPackedReaderEnum::Bit20(
+                DirectPackedReader20::new(slice, offset),
+            ))),
+            24 => Ok(DirectPackedReader(DirectPackedReaderEnum::Bit24(
+                DirectPackedReader24::new(slice, offset),
+            ))),
+            28 => Ok(DirectPackedReader(DirectPackedReaderEnum::Bit28(
+                DirectPackedReader28::new(slice, offset),
+            ))),
+            32 => Ok(DirectPackedReader(DirectPackedReaderEnum::Bit32(
+                DirectPackedReader32::new(slice, offset),
+            ))),
+            40 => Ok(DirectPackedReader(DirectPackedReaderEnum::Bit40(
+                DirectPackedReader40::new(slice, offset),
+            ))),
+            48 => Ok(DirectPackedReader(DirectPackedReaderEnum::Bit48(
+                DirectPackedReader48::new(slice, offset),
+            ))),
+            56 => Ok(DirectPackedReader(DirectPackedReaderEnum::Bit56(
+                DirectPackedReader56::new(slice, offset),
+            ))),
+            64 => Ok(DirectPackedReader(DirectPackedReaderEnum::Bit64(
+                DirectPackedReader64::new(slice, offset),
+            ))),
+            _ => bail!(IllegalArgument(format!(
+                "unsupported bits_per_value: {}",
+                bits_per_value
+            ))),
+        }
     }
+}
+
+pub struct DirectPackedReader(DirectPackedReaderEnum);
+
+impl LongValues for DirectPackedReader {
+    fn get64_with_ctx(
+        &self,
+        ctx: LongValuesContext,
+        index: i64,
+    ) -> Result<(i64, LongValuesContext)> {
+        match &self.0 {
+            DirectPackedReaderEnum::Bit1(r) => r.get64_with_ctx(ctx, index),
+            DirectPackedReaderEnum::Bit2(r) => r.get64_with_ctx(ctx, index),
+            DirectPackedReaderEnum::Bit4(r) => r.get64_with_ctx(ctx, index),
+            DirectPackedReaderEnum::Bit8(r) => r.get64_with_ctx(ctx, index),
+            DirectPackedReaderEnum::Bit12(r) => r.get64_with_ctx(ctx, index),
+            DirectPackedReaderEnum::Bit16(r) => r.get64_with_ctx(ctx, index),
+            DirectPackedReaderEnum::Bit20(r) => r.get64_with_ctx(ctx, index),
+            DirectPackedReaderEnum::Bit24(r) => r.get64_with_ctx(ctx, index),
+            DirectPackedReaderEnum::Bit28(r) => r.get64_with_ctx(ctx, index),
+            DirectPackedReaderEnum::Bit32(r) => r.get64_with_ctx(ctx, index),
+            DirectPackedReaderEnum::Bit40(r) => r.get64_with_ctx(ctx, index),
+            DirectPackedReaderEnum::Bit48(r) => r.get64_with_ctx(ctx, index),
+            DirectPackedReaderEnum::Bit56(r) => r.get64_with_ctx(ctx, index),
+            DirectPackedReaderEnum::Bit64(r) => r.get64_with_ctx(ctx, index),
+        }
+    }
+}
+
+impl NumericDocValues for DirectPackedReader {
+    fn get_with_ctx(
+        &self,
+        ctx: NumericDocValuesContext,
+        doc_id: DocId,
+    ) -> Result<(i64, NumericDocValuesContext)> {
+        match &self.0 {
+            DirectPackedReaderEnum::Bit1(r) => r.get64_with_ctx(ctx, i64::from(doc_id)),
+            DirectPackedReaderEnum::Bit2(r) => r.get64_with_ctx(ctx, i64::from(doc_id)),
+            DirectPackedReaderEnum::Bit4(r) => r.get64_with_ctx(ctx, i64::from(doc_id)),
+            DirectPackedReaderEnum::Bit8(r) => r.get64_with_ctx(ctx, i64::from(doc_id)),
+            DirectPackedReaderEnum::Bit12(r) => r.get64_with_ctx(ctx, i64::from(doc_id)),
+            DirectPackedReaderEnum::Bit16(r) => r.get64_with_ctx(ctx, i64::from(doc_id)),
+            DirectPackedReaderEnum::Bit20(r) => r.get64_with_ctx(ctx, i64::from(doc_id)),
+            DirectPackedReaderEnum::Bit24(r) => r.get64_with_ctx(ctx, i64::from(doc_id)),
+            DirectPackedReaderEnum::Bit28(r) => r.get64_with_ctx(ctx, i64::from(doc_id)),
+            DirectPackedReaderEnum::Bit32(r) => r.get64_with_ctx(ctx, i64::from(doc_id)),
+            DirectPackedReaderEnum::Bit40(r) => r.get64_with_ctx(ctx, i64::from(doc_id)),
+            DirectPackedReaderEnum::Bit48(r) => r.get64_with_ctx(ctx, i64::from(doc_id)),
+            DirectPackedReaderEnum::Bit56(r) => r.get64_with_ctx(ctx, i64::from(doc_id)),
+            DirectPackedReaderEnum::Bit64(r) => r.get64_with_ctx(ctx, i64::from(doc_id)),
+        }
+    }
+}
+
+enum DirectPackedReaderEnum {
+    Bit1(DirectPackedReader1),
+    Bit2(DirectPackedReader2),
+    Bit4(DirectPackedReader4),
+    Bit8(DirectPackedReader8),
+    Bit12(DirectPackedReader12),
+    Bit16(DirectPackedReader16),
+    Bit20(DirectPackedReader20),
+    Bit24(DirectPackedReader24),
+    Bit28(DirectPackedReader28),
+    Bit32(DirectPackedReader32),
+    Bit40(DirectPackedReader40),
+    Bit48(DirectPackedReader48),
+    Bit56(DirectPackedReader56),
+    Bit64(DirectPackedReader64),
 }
 
 // ================ Begin Reader 1 ================

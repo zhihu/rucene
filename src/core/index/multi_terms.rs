@@ -1,18 +1,20 @@
-use core::index::multi_fields::{IterWithSlice, MultiPostingsIterator};
-use core::index::reader_slice::ReaderSlice;
-use core::index::term::{EmptyTermIterator, SeekStatus, TermIterator, Terms, TermsRef};
-use core::search::posting_iterator::PostingIterator;
+use core::index::{
+    EmptyTermIterator, IterWithSlice, MultiPostingsIterator, ReaderSlice, SeekStatus, TermIterator,
+    Terms,
+};
+use core::search::posting_iterator::{EmptyPostingIterator, PostingIterator};
+use core::search::{DocIterator, Payload};
 use core::util::binary_heap::BinaryHeapPub;
+use core::util::DocId;
 
 use error::ErrorKind::UnsupportedOperation;
 use error::Result;
 
-use std::any::Any;
 use std::cmp::Ordering;
 use std::mem;
 
-pub struct MultiTerms {
-    subs: Vec<TermsRef>,
+pub struct MultiTerms<T: Terms> {
+    subs: Vec<T>,
     #[allow(dead_code)]
     sub_slices: Vec<ReaderSlice>,
     has_freqs: bool,
@@ -21,8 +23,8 @@ pub struct MultiTerms {
     has_payloads: bool,
 }
 
-impl MultiTerms {
-    pub fn new(subs: Vec<TermsRef>, sub_slices: Vec<ReaderSlice>) -> Result<MultiTerms> {
+impl<T: Terms> MultiTerms<T> {
+    pub fn new(subs: Vec<T>, sub_slices: Vec<ReaderSlice>) -> Result<MultiTerms<T>> {
         let mut has_freqs = true;
         let mut has_offsets = true;
         let mut has_positions = true;
@@ -46,8 +48,9 @@ impl MultiTerms {
     }
 }
 
-impl Terms for MultiTerms {
-    fn iterator(&self) -> Result<Box<TermIterator>> {
+impl<T: Terms> Terms for MultiTerms<T> {
+    type Iterator = MultiTermIteratorEnum<T::Iterator>;
+    fn iterator(&self) -> Result<Self::Iterator> {
         let mut terms_iters = vec![];
         let mut i = 0;
         for sub in &self.subs {
@@ -59,11 +62,15 @@ impl Terms for MultiTerms {
         }
 
         if terms_iters.is_empty() {
-            Ok(Box::new(EmptyTermIterator::default()))
+            Ok(MultiTermIteratorEnum::Empty(EmptyTermIterator::default()))
         } else {
             let mut res = MultiTermIterator::new(self.sub_slices.clone());
             res.reset(terms_iters)?;
-            Ok(Box::new(res))
+            if res.queue.queue.is_empty() {
+                Ok(MultiTermIteratorEnum::Empty(EmptyTermIterator::default()))
+            } else {
+                Ok(MultiTermIteratorEnum::Multi(res))
+            }
         }
     }
 
@@ -136,40 +143,43 @@ impl Terms for MultiTerms {
     }
 }
 
-pub struct TermIteratorIndex {
+pub struct TermIteratorIndex<T: TermIterator> {
     pub sub_index: usize,
-    pub terms: Box<TermIterator>,
+    pub terms: Option<T>,
 }
 
-impl TermIteratorIndex {
-    pub fn new(terms: Box<TermIterator>, sub_index: usize) -> Self {
-        TermIteratorIndex { sub_index, terms }
+impl<T: TermIterator> TermIteratorIndex<T> {
+    pub fn new(terms: T, sub_index: usize) -> Self {
+        TermIteratorIndex {
+            sub_index,
+            terms: Some(terms),
+        }
     }
 
-    pub fn take_terms(&mut self) -> Box<TermIterator> {
-        mem::replace(&mut self.terms, Box::new(EmptyTermIterator::default()))
+    pub fn take_terms(&mut self) -> T {
+        debug_assert!(self.terms.is_some());
+        self.terms.take().unwrap()
     }
 }
 
 /// Exposes `TermsEnum` API, merged from `TermsEnum` API of sub-segments.
 /// This does a merge sort, by term text, of the sub-readers
-pub struct MultiTermIterator {
-    queue: TermMergeQueue,
-    pub subs: Vec<TermIteratorWithSlice>,
+pub struct MultiTermIterator<T: TermIterator> {
+    queue: TermMergeQueue<T>,
+    pub subs: Vec<TermIteratorWithSlice<T>>,
     current_subs_indexes: Vec<usize>,
     pub top_indexes: Vec<usize>,
     // sub_docs: Vec<IterWithSlice>,
     last_seek: Vec<u8>,
     last_seek_exact: bool,
-    last_seek_scratch: Vec<u8>,
     pub num_top: usize,
     num_subs: usize,
     current: Vec<u8>,
     current_is_none: bool,
 }
 
-impl MultiTermIterator {
-    pub fn new(slices: Vec<ReaderSlice>) -> MultiTermIterator {
+impl<T: TermIterator> MultiTermIterator<T> {
+    pub fn new(slices: Vec<ReaderSlice>) -> MultiTermIterator<T> {
         let len = slices.len();
         let queue = TermMergeQueue::new(len);
         let top_indexes = vec![0; len];
@@ -188,7 +198,6 @@ impl MultiTermIterator {
             top_indexes,
             last_seek: Vec::with_capacity(0),
             last_seek_exact: false,
-            last_seek_scratch: Vec::with_capacity(0),
             num_top: 0,
             num_subs: 0,
             current: vec![],
@@ -197,13 +206,14 @@ impl MultiTermIterator {
     }
 
     /// The terms array must be newly created TermIterator,
-    pub fn reset(&mut self, term_iter_index: Vec<TermIteratorIndex>) -> Result<()> {
+    pub fn reset(&mut self, term_iter_index: Vec<TermIteratorIndex<T>>) -> Result<()> {
         debug_assert!(term_iter_index.len() <= self.top_indexes.len());
         self.num_subs = 0;
         self.num_top = 0;
         self.queue.queue.clear();
         for mut term_index in term_iter_index {
-            if let Some(term) = term_index.terms.next()? {
+            debug_assert!(term_index.terms.is_some());
+            if let Some(term) = term_index.terms.as_mut().unwrap().next()? {
                 let iter = term_index.take_terms();
                 self.subs[term_index.sub_index].reset(iter, term);
                 self.queue.queue.push(TIWSRefWithIndex::new(
@@ -216,11 +226,10 @@ impl MultiTermIterator {
                 // field has no terms
             }
         }
-        // TODO
         //        if self.queue.queue.is_empty() {
-        //            return EmptyTermIterator{}
+        //            Ok(MultiTermIteratorEnum::Empty(EmptyTermIterator::default()))
         //        } else {
-        //            return self
+        //            Ok(MultiTermIteratorEnum::Multi(self))
         //        }
         Ok(())
     }
@@ -258,7 +267,9 @@ impl MultiTermIterator {
     }
 }
 
-impl TermIterator for MultiTermIterator {
+impl<T: TermIterator> TermIterator for MultiTermIterator<T> {
+    type Postings = MultiPostingsIterator<T::Postings>;
+    type TermState = T::TermState;
     fn next(&mut self) -> Result<Option<Vec<u8>>> {
         if self.last_seek_exact {
             // Must seekCeil at this point, so those subs that
@@ -479,7 +490,7 @@ impl TermIterator for MultiTermIterator {
         Ok(sum)
     }
 
-    fn postings_with_flags(&mut self, flags: i16) -> Result<Box<PostingIterator>> {
+    fn postings_with_flags(&mut self, flags: u16) -> Result<Self::Postings> {
         let mut docs_iter = MultiPostingsIterator::new(self.subs.len());
 
         let mut upto = 0;
@@ -501,20 +512,16 @@ impl TermIterator for MultiTermIterator {
         }
 
         docs_iter.reset(sub_docs, upto);
-        Ok(Box::new(docs_iter))
-    }
-
-    fn as_any(&self) -> &Any {
-        self
+        Ok(docs_iter)
     }
 }
 
-struct TermMergeQueue {
-    queue: BinaryHeapPub<TIWSRefWithIndex>,
+struct TermMergeQueue<T: TermIterator> {
+    queue: BinaryHeapPub<TIWSRefWithIndex<T>>,
     stack: Vec<usize>,
 }
 
-impl TermMergeQueue {
+impl<T: TermIterator> TermMergeQueue<T> {
     fn new(size: usize) -> Self {
         let queue = BinaryHeapPub::with_capacity(size);
         let stack = vec![0; size];
@@ -551,50 +558,50 @@ impl TermMergeQueue {
 }
 
 // pointer to `TermIteratorWithSlice` and index to subs
-struct TIWSRefWithIndex {
-    term_slice: *mut TermIteratorWithSlice,
+struct TIWSRefWithIndex<T: TermIterator> {
+    term_slice: *mut TermIteratorWithSlice<T>,
     index: usize,
 }
 
-impl TIWSRefWithIndex {
-    fn new(term_slice: &mut TermIteratorWithSlice, index: usize) -> Self {
+impl<T: TermIterator> TIWSRefWithIndex<T> {
+    fn new(term_slice: &mut TermIteratorWithSlice<T>, index: usize) -> Self {
         TIWSRefWithIndex { term_slice, index }
     }
 
-    fn slice(&self) -> &mut TermIteratorWithSlice {
+    fn slice(&self) -> &mut TermIteratorWithSlice<T> {
         unsafe { &mut *self.term_slice }
     }
 }
 
-impl Eq for TIWSRefWithIndex {}
+impl<T: TermIterator> Eq for TIWSRefWithIndex<T> {}
 
-impl PartialEq for TIWSRefWithIndex {
-    fn eq(&self, other: &TIWSRefWithIndex) -> bool {
+impl<T: TermIterator> PartialEq for TIWSRefWithIndex<T> {
+    fn eq(&self, other: &TIWSRefWithIndex<T>) -> bool {
         self.slice().current == other.slice().current
     }
 }
 
-impl Ord for TIWSRefWithIndex {
+impl<T: TermIterator> Ord for TIWSRefWithIndex<T> {
     // reverse ord for binary heap
     fn cmp(&self, other: &Self) -> Ordering {
         unsafe { (*other.term_slice).current.cmp(&(*self.term_slice).current) }
     }
 }
 
-impl PartialOrd for TIWSRefWithIndex {
+impl<T: TermIterator> PartialOrd for TIWSRefWithIndex<T> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-pub struct TermIteratorWithSlice {
+pub struct TermIteratorWithSlice<T: TermIterator> {
     sub_slice: ReaderSlice,
-    pub terms: Option<Box<TermIterator>>,
+    pub terms: Option<T>,
     current: Vec<u8>,
     pub index: usize,
 }
 
-impl TermIteratorWithSlice {
+impl<T: TermIterator> TermIteratorWithSlice<T> {
     fn new(index: usize, sub_slice: ReaderSlice) -> Self {
         TermIteratorWithSlice {
             sub_slice,
@@ -604,8 +611,259 @@ impl TermIteratorWithSlice {
         }
     }
 
-    fn reset(&mut self, terms: Box<TermIterator>, term: Vec<u8>) {
+    fn reset(&mut self, terms: T, term: Vec<u8>) {
         self.terms = Some(terms);
         self.current = term;
+    }
+}
+
+pub enum MultiTermIteratorEnum<T: TermIterator> {
+    Multi(MultiTermIterator<T>),
+    Raw(T),
+    Empty(EmptyTermIterator),
+}
+
+impl<T: TermIterator> TermIterator for MultiTermIteratorEnum<T> {
+    type Postings = MultiPostingIterEnum<T::Postings>;
+    type TermState = T::TermState;
+    fn next(&mut self) -> Result<Option<Vec<u8>>> {
+        match self {
+            MultiTermIteratorEnum::Multi(t) => t.next(),
+            MultiTermIteratorEnum::Raw(t) => t.next(),
+            MultiTermIteratorEnum::Empty(t) => t.next(),
+        }
+    }
+
+    fn seek_exact(&mut self, text: &[u8]) -> Result<bool> {
+        match self {
+            MultiTermIteratorEnum::Multi(t) => t.seek_exact(text),
+            MultiTermIteratorEnum::Raw(t) => t.seek_exact(text),
+            MultiTermIteratorEnum::Empty(t) => t.seek_exact(text),
+        }
+    }
+
+    fn seek_ceil(&mut self, text: &[u8]) -> Result<SeekStatus> {
+        match self {
+            MultiTermIteratorEnum::Multi(t) => t.seek_ceil(text),
+            MultiTermIteratorEnum::Raw(t) => t.seek_ceil(text),
+            MultiTermIteratorEnum::Empty(t) => t.seek_ceil(text),
+        }
+    }
+
+    fn seek_exact_ord(&mut self, ord: i64) -> Result<()> {
+        match self {
+            MultiTermIteratorEnum::Multi(t) => t.seek_exact_ord(ord),
+            MultiTermIteratorEnum::Raw(t) => t.seek_exact_ord(ord),
+            MultiTermIteratorEnum::Empty(t) => t.seek_exact_ord(ord),
+        }
+    }
+
+    fn seek_exact_state(&mut self, text: &[u8], state: &Self::TermState) -> Result<()> {
+        match self {
+            MultiTermIteratorEnum::Multi(t) => t.seek_exact_state(text, state),
+            MultiTermIteratorEnum::Raw(t) => t.seek_exact_state(text, state),
+            MultiTermIteratorEnum::Empty(_) => unreachable!(),
+        }
+    }
+
+    fn term(&self) -> Result<&[u8]> {
+        match self {
+            MultiTermIteratorEnum::Multi(t) => t.term(),
+            MultiTermIteratorEnum::Raw(t) => t.term(),
+            MultiTermIteratorEnum::Empty(t) => t.term(),
+        }
+    }
+
+    fn ord(&self) -> Result<i64> {
+        match self {
+            MultiTermIteratorEnum::Multi(t) => t.ord(),
+            MultiTermIteratorEnum::Raw(t) => t.ord(),
+            MultiTermIteratorEnum::Empty(t) => t.ord(),
+        }
+    }
+
+    fn doc_freq(&mut self) -> Result<i32> {
+        match self {
+            MultiTermIteratorEnum::Multi(t) => t.doc_freq(),
+            MultiTermIteratorEnum::Raw(t) => t.doc_freq(),
+            MultiTermIteratorEnum::Empty(t) => t.doc_freq(),
+        }
+    }
+
+    fn total_term_freq(&mut self) -> Result<i64> {
+        match self {
+            MultiTermIteratorEnum::Multi(t) => t.total_term_freq(),
+            MultiTermIteratorEnum::Raw(t) => t.total_term_freq(),
+            MultiTermIteratorEnum::Empty(t) => t.total_term_freq(),
+        }
+    }
+
+    fn postings(&mut self) -> Result<Self::Postings> {
+        match self {
+            MultiTermIteratorEnum::Multi(t) => Ok(MultiPostingIterEnum::Multi(t.postings()?)),
+            MultiTermIteratorEnum::Raw(t) => Ok(MultiPostingIterEnum::Raw(t.postings()?)),
+            MultiTermIteratorEnum::Empty(t) => Ok(MultiPostingIterEnum::Empty(t.postings()?)),
+        }
+    }
+
+    fn postings_with_flags(&mut self, flags: u16) -> Result<Self::Postings> {
+        match self {
+            MultiTermIteratorEnum::Multi(t) => {
+                Ok(MultiPostingIterEnum::Multi(t.postings_with_flags(flags)?))
+            }
+            MultiTermIteratorEnum::Raw(t) => {
+                Ok(MultiPostingIterEnum::Raw(t.postings_with_flags(flags)?))
+            }
+            MultiTermIteratorEnum::Empty(t) => {
+                Ok(MultiPostingIterEnum::Empty(t.postings_with_flags(flags)?))
+            }
+        }
+    }
+
+    fn term_state(&mut self) -> Result<Self::TermState> {
+        match self {
+            MultiTermIteratorEnum::Multi(t) => t.term_state(),
+            MultiTermIteratorEnum::Raw(t) => t.term_state(),
+            MultiTermIteratorEnum::Empty(_) => unreachable!(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        match self {
+            MultiTermIteratorEnum::Multi(t) => t.is_empty(),
+            MultiTermIteratorEnum::Raw(t) => t.is_empty(),
+            MultiTermIteratorEnum::Empty(_) => true,
+        }
+    }
+}
+
+pub enum MultiPostingIterEnum<T: PostingIterator> {
+    Multi(MultiPostingsIterator<T>),
+    Raw(T),
+    Empty(EmptyPostingIterator),
+}
+
+impl<T: PostingIterator> MultiPostingIterEnum<T> {
+    pub fn is_multi(&self) -> bool {
+        match self {
+            MultiPostingIterEnum::Multi(_) => true,
+            _ => false,
+        }
+    }
+}
+
+impl<T: PostingIterator> PostingIterator for MultiPostingIterEnum<T> {
+    fn freq(&self) -> Result<i32> {
+        match self {
+            MultiPostingIterEnum::Multi(i) => i.freq(),
+            MultiPostingIterEnum::Raw(i) => i.freq(),
+            MultiPostingIterEnum::Empty(i) => i.freq(),
+        }
+    }
+
+    fn next_position(&mut self) -> Result<i32> {
+        match self {
+            MultiPostingIterEnum::Multi(i) => i.next_position(),
+            MultiPostingIterEnum::Raw(i) => i.next_position(),
+            MultiPostingIterEnum::Empty(i) => i.next_position(),
+        }
+    }
+
+    fn start_offset(&self) -> Result<i32> {
+        match self {
+            MultiPostingIterEnum::Multi(i) => i.start_offset(),
+            MultiPostingIterEnum::Raw(i) => i.start_offset(),
+            MultiPostingIterEnum::Empty(i) => i.start_offset(),
+        }
+    }
+
+    fn end_offset(&self) -> Result<i32> {
+        match self {
+            MultiPostingIterEnum::Multi(i) => i.end_offset(),
+            MultiPostingIterEnum::Raw(i) => i.end_offset(),
+            MultiPostingIterEnum::Empty(i) => i.end_offset(),
+        }
+    }
+
+    fn payload(&self) -> Result<Payload> {
+        match self {
+            MultiPostingIterEnum::Multi(i) => i.payload(),
+            MultiPostingIterEnum::Raw(i) => i.payload(),
+            MultiPostingIterEnum::Empty(i) => i.payload(),
+        }
+    }
+}
+
+impl<T: PostingIterator> DocIterator for MultiPostingIterEnum<T> {
+    fn doc_id(&self) -> DocId {
+        match self {
+            MultiPostingIterEnum::Multi(i) => i.doc_id(),
+            MultiPostingIterEnum::Raw(i) => i.doc_id(),
+            MultiPostingIterEnum::Empty(i) => i.doc_id(),
+        }
+    }
+
+    fn next(&mut self) -> Result<DocId> {
+        match self {
+            MultiPostingIterEnum::Multi(i) => i.next(),
+            MultiPostingIterEnum::Raw(i) => i.next(),
+            MultiPostingIterEnum::Empty(i) => i.next(),
+        }
+    }
+
+    fn advance(&mut self, target: i32) -> Result<DocId> {
+        match self {
+            MultiPostingIterEnum::Multi(i) => i.advance(target),
+            MultiPostingIterEnum::Raw(i) => i.advance(target),
+            MultiPostingIterEnum::Empty(i) => i.advance(target),
+        }
+    }
+
+    fn slow_advance(&mut self, target: i32) -> Result<DocId> {
+        match self {
+            MultiPostingIterEnum::Multi(i) => i.slow_advance(target),
+            MultiPostingIterEnum::Raw(i) => i.slow_advance(target),
+            MultiPostingIterEnum::Empty(i) => i.slow_advance(target),
+        }
+    }
+
+    fn cost(&self) -> usize {
+        match self {
+            MultiPostingIterEnum::Multi(i) => i.cost(),
+            MultiPostingIterEnum::Raw(i) => i.cost(),
+            MultiPostingIterEnum::Empty(i) => i.cost(),
+        }
+    }
+
+    fn matches(&mut self) -> Result<bool> {
+        match self {
+            MultiPostingIterEnum::Multi(i) => i.matches(),
+            MultiPostingIterEnum::Raw(i) => i.matches(),
+            MultiPostingIterEnum::Empty(i) => i.matches(),
+        }
+    }
+
+    fn match_cost(&self) -> f32 {
+        match self {
+            MultiPostingIterEnum::Multi(i) => i.match_cost(),
+            MultiPostingIterEnum::Raw(i) => i.match_cost(),
+            MultiPostingIterEnum::Empty(i) => i.match_cost(),
+        }
+    }
+
+    fn approximate_next(&mut self) -> Result<DocId> {
+        match self {
+            MultiPostingIterEnum::Multi(i) => i.approximate_next(),
+            MultiPostingIterEnum::Raw(i) => i.approximate_next(),
+            MultiPostingIterEnum::Empty(i) => i.approximate_next(),
+        }
+    }
+
+    fn approximate_advance(&mut self, target: i32) -> Result<DocId> {
+        match self {
+            MultiPostingIterEnum::Multi(i) => i.approximate_advance(target),
+            MultiPostingIterEnum::Raw(i) => i.approximate_advance(target),
+            MultiPostingIterEnum::Empty(i) => i.approximate_advance(target),
+        }
     }
 }

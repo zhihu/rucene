@@ -3,20 +3,16 @@ use core::search::DocIterator;
 use core::search::Scorer;
 use core::search::SimScorer;
 use core::util::DocId;
-use error::*;
+use error::Result;
 
-pub struct TermScorer {
-    sim_scorer: Box<SimScorer>,
-    postings_iterator: Box<PostingIterator>,
+pub struct TermScorer<T: PostingIterator> {
+    sim_scorer: Box<dyn SimScorer>,
+    postings_iterator: T,
     boost: f32,
 }
 
-impl TermScorer {
-    pub fn new(
-        sim_scorer: Box<SimScorer>,
-        postings_iterator: Box<PostingIterator>,
-        boost: f32,
-    ) -> TermScorer {
+impl<T: PostingIterator> TermScorer<T> {
+    pub fn new(sim_scorer: Box<dyn SimScorer>, postings_iterator: T, boost: f32) -> Self {
         TermScorer {
             sim_scorer,
             postings_iterator,
@@ -33,7 +29,7 @@ impl TermScorer {
     }
 }
 
-impl Scorer for TermScorer {
+impl<T: PostingIterator> Scorer for TermScorer<T> {
     fn score(&mut self) -> Result<f32> {
         let doc_id = self.doc_id();
         let freq = self.freq();
@@ -42,7 +38,7 @@ impl Scorer for TermScorer {
     }
 }
 
-impl DocIterator for TermScorer {
+impl<T: PostingIterator> DocIterator for TermScorer<T> {
     fn doc_id(&self) -> DocId {
         self.postings_iterator.doc_id()
     }

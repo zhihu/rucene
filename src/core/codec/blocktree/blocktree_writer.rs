@@ -2,12 +2,12 @@ use core::codec::blocktree::*;
 use core::codec::codec_util::{write_footer, write_index_header};
 use core::codec::consumer::FieldsConsumer;
 use core::codec::writer::PostingsWriterBase;
-use core::codec::BlockTermState;
+use core::codec::{BlockTermState, Codec};
 use core::index::TermIterator;
 use core::index::{segment_file_name, SegmentWriteState};
-use core::index::{FieldInfo, FieldInfos, Fields, IndexOptions};
-use core::store::RAMOutputStream;
+use core::index::{FieldInfo, FieldInfos, Fields, IndexOptions, Terms};
 use core::store::{DataOutput, IndexOutput};
+use core::store::{Directory, RAMOutputStream};
 use core::util::bit_set::{FixedBitSet, ImmutableBitSet};
 use core::util::fst::bytes_output::{ByteSequenceOutput, ByteSequenceOutputFactory};
 use core::util::fst::fst_builder::FstBuilder;
@@ -19,10 +19,6 @@ use error::{ErrorKind, Result};
 
 use std::cmp::min;
 use std::mem;
-
-const DEFAULT_MIN_BLOCK_SIZE: i32 = 25;
-
-const DEFAULT_MAX_BLOCK_SIZE: i32 = 48;
 
 /// Block-based terms index and dictionary writer.
 ///
@@ -112,13 +108,13 @@ const DEFAULT_MAX_BLOCK_SIZE: i32 = 48;
 ///     byte of each sub-block, and its file pointer.
 ///
 /// @see BlockTreeTermsReader
-pub struct BlockTreeTermsWriter {
-    terms_out: Box<IndexOutput>,
-    index_out: Box<IndexOutput>,
+pub struct BlockTreeTermsWriter<T: PostingsWriterBase, O: IndexOutput> {
+    terms_out: O,
+    index_out: O,
     max_doc: DocId,
     min_items_in_block: usize,
     max_items_in_block: usize,
-    postings_writer: Box<PostingsWriterBase>,
+    postings_writer: T,
     field_infos: FieldInfos,
     fields: Vec<FieldMetaData>,
     scratch_bytes: RAMOutputStream,
@@ -126,13 +122,13 @@ pub struct BlockTreeTermsWriter {
     closed: bool,
 }
 
-impl BlockTreeTermsWriter {
-    pub fn new(
-        state: &SegmentWriteState,
-        postings_writer: Box<PostingsWriterBase>,
+impl<T: PostingsWriterBase, O: IndexOutput> BlockTreeTermsWriter<T, O> {
+    pub fn new<D: Directory, DW: Directory<IndexOutput = O>, C: Codec>(
+        state: &SegmentWriteState<D, DW, C>,
+        postings_writer: T,
         min_items_in_block: usize,
         max_items_in_block: usize,
-    ) -> Result<Self> {
+    ) -> Result<BlockTreeTermsWriter<T, O>> {
         Self::validate_settings(min_items_in_block, max_items_in_block)?;
 
         let max_doc = state.segment_info.max_doc;
@@ -144,7 +140,7 @@ impl BlockTreeTermsWriter {
         );
         let mut terms_out = state.directory.create_output(&terms_name, &state.context)?;
         write_index_header(
-            terms_out.as_mut(),
+            &mut terms_out,
             TERMS_CODEC_NAME,
             VERSION_CURRENT,
             state.segment_info.get_id(),
@@ -158,7 +154,7 @@ impl BlockTreeTermsWriter {
         );
         let mut index_out = state.directory.create_output(&index_name, &state.context)?;
         write_index_header(
-            index_out.as_mut(),
+            &mut index_out,
             TERMS_INDEX_CODEC_NAME,
             VERSION_CURRENT,
             state.segment_info.get_id(),
@@ -166,7 +162,7 @@ impl BlockTreeTermsWriter {
         )?;
 
         let mut postings_writer = postings_writer;
-        postings_writer.init(terms_out.as_mut(), &state)?;
+        postings_writer.init(&mut terms_out, &state)?;
 
         Ok(BlockTreeTermsWriter {
             terms_out,
@@ -183,11 +179,11 @@ impl BlockTreeTermsWriter {
         })
     }
 
-    fn write_trailer(out: &mut IndexOutput, dir_start: i64) -> Result<()> {
+    fn write_trailer(out: &mut impl IndexOutput, dir_start: i64) -> Result<()> {
         out.write_long(dir_start)
     }
 
-    fn write_index_trailer(out: &mut IndexOutput, dir_start: i64) -> Result<()> {
+    fn write_index_trailer(out: &mut impl IndexOutput, dir_start: i64) -> Result<()> {
         out.write_long(dir_start)
     }
 
@@ -243,25 +239,25 @@ impl BlockTreeTermsWriter {
             self.terms_out.write_vint(field.doc_count)?;
             self.terms_out.write_vint(field.longs_size as i32)?;
             self.index_out.write_vlong(field.index_start_fp)?;
-            Self::write_bytes_ref(self.terms_out.as_mut(), &field.min_term)?;
-            Self::write_bytes_ref(self.terms_out.as_mut(), &field.max_term)?;
+            Self::write_bytes_ref(&mut self.terms_out, &field.min_term)?;
+            Self::write_bytes_ref(&mut self.terms_out, &field.max_term)?;
         }
-        Self::write_trailer(self.terms_out.as_mut(), dir_start)?;
-        write_footer(self.terms_out.as_mut())?;
-        Self::write_index_trailer(self.index_out.as_mut(), index_dir_start)?;
-        write_footer(self.index_out.as_mut())?;
+        Self::write_trailer(&mut self.terms_out, dir_start)?;
+        write_footer(&mut self.terms_out)?;
+        Self::write_index_trailer(&mut self.index_out, index_dir_start)?;
+        write_footer(&mut self.index_out)?;
 
         self.postings_writer.close()
     }
 
-    fn write_bytes_ref(out: &mut IndexOutput, bytes: &[u8]) -> Result<()> {
+    fn write_bytes_ref(out: &mut impl IndexOutput, bytes: &[u8]) -> Result<()> {
         out.write_vint(bytes.len() as i32)?;
         out.write_bytes(bytes, 0, bytes.len())
     }
 }
 
-impl FieldsConsumer for BlockTreeTermsWriter {
-    fn write(&mut self, fields: &Fields) -> Result<()> {
+impl<T: PostingsWriterBase, O: IndexOutput> FieldsConsumer for BlockTreeTermsWriter<T, O> {
+    fn write(&mut self, fields: &impl Fields) -> Result<()> {
         let mut last_field = String::new();
         for field in fields.fields() {
             debug_assert!(last_field < field);
@@ -273,7 +269,7 @@ impl FieldsConsumer for BlockTreeTermsWriter {
 
                 loop {
                     if let Some(term) = terms_iter.next()? {
-                        terms_writer.write(&term, terms_iter.as_mut())?;
+                        terms_writer.write(&term, &mut terms_iter)?;
                     } else {
                         break;
                     }
@@ -286,7 +282,7 @@ impl FieldsConsumer for BlockTreeTermsWriter {
     }
 }
 
-impl Drop for BlockTreeTermsWriter {
+impl<T: PostingsWriterBase, O: IndexOutput> Drop for BlockTreeTermsWriter<T, O> {
     fn drop(&mut self) {
         if let Err(e) = self.close() {
             error!("drop BlockTreeTermsWriter failed by '{:?}'", e);
@@ -307,7 +303,7 @@ struct FieldMetaData {
     max_term: Vec<u8>,
 }
 
-struct TermsWriter<'a> {
+struct TermsWriter<'a, T: PostingsWriterBase, O: IndexOutput> {
     field_info: FieldInfo,
     num_terms: i64,
     docs_seen: FixedBitSet,
@@ -315,7 +311,6 @@ struct TermsWriter<'a> {
     sum_doc_freq: i64,
     index_start_fp: i64,
     last_term: Vec<u8>,
-    // TODO,
     prefix_starts: Vec<usize>,
     longs: Vec<i64>,
     longs_size: usize,
@@ -334,11 +329,11 @@ struct TermsWriter<'a> {
     meta_writer: RAMOutputStream,
     bytes_writer: RAMOutputStream,
 
-    block_tree_writer: &'a mut BlockTreeTermsWriter,
+    block_tree_writer: &'a mut BlockTreeTermsWriter<T, O>,
 }
 
-impl<'a> TermsWriter<'a> {
-    fn new(field_info: FieldInfo, block_tree_writer: &'a mut BlockTreeTermsWriter) -> Self {
+impl<'a, T: PostingsWriterBase, O: IndexOutput> TermsWriter<'a, T, O> {
+    fn new(field_info: FieldInfo, block_tree_writer: &'a mut BlockTreeTermsWriter<T, O>) -> Self {
         assert_ne!(field_info.index_options, IndexOptions::Null);
         let docs_seen = FixedBitSet::new(block_tree_writer.max_doc as usize);
         let longs_size = block_tree_writer.postings_writer.set_field(&field_info) as usize;
@@ -658,7 +653,7 @@ impl<'a> TermsWriter<'a> {
             (self.suffix_writer.file_pointer() << 1) as i32 + if is_leaf_block { 1 } else { 0 };
         self.block_tree_writer.terms_out.write_vint(term_addr)?;
         self.suffix_writer
-            .write_to(self.block_tree_writer.terms_out.as_mut())?;
+            .write_to(&mut self.block_tree_writer.terms_out)?;
         self.suffix_writer.reset();
 
         // Write term stats data byte[] blob
@@ -666,7 +661,7 @@ impl<'a> TermsWriter<'a> {
             .terms_out
             .write_vint(self.stats_writer.file_pointer() as i32)?;
         self.stats_writer
-            .write_to(self.block_tree_writer.terms_out.as_mut())?;
+            .write_to(&mut self.block_tree_writer.terms_out)?;
         self.stats_writer.reset();
 
         // Write term meta data byte[] blob
@@ -674,7 +669,7 @@ impl<'a> TermsWriter<'a> {
             .terms_out
             .write_vint(self.meta_writer.file_pointer() as i32)?;
         self.meta_writer
-            .write_to(self.block_tree_writer.terms_out.as_mut())?;
+            .write_to(&mut self.block_tree_writer.terms_out)?;
         self.meta_writer.reset();
 
         if has_floor_lead_label {
@@ -692,7 +687,7 @@ impl<'a> TermsWriter<'a> {
     }
 
     // Writes one term's worth of postings.
-    pub fn write(&mut self, text: &[u8], terms_iter: &mut TermIterator) -> Result<()> {
+    pub fn write(&mut self, text: &[u8], terms_iter: &mut impl TermIterator) -> Result<()> {
         if let Some(state) = self.block_tree_writer.postings_writer.write_term(
             text,
             terms_iter,
@@ -799,14 +794,12 @@ impl<'a> TermsWriter<'a> {
             root.index
                 .as_mut()
                 .unwrap()
-                .save(self.block_tree_writer.index_out.as_mut())?;
+                .save(&mut self.block_tree_writer.index_out)?;
 
             debug_assert!(self.first_pending_term.is_some());
-            let first_pending_term = mem::replace(&mut self.first_pending_term, None);
-            let min_term = first_pending_term.unwrap();
+            let min_term = self.first_pending_term.take().unwrap();
             debug_assert!(self.last_pending_term.is_some());
-            let last_pending_term = mem::replace(&mut self.last_pending_term, None);
-            let max_term = last_pending_term.unwrap();
+            let max_term = self.last_pending_term.take().unwrap();
 
             let meta = FieldMetaData {
                 field_info: self.field_info.clone(),

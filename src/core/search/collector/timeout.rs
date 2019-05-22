@@ -1,9 +1,10 @@
+use core::codec::Codec;
 use core::index::LeafReaderContext;
 use core::search::collector;
-use core::search::collector::{Collector, LeafCollector, SearchCollector};
+use core::search::collector::{Collector, ParallelLeafCollector, SearchCollector};
 use core::search::Scorer;
 use core::util::DocId;
-use error::*;
+use error::{ErrorKind, Result};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -25,7 +26,9 @@ impl TimeoutCollector {
 }
 
 impl SearchCollector for TimeoutCollector {
-    fn set_next_reader(&mut self, _reader: &LeafReaderContext) -> Result<()> {
+    type LC = TimeoutLeafCollector;
+
+    fn set_next_reader<C: Codec>(&mut self, _reader: &LeafReaderContext<'_, C>) -> Result<()> {
         Ok(())
     }
 
@@ -33,15 +36,18 @@ impl SearchCollector for TimeoutCollector {
         true
     }
 
-    fn leaf_collector(&mut self, _reader: &LeafReaderContext) -> Result<Box<LeafCollector>> {
-        Ok(Box::new(TimeoutLeafCollector::new(
+    fn leaf_collector<C: Codec>(
+        &mut self,
+        _reader: &LeafReaderContext<'_, C>,
+    ) -> Result<TimeoutLeafCollector> {
+        Ok(TimeoutLeafCollector::new(
             self.timeout_duration,
             self.start_time,
             Arc::clone(&self.timeout),
-        )))
+        ))
     }
 
-    fn finish(&mut self) -> Result<()> {
+    fn finish_parallel(&mut self) -> Result<()> {
         Ok(())
     }
 }
@@ -51,7 +57,7 @@ impl Collector for TimeoutCollector {
         false
     }
 
-    fn collect(&mut self, _doc: DocId, _scorer: &mut Scorer) -> Result<()> {
+    fn collect<S: Scorer + ?Sized>(&mut self, _doc: DocId, _scorer: &mut S) -> Result<()> {
         let now = SystemTime::now();
         if self.start_time < now && now.duration_since(self.start_time)? >= self.timeout_duration {
             self.timeout.store(true, Ordering::Release);
@@ -63,7 +69,7 @@ impl Collector for TimeoutCollector {
     }
 }
 
-struct TimeoutLeafCollector {
+pub struct TimeoutLeafCollector {
     timeout_duration: Duration,
     start_time: SystemTime,
     timeout: Arc<AtomicBool>,
@@ -88,7 +94,7 @@ impl Collector for TimeoutLeafCollector {
         false
     }
 
-    fn collect(&mut self, _doc: i32, _scorer: &mut Scorer) -> Result<()> {
+    fn collect<S: Scorer + ?Sized>(&mut self, _doc: i32, _scorer: &mut S) -> Result<()> {
         let now = SystemTime::now();
         if self.start_time < now && now.duration_since(self.start_time)? >= self.timeout_duration {
             self.timeout.store(true, Ordering::Release);
@@ -100,7 +106,7 @@ impl Collector for TimeoutLeafCollector {
     }
 }
 
-impl LeafCollector for TimeoutLeafCollector {
+impl ParallelLeafCollector for TimeoutLeafCollector {
     fn finish_leaf(&mut self) -> Result<()> {
         Ok(())
     }

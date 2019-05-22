@@ -17,8 +17,6 @@ const NEXT_LEVEL_ARRAY: [usize; 10] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 9];
 /// An array holding the level sizes for byte slices.
 const LEVEL_SIZE_ARRAY: [usize; 10] = [2, 4, 8, 16, 32, 64, 128, 256, 512, 1024];
 
-const FIRST_LEVEL_SIZE: usize = LEVEL_SIZE_ARRAY[0];
-
 /// Class that Posting and PostingVector use to write byte
 /// streams into shared fixed-size byte[] arrays.  The idea
 /// is to allocate slices of increasing lengths For
@@ -44,7 +42,7 @@ pub struct IntBlockPool {
     pub int_upto: usize,
     /// Current head offset
     pub int_offset: isize,
-    allocator: Box<IntAllocator>,
+    allocator: Box<dyn IntAllocator>,
 }
 
 impl Default for IntBlockPool {
@@ -60,7 +58,7 @@ impl Default for IntBlockPool {
 }
 
 impl IntBlockPool {
-    pub fn new(allocator: Box<IntAllocator>) -> Self {
+    pub fn new(allocator: Box<dyn IntAllocator>) -> Self {
         let mut buffers = Vec::with_capacity(10);
         for _ in 0..10 {
             buffers.push(vec![]);
@@ -184,7 +182,7 @@ pub trait IntAllocator {
         vec![0i32; self.block_size()]
     }
 
-    fn shallow_copy(&mut self) -> Box<IntAllocator>;
+    fn shallow_copy(&mut self) -> Box<dyn IntAllocator>;
 }
 
 pub struct DirectIntAllocator {
@@ -210,7 +208,7 @@ impl IntAllocator for DirectIntAllocator {
 
     fn recycle_int_blocks(&mut self, _blocks: &mut [Vec<i32>], _start: usize, _end: usize) {}
 
-    fn shallow_copy(&mut self) -> Box<IntAllocator> {
+    fn shallow_copy(&mut self) -> Box<dyn IntAllocator> {
         Box::new(DirectIntAllocator {
             block_size: self.block_size,
         })

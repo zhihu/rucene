@@ -1,7 +1,8 @@
-use core::index::term::TermIterator;
 use core::index::BoxedBinaryDocValuesEnum;
 use core::index::SortedDocValuesTermIterator;
-use core::index::{BinaryDocValues, CompressedBinaryDocValues, LongBinaryDocValues};
+use core::index::{
+    BinaryDocValues, CompressedBinaryDocValues, DocValuesTermIterator, LongBinaryDocValues,
+};
 use core::util::bit_util;
 use core::util::DocId;
 use core::util::LongValues;
@@ -36,10 +37,64 @@ pub trait SortedDocValues: BinaryDocValues {
         Ok(-(low + 1)) // key not found
     }
 
-    fn term_iterator(&self) -> Result<Box<TermIterator>>;
+    fn term_iterator(&self) -> Result<DocValuesTermIterator>;
 }
 
-pub type SortedDocValuesRef = Arc<SortedDocValues>;
+pub type SortedDocValuesRef = Arc<dyn SortedDocValues>;
+
+pub struct EmptySortedDocValues;
+
+impl SortedDocValues for EmptySortedDocValues {
+    fn get_ord(&self, _doc_id: DocId) -> Result<i32> {
+        Ok(-1)
+    }
+
+    fn lookup_ord(&self, _ord: i32) -> Result<Vec<u8>> {
+        Ok(Vec::with_capacity(0))
+    }
+
+    fn get_value_count(&self) -> usize {
+        0
+    }
+
+    fn term_iterator(&self) -> Result<DocValuesTermIterator> {
+        Ok(DocValuesTermIterator::empty())
+    }
+}
+
+impl BinaryDocValues for EmptySortedDocValues {
+    fn get(&self, _doc_id: DocId) -> Result<Vec<u8>> {
+        Ok(Vec::with_capacity(0))
+    }
+}
+
+impl<T: SortedDocValues + ?Sized> SortedDocValues for Arc<T> {
+    fn get_ord(&self, doc_id: DocId) -> Result<i32> {
+        (**self).get_ord(doc_id)
+    }
+
+    fn lookup_ord(&self, ord: i32) -> Result<Vec<u8>> {
+        (**self).lookup_ord(ord)
+    }
+
+    fn get_value_count(&self) -> usize {
+        (**self).get_value_count()
+    }
+
+    fn lookup_term(&self, key: &[u8]) -> Result<i32> {
+        (**self).lookup_term(key)
+    }
+
+    fn term_iterator(&self) -> Result<DocValuesTermIterator> {
+        (**self).term_iterator()
+    }
+}
+
+impl<T: SortedDocValues + ?Sized> BinaryDocValues for Arc<T> {
+    fn get(&self, doc_id: DocId) -> Result<Vec<u8>> {
+        (**self).get(doc_id)
+    }
+}
 
 #[derive(Clone)]
 pub struct TailoredSortedDocValues {
@@ -48,8 +103,8 @@ pub struct TailoredSortedDocValues {
 
 impl TailoredSortedDocValues {
     pub fn new(
-        ordinals: Box<LongValues>,
-        binary: Box<LongBinaryDocValues>,
+        ordinals: Box<dyn LongValues>,
+        binary: Box<dyn LongBinaryDocValues>,
         value_count: usize,
     ) -> Self {
         let inner = TailoredSortedDocValuesInner::new(ordinals, binary, value_count);
@@ -59,8 +114,8 @@ impl TailoredSortedDocValues {
     }
 
     pub fn with_compression(
-        ordinals: Box<LongValues>,
-        binary: Box<CompressedBinaryDocValues>,
+        ordinals: Box<dyn LongValues>,
+        binary: CompressedBinaryDocValues,
         value_count: usize,
     ) -> Self {
         let inner = TailoredSortedDocValuesInner::with_compression(ordinals, binary, value_count);
@@ -86,15 +141,15 @@ impl SortedDocValues for TailoredSortedDocValues {
     fn lookup_term(&self, key: &[u8]) -> Result<i32> {
         self.inner.lookup_term(key)
     }
-    fn term_iterator(&self) -> Result<Box<TermIterator>> {
+    fn term_iterator(&self) -> Result<DocValuesTermIterator> {
         match self.inner.binary {
             BoxedBinaryDocValuesEnum::Compressed(ref bin) => {
                 let boxed = bin.get_term_iterator()?;
-                Ok(Box::new(boxed))
+                Ok(DocValuesTermIterator::comp_bin(boxed))
             }
             _ => {
                 let ti = SortedDocValuesTermIterator::new(self.clone());
-                Ok(Box::new(ti))
+                Ok(DocValuesTermIterator::sorted(ti))
             }
         }
     }
@@ -112,15 +167,15 @@ impl BinaryDocValues for TailoredSortedDocValues {
 }
 
 pub struct TailoredSortedDocValuesInner {
-    ordinals: Box<LongValues>,
+    ordinals: Box<dyn LongValues>,
     binary: BoxedBinaryDocValuesEnum,
     value_count: usize,
 }
 
 impl TailoredSortedDocValuesInner {
     fn new(
-        ordinals: Box<LongValues>,
-        binary: Box<LongBinaryDocValues>,
+        ordinals: Box<dyn LongValues>,
+        binary: Box<dyn LongBinaryDocValues>,
         value_count: usize,
     ) -> Self {
         TailoredSortedDocValuesInner {
@@ -131,8 +186,8 @@ impl TailoredSortedDocValuesInner {
     }
 
     fn with_compression(
-        ordinals: Box<LongValues>,
-        binary: Box<CompressedBinaryDocValues>,
+        ordinals: Box<dyn LongValues>,
+        binary: CompressedBinaryDocValues,
         value_count: usize,
     ) -> Self {
         TailoredSortedDocValuesInner {

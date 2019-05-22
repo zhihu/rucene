@@ -49,7 +49,7 @@ impl Fieldable for SortedNumericDocValuesField {
         self.field.fields_data()
     }
 
-    fn token_stream(&mut self) -> Result<Box<TokenStream>> {
+    fn token_stream(&mut self) -> Result<Box<dyn TokenStream>> {
         self.field.token_stream()
     }
 

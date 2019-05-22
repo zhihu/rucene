@@ -2,29 +2,31 @@ use core::codec::codec_util;
 use core::codec::MutablePointsReader;
 use core::codec::{INT_BYTES, LONG_BYTES};
 use core::index::{IntersectVisitor, LiveDocsDocMap, Relation};
-use core::store::DataOutput;
-use core::store::GrowableByteArrayDataOutput;
-use core::store::IndexOutput;
-use core::store::RAMOutputStream;
-use core::store::TrackingDirectoryWrapper;
-use core::store::{Directory, DirectoryRc};
-use core::util::bit_set::{BitSet, FixedBitSet};
+use core::store::{
+    DataOutput, Directory, GrowableByteArrayDataOutput, IndexOutput, RAMOutputStream,
+    TrackingDirectoryWrapper,
+};
+use core::util::bit_set::{BitSet, FixedBitSet, ImmutableBitSet};
 use core::util::bit_util::UnsignedShift;
-use core::util::bkd::bkd_reader::{MergeReader, StubIntersectVisitor};
-use core::util::bkd::LongBitSet;
-use core::util::bkd::MutablePointsReaderUtils;
-use core::util::bkd::PointType;
-use core::util::bkd::{BKDReader, PointReader};
-use core::util::bkd::{DocIdsWriter, HeapPointWriter, OfflinePointWriter, PointWriter};
+use core::util::bkd::{
+    bkd_reader::{MergeReader, StubIntersectVisitor},
+    BKDReader, DocIdsWriter, HeapPointWriter, LongBitSet, MutablePointsReaderUtils,
+    OfflinePointWriter, PointReader, PointReaderEnum, PointType, PointWriter, PointWriterEnum,
+};
 use core::util::offline_sorter::{BufferSize, MAX_TEMP_FILES};
 use core::util::sorter::{check_range, MSBRadixSorter, MSBSorter, Sorter};
 use core::util::string_util::bytes_subtract;
 use core::util::DocId;
 
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
+use std::sync::Arc;
 
-use error::Result;
+use error::{
+    ErrorKind::{IllegalArgument, IllegalState, UnsupportedOperation},
+    Result,
+};
 
 pub const CODEC_NAME: &str = "BKD";
 pub const VERSION_START: i32 = 0;
@@ -37,14 +39,14 @@ pub const DEFAULT_MAX_POINTS_IN_LEAF_NODE: i32 = 1024;
 pub const DEFAULT_MAX_MB_SORT_IN_HEAP: f32 = 1024.0f32;
 pub const MAX_DIMS: i32 = 8;
 
-pub struct PathSlice {
-    writer: Box<PointWriter>,
+pub struct PathSlice<W: PointWriter> {
+    writer: W,
     start: i64,
     count: i64,
 }
 
-impl PathSlice {
-    pub fn new(writer: Box<PointWriter>, start: i64, count: i64) -> PathSlice {
+impl<W: PointWriter> PathSlice<W> {
+    pub fn new(writer: W, start: i64, count: i64) -> PathSlice<W> {
         PathSlice {
             writer,
             start,
@@ -53,19 +55,23 @@ impl PathSlice {
     }
 }
 
-pub struct OneDimIntersectVisitor<'a> {
-    one_dim_writer: &'a mut OneDimensionBKDWriter<'a>,
+pub struct OneDimIntersectVisitor<'a, D: Directory, O: IndexOutput> {
+    one_dim_writer: &'a mut OneDimensionBKDWriter<'a, D, O>,
 }
 
-impl<'a> OneDimIntersectVisitor<'a> {
-    pub fn new(one_dim_writer: &'a mut OneDimensionBKDWriter<'a>) -> OneDimIntersectVisitor<'a> {
+impl<'a, D: Directory, O: IndexOutput> OneDimIntersectVisitor<'a, D, O> {
+    pub fn new(
+        one_dim_writer: &'a mut OneDimensionBKDWriter<'a, D, O>,
+    ) -> OneDimIntersectVisitor<'a, D, O> {
         OneDimIntersectVisitor { one_dim_writer }
     }
 }
 
-impl<'a> IntersectVisitor for OneDimIntersectVisitor<'a> {
+impl<'a, D: Directory + 'static, O: IndexOutput> IntersectVisitor
+    for OneDimIntersectVisitor<'a, D, O>
+{
     fn visit(&mut self, _doc_id: DocId) -> Result<()> {
-        bail!("IllegalStateException")
+        bail!(IllegalState("".into()))
     }
 
     fn visit_by_packed_value(&mut self, doc_id: DocId, packed_value: &[u8]) -> Result<()> {
@@ -77,8 +83,8 @@ impl<'a> IntersectVisitor for OneDimIntersectVisitor<'a> {
     }
 }
 
-pub struct OneDimensionBKDWriter<'a> {
-    out: &'a mut IndexOutput,
+pub struct OneDimensionBKDWriter<'a, D: Directory, O: IndexOutput> {
+    out: &'a mut O,
     leaf_block_fps: Vec<i64>,
     leaf_block_start_values: Vec<Vec<u8>>,
     leaf_values: Vec<u8>,
@@ -88,24 +94,27 @@ pub struct OneDimensionBKDWriter<'a> {
     last_packed_value: Vec<u8>,
     last_doc_id: DocId,
 
-    bkd_writer: *mut BKDWriter,
+    bkd_writer: *mut BKDWriter<D>,
 }
 
-impl<'a> OneDimensionBKDWriter<'a> {
+impl<'a, D: Directory + 'static, O: IndexOutput> OneDimensionBKDWriter<'a, D, O> {
     pub fn new(
-        out: &'a mut IndexOutput,
-        bkd_writer: &mut BKDWriter,
-    ) -> Result<OneDimensionBKDWriter<'a>> {
+        out: &'a mut O,
+        bkd_writer: &mut BKDWriter<D>,
+    ) -> Result<OneDimensionBKDWriter<'a, D, O>> {
         if bkd_writer.num_dims != 1 {
-            bail!("num_dims must be 1 but got {}", bkd_writer.num_dims);
+            bail!(UnsupportedOperation(Cow::Owned(format!(
+                "num_dims must be 1 but got {}",
+                bkd_writer.num_dims
+            ))));
         }
         if bkd_writer.point_count != 0 {
-            bail!("cannot mix add and merge");
+            bail!(IllegalState("cannot mix add and merge".into()));
         }
 
         // Catch user silliness:
         if bkd_writer.heap_point_writer.is_none() && bkd_writer.temp_input.is_none() {
-            bail!("already finished");
+            bail!(IllegalState("already finished".into()));
         }
 
         // Mark that we already finished:
@@ -154,11 +163,10 @@ impl<'a> OneDimensionBKDWriter<'a> {
         self.leaf_count += 1;
 
         if self.value_count > bkd_writer.total_point_count {
-            bail!(
+            bail!(IllegalState(format!(
                 "total_point_count={}, was passed when we were created, but we just hit {} values",
-                bkd_writer.total_point_count,
-                bkd_writer.point_count
-            );
+                bkd_writer.total_point_count, bkd_writer.point_count
+            )));
         }
 
         if self.leaf_count as i32 == bkd_writer.max_points_in_leaf_node {
@@ -293,12 +301,12 @@ impl<'a> OneDimensionBKDWriter<'a> {
     }
 }
 
-pub struct BKDWriter {
+pub struct BKDWriter<D: Directory> {
     _bytes_per_doc: usize,
     num_dims: usize,
     bytes_per_dim: usize,
     packed_bytes_length: usize,
-    temp_dir: TrackingDirectoryWrapper<DirectoryRc>,
+    temp_dir: TrackingDirectoryWrapper<D, Arc<D>>,
     temp_file_name_prefix: String,
     _max_mb_sort_in_heap: f64,
     scratch_diff: Vec<u8>,
@@ -308,9 +316,9 @@ pub struct BKDWriter {
     // _scratch_ref2: Vec<u8>,
     common_prefix_lengths: Vec<usize>,
 
-    docs_seen: Box<BitSet>,
+    docs_seen: FixedBitSet,
 
-    offline_point_writer: Option<OfflinePointWriter>,
+    offline_point_writer: Option<OfflinePointWriter<D>>,
     heap_point_writer: Option<HeapPointWriter>,
 
     temp_input: Option<String>,
@@ -332,10 +340,10 @@ pub struct BKDWriter {
     scratch_out: GrowableByteArrayDataOutput,
 }
 
-impl BKDWriter {
+impl<D: Directory + 'static> BKDWriter<D> {
     pub fn new(
         max_doc: i32,
-        temp_dir: DirectoryRc,
+        temp_dir: Arc<D>,
         temp_file_name_prefix: &str,
         num_dims: usize,
         bytes_per_dim: usize,
@@ -343,8 +351,8 @@ impl BKDWriter {
         max_mb_sort_in_heap: f64,
         total_point_count: i64,
         single_value_per_doc: bool,
-    ) -> Result<BKDWriter> {
-        BKDWriter::verify_params(
+    ) -> Result<BKDWriter<D>> {
+        Self::verify_params(
             num_dims,
             max_points_in_leaf_node,
             max_mb_sort_in_heap,
@@ -381,14 +389,12 @@ impl BKDWriter {
             as i32;
         // Finally, we must be able to hold at least the leaf node in heap during build:
         if max_points_sort_in_heap < max_points_in_leaf_node {
-            bail!(
-                "maxMBSortInHeap={} only allows for maxPointsSortInHeap={}, but this is less than \
-                 maxPointsInLeafNode={},; either increase maxMBSortInHeap or decrease \
-                 maxPointsInLeafNode",
-                max_mb_sort_in_heap,
-                max_points_sort_in_heap,
-                max_points_in_leaf_node
-            );
+            bail!(IllegalArgument(format!(
+                "max_mb_sort_in_heap={} only allows for max_mb_sort_in_heap={}, but this is less \
+                 than max_points_in_leaf_node={},; either increase max_points_sort_in_heap or \
+                 decrease max_points_in_leaf_node",
+                max_mb_sort_in_heap, max_points_sort_in_heap, max_points_in_leaf_node
+            )));
         }
 
         // We write first maxPointsSortInHeap in heap, then cutover to offline for additional
@@ -415,7 +421,7 @@ impl BKDWriter {
             scratch1: vec![0u8; packed_bytes_length],
             scratch2: vec![0u8; packed_bytes_length],
             common_prefix_lengths: vec![0; num_dims],
-            docs_seen: Box::new(FixedBitSet::new(max_doc as usize)),
+            docs_seen: FixedBitSet::new(max_doc as usize),
             offline_point_writer: None,
             temp_input: None,
             heap_point_writer: Some(heap_point_writer),
@@ -436,7 +442,10 @@ impl BKDWriter {
 
     pub fn add(&mut self, packed_value: &[u8], doc_id: DocId) -> Result<()> {
         if packed_value.len() != self.packed_bytes_length {
-            bail!("packedValue should be length={}", self.packed_bytes_length);
+            bail!(IllegalArgument(format!(
+                "packedValue should be length={}",
+                self.packed_bytes_length
+            )));
         }
 
         if self.point_count > self.max_points_sort_in_heap as i64 {
@@ -481,11 +490,10 @@ impl BKDWriter {
 
         self.point_count += 1;
         if self.point_count > self.total_point_count {
-            bail!(
+            bail!(IllegalState(format!(
                 "totalPointCount={} was passed when we were created, but we just hit {} values",
-                self.total_point_count,
-                self.point_count
-            );
+                self.total_point_count, self.point_count
+            )));
         }
 
         self.docs_seen.set(doc_id as usize);
@@ -495,9 +503,9 @@ impl BKDWriter {
 
     pub fn write_field(
         &mut self,
-        out: &mut IndexOutput,
+        out: &mut impl IndexOutput,
         field_name: &str,
-        reader: Box<MutablePointsReader>,
+        reader: impl MutablePointsReader,
     ) -> Result<i64> {
         if self.num_dims == 1 {
             self.write_field_1_dim(out, field_name, reader)
@@ -515,31 +523,39 @@ impl BKDWriter {
         // We encode dim in a single byte in the splitPackedValues, but we only expose 4 bits for
         // it now, in case we want to use remaining 4 bits for another purpose later
         if num_dims < 1 || num_dims as i32 > MAX_DIMS {
-            bail!("numDims must be 1 .. {}", MAX_DIMS);
+            bail!(IllegalArgument(format!(
+                "num_dims must be 1 .. {}",
+                MAX_DIMS
+            )));
         }
         if max_points_in_leaf_node <= 0 {
-            bail!("maxPointsInLeafNode must be > 0");
+            bail!(IllegalArgument(
+                "max_points_in_leaf_node must be > 0".into()
+            ));
         }
         if max_points_in_leaf_node > i32::max_value() {
-            bail!("maxPointsInLeafNode must be <= {}", i32::max_value());
+            bail!(IllegalArgument(format!(
+                "max_points_in_leaf_node must be <= {}",
+                i32::max_value()
+            )));
         }
         if max_mb_sort_in_heap < 0.0 {
-            bail!("maxMBSortInHeap must be >= 0.0");
+            bail!(IllegalArgument("max_mb_sort_in_heap must be >= 0.0".into()));
         }
         if total_point_count < 0 {
-            bail!("totalPointCount must be >=0");
+            bail!(IllegalArgument("total_point_count must be >=0".into()));
         }
 
         Ok(())
     }
 
-    pub fn finish(&mut self, out: &mut IndexOutput) -> Result<i64> {
+    pub fn finish(&mut self, out: &mut impl IndexOutput) -> Result<i64> {
         // TODO: specialize the 1D case?  it's much faster at indexing time (no partitioning on
         // recurse...)
 
         // Catch user silliness:
         if self.heap_point_writer.is_none() && self.temp_input.is_none() {
-            bail!("already finished");
+            bail!(IllegalState("already finished".into()));
         }
 
         if self.offline_point_writer.is_some() {
@@ -547,7 +563,7 @@ impl BKDWriter {
         }
 
         if self.point_count == 0 {
-            bail!("must index at least one point");
+            bail!(IllegalState("must index at least one point".into()));
         }
 
         let mut ord_bit_set = if self.num_dims > 1 {
@@ -584,9 +600,9 @@ impl BKDWriter {
         debug_assert!(self.point_count / num_leaves as i64 <= self.max_points_in_leaf_node as i64);
 
         // Sort all docs once by each dimension:
-        let mut sorted_point_writers: Vec<PathSlice> = vec![];
+        let mut sorted_point_writers: Vec<PathSlice<PointWriterEnum<D>>> = vec![];
         // This is only used on exception; on normal code paths we close all files we opened:
-        let mut to_close_heroically: Vec<Box<PointReader>> = vec![];
+        let mut to_close_heroically = vec![];
         let mut _success = false;
 
         for dim in 0..self.num_dims {
@@ -645,7 +661,7 @@ impl BKDWriter {
     /// returns -1 if all documents containing dimensional values were deleted.
     pub fn merge(
         &mut self,
-        output: &mut IndexOutput,
+        output: &mut impl IndexOutput,
         doc_maps: Vec<&LiveDocsDocMap>,
         readers: Vec<&BKDReader>,
     ) -> Result<i64> {
@@ -697,12 +713,12 @@ impl BKDWriter {
     }
 }
 
-impl BKDWriter {
+impl<D: Directory + 'static> BKDWriter<D> {
     fn spill_to_offline(&mut self) -> Result<()> {
         // For each .add we just append to this input file, then in .finish we sort this input and
         // resursively build the tree:
         self.offline_point_writer = Some(OfflinePointWriter::prefix_new(
-            &self.temp_dir.directory,
+            Arc::clone(&self.temp_dir.directory),
             &self.temp_file_name_prefix,
             self.packed_bytes_length,
             self.long_ords,
@@ -743,24 +759,24 @@ impl BKDWriter {
 
     // In the 1D case, we can simply sort points in ascending order and use the
     // same writing logic as we use at merge time.
-    fn write_field_1_dim(
+    fn write_field_1_dim<O: IndexOutput>(
         &mut self,
-        out: &mut IndexOutput,
+        out: &mut O,
         field_name: &str,
-        mut reader: Box<MutablePointsReader>,
+        mut reader: impl MutablePointsReader,
     ) -> Result<i64> {
         let size = reader.size(field_name)? as i32;
 
         MutablePointsReaderUtils::sort(
             self.max_doc,
             self.packed_bytes_length as i32,
-            reader.as_mut(),
+            &mut reader,
             0,
             size,
         );
 
         let mut one_dim_writer = OneDimensionBKDWriter::new(out, self)?;
-        let one_dim_writer_ptr = (&mut one_dim_writer) as (*mut OneDimensionBKDWriter);
+        let one_dim_writer_ptr = (&mut one_dim_writer) as (*mut OneDimensionBKDWriter<D, O>);
         let mut visitor = OneDimIntersectVisitor::new(unsafe { &mut (*one_dim_writer_ptr) });
         reader.intersect(field_name, &mut visitor)?;
 
@@ -773,7 +789,7 @@ impl BKDWriter {
         offset: i32,
         count: i32,
         index: &mut Vec<u8>,
-        leaf_block_start_values: &Vec<Vec<u8>>,
+        leaf_block_start_values: &[Vec<u8>],
     ) {
         let dest = node_id as usize * (1 + self.bytes_per_dim) + 1;
 
@@ -1082,8 +1098,8 @@ impl BKDWriter {
 
     fn write_index(
         &mut self,
-        out: &mut IndexOutput,
-        leaf_block_fps: &Vec<i64>,
+        out: &mut impl IndexOutput,
+        leaf_block_fps: &[i64],
         split_packed_values: &mut Vec<u8>,
     ) -> Result<()> {
         let packed_index = self.pack_index(leaf_block_fps, split_packed_values)?;
@@ -1092,9 +1108,9 @@ impl BKDWriter {
 
     fn write_index_packed(
         &mut self,
-        out: &mut IndexOutput,
+        out: &mut impl IndexOutput,
         num_leaves: i32,
-        packed_index: &Vec<u8>,
+        packed_index: &[u8],
     ) -> Result<()> {
         codec_util::write_header(out, CODEC_NAME, VERSION_CURRENT)?;
 
@@ -1117,8 +1133,8 @@ impl BKDWriter {
 
     fn write_leaf_block_docs(
         &self,
-        out: &mut DataOutput,
-        doc_ids: &Vec<DocId>,
+        out: &mut impl DataOutput,
+        doc_ids: &[DocId],
         start: usize,
         count: usize,
     ) -> Result<()> {
@@ -1128,7 +1144,7 @@ impl BKDWriter {
 
     fn write_leaf_block_packed_values(
         &self,
-        out: &mut DataOutput,
+        out: &mut impl DataOutput,
         common_prefix_lengths: &mut [usize],
         count: usize,
         sorted_dim: usize,
@@ -1177,11 +1193,11 @@ impl BKDWriter {
 
     fn write_leaf_block_packed_values_range(
         &self,
-        out: &mut DataOutput,
+        out: &mut impl DataOutput,
         common_prefix_lengths: &[usize],
         start: usize,
         end: usize,
-        values: &Vec<&[u8]>,
+        values: &[&[u8]],
     ) -> Result<()> {
         for i in start..end {
             debug_assert_eq!(values[i].len(), self.packed_bytes_length);
@@ -1199,7 +1215,7 @@ impl BKDWriter {
         Ok(())
     }
 
-    fn run_len(&self, values: &Vec<&[u8]>, start: usize, end: usize, byte_offset: usize) -> usize {
+    fn run_len(&self, values: &[&[u8]], start: usize, end: usize, byte_offset: usize) -> usize {
         let b = values[start][byte_offset];
 
         for i in start + 1..end {
@@ -1215,7 +1231,7 @@ impl BKDWriter {
 
     fn write_common_prefixes(
         &self,
-        out: &mut DataOutput,
+        out: &mut impl DataOutput,
         common_prefix_lengths: &[usize],
         packed_value: &mut Vec<u8>,
     ) -> Result<()> {
@@ -1233,10 +1249,10 @@ impl BKDWriter {
 
     fn check_max_leaf_node_count(&self, num_leaves: i32) -> Result<()> {
         if (1 + self.bytes_per_dim as i32) * num_leaves > i32::max_value() - 64 {
-            bail!(
+            bail!(IllegalState(format!(
                 "too many nodes:increase max_points_in_leaf_node( currently {}) and reindex)",
                 self.max_points_in_leaf_node
-            );
+            )));
         }
 
         Ok(())
@@ -1256,26 +1272,16 @@ impl BKDWriter {
             let cmp = last_packed_value[dim_offset..dim_offset + self.bytes_per_dim]
                 .cmp(&packed_value[dim_offset..dim_offset + self.bytes_per_dim]);
             if cmp == Ordering::Greater {
-                bail!(
+                bail!(IllegalArgument(format!(
                     "values out of order. offset: {}, bytes_per_dim: {},  value: {:?}, last: {:?}",
-                    dim_offset,
-                    self.bytes_per_dim,
-                    packed_value,
-                    last_packed_value
-                );
-            }
-
-            if cmp == Ordering::Equal && doc < last_doc {
-                bail!(
+                    dim_offset, self.bytes_per_dim, packed_value, last_packed_value
+                )));
+            } else if cmp == Ordering::Equal && doc < last_doc {
+                bail!(IllegalArgument(format!(
                     "docs out of order. offset: {}, bytes_per_dim: {},  value: {:?}, last: {:?}, \
                      doc: {}, last: {}",
-                    dim_offset,
-                    self.bytes_per_dim,
-                    packed_value,
-                    last_packed_value,
-                    doc,
-                    last_doc
-                );
+                    dim_offset, self.bytes_per_dim, packed_value, last_packed_value, doc, last_doc
+                )));
             }
         }
 
@@ -1346,15 +1352,15 @@ impl BKDWriter {
         &mut self,
         node_id: i32,
         leaf_node_offset: i32,
-        slices: &mut Vec<PathSlice>,
+        slices: &mut Vec<PathSlice<PointWriterEnum<D>>>,
         ord_bitset: &mut Option<LongBitSet>,
-        out: &mut IndexOutput,
+        out: &mut impl IndexOutput,
         min_packed_value: &mut Vec<u8>,
         max_packed_value: &mut Vec<u8>,
         parent_splits: &mut Vec<i32>,
         split_packed_values: &mut Vec<u8>,
         leaf_block_fps: &mut Vec<i64>,
-        to_close_heroically: &mut Vec<Box<PointReader>>,
+        to_close_heroically: &mut Vec<PointReaderEnum>,
     ) -> Result<()> {
         for slice in slices.iter() {
             debug_assert!(slice.count == slices[0].count);
@@ -1440,7 +1446,7 @@ impl BKDWriter {
             let count = source.count;
             debug_assert!(count > 0);
             self.write_leaf_block_docs(
-                out.as_data_output(),
+                out,
                 &heap_source.doc_ids,
                 source.start as usize,
                 count as usize,
@@ -1451,11 +1457,9 @@ impl BKDWriter {
 
             // Write the common prefixes:
             let scratch1 = (&mut self.scratch1) as (*mut Vec<u8>);
-            self.write_common_prefixes(
-                out.as_data_output(),
-                &self.common_prefix_lengths,
-                unsafe { &mut (*scratch1) },
-            )?;
+            self.write_common_prefixes(out, &self.common_prefix_lengths, unsafe {
+                &mut (*scratch1)
+            })?;
 
             let mut packed_values_to_store: Vec<Vec<u8>> = vec![];
             let mut packed_values: Vec<&[u8]> = vec![];
@@ -1481,7 +1485,7 @@ impl BKDWriter {
 
             let common_prefix_lengths = self.common_prefix_lengths.as_mut() as *mut [usize];
             self.write_leaf_block_packed_values(
-                out.as_data_output(),
+                out,
                 unsafe { &mut (*common_prefix_lengths) },
                 count as usize,
                 sorted_dim,
@@ -1501,7 +1505,7 @@ impl BKDWriter {
                 0
             };
 
-            let source = (&slices[split_dim]) as (*const PathSlice);
+            let source = (&slices[split_dim]) as (*const PathSlice<PointWriterEnum<D>>);
             let source = unsafe { &(*source) };
             debug_assert!((node_id as usize) < split_packed_values.len());
 
@@ -1516,8 +1520,8 @@ impl BKDWriter {
 
             // Partition all PathSlice that are not the split dim into sorted left and right sets,
             // so we can recurse:
-            let mut left_slices: Vec<PathSlice> = vec![];
-            let mut right_slices: Vec<PathSlice> = vec![];
+            let mut left_slices = vec![];
+            let mut right_slices = vec![];
 
             let mut min_split_packed_value: Vec<u8> = vec![0u8; self.packed_bytes_length];
             min_split_packed_value[0..self.packed_bytes_length]
@@ -1540,12 +1544,12 @@ impl BKDWriter {
                     // already sorted slice, and we will re-use its shared
                     // reader when visiting it as we recurse:
                     left_slices.push(PathSlice::new(
-                        source.writer.as_ref().clone(),
+                        source.writer.clone(),
                         source.start,
                         left_count,
                     ));
                     right_slices.push(PathSlice::new(
-                        source.writer.as_ref().clone(),
+                        source.writer.clone(),
                         source.start + left_count,
                         right_count,
                     ));
@@ -1570,24 +1574,22 @@ impl BKDWriter {
                     to_close_heroically,
                 )?;
 
-                let mut left_point_writer =
-                    self.point_writer(left_count, &format!("left{}", dim))?;
+                let mut left_point_writer = self.point_writer(left_count, &format!("left{}", dim));
                 let mut right_point_writer =
-                    self.point_writer(source.count - left_count, &format!("right{}", dim))?;
+                    self.point_writer(source.count - left_count, &format!("right{}", dim));
                 let next_right_count = reader.split(
                     source.count,
                     ord_bitset.as_mut().unwrap(),
-                    left_point_writer.as_mut(),
-                    right_point_writer.as_mut(),
+                    &mut left_point_writer,
+                    &mut right_point_writer,
                     dim as i32 == dim_to_clear,
                 )?;
 
                 if right_count != next_right_count {
-                    bail!(
+                    bail!(IllegalState(format!(
                         "wrong number of points in split: expected={} but actual={}",
-                        right_count,
-                        next_right_count
-                    );
+                        right_count, next_right_count
+                    )));
                 }
 
                 left_slices.push(PathSlice::new(left_point_writer, 0, left_count));
@@ -1652,7 +1654,7 @@ impl BKDWriter {
         &self,
         right_count: i64,
         split_dim: i32,
-        source: &PathSlice,
+        source: &PathSlice<PointWriterEnum<D>>,
         ord_bitset: &mut Option<LongBitSet>,
     ) -> Result<Vec<u8>> {
         // Now we mark ords that fall into the right half, so we can partition on all other dims
@@ -1683,9 +1685,9 @@ impl BKDWriter {
         Ok(scratch)
     }
 
-    fn point_writer(&self, count: i64, desc: &str) -> Result<Box<PointWriter>> {
-        let point_writer: Box<PointWriter> = if count < self.max_points_sort_in_heap as i64 {
-            Box::new(HeapPointWriter::new(
+    fn point_writer(&self, count: i64, desc: &str) -> PointWriterEnum<D> {
+        if count < self.max_points_sort_in_heap as i64 {
+            PointWriterEnum::Heap(HeapPointWriter::new(
                 count as usize,
                 count as usize,
                 self.packed_bytes_length,
@@ -1693,8 +1695,8 @@ impl BKDWriter {
                 self.single_value_per_doc,
             ))
         } else {
-            Box::new(OfflinePointWriter::prefix_new(
-                &self.temp_dir.directory,
+            PointWriterEnum::Offline(OfflinePointWriter::prefix_new(
+                Arc::clone(&self.temp_dir.directory),
                 &self.temp_file_name_prefix,
                 self.packed_bytes_length,
                 self.long_ords,
@@ -1702,16 +1704,14 @@ impl BKDWriter {
                 count,
                 self.single_value_per_doc,
             ))
-        };
-
-        Ok(point_writer)
+        }
     }
 
     fn split(
         &mut self,
-        min_packed_value: &Vec<u8>,
-        max_packed_value: &Vec<u8>,
-        parent_splits: &Vec<i32>,
+        min_packed_value: &[u8],
+        max_packed_value: &[u8],
+        parent_splits: &[i32],
     ) -> usize {
         // First look at whether there is a dimension that has split less than 2x less than
         // the dim that has most splits, and return it if there is such a dimension and it
@@ -1737,8 +1737,8 @@ impl BKDWriter {
             bytes_subtract(
                 self.bytes_per_dim,
                 dim,
-                max_packed_value.as_ref(),
-                min_packed_value.as_ref(),
+                max_packed_value,
+                min_packed_value,
                 self.scratch_diff.as_mut(),
             );
 
@@ -1754,11 +1754,11 @@ impl BKDWriter {
         split_dim.unwrap()
     }
 
-    fn switch_to_heap(
+    fn switch_to_heap<W: PointWriter>(
         &self,
-        source: &mut PathSlice,
-        to_close_heroically: &mut Vec<Box<PointReader>>,
-    ) -> Result<PathSlice> {
+        source: &mut PathSlice<W>,
+        to_close_heroically: &mut Vec<PointReaderEnum>,
+    ) -> Result<PathSlice<PointWriterEnum<D>>> {
         let count = source.count;
         // Not inside the try because we don't want to close it here:
         let reader = source.writer.shared_point_reader(
@@ -1781,7 +1781,7 @@ impl BKDWriter {
             writer.append(reader.packed_value(), reader.ord(), reader.doc_id())?;
         }
 
-        Ok(PathSlice::new(Box::new(writer), 0, count))
+        Ok(PathSlice::new(PointWriterEnum::Heap(writer), 0, count))
     }
 
     fn sort_heap_point_writer(&mut self, writer: &mut HeapPointWriter, dim: i32) {
@@ -1798,7 +1798,7 @@ impl BKDWriter {
         msb_sorter.sort(0, self.point_count as i32);
     }
 
-    fn sort(&mut self, dim: i32) -> Result<Box<PointWriter>> {
+    fn sort(&mut self, dim: i32) -> Result<PointWriterEnum<D>> {
         debug_assert!(dim >= 0 && dim < self.num_dims as i32);
 
         if self.heap_point_writer.is_some() {
@@ -1816,7 +1816,7 @@ impl BKDWriter {
             self.sort_heap_point_writer(&mut sorted, dim);
             sorted.close()?;
 
-            return Ok(Box::new(sorted));
+            return Ok(PointWriterEnum::Heap(sorted));
         } else {
             // Offline sort:
             unimplemented!()
@@ -1824,7 +1824,7 @@ impl BKDWriter {
     }
 }
 
-impl Drop for BKDWriter {
+impl<D: Directory> Drop for BKDWriter<D> {
     fn drop(&mut self) {
         if self.temp_input.is_some() {
             // NOTE: this should only happen on exception, e.g. caller calls close w/o calling
@@ -1837,8 +1837,8 @@ impl Drop for BKDWriter {
     }
 }
 
-pub struct BKDWriterMSBIntroSorter {
-    bkd_writer: *mut BKDWriter,
+pub struct BKDWriterMSBIntroSorter<D: Directory> {
+    bkd_writer: *mut BKDWriter<D>,
     heap_writer: *mut HeapPointWriter,
     dim: i32,
 
@@ -1848,14 +1848,14 @@ pub struct BKDWriterMSBIntroSorter {
     pivot_len: usize,
 }
 
-impl BKDWriterMSBIntroSorter {
+impl<D: Directory> BKDWriterMSBIntroSorter<D> {
     pub fn new(
         k: i32,
         max_length: i32,
-        bkd_writer: &mut BKDWriter,
+        bkd_writer: &mut BKDWriter<D>,
         heap_writer: &mut HeapPointWriter,
         dim: i32,
-    ) -> BKDWriterMSBIntroSorter {
+    ) -> BKDWriterMSBIntroSorter<D> {
         BKDWriterMSBIntroSorter {
             bkd_writer,
             heap_writer,
@@ -1868,8 +1868,8 @@ impl BKDWriterMSBIntroSorter {
     }
 }
 
-impl MSBSorter for BKDWriterMSBIntroSorter {
-    type Fallback = BKDWriterMSBIntroSorter;
+impl<D: Directory> MSBSorter for BKDWriterMSBIntroSorter<D> {
+    type Fallback = BKDWriterMSBIntroSorter<D>;
     fn byte_at(&self, i: i32, k: i32) -> Option<u8> {
         debug_assert!(k >= 0);
         let bkd_writer = unsafe { &(*self.bkd_writer) };
@@ -1925,7 +1925,7 @@ impl MSBSorter for BKDWriterMSBIntroSorter {
             .copy_from_slice(&bkd_writer.scratch1);
     }
 
-    fn fallback_sorter(&mut self, k: i32) -> BKDWriterMSBIntroSorter {
+    fn fallback_sorter(&mut self, k: i32) -> BKDWriterMSBIntroSorter<D> {
         BKDWriterMSBIntroSorter::new(
             k,
             self.max_length,
@@ -1936,16 +1936,7 @@ impl MSBSorter for BKDWriterMSBIntroSorter {
     }
 }
 
-impl Sorter for BKDWriterMSBIntroSorter {
-    fn swap(&mut self, i: i32, j: i32) {
-        self.msb_swap(i, j)
-    }
-
-    fn sort(&mut self, from: i32, to: i32) {
-        check_range(from, to);
-        self.quick_sort(from, to, 2 * ((((to - from) as f64).log2()) as i32));
-    }
-
+impl<D: Directory> Sorter for BKDWriterMSBIntroSorter<D> {
     fn compare(&mut self, i: i32, j: i32) -> Ordering {
         for o in self.k..self.max_length {
             let b1 = self.byte_at(i, o);
@@ -1958,6 +1949,15 @@ impl Sorter for BKDWriterMSBIntroSorter {
         }
 
         return Ordering::Equal;
+    }
+
+    fn swap(&mut self, i: i32, j: i32) {
+        self.msb_swap(i, j)
+    }
+
+    fn sort(&mut self, from: i32, to: i32) {
+        check_range(from, to);
+        self.quick_sort(from, to, 2 * ((((to - from) as f64).log2()) as i32));
     }
 
     fn set_pivot(&mut self, i: i32) {

@@ -7,7 +7,6 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::iter::Iterator;
 use std::mem::discriminant;
-use std::ptr;
 use std::result;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -492,7 +491,7 @@ impl FieldInfos {
     }
 }
 
-pub struct FieldInfosBuilder<T: AsMut<FieldNumbers> + AsRef<FieldNumbers>> {
+pub struct FieldInfosBuilder<T: AsRef<FieldNumbers>> {
     pub by_name: HashMap<String, FieldInfo>,
     pub global_field_numbers: T,
 }
@@ -503,10 +502,7 @@ impl Default for FieldInfosBuilder<FieldNumbers> {
     }
 }
 
-impl<T> FieldInfosBuilder<T>
-where
-    T: AsMut<FieldNumbers> + AsRef<FieldNumbers>,
-{
+impl<T: AsRef<FieldNumbers>> FieldInfosBuilder<T> {
     pub fn new(global_field_numbers: T) -> Self {
         FieldInfosBuilder {
             by_name: HashMap::new(),
@@ -529,7 +525,7 @@ where
             // number for this field.  If the field was seen
             // before then we'll get the same name and number,
             // else we'll allocate a new one:
-            let field_number = self.global_field_numbers.as_mut().add_or_get(
+            let field_number = self.global_field_numbers.as_ref().add_or_get(
                 name,
                 0,
                 DocValuesType::Null,
@@ -602,7 +598,7 @@ where
                     // aware of this field's DocValuesType.  This will throw
                     // IllegalArgumentException if an illegal type change was
                     // attempted.
-                    self.global_field_numbers.as_mut().set_doc_values_type(
+                    self.global_field_numbers.as_ref().set_doc_values_type(
                         field_info.number,
                         name,
                         doc_values,
@@ -616,7 +612,7 @@ where
             // number for this field.  If the field was seen
             // before then we'll get the same name and number,
             // else we'll allocate a new one:
-            let field_number = self.global_field_numbers.as_mut().add_or_get(
+            let field_number = self.global_field_numbers.as_ref().add_or_get(
                 name,
                 preferred_field_number,
                 doc_values,
@@ -665,7 +661,7 @@ impl FieldNumbers {
     }
 
     pub fn add_or_get(
-        &mut self,
+        &self,
         field_name: &str,
         preferred_field_number: u32,
         dv_type: DocValuesType,
@@ -681,12 +677,12 @@ impl FieldNumbers {
         )
     }
 
-    pub fn clear(&mut self) {
+    pub fn clear(&self) {
         self.inner.lock().unwrap().clear();
     }
 
     pub fn set_doc_values_type(
-        &mut self,
+        &self,
         number: u32,
         name: &str,
         dv_type: DocValuesType,
@@ -698,7 +694,7 @@ impl FieldNumbers {
     }
 
     pub fn set_dimensions(
-        &mut self,
+        &self,
         number: u32,
         name: &str,
         dimension_count: u32,
@@ -886,6 +882,8 @@ impl FieldNumbersInner {
         Ok(())
     }
 
+    // TODO used for doc values update
+    #[allow(dead_code)]
     /// return true if the field_name exists in the map and is of the type of dv_type
     fn contains(&self, field_name: &str, dv_type: DocValuesType) -> bool {
         // used by IndexWriter.updateNumericDocValue
@@ -954,32 +952,26 @@ impl AsMut<FieldNumbers> for FieldNumbers {
 
 #[derive(Clone)]
 pub struct FieldNumbersRef {
-    field_numbers: *mut FieldNumbers,
+    field_numbers: Arc<FieldNumbers>,
 }
 
 impl Default for FieldNumbersRef {
     fn default() -> Self {
         FieldNumbersRef {
-            field_numbers: ptr::null_mut(),
+            field_numbers: Arc::new(FieldNumbers::new()),
         }
     }
 }
 
 impl FieldNumbersRef {
-    pub fn new(field_numbers: &mut FieldNumbers) -> Self {
+    pub fn new(field_numbers: Arc<FieldNumbers>) -> Self {
         FieldNumbersRef { field_numbers }
     }
 }
 
 impl AsRef<FieldNumbers> for FieldNumbersRef {
     fn as_ref(&self) -> &FieldNumbers {
-        unsafe { &*self.field_numbers }
-    }
-}
-
-impl AsMut<FieldNumbers> for FieldNumbersRef {
-    fn as_mut(&mut self) -> &mut FieldNumbers {
-        unsafe { &mut *self.field_numbers }
+        self.field_numbers.as_ref()
     }
 }
 
@@ -998,9 +990,10 @@ impl FieldDimensions {
     }
 }
 
-pub trait Fields: Send + Sync {
+pub trait Fields {
+    type Terms: Terms;
     fn fields(&self) -> Vec<String>;
-    fn terms(&self, field: &str) -> Result<Option<TermsRef>>;
+    fn terms(&self, field: &str) -> Result<Option<Self::Terms>>;
     fn size(&self) -> usize;
     fn terms_freq(&self, _field: &str) -> usize {
         unimplemented!()

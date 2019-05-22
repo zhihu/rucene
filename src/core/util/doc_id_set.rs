@@ -1,24 +1,24 @@
-use error::*;
+use error::Result;
 
+use core::search::query_cache::{
+    NotDocIdSet, NotDocIterator, ShortArrayDocIdSet, ShortArrayDocIterator,
+};
 use core::search::{DocIdSet, DocIterator, NO_MORE_DOCS};
-use core::util::bit_set::{ImmutableBitSet, ImmutableBitSetRef};
+use core::util::bit_set::{FixedBitSet, ImmutableBitSet};
 use core::util::DocId;
 use std::sync::Arc;
 
-pub struct BitDocIdSet {
-    set: ImmutableBitSetRef,
+pub struct BitDocIdSet<T: ImmutableBitSet> {
+    set: Arc<T>,
     cost: usize,
 }
 
-impl BitDocIdSet {
-    pub fn new(set: Box<ImmutableBitSet>, cost: usize) -> BitDocIdSet {
-        BitDocIdSet {
-            cost,
-            set: Arc::from(set),
-        }
+impl<T: ImmutableBitSet> BitDocIdSet<T> {
+    pub fn new(set: Arc<T>, cost: usize) -> BitDocIdSet<T> {
+        BitDocIdSet { cost, set }
     }
 
-    pub fn with_bits(set: Box<ImmutableBitSet>) -> BitDocIdSet {
+    pub fn with_bits(set: Arc<T>) -> BitDocIdSet<T> {
         let cost = set.approximate_cardinality();
         BitDocIdSet {
             cost,
@@ -27,28 +27,26 @@ impl BitDocIdSet {
     }
 }
 
-impl DocIdSet for BitDocIdSet {
-    fn iterator(&self) -> Result<Option<Box<DocIterator>>> {
-        Ok(Some(Box::new(BitSetIterator::new(
-            Arc::clone(&self.set),
-            self.cost,
-        )?)))
+impl<T: ImmutableBitSet + 'static> DocIdSet for BitDocIdSet<T> {
+    type Iter = BitSetIterator<T>;
+    fn iterator(&self) -> Result<Option<Self::Iter>> {
+        Ok(Some(BitSetIterator::new(Arc::clone(&self.set), self.cost)?))
     }
 
-    fn bits(&self) -> Result<Option<ImmutableBitSetRef>> {
-        Ok(Some(Arc::clone(&self.set)))
-    }
+    //    fn bits(&self) -> Result<Option<ImmutableBitSetRef>> {
+    //        Ok(Some(Arc::clone(&self.set)))
+    //    }
 }
 
-pub struct BitSetIterator {
-    bits: ImmutableBitSetRef,
+pub struct BitSetIterator<T: ImmutableBitSet> {
+    bits: Arc<T>,
     length: usize,
     cost: usize,
     doc: DocId,
 }
 
-impl BitSetIterator {
-    pub fn new(bits: ImmutableBitSetRef, cost: usize) -> Result<BitSetIterator> {
+impl<T: ImmutableBitSet> BitSetIterator<T> {
+    pub fn new(bits: Arc<T>, cost: usize) -> Result<Self> {
         let length = bits.len();
         Ok(BitSetIterator {
             bits,
@@ -63,7 +61,7 @@ impl BitSetIterator {
     }
 }
 
-impl DocIterator for BitSetIterator {
+impl<T: ImmutableBitSet> DocIterator for BitSetIterator<T> {
     fn doc_id(&self) -> DocId {
         self.doc
     }
@@ -104,16 +102,17 @@ impl IntArrayDocIdSet {
 }
 
 impl DocIdSet for IntArrayDocIdSet {
-    fn iterator(&self) -> Result<Option<Box<DocIterator>>> {
-        Ok(Some(Box::new(IntArrayDocIterator::new(
+    type Iter = IntArrayDocIterator;
+    fn iterator(&self) -> Result<Option<Self::Iter>> {
+        Ok(Some(IntArrayDocIterator::new(
             Arc::clone(&self.docs),
             self.length,
-        ))))
+        )))
     }
 
-    fn bits(&self) -> Result<Option<ImmutableBitSetRef>> {
-        Ok(None)
-    }
+    //    fn bits(&self) -> Result<Option<ImmutableBitSetRef>> {
+    //        Ok(None)
+    //    }
 }
 
 pub struct IntArrayDocIterator {
@@ -131,6 +130,11 @@ impl IntArrayDocIterator {
             i: -1,
             doc: -1,
         }
+    }
+
+    // used as stub
+    pub fn empty() -> Self {
+        Self::new(Arc::new(vec![NO_MORE_DOCS]), 0)
     }
 }
 
@@ -157,5 +161,129 @@ impl DocIterator for IntArrayDocIterator {
 
     fn cost(&self) -> usize {
         self.length
+    }
+}
+
+pub enum DocIdSetEnum {
+    ShortArray(ShortArrayDocIdSet),
+    IntArray(IntArrayDocIdSet),
+    NotDocId(NotDocIdSet<ShortArrayDocIdSet>),
+    BitDocId(BitDocIdSet<FixedBitSet>),
+}
+
+impl DocIdSet for DocIdSetEnum {
+    type Iter = DocIdSetDocIterEnum;
+    fn iterator(&self) -> Result<Option<Self::Iter>> {
+        match self {
+            DocIdSetEnum::ShortArray(s) => {
+                Ok(s.iterator()?.map(|i| DocIdSetDocIterEnum::ShortArray(i)))
+            }
+            DocIdSetEnum::IntArray(s) => {
+                Ok(s.iterator()?.map(|i| DocIdSetDocIterEnum::IntArray(i)))
+            }
+            DocIdSetEnum::NotDocId(s) => {
+                Ok(s.iterator()?.map(|i| DocIdSetDocIterEnum::NotDocId(i)))
+            }
+            DocIdSetEnum::BitDocId(s) => {
+                Ok(s.iterator()?.map(|i| DocIdSetDocIterEnum::BitDocId(i)))
+            }
+        }
+    }
+}
+
+pub enum DocIdSetDocIterEnum {
+    ShortArray(ShortArrayDocIterator),
+    IntArray(IntArrayDocIterator),
+    NotDocId(NotDocIterator<ShortArrayDocIterator>),
+    BitDocId(BitSetIterator<FixedBitSet>),
+}
+
+// used for empty stub
+impl Default for DocIdSetDocIterEnum {
+    fn default() -> Self {
+        DocIdSetDocIterEnum::IntArray(IntArrayDocIterator::empty())
+    }
+}
+
+impl DocIterator for DocIdSetDocIterEnum {
+    fn doc_id(&self) -> DocId {
+        match self {
+            DocIdSetDocIterEnum::ShortArray(i) => i.doc_id(),
+            DocIdSetDocIterEnum::IntArray(i) => i.doc_id(),
+            DocIdSetDocIterEnum::NotDocId(i) => i.doc_id(),
+            DocIdSetDocIterEnum::BitDocId(i) => i.doc_id(),
+        }
+    }
+
+    fn next(&mut self) -> Result<DocId> {
+        match self {
+            DocIdSetDocIterEnum::ShortArray(i) => i.next(),
+            DocIdSetDocIterEnum::IntArray(i) => i.next(),
+            DocIdSetDocIterEnum::NotDocId(i) => i.next(),
+            DocIdSetDocIterEnum::BitDocId(i) => i.next(),
+        }
+    }
+
+    fn advance(&mut self, target: i32) -> Result<DocId> {
+        match self {
+            DocIdSetDocIterEnum::ShortArray(i) => i.advance(target),
+            DocIdSetDocIterEnum::IntArray(i) => i.advance(target),
+            DocIdSetDocIterEnum::NotDocId(i) => i.advance(target),
+            DocIdSetDocIterEnum::BitDocId(i) => i.advance(target),
+        }
+    }
+
+    fn slow_advance(&mut self, target: i32) -> Result<DocId> {
+        match self {
+            DocIdSetDocIterEnum::ShortArray(i) => i.slow_advance(target),
+            DocIdSetDocIterEnum::IntArray(i) => i.slow_advance(target),
+            DocIdSetDocIterEnum::NotDocId(i) => i.slow_advance(target),
+            DocIdSetDocIterEnum::BitDocId(i) => i.slow_advance(target),
+        }
+    }
+
+    fn cost(&self) -> usize {
+        match self {
+            DocIdSetDocIterEnum::ShortArray(i) => i.cost(),
+            DocIdSetDocIterEnum::IntArray(i) => i.cost(),
+            DocIdSetDocIterEnum::NotDocId(i) => i.cost(),
+            DocIdSetDocIterEnum::BitDocId(i) => i.cost(),
+        }
+    }
+
+    fn matches(&mut self) -> Result<bool> {
+        match self {
+            DocIdSetDocIterEnum::ShortArray(i) => i.matches(),
+            DocIdSetDocIterEnum::IntArray(i) => i.matches(),
+            DocIdSetDocIterEnum::NotDocId(i) => i.matches(),
+            DocIdSetDocIterEnum::BitDocId(i) => i.matches(),
+        }
+    }
+
+    fn match_cost(&self) -> f32 {
+        match self {
+            DocIdSetDocIterEnum::ShortArray(i) => i.match_cost(),
+            DocIdSetDocIterEnum::IntArray(i) => i.match_cost(),
+            DocIdSetDocIterEnum::NotDocId(i) => i.match_cost(),
+            DocIdSetDocIterEnum::BitDocId(i) => i.match_cost(),
+        }
+    }
+
+    fn approximate_next(&mut self) -> Result<DocId> {
+        match self {
+            DocIdSetDocIterEnum::ShortArray(i) => i.approximate_next(),
+            DocIdSetDocIterEnum::IntArray(i) => i.approximate_next(),
+            DocIdSetDocIterEnum::NotDocId(i) => i.approximate_next(),
+            DocIdSetDocIterEnum::BitDocId(i) => i.approximate_next(),
+        }
+    }
+
+    fn approximate_advance(&mut self, target: i32) -> Result<DocId> {
+        match self {
+            DocIdSetDocIterEnum::ShortArray(i) => i.approximate_advance(target),
+            DocIdSetDocIterEnum::IntArray(i) => i.approximate_advance(target),
+            DocIdSetDocIterEnum::NotDocId(i) => i.approximate_advance(target),
+            DocIdSetDocIterEnum::BitDocId(i) => i.approximate_advance(target),
+        }
     }
 }

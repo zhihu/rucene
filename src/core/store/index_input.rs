@@ -3,7 +3,7 @@ use core::store::RandomAccessInput;
 use error::Result;
 
 pub trait IndexInput: DataInput + Send + Sync {
-    fn clone(&self) -> Result<Box<IndexInput>>;
+    fn clone(&self) -> Result<Box<dyn IndexInput>>;
 
     fn file_pointer(&self) -> i64;
     fn seek(&mut self, pos: i64) -> Result<()>;
@@ -13,15 +13,14 @@ pub trait IndexInput: DataInput + Send + Sync {
     }
     fn name(&self) -> &str;
 
-    fn random_access_slice(&self, _offset: i64, _length: i64) -> Result<Box<RandomAccessInput>>;
+    fn random_access_slice(&self, _offset: i64, _length: i64)
+        -> Result<Box<dyn RandomAccessInput>>;
 
-    fn slice(&self, _description: &str, _offset: i64, _length: i64) -> Result<Box<IndexInput>> {
+    fn slice(&self, _description: &str, _offset: i64, _length: i64) -> Result<Box<dyn IndexInput>> {
         unimplemented!();
     }
 
     fn is_buffered(&self) -> bool {
         false
     }
-
-    fn as_data_input(&mut self) -> &mut DataInput;
 }

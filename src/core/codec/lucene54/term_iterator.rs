@@ -1,6 +1,6 @@
-use core::codec::lucene54::{self, ReverseTermsIndexRef};
-use core::index::{SeekStatus, TermIterator};
-use core::search::posting_iterator::PostingIterator;
+use core::codec::{Lucene54DocValuesFormat, ReverseTermsIndexRef};
+use core::index::{SeekStatus, TermIterator, UnreachableTermState};
+use core::search::posting_iterator::EmptyPostingIterator;
 use core::store::IndexInput;
 use core::util::bit_util::UnsignedShift;
 use core::util::packed::MonotonicBlockPackedReaderRef;
@@ -9,7 +9,6 @@ use core::util::LongValues;
 use error::ErrorKind::UnsupportedOperation;
 use error::Result;
 
-use std::any::Any;
 use std::cmp::Ordering;
 
 pub struct CompressedBinaryTermIterator {
@@ -20,9 +19,9 @@ pub struct CompressedBinaryTermIterator {
     num_index_values: i64,
     current_ord: i64,
     current_block_start: i64,
-    input: Box<IndexInput>,
-    offsets: [i32; lucene54::INTERVAL_COUNT as usize],
-    buffer: [u8; (lucene54::INTERVAL_COUNT * 2 - 1) as usize],
+    input: Box<dyn IndexInput>,
+    offsets: [i32; Lucene54DocValuesFormat::INTERVAL_COUNT as usize],
+    buffer: [u8; (Lucene54DocValuesFormat::INTERVAL_COUNT * 2 - 1) as usize],
     term: Vec<u8>,
     term_length: u32,
     first_term: Vec<u8>,
@@ -31,7 +30,7 @@ pub struct CompressedBinaryTermIterator {
 
 impl CompressedBinaryTermIterator {
     pub fn new(
-        input: Box<IndexInput>,
+        input: Box<dyn IndexInput>,
         max_term_length: usize,
         num_reverse_index_values: i64,
         reverse_index: ReverseTermsIndexRef,
@@ -50,8 +49,8 @@ impl CompressedBinaryTermIterator {
             current_ord: -1,
             current_block_start: 0,
             input,
-            offsets: [0; lucene54::INTERVAL_COUNT as usize],
-            buffer: [0u8; (lucene54::INTERVAL_COUNT * 2 - 1) as usize],
+            offsets: [0; Lucene54DocValuesFormat::INTERVAL_COUNT as usize],
+            buffer: [0u8; (Lucene54DocValuesFormat::INTERVAL_COUNT * 2 - 1) as usize],
             term: vec![0u8; max_term_length],
             term_length: 0,
             first_term: vec![0u8; max_term_length],
@@ -65,8 +64,11 @@ impl CompressedBinaryTermIterator {
             self.input
                 .read_bytes(&mut self.first_term, 0, length as usize)?;
             self.first_term_length = length;
-            self.input
-                .read_bytes(&mut self.buffer, 0, (lucene54::INTERVAL_COUNT - 1) as usize)?;
+            self.input.read_bytes(
+                &mut self.buffer,
+                0,
+                (Lucene54DocValuesFormat::INTERVAL_COUNT - 1) as usize,
+            )?;
         }
         if self.buffer[0] == 0xFF {
             self.read_short_addresses()?;
@@ -92,8 +94,8 @@ impl CompressedBinaryTermIterator {
     fn read_short_addresses(&mut self) -> Result<()> {
         self.input.read_bytes(
             &mut self.buffer,
-            (lucene54::INTERVAL_COUNT - 1) as usize,
-            lucene54::INTERVAL_COUNT as usize,
+            (Lucene54DocValuesFormat::INTERVAL_COUNT - 1) as usize,
+            Lucene54DocValuesFormat::INTERVAL_COUNT as usize,
         )?;
         let mut address = 0;
         for i in 1..self.offsets.len() {
@@ -167,12 +169,14 @@ impl CompressedBinaryTermIterator {
 }
 
 impl TermIterator for CompressedBinaryTermIterator {
+    type Postings = EmptyPostingIterator; // stub type
+    type TermState = UnreachableTermState;
     fn next(&mut self) -> Result<Option<Vec<u8>>> {
         self.current_ord += 1;
         if self.current_ord >= self.num_values {
             Ok(None)
         } else {
-            let offset = self.current_ord as i32 & lucene54::INTERVAL_MASK;
+            let offset = self.current_ord as i32 & Lucene54DocValuesFormat::INTERVAL_MASK;
             if offset == 0 {
                 // switch to next block
                 self.read_header()?;
@@ -188,16 +192,16 @@ impl TermIterator for CompressedBinaryTermIterator {
         let mut block = 0_i64;
         let index_pos = self.binary_search_index(text)?;
         if index_pos >= 0 {
-            let low = index_pos << lucene54::BLOCK_INTERVAL_SHIFT;
+            let low = index_pos << Lucene54DocValuesFormat::BLOCK_INTERVAL_SHIFT;
             let high = ::std::cmp::min(
                 self.num_index_values - 1,
-                low + i64::from(lucene54::BLOCK_INTERVAL_MASK),
+                low + i64::from(Lucene54DocValuesFormat::BLOCK_INTERVAL_MASK),
             );
             block = ::std::cmp::max(low, self.binary_search_block(text, low, high)?);
         }
         // position before block then scan to term
         self.input.seek(self.addresses.get64(block)?)?;
-        self.current_ord = (block << lucene54::INTERVAL_SHIFT) - 1;
+        self.current_ord = (block << Lucene54DocValuesFormat::INTERVAL_SHIFT) - 1;
 
         while self.next()?.is_some() {
             let cmp = self.term[0..self.term_length as usize].as_ref().cmp(text);
@@ -212,18 +216,18 @@ impl TermIterator for CompressedBinaryTermIterator {
     }
 
     fn seek_exact_ord(&mut self, ord: i64) -> Result<()> {
-        let block = ord.unsigned_shift(lucene54::INTERVAL_SHIFT as usize);
+        let block = ord.unsigned_shift(Lucene54DocValuesFormat::INTERVAL_SHIFT as usize);
         if block
             != self
                 .current_ord
-                .unsigned_shift(lucene54::INTERVAL_SHIFT as usize)
+                .unsigned_shift(Lucene54DocValuesFormat::INTERVAL_SHIFT as usize)
         {
             // switch to different block
             self.input.seek(self.addresses.get64(block)?)?;
             self.read_header()?;
         }
         self.current_ord = ord;
-        let offset = (ord & i64::from(lucene54::INTERVAL_MASK)) as i32;
+        let offset = (ord & i64::from(Lucene54DocValuesFormat::INTERVAL_MASK)) as i32;
         if offset == 0 {
             self.read_first_term()
         } else {
@@ -251,13 +255,9 @@ impl TermIterator for CompressedBinaryTermIterator {
         Ok(-1)
     }
 
-    fn postings_with_flags(&mut self, _flags: i16) -> Result<Box<PostingIterator>> {
+    fn postings_with_flags(&mut self, _flags: u16) -> Result<Self::Postings> {
         bail!(UnsupportedOperation(
             "postings_with_flags unsupported for CompressedBinaryTermIterator".into()
         ))
-    }
-
-    fn as_any(&self) -> &Any {
-        self
     }
 }

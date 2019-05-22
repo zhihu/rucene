@@ -18,20 +18,20 @@ mod offline_point;
 
 pub use self::offline_point::*;
 
-use error::*;
+use error::{ErrorKind::IllegalState, Result};
 
 use core::util::DocId;
 
 use core::codec::MutablePointsReader;
-use core::store::IndexOutput;
+use core::store::{DataOutput, Directory, IndexOutput, IndexOutputRef, InvalidIndexOutput};
 
-use core::util::bit_util::{pop_array, UnsignedShift};
+use core::util::bit_util::{pop_array, BitsRequired, UnsignedShift};
 use core::util::math;
-use core::util::packed::packed_misc::unsigned_bits_required;
 use core::util::selector::{DefaultIntroSelector, RadixSelector};
 use core::util::sorter::{check_range, MSBRadixSorter, MSBSorter, Sorter};
 
 use std::cmp::Ordering;
+use std::io;
 
 pub const BKD_CODEC_NAME: &str = "BKD";
 pub const BKD_VERSION_COMPRESSED_DOC_IDS: i32 = 1;
@@ -57,7 +57,7 @@ pub trait PointReader {
         for _ in 0..count {
             let result = self.next()?;
             if !result {
-                bail!("did not see enough points from reader");
+                bail!(IllegalState("did not see enough points from reader".into()));
             } else {
                 let ord = self.ord();
                 debug_assert_eq!(ord_bit_set.get(ord), false);
@@ -71,8 +71,8 @@ pub trait PointReader {
         &mut self,
         count: i64,
         right_tree: &mut LongBitSet,
-        left: &mut PointWriter,
-        right: &mut PointWriter,
+        left: &mut impl PointWriter,
+        right: &mut impl PointWriter,
         do_clear_bits: bool,
     ) -> Result<i64> {
         // Partition this source according to how the splitDim split the values:
@@ -98,25 +98,202 @@ pub trait PointReader {
     }
 }
 
+pub enum PointReaderEnum {
+    Heap(HeapPointReader),
+    Offline(OfflinePointReader),
+}
+
+impl PointReader for PointReaderEnum {
+    fn next(&mut self) -> Result<bool> {
+        match self {
+            PointReaderEnum::Heap(h) => h.next(),
+            PointReaderEnum::Offline(o) => o.next(),
+        }
+    }
+    fn packed_value(&self) -> &[u8] {
+        match self {
+            PointReaderEnum::Heap(h) => h.packed_value(),
+            PointReaderEnum::Offline(o) => o.packed_value(),
+        }
+    }
+    fn ord(&self) -> i64 {
+        match self {
+            PointReaderEnum::Heap(h) => h.ord(),
+            PointReaderEnum::Offline(o) => o.ord(),
+        }
+    }
+    fn doc_id(&self) -> DocId {
+        match self {
+            PointReaderEnum::Heap(h) => h.doc_id(),
+            PointReaderEnum::Offline(o) => o.doc_id(),
+        }
+    }
+    fn mark_ords(&mut self, count: i64, ord_bit_set: &mut LongBitSet) -> Result<()> {
+        match self {
+            PointReaderEnum::Heap(h) => h.mark_ords(count, ord_bit_set),
+            PointReaderEnum::Offline(o) => o.mark_ords(count, ord_bit_set),
+        }
+    }
+    fn split(
+        &mut self,
+        count: i64,
+        right_tree: &mut LongBitSet,
+        left: &mut impl PointWriter,
+        right: &mut impl PointWriter,
+        do_clear_bits: bool,
+    ) -> Result<i64> {
+        match self {
+            PointReaderEnum::Heap(h) => h.split(count, right_tree, left, right, do_clear_bits),
+            PointReaderEnum::Offline(o) => o.split(count, right_tree, left, right, do_clear_bits),
+        }
+    }
+}
+
 pub trait PointWriter {
+    // add lifetime here, this is a reference type
+    type IndexOutput: IndexOutput;
     fn append(&mut self, packed_value: &[u8], ord: i64, doc_id: DocId) -> Result<()>;
     fn destory(&mut self) -> Result<()>;
-    fn point_reader(&self, start_point: usize, length: usize) -> Result<Box<PointReader>>;
+    fn point_reader(&self, start_point: usize, length: usize) -> Result<PointReaderEnum>;
     fn shared_point_reader(
         &mut self,
         start_point: usize,
         length: usize,
-        to_close_heroically: &mut Vec<Box<PointReader>>,
-    ) -> Result<&mut PointReader>;
+        to_close_heroically: &mut Vec<PointReaderEnum>,
+    ) -> Result<&mut PointReaderEnum>;
     fn point_type(&self) -> PointType;
-    fn index_output(&mut self) -> &mut IndexOutput;
+    fn index_output(&mut self) -> Self::IndexOutput;
     fn set_count(&mut self, count: i64);
     fn close(&mut self) -> Result<()>;
 
     fn try_as_heap_writer(&mut self) -> &mut HeapPointWriter {
         unimplemented!()
     }
-    fn clone(&self) -> Box<PointWriter>;
+    fn clone(&self) -> Self;
+}
+
+pub enum PointWriterEnum<D: Directory> {
+    Heap(HeapPointWriter),
+    Offline(OfflinePointWriter<D>),
+}
+
+impl<D: Directory + 'static> PointWriter for PointWriterEnum<D> {
+    type IndexOutput = PointWriterOutput<D>;
+
+    fn append(&mut self, packed_value: &[u8], ord: i64, doc_id: DocId) -> Result<()> {
+        match self {
+            PointWriterEnum::Heap(h) => h.append(packed_value, ord, doc_id),
+            PointWriterEnum::Offline(o) => o.append(packed_value, ord, doc_id),
+        }
+    }
+    fn destory(&mut self) -> Result<()> {
+        match self {
+            PointWriterEnum::Heap(h) => h.destory(),
+            PointWriterEnum::Offline(o) => o.destory(),
+        }
+    }
+    fn point_reader(&self, start_point: usize, length: usize) -> Result<PointReaderEnum> {
+        match self {
+            PointWriterEnum::Heap(h) => h.point_reader(start_point, length),
+            PointWriterEnum::Offline(o) => o.point_reader(start_point, length),
+        }
+    }
+    fn shared_point_reader(
+        &mut self,
+        start_point: usize,
+        length: usize,
+        to_close_heroically: &mut Vec<PointReaderEnum>,
+    ) -> Result<&mut PointReaderEnum> {
+        match self {
+            PointWriterEnum::Heap(h) => {
+                h.shared_point_reader(start_point, length, to_close_heroically)
+            }
+            PointWriterEnum::Offline(o) => {
+                o.shared_point_reader(start_point, length, to_close_heroically)
+            }
+        }
+    }
+    fn point_type(&self) -> PointType {
+        match self {
+            PointWriterEnum::Heap(h) => h.point_type(),
+            PointWriterEnum::Offline(o) => o.point_type(),
+        }
+    }
+    fn index_output(&mut self) -> PointWriterOutput<D> {
+        match self {
+            PointWriterEnum::Heap(h) => PointWriterOutput::Heap(h.index_output()),
+            PointWriterEnum::Offline(o) => PointWriterOutput::Offline(o.index_output()),
+        }
+    }
+    fn set_count(&mut self, count: i64) {
+        match self {
+            PointWriterEnum::Heap(h) => h.set_count(count),
+            PointWriterEnum::Offline(o) => o.set_count(count),
+        }
+    }
+    fn close(&mut self) -> Result<()> {
+        match self {
+            PointWriterEnum::Heap(h) => h.close(),
+            PointWriterEnum::Offline(o) => o.close(),
+        }
+    }
+
+    fn try_as_heap_writer(&mut self) -> &mut HeapPointWriter {
+        match self {
+            PointWriterEnum::Heap(h) => h.try_as_heap_writer(),
+            PointWriterEnum::Offline(o) => o.try_as_heap_writer(),
+        }
+    }
+    fn clone(&self) -> Self {
+        match self {
+            PointWriterEnum::Heap(h) => PointWriterEnum::Heap(h.clone()),
+            PointWriterEnum::Offline(o) => PointWriterEnum::Offline(o.clone()),
+        }
+    }
+}
+
+pub enum PointWriterOutput<D: Directory> {
+    Heap(IndexOutputRef<InvalidIndexOutput>),
+    Offline(IndexOutputRef<D::TempOutput>),
+}
+
+impl<D: Directory> IndexOutput for PointWriterOutput<D> {
+    fn name(&self) -> &str {
+        match self {
+            PointWriterOutput::Heap(h) => h.name(),
+            PointWriterOutput::Offline(o) => o.name(),
+        }
+    }
+    fn file_pointer(&self) -> i64 {
+        match self {
+            PointWriterOutput::Heap(h) => h.file_pointer(),
+            PointWriterOutput::Offline(o) => o.file_pointer(),
+        }
+    }
+    fn checksum(&self) -> Result<i64> {
+        match self {
+            PointWriterOutput::Heap(h) => h.checksum(),
+            PointWriterOutput::Offline(o) => o.checksum(),
+        }
+    }
+}
+
+impl<D: Directory> DataOutput for PointWriterOutput<D> {}
+
+impl<D: Directory> io::Write for PointWriterOutput<D> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self {
+            PointWriterOutput::Heap(h) => h.write(buf),
+            PointWriterOutput::Offline(o) => o.write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            PointWriterOutput::Heap(h) => h.flush(),
+            PointWriterOutput::Offline(o) => o.flush(),
+        }
+    }
 }
 
 /// BitSet of fixed length (numBits), backed by accessible ({@link #getBits})
@@ -183,7 +360,7 @@ impl LongBitSet {
     }
 }
 
-pub struct UtilMSBIntroSorter {
+pub struct UtilMSBIntroSorter<P: MutablePointsReader> {
     k: i32,
     packed_bytes_length: i32,
     pivot_doc: i32,
@@ -191,17 +368,12 @@ pub struct UtilMSBIntroSorter {
     scratch: Vec<u8>,
     // TODO: we use raw pointer because the `fallback_sorter` method need to return a copy of this
     // reader, thus there will be 2 mut ref for reader in conflict with the borrow-checker rule
-    reader: *mut MutablePointsReader,
+    reader: *mut P,
     bits_per_doc_id: i32,
 }
 
-impl UtilMSBIntroSorter {
-    pub fn new(
-        k: i32,
-        packed_bytes_length: i32,
-        reader: *mut MutablePointsReader,
-        bits_per_doc_id: i32,
-    ) -> UtilMSBIntroSorter {
+impl<P: MutablePointsReader> UtilMSBIntroSorter<P> {
+    pub fn new(k: i32, packed_bytes_length: i32, reader: *mut P, bits_per_doc_id: i32) -> Self {
         UtilMSBIntroSorter {
             k,
             packed_bytes_length,
@@ -214,13 +386,13 @@ impl UtilMSBIntroSorter {
     }
 
     #[inline]
-    fn reader(&self) -> &mut MutablePointsReader {
+    fn reader(&self) -> &mut P {
         unsafe { &mut *self.reader }
     }
 }
 
-impl MSBSorter for UtilMSBIntroSorter {
-    type Fallback = UtilMSBIntroSorter;
+impl<P: MutablePointsReader> MSBSorter for UtilMSBIntroSorter<P> {
+    type Fallback = UtilMSBIntroSorter<P>;
     fn byte_at(&self, i: i32, k: i32) -> Option<u8> {
         let v = if k < self.packed_bytes_length {
             self.reader().byte_at(i, k)
@@ -239,7 +411,7 @@ impl MSBSorter for UtilMSBIntroSorter {
         self.reader().swap(i, j);
     }
 
-    fn fallback_sorter(&mut self, k: i32) -> UtilMSBIntroSorter {
+    fn fallback_sorter(&mut self, k: i32) -> UtilMSBIntroSorter<P> {
         UtilMSBIntroSorter::new(
             k,
             self.packed_bytes_length,
@@ -249,7 +421,12 @@ impl MSBSorter for UtilMSBIntroSorter {
     }
 }
 
-impl Sorter for UtilMSBIntroSorter {
+impl<P: MutablePointsReader> Sorter for UtilMSBIntroSorter<P> {
+    fn compare(&mut self, i: i32, j: i32) -> Ordering {
+        self.set_pivot(i);
+        self.compare_pivot(j)
+    }
+
     fn swap(&mut self, i: i32, j: i32) {
         self.reader().swap(i, j)
     }
@@ -258,11 +435,6 @@ impl Sorter for UtilMSBIntroSorter {
         check_range(from, to);
 
         self.quick_sort(from, to, 2 * math::log((to - from) as i64, 2));
-    }
-
-    fn compare(&mut self, i: i32, j: i32) -> Ordering {
-        self.set_pivot(i);
-        self.compare_pivot(j)
     }
 
     fn set_pivot(&mut self, i: i32) {
@@ -290,23 +462,23 @@ impl Sorter for UtilMSBIntroSorter {
     }
 }
 
-pub struct DimIntroSorter<'a, 'b> {
+pub struct DimIntroSorter<'a, 'b, P: MutablePointsReader> {
     num_bytes_to_compare: i32,
     offset: i32,
     pivot_doc: i32,
     pivot: &'a mut Vec<u8>,
     scratch2: &'b mut Vec<u8>,
-    reader: Box<MutablePointsReader>,
+    reader: P,
 }
 
-impl<'a, 'b> DimIntroSorter<'a, 'b> {
+impl<'a, 'b, P: MutablePointsReader> DimIntroSorter<'a, 'b, P> {
     pub fn new(
         num_bytes_to_compare: i32,
         offset: i32,
         scratch1: &'a mut Vec<u8>,
         scratch2: &'b mut Vec<u8>,
-        reader: Box<MutablePointsReader>,
-    ) -> DimIntroSorter<'a, 'b> {
+        reader: P,
+    ) -> Self {
         DimIntroSorter {
             num_bytes_to_compare,
             offset,
@@ -318,7 +490,12 @@ impl<'a, 'b> DimIntroSorter<'a, 'b> {
     }
 }
 
-impl<'a, 'b> Sorter for DimIntroSorter<'a, 'b> {
+impl<'a, 'b, P: MutablePointsReader> Sorter for DimIntroSorter<'a, 'b, P> {
+    fn compare(&mut self, i: i32, j: i32) -> Ordering {
+        self.set_pivot(i);
+        self.compare_pivot(j)
+    }
+
     fn swap(&mut self, i: i32, j: i32) {
         self.reader.swap(i, j)
     }
@@ -326,11 +503,6 @@ impl<'a, 'b> Sorter for DimIntroSorter<'a, 'b> {
     fn sort(&mut self, from: i32, to: i32) {
         check_range(from, to);
         self.quick_sort(from, to, 2 * ((((to - from) as f64).log2()) as i32));
-    }
-
-    fn compare(&mut self, i: i32, j: i32) -> Ordering {
-        self.set_pivot(i);
-        self.compare_pivot(j)
     }
 
     fn set_pivot(&mut self, i: i32) {
@@ -358,11 +530,11 @@ impl MutablePointsReaderUtils {
     pub fn sort(
         max_doc: i32,
         packed_bytes_length: i32,
-        reader: &mut (MutablePointsReader + 'static),
+        reader: &mut impl MutablePointsReader,
         from: i32,
         to: i32,
     ) {
-        let bit_per_doc_id = unsigned_bits_required((max_doc - 1) as i64);
+        let bit_per_doc_id = (max_doc - 1).bits_required() as i32;
         let intro_sorter =
             UtilMSBIntroSorter::new(0, packed_bytes_length as i32, reader, bit_per_doc_id);
         let mut msb_sorter =
@@ -373,8 +545,8 @@ impl MutablePointsReaderUtils {
     pub fn sort_by_dim(
         sorted_dim: i32,
         bytes_per_dim: i32,
-        common_prefix_lengths: &Vec<i32>,
-        reader: Box<MutablePointsReader>,
+        common_prefix_lengths: &[i32],
+        reader: impl MutablePointsReader,
         from: i32,
         to: i32,
         scratch1: &mut Vec<u8>,
@@ -393,7 +565,7 @@ impl MutablePointsReaderUtils {
         split_dim: i32,
         bytes_per_dim: i32,
         common_prefix_len: i32,
-        reader: Box<MutablePointsReader>,
+        reader: impl MutablePointsReader,
         from: i32,
         to: i32,
         mid: i32,
@@ -402,7 +574,7 @@ impl MutablePointsReaderUtils {
     ) {
         let offset = split_dim * bytes_per_dim + common_prefix_len;
         let cmp_bytes = bytes_per_dim - common_prefix_len;
-        let bit_per_doc_id = unsigned_bits_required((max_doc - 1) as i64);
+        let bit_per_doc_id = (max_doc - 1).bits_required() as i32;
 
         let selector = DefaultIntroSelector::new(
             cmp_bytes,

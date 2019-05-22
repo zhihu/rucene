@@ -3,9 +3,11 @@ use std::collections::{BTreeMap, HashMap};
 use std::mem;
 use std::sync::Arc;
 
-use core::codec::format::{self, doc_values_format_for_name, DocValuesFormat};
+use core::codec::format::{
+    self, doc_values_format_for_name, DocValuesConsumerEnum, DocValuesFormat, DocValuesFormatEnum,
+};
 use core::codec::lucene54::Lucene54DocValuesFormat;
-use core::codec::{DocValuesConsumer, DocValuesProducer, DocValuesProducerRef};
+use core::codec::{Codec, DocValuesConsumer, DocValuesProducer, DocValuesProducerRef};
 use core::index::BinaryDocValues;
 use core::index::NumericDocValues;
 use core::index::SortedDocValues;
@@ -13,8 +15,9 @@ use core::index::SortedNumericDocValues;
 use core::index::SortedSetDocValues;
 use core::index::{DocValuesType, FieldInfo};
 use core::index::{SegmentReadState, SegmentWriteState};
-use core::util::byte_ref::BytesRef;
+use core::store::Directory;
 use core::util::numeric::Numeric;
+use core::util::BytesRef;
 use core::util::{BitsRef, ReusableIterator};
 
 use error::ErrorKind::{IllegalArgument, IllegalState};
@@ -40,30 +43,29 @@ fn get_full_segment_suffix(outer_segment_suffix: &str, segment_suffix: String) -
     }
 }
 
-pub struct PerFieldDocValuesFormat {
-    name: String,
-}
-
-impl Default for PerFieldDocValuesFormat {
-    fn default() -> Self {
-        PerFieldDocValuesFormat {
-            name: PER_FIELD_NAME.to_string(),
-        }
-    }
-}
+#[derive(Default, Clone, Copy)]
+pub struct PerFieldDocValuesFormat;
 
 impl DocValuesFormat for PerFieldDocValuesFormat {
     fn name(&self) -> &str {
-        &self.name
+        PER_FIELD_NAME
     }
 
-    fn fields_producer(&self, state: &SegmentReadState) -> Result<Box<DocValuesProducer>> {
+    fn fields_producer<'a, D: Directory, DW: Directory, C: Codec>(
+        &self,
+        state: &SegmentReadState<'a, D, DW, C>,
+    ) -> Result<Box<dyn DocValuesProducer>> {
         let boxed = DocValuesFieldsReader::new(state)?;
         Ok(Box::new(boxed))
     }
 
-    fn fields_consumer(&self, state: &SegmentWriteState) -> Result<Box<DocValuesConsumer>> {
-        Ok(Box::new(DocValuesFieldsWriter::new(state)))
+    fn fields_consumer<D: Directory, DW: Directory, C: Codec>(
+        &self,
+        state: &SegmentWriteState<D, DW, C>,
+    ) -> Result<DocValuesConsumerEnum<D, DW, C>> {
+        Ok(DocValuesConsumerEnum::PerField(DocValuesFieldsWriter::new(
+            state,
+        )))
     }
 }
 
@@ -72,7 +74,12 @@ pub struct DocValuesFieldsReader {
 }
 
 impl DocValuesFieldsReader {
-    pub fn new(state: &SegmentReadState) -> Result<DocValuesFieldsReader> {
+    pub fn new<D, DW, C>(state: &SegmentReadState<'_, D, DW, C>) -> Result<DocValuesFieldsReader>
+    where
+        D: Directory,
+        DW: Directory,
+        C: Codec,
+    {
         let mut fields = BTreeMap::new();
         let mut formats = HashMap::new();
         for (name, info) in &state.field_infos.by_name {
@@ -125,7 +132,7 @@ impl DocValuesFieldsReader {
 }
 
 impl DocValuesProducer for DocValuesFieldsReader {
-    fn get_numeric(&self, field: &FieldInfo) -> Result<Arc<NumericDocValues>> {
+    fn get_numeric(&self, field: &FieldInfo) -> Result<Arc<dyn NumericDocValues>> {
         match self.fields.get(&field.name) {
             Some(producer) => producer.get_numeric(field),
             None => bail!(IllegalArgument(format! {
@@ -135,7 +142,7 @@ impl DocValuesProducer for DocValuesFieldsReader {
         }
     }
 
-    fn get_binary(&self, field: &FieldInfo) -> Result<Arc<BinaryDocValues>> {
+    fn get_binary(&self, field: &FieldInfo) -> Result<Arc<dyn BinaryDocValues>> {
         match self.fields.get(&field.name) {
             Some(producer) => producer.get_binary(field),
             None => bail!(IllegalArgument(format! {
@@ -145,7 +152,7 @@ impl DocValuesProducer for DocValuesFieldsReader {
         }
     }
 
-    fn get_sorted(&self, field: &FieldInfo) -> Result<Arc<SortedDocValues>> {
+    fn get_sorted(&self, field: &FieldInfo) -> Result<Arc<dyn SortedDocValues>> {
         match self.fields.get(&field.name) {
             Some(producer) => producer.get_sorted(field),
             None => bail!(IllegalArgument(format! {
@@ -155,7 +162,7 @@ impl DocValuesProducer for DocValuesFieldsReader {
         }
     }
 
-    fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Arc<SortedNumericDocValues>> {
+    fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Arc<dyn SortedNumericDocValues>> {
         match self.fields.get(&field.name) {
             Some(producer) => producer.get_sorted_numeric(field),
             None => bail!(IllegalArgument(format! {
@@ -165,7 +172,7 @@ impl DocValuesProducer for DocValuesFieldsReader {
         }
     }
 
-    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Arc<SortedSetDocValues>> {
+    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Arc<dyn SortedSetDocValues>> {
         match self.fields.get(&field.name) {
             Some(producer) => producer.get_sorted_set(field),
             None => bail!(IllegalArgument(format! {
@@ -192,24 +199,24 @@ impl DocValuesProducer for DocValuesFieldsReader {
         Ok(())
     }
 
-    fn get_merge_instance(&self) -> Result<Box<DocValuesProducer>> {
+    fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
         Ok(Box::new(DocValuesFieldsReader::copy_for_merge(self)?))
     }
 }
 
-struct ConsumerAndSuffix {
-    consumer: Box<DocValuesConsumer>,
+struct ConsumerAndSuffix<D: Directory, DW: Directory, C: Codec> {
+    consumer: DocValuesConsumerEnum<D, DW, C>,
     suffix: i32,
 }
 
-struct DocValuesFieldsWriter {
-    formats: HashMap<String, ConsumerAndSuffix>,
+pub struct DocValuesFieldsWriter<D: Directory, DW: Directory, C: Codec> {
+    formats: HashMap<String, ConsumerAndSuffix<D, DW, C>>,
     suffixes: HashMap<String, i32>,
-    segment_write_state: SegmentWriteState,
+    segment_write_state: SegmentWriteState<D, DW, C>,
 }
 
-impl DocValuesFieldsWriter {
-    fn new(state: &SegmentWriteState) -> Self {
+impl<D: Directory, DW: Directory, C: Codec> DocValuesFieldsWriter<D, DW, C> {
+    fn new(state: &SegmentWriteState<D, DW, C>) -> Self {
         DocValuesFieldsWriter {
             formats: HashMap::new(),
             suffixes: HashMap::new(),
@@ -217,8 +224,8 @@ impl DocValuesFieldsWriter {
         }
     }
 
-    fn get_instance(&mut self, field: &FieldInfo) -> Result<&mut DocValuesConsumer> {
-        let mut format: Option<Box<DocValuesFormat>> = None;
+    fn get_instance(&mut self, field: &FieldInfo) -> Result<&mut DocValuesConsumerEnum<D, DW, C>> {
+        let mut format: Option<DocValuesFormatEnum> = None;
         if field.dv_gen != -1 {
             // this means the field never existed in that segment, yet is applied updates
             if let Some(format_name) = field.attribute(PER_FIELD_VALUE_FORMAT_KEY) {
@@ -227,7 +234,9 @@ impl DocValuesFieldsWriter {
         }
         if format.is_none() {
             // TODO hard code for `PerFieldDocValuesFormat.getDocValuesFormatForField`
-            format = Some(Box::new(Lucene54DocValuesFormat::default()));
+            format = Some(DocValuesFormatEnum::Lucene54(
+                Lucene54DocValuesFormat::default(),
+            ));
         }
 
         let format = format.unwrap();
@@ -299,20 +308,15 @@ impl DocValuesFieldsWriter {
 
         // TODO: we should only provide the "slice" of FIS
         // that this DVF actually sees ...
-        Ok(self
-            .formats
-            .get_mut(&format_name)
-            .unwrap()
-            .consumer
-            .as_mut())
+        Ok(&mut self.formats.get_mut(&format_name).unwrap().consumer)
     }
 }
 
-impl DocValuesConsumer for DocValuesFieldsWriter {
+impl<D: Directory, DW: Directory, C: Codec> DocValuesConsumer for DocValuesFieldsWriter<D, DW, C> {
     fn add_numeric_field(
         &mut self,
         field_info: &FieldInfo,
-        values: &mut ReusableIterator<Item = Result<Numeric>>,
+        values: &mut impl ReusableIterator<Item = Result<Numeric>>,
     ) -> Result<()> {
         self.get_instance(field_info)?
             .add_numeric_field(field_info, values)
@@ -321,7 +325,7 @@ impl DocValuesConsumer for DocValuesFieldsWriter {
     fn add_binary_field(
         &mut self,
         field_info: &FieldInfo,
-        values: &mut ReusableIterator<Item = Result<BytesRef>>,
+        values: &mut impl ReusableIterator<Item = Result<BytesRef>>,
     ) -> Result<()> {
         self.get_instance(field_info)?
             .add_binary_field(field_info, values)
@@ -330,8 +334,8 @@ impl DocValuesConsumer for DocValuesFieldsWriter {
     fn add_sorted_field(
         &mut self,
         field_info: &FieldInfo,
-        values: &mut ReusableIterator<Item = Result<BytesRef>>,
-        doc_to_ord: &mut ReusableIterator<Item = Result<Numeric>>,
+        values: &mut impl ReusableIterator<Item = Result<BytesRef>>,
+        doc_to_ord: &mut impl ReusableIterator<Item = Result<Numeric>>,
     ) -> Result<()> {
         self.get_instance(field_info)?
             .add_sorted_field(field_info, values, doc_to_ord)
@@ -340,8 +344,8 @@ impl DocValuesConsumer for DocValuesFieldsWriter {
     fn add_sorted_numeric_field(
         &mut self,
         field_info: &FieldInfo,
-        values: &mut ReusableIterator<Item = Result<Numeric>>,
-        doc_to_value_count: &mut ReusableIterator<Item = Result<u32>>,
+        values: &mut impl ReusableIterator<Item = Result<Numeric>>,
+        doc_to_value_count: &mut impl ReusableIterator<Item = Result<u32>>,
     ) -> Result<()> {
         self.get_instance(field_info)?.add_sorted_numeric_field(
             field_info,
@@ -353,9 +357,9 @@ impl DocValuesConsumer for DocValuesFieldsWriter {
     fn add_sorted_set_field(
         &mut self,
         field_info: &FieldInfo,
-        values: &mut ReusableIterator<Item = Result<BytesRef>>,
-        doc_to_ord_count: &mut ReusableIterator<Item = Result<u32>>,
-        ords: &mut ReusableIterator<Item = Result<Numeric>>,
+        values: &mut impl ReusableIterator<Item = Result<BytesRef>>,
+        doc_to_ord_count: &mut impl ReusableIterator<Item = Result<u32>>,
+        ords: &mut impl ReusableIterator<Item = Result<Numeric>>,
     ) -> Result<()> {
         self.get_instance(field_info)?.add_sorted_set_field(
             field_info,

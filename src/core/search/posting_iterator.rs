@@ -2,44 +2,43 @@ use core::search::{DocIterator, Payload, NO_MORE_DOCS};
 use core::util::DocId;
 use error::Result;
 
-use std::any::Any;
+pub struct PostingIteratorFlags;
 
-/// Flag to pass to {@link TermsEnum#postings(PostingsEnum, int)} if you don't
-/// require per-document postings in the returned enum.
-pub const POSTING_ITERATOR_FLAG_NONE: i16 = 0;
+impl PostingIteratorFlags {
+    /// Flag to pass to {@link TermIterator#postings_with_flags(u16)} if you don't
+    /// require per-document postings in the returned iterator.
+    pub const NONE: u16 = 0;
 
-/// Flag to pass to {@link TermsEnum#postings(PostingsEnum, int)}
-/// if you require term frequencies in the returned enum. */
-pub const POSTING_ITERATOR_FLAG_FREQS: i16 = 1 << 3;
+    /// Flag to pass to {@link TermIterator#postings_with_flags(u16)}
+    /// if you require term frequencies in the returned iterator.
+    pub const FREQS: u16 = 1 << 3;
 
-/// Flag to pass to {@link TermsEnum#postings(PostingsEnum, int)}
-/// if you require term positions in the returned enum. */
-pub const POSTING_ITERATOR_FLAG_POSITIONS: i16 = POSTING_ITERATOR_FLAG_FREQS | 1 << 4;
+    /// Flag to pass to {@link TermIterator#postings_with_flags(u16)}
+    /// if you require term positions in the returned iterator.
+    pub const POSITIONS: u16 = Self::FREQS | 1 << 4;
 
-/// Flag to pass to {@link TermsEnum#postings(PostingsEnum, int)}
-/// if you require offsets in the returned enum. */
-pub const POSTING_ITERATOR_FLAG_OFFSETS: i16 = POSTING_ITERATOR_FLAG_POSITIONS | 1 << 5;
+    /// Flag to pass to {@link TermIterator#postings_with_flags(u16)}
+    /// if you require offsets in the returned iterator.
+    pub const OFFSETS: u16 = Self::POSITIONS | 1 << 5;
 
-/// Flag to pass to  {@link TermsEnum#postings(PostingsEnum, int)}
-/// if you require payloads in the returned enum. */
-pub const POSTING_ITERATOR_FLAG_PAYLOADS: i16 = POSTING_ITERATOR_FLAG_POSITIONS | 1 << 6;
+    /// Flag to pass to  {@link TermIterator#postings_with_flags(u16)}
+    /// if you require payloads in the returned iterator.
+    pub const PAYLOADS: u16 = Self::POSITIONS | 1 << 6;
 
-/// Flag to pass to {@link TermsEnum#postings(PostingsEnum, int)}
-/// to get positions, payloads and offsets in the returned enum
-pub const POSTING_ITERATOR_FLAG_ALL: i16 =
-    POSTING_ITERATOR_FLAG_OFFSETS | POSTING_ITERATOR_FLAG_PAYLOADS;
+    /// Flag to pass to {@link TermIterator#postings_with_flags(u16)}
+    /// to get positions, payloads and offsets in the returned iterator.
+    pub const ALL: u16 = Self::OFFSETS | Self::PAYLOADS;
 
-pub fn posting_feature_requested(flags: i16, feature: i16) -> bool {
-    (flags & feature) == feature
+    pub fn feature_requested(flags: u16, feature: u16) -> bool {
+        (flags & feature) == feature
+    }
 }
 
 pub trait PostingIterator: DocIterator {
-    fn clone_as_doc_iterator(&self) -> Result<Box<DocIterator>>;
-
     /// Returns term frequency in the current document, or 1 if the field was
-    /// indexed with {@link IndexOptions#DOCS}. Do not call this before
-    /// {@link #nextDoc} is first called, nor after {@link #nextDoc} returns
-    /// {@link DocIdSetIterator#NO_MORE_DOCS}.
+    /// indexed with {@link IndexOptions::Docs}. Do not call this before
+    /// {@link #nextDoc} is first called, nor after {@link #next_doc} returns
+    /// {@link NO_MORE_DOCS}.
     ///
     /// <p>
     /// <b>NOTE:</b> if the {@link PostingsEnum} was obtain with {@link #NONE},
@@ -63,9 +62,6 @@ pub trait PostingIterator: DocIterator {
     /// (neither members of the returned BytesRef nor bytes
     /// in the byte[]). */
     fn payload(&self) -> Result<Payload>;
-
-    /// use for type cast
-    fn as_any_mut(&mut self) -> &mut Any;
 }
 
 #[derive(Clone)]
@@ -100,10 +96,6 @@ impl DocIterator for EmptyPostingIterator {
 }
 
 impl PostingIterator for EmptyPostingIterator {
-    fn clone_as_doc_iterator(&self) -> Result<Box<DocIterator>> {
-        Ok(Box::new(EmptyPostingIterator { doc_id: -1 }))
-    }
-
     fn freq(&self) -> Result<i32> {
         Ok(0)
     }
@@ -122,9 +114,5 @@ impl PostingIterator for EmptyPostingIterator {
 
     fn payload(&self) -> Result<Payload> {
         Ok(Payload::new())
-    }
-
-    fn as_any_mut(&mut self) -> &mut Any {
-        self
     }
 }

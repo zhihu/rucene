@@ -123,12 +123,15 @@ mod point_values_writer;
 
 pub use self::point_values_writer::*;
 
+pub use self::doc_values_term_iterator::DocValuesTermIterator;
+
 pub mod doc_id_merger;
 
 mod bufferd_updates;
 mod byte_slice_reader;
 mod delete_policy;
 mod doc_consumer;
+mod doc_values_term_iterator;
 mod doc_writer;
 mod doc_writer_delete_queue;
 mod doc_writer_flush_queue;
@@ -152,7 +155,6 @@ mod thread_doc_writer;
 
 use serde::ser::SerializeStruct;
 use serde::{Serialize, Serializer};
-use std::any::Any;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -163,30 +165,16 @@ use std::sync::Arc;
 
 use regex::Regex;
 
-use core::codec::Codec;
+use core::codec::{Codec, CodecTVFields, FieldsProducer, LiveDocsFormat};
 use core::doc::Document;
 use core::index::bufferd_updates::BufferedUpdates;
 use core::search::sort::Sort;
-use core::store::{DirectoryRc, IOContext};
+use core::store::{Directory, IOContext};
 use core::util::bit_set::FixedBitSet;
 use core::util::string_util::ID_LENGTH;
-use core::util::{to_base36, Bits, DocId, Version};
+use core::util::{to_base36, DocId, Version};
 
 use error::{ErrorKind, Result};
-
-// postings flags for postings enum
-/// don't need per doc postings
-pub const POSTINGS_NONE: i16 = 0;
-/// require term frequencies
-pub const POSTINGS_FREQS: i16 = 1 << 3;
-/// require term positions
-pub const POSTINGS_POSITIONS: i16 = POSTINGS_FREQS | 1 << 4;
-/// require term offsets
-pub const POSTINGS_OFFSETS: i16 = POSTINGS_POSITIONS | 1 << 5;
-/// require term payloads
-pub const POSTINGS_PAYLOADS: i16 = POSTINGS_POSITIONS | 1 << 6;
-/// require positions, payloads and offsets
-pub const POSTINGS_ALL: i16 = POSTINGS_OFFSETS | POSTINGS_PAYLOADS;
 
 // index file names
 pub const INDEX_FILE_SEGMENTS: &str = "segments";
@@ -290,9 +278,10 @@ fn strip_extension(filename: &str) -> &str {
     }
 }
 
-pub trait IndexReader: Send + Sync {
-    fn leaves(&self) -> Vec<LeafReaderContext>;
-    fn term_vector(&self, doc_id: DocId) -> Result<Option<Box<Fields>>>;
+pub trait IndexReader {
+    type Codec: Codec;
+    fn leaves(&self) -> Vec<LeafReaderContext<'_, Self::Codec>>;
+    fn term_vector(&self, doc_id: DocId) -> Result<Option<CodecTVFields<Self::Codec>>>;
     fn document(&self, doc_id: DocId, fields: &[String]) -> Result<Document>;
     fn max_doc(&self) -> i32;
     fn num_docs(&self) -> i32;
@@ -302,7 +291,7 @@ pub trait IndexReader: Send + Sync {
     fn has_deletions(&self) -> bool {
         self.num_deleted_docs() > 0
     }
-    fn leaf_reader_for_doc(&self, doc: DocId) -> LeafReaderContext {
+    fn leaf_reader_for_doc(&self, doc: DocId) -> LeafReaderContext<'_, Self::Codec> {
         let leaves = self.leaves();
         let size = leaves.len();
         let mut lo = 0usize;
@@ -324,21 +313,22 @@ pub trait IndexReader: Send + Sync {
         leaves[hi].clone()
     }
 
-    fn as_any(&self) -> &Any;
+    // used for refresh
+    fn refresh(&self) -> Result<Option<Box<dyn IndexReader<Codec = Self::Codec>>>> {
+        Ok(None)
+    }
 }
 
-pub type IndexReaderRef = Arc<IndexReader>;
+pub const SEGMENT_USE_COMPOUND_YES: u8 = 0x01;
+pub const SEGMENT_USE_COMPOUND_NO: u8 = 0xff;
 
-pub const SEGMENT_INFO_YES: i32 = 1;
-pub const SEGMENT_INFO_NO: i32 = -1;
-
-pub struct SegmentInfo {
+pub struct SegmentInfo<D: Directory, C: Codec> {
     pub name: String,
     pub max_doc: i32,
-    pub directory: DirectoryRc,
+    pub directory: Arc<D>,
     pub is_compound_file: AtomicBool,
     pub id: [u8; ID_LENGTH],
-    pub codec: Option<Arc<Codec>>,
+    pub codec: Option<Arc<C>>,
     pub diagnostics: HashMap<String, String>,
     pub attributes: HashMap<String, String>,
     pub index_sort: Option<Sort>,
@@ -346,20 +336,20 @@ pub struct SegmentInfo {
     pub set_files: HashSet<String>,
 }
 
-impl SegmentInfo {
+impl<D: Directory, C: Codec> SegmentInfo<D, C> {
     #[allow(too_many_arguments)]
     pub fn new(
         version: Version,
         name: &str,
         max_doc: i32,
-        directory: DirectoryRc,
+        directory: Arc<D>,
         is_compound_file: bool,
-        codec: Option<Arc<Codec>>,
+        codec: Option<Arc<C>>,
         diagnostics: HashMap<String, String>,
         id: [u8; ID_LENGTH],
         attributes: HashMap<String, String>,
         index_sort: Option<Sort>,
-    ) -> Result<SegmentInfo> {
+    ) -> Result<SegmentInfo<D, C>> {
         Ok(SegmentInfo {
             name: String::from(name),
             max_doc,
@@ -375,11 +365,11 @@ impl SegmentInfo {
         })
     }
 
-    pub fn set_codec(&mut self, codec: Arc<Codec>) {
+    pub fn set_codec(&mut self, codec: Arc<C>) {
         self.codec = Some(codec);
     }
 
-    pub fn codec(&self) -> &Arc<Codec> {
+    pub fn codec(&self) -> &Arc<C> {
         assert!(self.codec.is_some());
         &self.codec.as_ref().unwrap()
     }
@@ -466,7 +456,7 @@ impl SegmentInfo {
     }
 }
 
-impl Clone for SegmentInfo {
+impl<D: Directory, C: Codec> Clone for SegmentInfo<D, C> {
     fn clone(&self) -> Self {
         SegmentInfo {
             name: self.name.clone(),
@@ -484,13 +474,13 @@ impl Clone for SegmentInfo {
     }
 }
 
-impl Hash for SegmentInfo {
+impl<D: Directory, C: Codec> Hash for SegmentInfo<D, C> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         state.write(self.name.as_bytes());
     }
 }
 
-impl Serialize for SegmentInfo {
+impl<D: Directory, C: Codec> Serialize for SegmentInfo<D, C> {
     fn serialize<S>(&self, serializer: S) -> result::Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -514,7 +504,7 @@ impl Serialize for SegmentInfo {
     }
 }
 
-impl fmt::Debug for SegmentInfo {
+impl<D: Directory, C: Codec> fmt::Debug for SegmentInfo<D, C> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if let Ok(s) = ::serde_json::to_string_pretty(self) {
             write!(f, "{}", s)?;
@@ -588,14 +578,21 @@ impl Ord for Term {
     }
 }
 
-pub struct TermContext {
+pub struct TermContext<S: TermState> {
     pub doc_freq: i32,
     pub total_term_freq: i64,
-    pub states: Vec<(DocId, Box<TermState>)>,
+    pub states: Vec<(DocId, S)>,
 }
 
-impl TermContext {
-    pub fn new(reader: &IndexReader) -> TermContext {
+impl<S: TermState> TermContext<S> {
+    pub fn new<TI, Tm, FP, C, IR>(reader: &IR) -> TermContext<S>
+    where
+        TI: TermIterator<TermState = S>,
+        Tm: Terms<Iterator = TI>,
+        FP: FieldsProducer<Terms = Tm> + Clone,
+        C: Codec<FieldsProducer = FP>,
+        IR: IndexReader<Codec = C> + ?Sized,
+    {
         let doc_freq = 0;
         let total_term_freq = 0;
         let states = Vec::with_capacity(reader.leaves().len());
@@ -606,7 +603,14 @@ impl TermContext {
         }
     }
 
-    pub fn build(&mut self, reader: &IndexReader, term: &Term) -> Result<()> {
+    pub fn build<TI, Tm, FP, C, IR>(&mut self, reader: &IR, term: &Term) -> Result<()>
+    where
+        TI: TermIterator<TermState = S>,
+        Tm: Terms<Iterator = TI>,
+        FP: FieldsProducer<Terms = Tm> + Clone,
+        C: Codec<FieldsProducer = FP>,
+        IR: IndexReader<Codec = C> + ?Sized,
+    {
         for reader in reader.leaves() {
             if let Some(terms) = reader.reader.terms(&term.field)? {
                 let mut terms_enum = terms.iterator()?;
@@ -633,19 +637,19 @@ impl TermContext {
         }
     }
 
-    pub fn get_term_state(&self, reader: &LeafReaderContext) -> Option<&TermState> {
+    pub fn get_term_state<C: Codec>(&self, reader: &LeafReaderContext<'_, C>) -> Option<&S> {
         for (doc_base, state) in &self.states {
             if *doc_base == reader.doc_base {
-                return Some(state.as_ref());
+                return Some(state);
             }
         }
         None
     }
 
-    pub fn term_states(&self) -> HashMap<DocId, Box<TermState>> {
-        let mut term_states: HashMap<DocId, Box<TermState>> = HashMap::new();
+    pub fn term_states(&self) -> HashMap<DocId, S> {
+        let mut term_states = HashMap::new();
         for (doc_base, term_state) in &self.states {
-            term_states.insert(*doc_base, term_state.clone_to());
+            term_states.insert(*doc_base, term_state.clone());
         }
 
         term_states
@@ -655,9 +659,9 @@ impl TermContext {
 /// Embeds a [read-only] SegmentInfo and adds per-commit
 /// fields.
 /// @lucene.experimental */
-pub struct SegmentCommitInfo {
+pub struct SegmentCommitInfo<D: Directory, C: Codec> {
     /// The {@link SegmentInfo} that we wrap.
-    pub info: SegmentInfo,
+    pub info: SegmentInfo<D, C>,
     /// How many deleted docs in the segment:
     pub del_count: AtomicI32,
     /// Generation number of the live docs file (-1 if there
@@ -689,22 +693,22 @@ pub struct SegmentCommitInfo {
     pub buffered_deletes_gen: AtomicI64,
 }
 
-impl Hash for SegmentCommitInfo {
+impl<D: Directory, C: Codec> Hash for SegmentCommitInfo<D, C> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.info.hash(state);
     }
 }
 
-impl SegmentCommitInfo {
+impl<D: Directory, C: Codec> SegmentCommitInfo<D, C> {
     pub fn new(
-        info: SegmentInfo,
+        info: SegmentInfo<D, C>,
         del_count: i32,
         del_gen: i64,
         field_infos_gen: i64,
         doc_values_gen: i64,
         dv_updates_files: HashMap<i32, HashSet<String>>,
         field_infos_files: HashSet<String>,
-    ) -> SegmentCommitInfo {
+    ) -> SegmentCommitInfo<D, C> {
         let field_info_gen = if field_infos_gen == -1 {
             1
         } else {
@@ -870,7 +874,7 @@ impl SegmentCommitInfo {
     }
 }
 
-impl Clone for SegmentCommitInfo {
+impl<D: Directory, C: Codec> Clone for SegmentCommitInfo<D, C> {
     fn clone(&self) -> Self {
         let infos = SegmentCommitInfo::new(
             self.info.clone(),
@@ -896,16 +900,16 @@ impl Clone for SegmentCommitInfo {
     }
 }
 
-impl Eq for SegmentCommitInfo {}
+impl<D: Directory, C: Codec> Eq for SegmentCommitInfo<D, C> {}
 
-// TODO, only compare the segment name, maybe we should compare the raw pointer or the full struct?
-impl PartialEq for SegmentCommitInfo {
-    fn eq(&self, other: &SegmentCommitInfo) -> bool {
+// WARN: only compare the segment name, maybe we should compare the raw pointer or the full struct?
+impl<D: Directory, C: Codec> PartialEq for SegmentCommitInfo<D, C> {
+    fn eq(&self, other: &SegmentCommitInfo<D, C>) -> bool {
         self.info.name.eq(&other.info.name)
     }
 }
 
-impl Serialize for SegmentCommitInfo {
+impl<D: Directory, C: Codec> Serialize for SegmentCommitInfo<D, C> {
     fn serialize<S>(&self, serializer: S) -> result::Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -934,7 +938,7 @@ impl Serialize for SegmentCommitInfo {
     }
 }
 
-impl fmt::Display for SegmentCommitInfo {
+impl<D: Directory, C: Codec> fmt::Display for SegmentCommitInfo<D, C> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if let Ok(s) = ::serde_json::to_string_pretty(self) {
             write!(f, "{}", s)?;
@@ -944,7 +948,7 @@ impl fmt::Display for SegmentCommitInfo {
     }
 }
 
-impl fmt::Debug for SegmentCommitInfo {
+impl<D: Directory, C: Codec> fmt::Debug for SegmentCommitInfo<D, C> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if let Ok(s) = ::serde_json::to_string_pretty(self) {
             write!(f, "{}", s)?;
@@ -956,15 +960,15 @@ impl fmt::Debug for SegmentCommitInfo {
 
 /// Holder class for common parameters used during write.
 /// @lucene.experimental
-pub struct SegmentWriteState {
+pub struct SegmentWriteState<D: Directory, DW: Directory, C: Codec> {
     /// {@link InfoStream} used for debugging messages. */
     // info_stream: InfoStream,
     /// {@link Directory} where this segment will be written
     /// to.
-    pub directory: DirectoryRc,
+    pub directory: Arc<DW>,
 
     /// {@link SegmentInfo} describing this segment. */
-    pub segment_info: SegmentInfo,
+    pub segment_info: SegmentInfo<D, C>,
 
     /// {@link FieldInfos} describing all fields in this
     /// segment. */
@@ -978,11 +982,11 @@ pub struct SegmentWriteState {
     /// enrolled in here if it was deleted/updated at one point, and it's mapped to
     /// the docIDUpto, meaning any docID &lt; docIDUpto containing this term should
     /// be deleted/updated.
-    pub seg_updates: Option<*const BufferedUpdates>,
+    pub seg_updates: Option<*const BufferedUpdates<C>>,
 
     /// {@link MutableBits} recording live documents; this is
     /// only set if there is one or more deleted documents. */
-    live_docs: Box<Bits>,
+    live_docs: FixedBitSet,
 
     /// Unique suffix for any postings files written for this
     /// segment.  {@link PerFieldPostingsFormat} sets this for
@@ -1000,12 +1004,12 @@ pub struct SegmentWriteState {
     pub context: IOContext,
 }
 
-impl SegmentWriteState {
+impl<D: Directory, DW: Directory, C: Codec> SegmentWriteState<D, DW, C> {
     pub fn new(
-        directory: DirectoryRc,
-        segment_info: SegmentInfo,
+        directory: Arc<DW>,
+        segment_info: SegmentInfo<D, C>,
         field_infos: FieldInfos,
-        seg_updates: Option<*const BufferedUpdates>,
+        seg_updates: Option<*const BufferedUpdates<C>>,
         context: IOContext,
         segment_suffix: String,
     ) -> Self {
@@ -1016,13 +1020,14 @@ impl SegmentWriteState {
             field_infos,
             del_count_on_flush: 0,
             seg_updates,
-            live_docs: Box::new(FixedBitSet::default()),
+            live_docs: FixedBitSet::default(),
             segment_suffix,
             context,
         }
     }
 
-    pub fn seg_updates(&self) -> &BufferedUpdates {
+    pub fn seg_updates(&self) -> &BufferedUpdates<C> {
+        debug_assert!(self.seg_updates.is_some());
         unsafe { &*self.seg_updates.unwrap() }
     }
 
@@ -1046,7 +1051,7 @@ impl SegmentWriteState {
     }
 }
 
-impl Clone for SegmentWriteState {
+impl<D: Directory, DW: Directory, C: Codec> Clone for SegmentWriteState<D, DW, C> {
     fn clone(&self) -> Self {
         SegmentWriteState {
             directory: Arc::clone(&self.directory),
@@ -1055,7 +1060,7 @@ impl Clone for SegmentWriteState {
             del_count_on_flush: self.del_count_on_flush,
             seg_updates: None,
             // no used
-            live_docs: Box::new(FixedBitSet::default()),
+            live_docs: FixedBitSet::default(),
             // TODO, fake clone
             segment_suffix: self.segment_suffix.clone(),
             context: self.context,
@@ -1065,12 +1070,12 @@ impl Clone for SegmentWriteState {
 
 /// Holder class for common parameters used during read.
 /// @lucene.experimental
-pub struct SegmentReadState<'a> {
+pub struct SegmentReadState<'a, D: Directory, DW: Directory, C: Codec> {
     /// {@link Directory} where this segment is read from.
-    pub directory: DirectoryRc,
+    pub directory: Arc<DW>,
 
     /// {@link SegmentInfo} describing this segment.
-    pub segment_info: &'a SegmentInfo,
+    pub segment_info: &'a SegmentInfo<D, C>,
 
     /// {@link FieldInfos} describing all fields in this
     /// segment. */
@@ -1089,14 +1094,14 @@ pub struct SegmentReadState<'a> {
     pub segment_suffix: String,
 }
 
-impl<'a> SegmentReadState<'a> {
+impl<'a, D: Directory, DW: Directory, C: Codec> SegmentReadState<'a, D, DW, C> {
     pub fn new(
-        directory: DirectoryRc,
-        segment_info: &'a SegmentInfo,
+        directory: Arc<DW>,
+        segment_info: &'a SegmentInfo<D, C>,
         field_infos: Arc<FieldInfos>,
         context: &'a IOContext,
         segment_suffix: String,
-    ) -> SegmentReadState<'a> {
+    ) -> SegmentReadState<'a, D, DW, C> {
         SegmentReadState {
             directory,
             segment_info,
@@ -1106,7 +1111,10 @@ impl<'a> SegmentReadState<'a> {
         }
     }
 
-    pub fn with_suffix(state: &'a SegmentReadState, suffix: &str) -> SegmentReadState<'a> {
+    pub fn with_suffix(
+        state: &'a SegmentReadState<D, DW, C>,
+        suffix: &str,
+    ) -> SegmentReadState<'a, D, DW, C> {
         Self::new(
             state.directory.clone(),
             state.segment_info,
@@ -1122,9 +1130,8 @@ pub mod tests {
     use std::collections::HashMap;
 
     use super::*;
-    use core::codec::{DocValuesProducer, FieldsProducer};
-    use core::codec::{NormsProducer, StoredFieldsReader, TermVectorsReader};
-    use core::index::point_values::PointValuesRef;
+    use core::codec::tests::TestCodec;
+    use core::codec::*;
     use core::search::bm25_similarity::BM25Similarity;
     use core::util::external::deferred::Deferred;
     use core::util::*;
@@ -1171,6 +1178,7 @@ pub mod tests {
     }
 
     pub struct MockLeafReader {
+        codec: TestCodec,
         doc_base: DocId,
         live_docs: BitsRef,
         field_infos: FieldInfos,
@@ -1211,6 +1219,7 @@ pub mod tests {
             infos.push(field_info_two);
 
             MockLeafReader {
+                codec: TestCodec::default(),
                 doc_base,
                 live_docs: Arc::new(MatchAllBits::new(0usize)),
                 field_infos: FieldInfos::new(infos).unwrap(),
@@ -1219,7 +1228,19 @@ pub mod tests {
     }
 
     impl LeafReader for MockLeafReader {
-        fn add_core_drop_listener(&self, listener: Deferred) {
+        type Codec = TestCodec;
+        type FieldsProducer = CodecFieldsProducer<TestCodec>;
+        type TVReader = Arc<CodecTVReader<TestCodec>>;
+        type TVFields = CodecTVFields<TestCodec>;
+        type StoredReader = Arc<CodecStoredFieldsReader<TestCodec>>;
+        type NormsReader = Arc<CodecNormsProducer<TestCodec>>;
+        type PointsReader = Arc<CodecPointsReader<TestCodec>>;
+
+        fn codec(&self) -> &Self::Codec {
+            &self.codec
+        }
+
+        fn add_core_drop_listener(&self, _listener: Deferred) {
             unreachable!()
         }
 
@@ -1231,11 +1252,11 @@ pub mod tests {
             unimplemented!()
         }
 
-        fn term_vector(&self, _doc_id: DocId) -> Result<Option<Box<Fields>>> {
+        fn term_vector(&self, _doc_id: DocId) -> Result<Option<Self::TVFields>> {
             unimplemented!()
         }
 
-        fn point_values(&self) -> Option<PointValuesRef> {
+        fn point_values(&self) -> Option<Self::PointsReader> {
             unimplemented!()
         }
 
@@ -1243,7 +1264,7 @@ pub mod tests {
             unimplemented!()
         }
 
-        fn norm_values(&self, _field: &str) -> Result<Option<Box<NumericDocValues>>> {
+        fn norm_values(&self, _field: &str) -> Result<Option<Box<dyn NumericDocValues>>> {
             Ok(Some(Box::new(MockNumericValues::default())))
         }
 
@@ -1310,29 +1331,29 @@ pub mod tests {
             None
         }
 
-        fn store_fields_reader(&self) -> Result<Arc<StoredFieldsReader>> {
+        fn store_fields_reader(&self) -> Result<Self::StoredReader> {
             unreachable!()
         }
 
-        fn term_vectors_reader(&self) -> Result<Option<Arc<TermVectorsReader>>> {
+        fn term_vectors_reader(&self) -> Result<Option<Self::TVReader>> {
             unreachable!()
         }
 
-        fn norms_reader(&self) -> Result<Option<Arc<NormsProducer>>> {
+        fn norms_reader(&self) -> Result<Option<Self::NormsReader>> {
             unreachable!()
         }
 
-        fn doc_values_reader(&self) -> Result<Option<Arc<DocValuesProducer>>> {
+        fn doc_values_reader(&self) -> Result<Option<Arc<dyn DocValuesProducer>>> {
             unreachable!()
         }
 
-        fn postings_reader(&self) -> Result<Arc<FieldsProducer>> {
+        fn postings_reader(&self) -> Result<Self::FieldsProducer> {
             unreachable!()
         }
     }
 
-    impl AsRef<LeafReader> for MockLeafReader {
-        fn as_ref(&self) -> &(LeafReader + 'static) {
+    impl AsRef<SearchLeafReader<TestCodec>> for MockLeafReader {
+        fn as_ref(&self) -> &SearchLeafReader<TestCodec> {
             self
         }
     }
@@ -1346,11 +1367,11 @@ pub mod tests {
         pub fn new(leaves: Vec<MockLeafReader>) -> MockIndexReader {
             let mut starts = Vec::with_capacity(leaves.len() + 1);
             let mut max_doc = 0;
-            let mut num_docs = 0;
+            let mut _num_docs = 0;
             for reader in &leaves {
                 starts.push(max_doc);
                 max_doc += reader.max_doc();
-                num_docs += reader.num_docs();
+                _num_docs += reader.num_docs();
             }
 
             starts.push(max_doc);
@@ -1360,17 +1381,24 @@ pub mod tests {
     }
 
     impl IndexReader for MockIndexReader {
-        fn leaves(&self) -> Vec<LeafReaderContext> {
+        type Codec = TestCodec;
+
+        fn leaves(&self) -> Vec<LeafReaderContext<'_, Self::Codec>> {
             self.leaves
                 .iter()
                 .enumerate()
                 .map(|(i, r)| {
-                    LeafReaderContext::new(self, r.as_ref() as &LeafReader, i, self.starts[i])
+                    LeafReaderContext::new(
+                        self,
+                        r.as_ref() as &SearchLeafReader<TestCodec>,
+                        i,
+                        self.starts[i],
+                    )
                 })
                 .collect()
         }
 
-        fn term_vector(&self, _doc_id: DocId) -> Result<Option<Box<Fields>>> {
+        fn term_vector(&self, _doc_id: DocId) -> Result<Option<CodecTVFields<Self::Codec>>> {
             unimplemented!()
         }
 
@@ -1384,10 +1412,6 @@ pub mod tests {
 
         fn num_docs(&self) -> i32 {
             1
-        }
-
-        fn as_any(&self) -> &Any {
-            self
         }
     }
 }

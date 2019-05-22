@@ -6,16 +6,16 @@ use std::fmt::Display;
 use std::hash::{Hash, Hasher};
 use std::i32;
 
-use core::index::{LeafReader, LeafReaderContext};
+use core::codec::Codec;
+use core::index::{LeafReaderContext, SearchLeafReader};
 use core::search::explanation::Explanation;
-use core::search::searcher::IndexSearcher;
+use core::search::searcher::{IndexSearcher, SearchPlanBuilder};
 use core::search::statistics::CollectionStatistics;
 use core::search::statistics::TermStatistics;
 use core::search::term_query::TermQuery;
 use core::search::top_docs::TopDocs;
-use core::util::bit_set::ImmutableBitSetRef;
 use core::util::{DocId, IndexedContext, KeyedContext, VariantValue};
-use error::*;
+use error::Result;
 
 pub mod collector;
 pub mod conjunction;
@@ -87,7 +87,7 @@ pub const NO_MORE_DOCS: DocId = i32::MAX;
 /// `NO_MORE_DOCS` is set to `NO_MORE_DOCS` in order to be used as
 /// a sentinel object. Implementations of this class are expected to consider
 /// `std:i32:MAX` as an invalid value.
-pub trait DocIterator: Send + Sync {
+pub trait DocIterator: Send {
     /// Creates a `TermIterator` over current doc.
     ///
     /// TODO: Uncomment after implementing all the `DocIterator`s and `Scorer`s
@@ -212,7 +212,7 @@ impl DocIterator for EmptyDocIterator {
 }
 
 /// Common scoring functionality for different types of queries.
-pub trait Scorer: DocIterator + Send + Sync {
+pub trait Scorer: DocIterator {
     /// Returns the score of the current document matching the query.
     /// Initially invalid, until `DocIterator::next()` or
     /// `DocIterator::advance(DocId)` is called on the `iterator()`
@@ -233,8 +233,64 @@ pub trait Scorer: DocIterator + Send + Sync {
     }
 }
 
+impl Scorer for Box<dyn Scorer> {
+    fn score(&mut self) -> Result<f32> {
+        (**self).score()
+    }
+
+    fn support_two_phase(&self) -> bool {
+        (**self).support_two_phase()
+    }
+
+    fn score_context(&mut self) -> Result<IndexedContext> {
+        (**self).score_context()
+    }
+
+    fn score_feature(&mut self) -> Result<Vec<FeatureResult>> {
+        (**self).score_feature()
+    }
+}
+
+impl DocIterator for Box<dyn Scorer> {
+    fn doc_id(&self) -> i32 {
+        (**self).doc_id()
+    }
+
+    fn next(&mut self) -> Result<i32> {
+        (**self).next()
+    }
+
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        (**self).advance(target)
+    }
+
+    fn slow_advance(&mut self, target: i32) -> Result<i32> {
+        (**self).slow_advance(target)
+    }
+
+    fn cost(&self) -> usize {
+        (**self).cost()
+    }
+
+    fn matches(&mut self) -> Result<bool> {
+        (**self).matches()
+    }
+
+    fn match_cost(&self) -> f32 {
+        (**self).match_cost()
+    }
+
+    fn approximate_next(&mut self) -> Result<i32> {
+        (**self).approximate_next()
+    }
+
+    fn approximate_advance(&mut self, target: i32) -> Result<i32> {
+        (**self).approximate_advance(target)
+    }
+}
+
 // helper function for doc iterator support two phase
-pub fn two_phase_next(scorer: &mut Scorer) -> Result<DocId> {
+pub fn two_phase_next(scorer: &mut dyn Scorer) -> Result<DocId> {
     let mut doc = scorer.doc_id();
     loop {
         if doc == NO_MORE_DOCS {
@@ -254,47 +310,14 @@ impl PartialEq for Scorer {
     }
 }
 
-// TODO mayte interface return this should return `Option<Scorer>`
-pub struct MatchNoDocScorer {
-    iterator: EmptyDocIterator,
-}
-
-impl Default for MatchNoDocScorer {
-    fn default() -> Self {
-        MatchNoDocScorer {
-            iterator: EmptyDocIterator::default(),
-        }
-    }
-}
-
-impl DocIterator for MatchNoDocScorer {
-    fn doc_id(&self) -> DocId {
-        self.iterator.doc_id
-    }
-
-    fn next(&mut self) -> Result<DocId> {
-        self.iterator.next()
-    }
-
-    fn advance(&mut self, target: DocId) -> Result<DocId> {
-        self.iterator.advance(target)
-    }
-
-    fn cost(&self) -> usize {
-        0usize
-    }
-}
-
-impl Scorer for MatchNoDocScorer {
-    fn score(&mut self) -> Result<f32> {
-        unreachable!()
-    }
-}
-
 /// The abstract base class for queries.
-pub trait Query: Display {
+pub trait Query<C: Codec>: Display {
     /// Create new `Scorer` based on query.
-    fn create_weight(&self, searcher: &IndexSearcher, needs_scores: bool) -> Result<Box<Weight>>;
+    fn create_weight(
+        &self,
+        searcher: &dyn SearchPlanBuilder<C>,
+        needs_scores: bool,
+    ) -> Result<Box<dyn Weight<C>>>;
 
     /// For highlight use.
     fn extract_terms(&self) -> Vec<TermQuery>;
@@ -304,8 +327,8 @@ pub trait Query: Display {
     fn as_any(&self) -> &Any;
 }
 
-pub trait Weight: Display {
-    fn create_scorer(&self, reader: &LeafReaderContext) -> Result<Box<Scorer>>;
+pub trait Weight<C: Codec>: Display {
+    fn create_scorer(&self, reader: &LeafReaderContext<'_, C>) -> Result<Option<Box<dyn Scorer>>>;
 
     fn hash_code(&self) -> u32 {
         let key = format!("{}", self);
@@ -330,15 +353,15 @@ pub trait Weight: Display {
 
     fn needs_scores(&self) -> bool;
 
-    fn create_batch_scorer(&self) -> Option<Box<BatchScorer>> {
+    fn create_batch_scorer(&self) -> Option<Box<dyn BatchScorer>> {
         None
     }
 
     /// An explanation of the score computation for the named document.
-    fn explain(&self, reader: &LeafReaderContext, doc: DocId) -> Result<Explanation>;
+    fn explain(&self, reader: &LeafReaderContext<'_, C>, doc: DocId) -> Result<Explanation>;
 }
 
-pub trait BatchScorer: Send + Sync {
+pub trait BatchScorer {
     fn scores(&self, _score_context: Vec<&IndexedContext>) -> Result<Vec<f32>> {
         unimplemented!()
     }
@@ -407,7 +430,7 @@ pub trait BatchScorer: Send + Sync {
 /// consult the Similarity's DocScorer for an explanation of how it computed its score. The query
 /// passes in a the document id and an explanation of how the frequency was computed.
 
-pub trait Similarity: Display {
+pub trait Similarity<C: Codec>: Display {
     /// Compute any collection-level weight (e.g. IDF, average document length, etc)
     /// needed for scoring a query.
     fn compute_weight(
@@ -416,7 +439,7 @@ pub trait Similarity: Display {
         term_stats: &[TermStatistics],
         context: Option<&KeyedContext>,
         boost: f32,
-    ) -> Box<SimWeight>;
+    ) -> Box<dyn SimWeight<C>>;
 
     /// Computes the normalization value for a query given the sum of the
     /// normalized weights `SimWeight#getValueForNormalization()` of
@@ -435,7 +458,7 @@ pub trait Similarity: Display {
     }
 }
 
-pub trait SimScorer: Send + Sync {
+pub trait SimScorer: Send {
     /// Score a single document
     /// @param doc document id within the inverted index segment
     /// @param freq sloppy term frequency
@@ -449,7 +472,7 @@ pub trait SimScorer: Send + Sync {
     // fn compute_payload_factor(&self, doc: DocId, start: i32, end: i32, payload: &Payload);
 }
 
-pub trait SimWeight {
+pub trait SimWeight<C: Codec> {
     ///  The value for normalization of contained query clauses (e.g. sum of squared weights).
     ///
     /// NOTE: a Similarity implementation might not use any query normalization at all,
@@ -459,10 +482,15 @@ pub trait SimWeight {
 
     fn normalize(&mut self, query_norm: f32, boost: f32);
 
-    fn sim_scorer(&self, reader: &LeafReader) -> Result<Box<SimScorer>>;
+    fn sim_scorer(&self, reader: &SearchLeafReader<C>) -> Result<Box<dyn SimScorer>>;
 
     /// Explain the score for a single document
-    fn explain(&self, reader: &LeafReader, doc: DocId, freq: Explanation) -> Result<Explanation> {
+    fn explain(
+        &self,
+        reader: &SearchLeafReader<C>,
+        doc: DocId,
+        freq: Explanation,
+    ) -> Result<Explanation> {
         Ok(Explanation::new(
             true,
             self.sim_scorer(reader)?.score(doc, freq.value())?,
@@ -472,8 +500,14 @@ pub trait SimWeight {
     }
 }
 
-pub trait SimilarityProducer: Send + Sync {
-    fn create(&self, field: &str) -> Box<Similarity>;
+pub trait SimilarityProducer<C> {
+    fn create(&self, field: &str) -> Box<dyn Similarity<C>>;
+}
+
+impl<C: Codec> SimilarityProducer<C> for Box<dyn SimilarityProducer<C>> {
+    fn create(&self, field: &str) -> Box<dyn Similarity<C>> {
+        (**self).create(field)
+    }
 }
 
 /// A query rescorer interface used to re-rank the Top-K results of a previously
@@ -481,32 +515,32 @@ pub trait SimilarityProducer: Send + Sync {
 pub trait Rescorer {
     /// Modifies the result of the previously executed search `TopDocs`
     /// in place based on the given `RescorerContext`
-    fn rescore(
+    fn rescore<C: Codec, IS: IndexSearcher<C>>(
         &self,
-        searcher: &IndexSearcher,
-        rescore_ctx: &RescoreRequest,
+        searcher: &IS,
+        rescore_ctx: &RescoreRequest<C>,
         top_docs: &mut TopDocs,
     ) -> Result<()>;
 
-    fn rescore_features(
+    fn rescore_features<C: Codec, IS: IndexSearcher<C>>(
         &self,
-        searcher: &IndexSearcher,
-        rescore_ctx: &RescoreRequest,
+        searcher: &IS,
+        rescore_ctx: &RescoreRequest<C>,
         top_docs: &mut TopDocs,
     ) -> Result<Vec<HashMap<String, VariantValue>>>;
 
     /// Explains how the score for the specified document was computed.
-    fn explain(
+    fn explain<C: Codec, IS: IndexSearcher<C>>(
         &self,
-        searcher: &IndexSearcher,
-        req: &RescoreRequest,
+        searcher: &IS,
+        req: &RescoreRequest<C>,
         first: Explanation,
         doc: DocId,
     ) -> Result<Explanation>;
 }
 
-pub struct RescoreRequest {
-    query: Box<Query>,
+pub struct RescoreRequest<C: Codec> {
+    query: Box<dyn Query<C>>,
     query_weight: f32,
     rescore_weight: f32,
     rescore_mode: RescoreMode,
@@ -514,15 +548,15 @@ pub struct RescoreRequest {
     pub rescore_movedout: bool,
 }
 
-impl RescoreRequest {
+impl<C: Codec> RescoreRequest<C> {
     pub fn new(
-        query: Box<Query>,
+        query: Box<dyn Query<C>>,
         query_weight: f32,
         rescore_weight: f32,
         rescore_mode: RescoreMode,
         window_size: usize,
         rescore_movedout: bool,
-    ) -> RescoreRequest {
+    ) -> RescoreRequest<C> {
         RescoreRequest {
             query,
             query_weight,
@@ -582,24 +616,27 @@ impl FeatureResult {
 /// A DocIdSet contains a set of doc ids. Implementing classes must
 /// only implement *#iterator* to provide access to the set.
 pub trait DocIdSet: Send + Sync {
+    type Iter: DocIterator;
     /// Provides a `DocIdSetIterator` to access the set.
     /// This implementation can return None if there
     /// are no docs that match.
-    fn iterator(&self) -> Result<Option<Box<DocIterator>>>;
+    fn iterator(&self) -> Result<Option<Self::Iter>>;
 
-    /// Optionally provides `Bits` interface for random access
-    /// to matching documents.
-    /// None, if this `DocIdSet` does not support random access.
-    /// In contrast to #iterator(), a return value of None
-    /// *does not* imply that no documents match the filter!
-    /// The default implementation does not provide random access, so you
-    /// only need to implement this method if your DocIdSet can
-    /// guarantee random access to every docid in O(1) time without
-    /// external disk access (as `Bits` interface cannot return
-    /// IOError. This is generally true for bit sets
-    /// like `FixedBitSet`, which return
-    /// itself if they are used as `DocIdSet`.
-    fn bits(&self) -> Result<Option<ImmutableBitSetRef>>;
+    // Optionally provides `Bits` interface for random access
+    // to matching documents.
+    // None, if this `DocIdSet` does not support random access.
+    // In contrast to #iterator(), a return value of None
+    // *does not* imply that no documents match the filter!
+    // The default implementation does not provide random access, so you
+    // only need to implement this method if your DocIdSet can
+    // guarantee random access to every docid in O(1) time without
+    // external disk access (as `Bits` interface cannot return
+    // IOError. This is generally true for bit sets
+    // like `FixedBitSet`, which return
+    // itself if they are used as `DocIdSet`.
+    //    fn bits(&self) -> Result<Option<ImmutableBitSetRef>> {
+    //        Ok(None)
+    //    }
 }
 
 #[cfg(test)]
@@ -653,23 +690,23 @@ pub mod tests {
         }
     }
 
-    pub struct MockSimpleScorer {
-        iterator: Box<DocIterator>,
+    pub struct MockSimpleScorer<T: DocIterator> {
+        iterator: T,
     }
 
-    impl MockSimpleScorer {
-        pub fn new(iterator: Box<DocIterator>) -> MockSimpleScorer {
+    impl<T: DocIterator> MockSimpleScorer<T> {
+        pub fn new(iterator: T) -> Self {
             MockSimpleScorer { iterator }
         }
     }
 
-    impl Scorer for MockSimpleScorer {
+    impl<T: DocIterator> Scorer for MockSimpleScorer<T> {
         fn score(&mut self) -> Result<f32> {
             Ok(self.doc_id() as f32)
         }
     }
 
-    impl DocIterator for MockSimpleScorer {
+    impl<T: DocIterator> DocIterator for MockSimpleScorer<T> {
         fn doc_id(&self) -> DocId {
             self.iterator.doc_id()
         }
@@ -712,9 +749,12 @@ pub mod tests {
         }
     }
 
-    impl Weight for MockSimpleWeight {
-        fn create_scorer(&self, _reader: &LeafReaderContext) -> Result<Box<Scorer>> {
-            Ok(create_mock_scorer(self.docs.clone()))
+    impl<C: Codec> Weight<C> for MockSimpleWeight {
+        fn create_scorer(
+            &self,
+            _reader: &LeafReaderContext<'_, C>,
+        ) -> Result<Option<Box<dyn Scorer>>> {
+            Ok(Some(Box::new(create_mock_scorer(self.docs.clone()))))
         }
 
         fn query_type(&self) -> &'static str {
@@ -731,7 +771,7 @@ pub mod tests {
             false
         }
 
-        fn explain(&self, _reader: &LeafReaderContext, _doc: DocId) -> Result<Explanation> {
+        fn explain(&self, _reader: &LeafReaderContext<'_, C>, _doc: DocId) -> Result<Explanation> {
             unimplemented!()
         }
     }
@@ -742,16 +782,16 @@ pub mod tests {
         }
     }
 
-    pub fn create_mock_scorer(docs: Vec<DocId>) -> Box<MockSimpleScorer> {
-        Box::new(MockSimpleScorer::new(Box::new(MockDocIterator::new(docs))))
+    pub fn create_mock_scorer(docs: Vec<DocId>) -> MockSimpleScorer<MockDocIterator> {
+        MockSimpleScorer::new(MockDocIterator::new(docs))
     }
 
-    pub fn create_mock_weight(docs: Vec<DocId>) -> Box<MockSimpleWeight> {
-        Box::new(MockSimpleWeight::new(docs))
+    pub fn create_mock_weight(docs: Vec<DocId>) -> MockSimpleWeight {
+        MockSimpleWeight::new(docs)
     }
 
-    pub fn create_mock_doc_iterator(docs: Vec<DocId>) -> Box<DocIterator> {
-        Box::new(MockDocIterator::new(docs))
+    pub fn create_mock_doc_iterator(docs: Vec<DocId>) -> MockDocIterator {
+        MockDocIterator::new(docs)
     }
 
     pub struct MockTwoPhaseScorer {
@@ -836,8 +876,8 @@ pub mod tests {
     pub fn create_mock_two_phase_scorer(
         all_docs: Vec<DocId>,
         invalid_docs: Vec<DocId>,
-    ) -> Box<MockTwoPhaseScorer> {
-        Box::new(MockTwoPhaseScorer::new(all_docs, invalid_docs))
+    ) -> MockTwoPhaseScorer {
+        MockTwoPhaseScorer::new(all_docs, invalid_docs)
     }
 
     #[test]

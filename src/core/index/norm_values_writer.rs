@@ -1,11 +1,13 @@
-use core::codec::NormsConsumer;
+use core::codec::{Codec, NormsConsumer};
 use core::index::FieldInfo;
 use core::index::SegmentWriteState;
-use core::util::packed::LongValuesIterator;
-use core::util::packed::{PackedLongValuesBuilder, PackedLongValuesBuilderType, DEFAULT_PAGE_SIZE};
+use core::util::packed::{
+    LongValuesIterator, PackedLongValuesBuilder, PackedLongValuesBuilderType, DEFAULT_PAGE_SIZE,
+};
 use core::util::packed_misc::COMPACT;
 use core::util::{DocId, Numeric, ReusableIterator};
 
+use core::store::Directory;
 use error::Result;
 
 const MISSING: i64 = 0;
@@ -36,7 +38,11 @@ impl NormValuesWriter {
 
     pub fn finish(&mut self, _num_doc: i32) {}
 
-    pub fn flush(&mut self, state: &SegmentWriteState, consumer: &mut NormsConsumer) -> Result<()> {
+    pub fn flush<D: Directory, DW: Directory, C: Codec, NC: NormsConsumer>(
+        &mut self,
+        state: &SegmentWriteState<D, DW, C>,
+        consumer: &mut NC,
+    ) -> Result<()> {
         let max_doc = state.segment_info.max_doc as usize;
         let values = self.pending.build();
         let mut iter = NumericIter::new(values.iterator(), max_doc, values.size() as usize);
@@ -45,15 +51,15 @@ impl NormValuesWriter {
     }
 }
 
-struct NumericIter {
-    values_iter: LongValuesIterator,
+struct NumericIter<'a> {
+    values_iter: LongValuesIterator<'a>,
     upto: usize,
     max_doc: usize,
     size: usize,
 }
 
-impl NumericIter {
-    fn new(values_iter: LongValuesIterator, max_doc: usize, size: usize) -> NumericIter {
+impl<'a> NumericIter<'a> {
+    fn new(values_iter: LongValuesIterator<'a>, max_doc: usize, size: usize) -> NumericIter {
         NumericIter {
             values_iter,
             upto: 0,
@@ -63,7 +69,7 @@ impl NumericIter {
     }
 }
 
-impl Iterator for NumericIter {
+impl<'a> Iterator for NumericIter<'a> {
     type Item = Result<Numeric>;
 
     fn next(&mut self) -> Option<Result<Numeric>> {
@@ -81,7 +87,7 @@ impl Iterator for NumericIter {
     }
 }
 
-impl ReusableIterator for NumericIter {
+impl<'a> ReusableIterator for NumericIter<'a> {
     fn reset(&mut self) {
         self.values_iter.reset();
         self.upto = 0;

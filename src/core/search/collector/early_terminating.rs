@@ -1,9 +1,10 @@
+use core::codec::Codec;
 use core::index::LeafReaderContext;
 use core::search::collector;
-use core::search::collector::{Collector, LeafCollector, SearchCollector};
+use core::search::collector::{Collector, ParallelLeafCollector, SearchCollector};
 use core::search::Scorer;
 use core::util::DocId;
-use error::*;
+use error::{ErrorKind, Result};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -32,7 +33,8 @@ impl EarlyTerminatingSortingCollector {
 }
 
 impl SearchCollector for EarlyTerminatingSortingCollector {
-    fn set_next_reader(&mut self, _reader: &LeafReaderContext) -> Result<()> {
+    type LC = EarlyTerminatingLeafCollector;
+    fn set_next_reader<C: Codec>(&mut self, _reader: &LeafReaderContext<'_, C>) -> Result<()> {
         self.num_docs_collected_per_reader = 0;
         Ok(())
     }
@@ -41,15 +43,15 @@ impl SearchCollector for EarlyTerminatingSortingCollector {
         true
     }
 
-    fn leaf_collector(&mut self, _reader: &LeafReaderContext) -> Result<Box<LeafCollector>> {
+    fn leaf_collector<C: Codec>(&mut self, _reader: &LeafReaderContext<'_, C>) -> Result<Self::LC> {
         assert!(self.support_parallel());
-        Ok(Box::new(EarlyTerminatingLeafCollector::new(
+        Ok(EarlyTerminatingLeafCollector::new(
             self.num_docs_to_collect_per_reader,
             Arc::clone(&self.early_terminated),
-        )))
+        ))
     }
 
-    fn finish(&mut self) -> Result<()> {
+    fn finish_parallel(&mut self) -> Result<()> {
         Ok(())
     }
 }
@@ -59,7 +61,7 @@ impl Collector for EarlyTerminatingSortingCollector {
         false
     }
 
-    fn collect(&mut self, _doc: DocId, _scorer: &mut Scorer) -> Result<()> {
+    fn collect<S: Scorer + ?Sized>(&mut self, _doc: DocId, _scorer: &mut S) -> Result<()> {
         self.num_docs_collected_per_reader += 1;
 
         if self.num_docs_collected_per_reader > self.num_docs_to_collect_per_reader {
@@ -91,7 +93,7 @@ impl EarlyTerminatingLeafCollector {
     }
 }
 
-impl LeafCollector for EarlyTerminatingLeafCollector {
+impl ParallelLeafCollector for EarlyTerminatingLeafCollector {
     fn finish_leaf(&mut self) -> Result<()> {
         Ok(())
     }
@@ -102,7 +104,7 @@ impl Collector for EarlyTerminatingLeafCollector {
         false
     }
 
-    fn collect(&mut self, _doc: i32, _scorer: &mut Scorer) -> Result<()> {
+    fn collect<S: Scorer + ?Sized>(&mut self, _doc: i32, _scorer: &mut S) -> Result<()> {
         self.num_docs_collected += 1;
 
         if self.num_docs_collected > self.num_docs_to_collect {

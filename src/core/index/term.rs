@@ -1,26 +1,35 @@
-use core::search::posting_iterator::POSTING_ITERATOR_FLAG_FREQS;
-use core::search::posting_iterator::{EmptyPostingIterator, PostingIterator};
+use core::search::posting_iterator::{EmptyPostingIterator, PostingIterator, PostingIteratorFlags};
 
 use error::ErrorKind::{IllegalArgument, UnsupportedOperation};
 use error::Result;
 
-use std::any::Any;
 use std::mem;
 use std::sync::Arc;
 
 /// Encapsulates all required internal state to position the associated
 /// `TermIterator` without re-seeking
-pub trait TermState: Send + Sync {
+pub trait TermState: Send + Sync + Clone {
     fn ord(&self) -> i64;
 
     fn serialize(&self) -> Vec<u8>;
+}
 
-    fn clone_to(&self) -> Box<TermState>;
+// use for stub impl for TermIterator that does not support TermState
+#[derive(Clone)]
+pub struct UnreachableTermState;
 
-    fn as_any(&self) -> &Any;
+impl TermState for UnreachableTermState {
+    fn ord(&self) -> i64 {
+        unreachable!()
+    }
+
+    fn serialize(&self) -> Vec<u8> {
+        unreachable!()
+    }
 }
 
 /// An ordinal based `TermState`
+#[derive(Clone)]
 pub struct OrdTermState {
     /// Term ordinal, i.e. its position in the full list of sorted terms
     pub ord: i64,
@@ -35,22 +44,15 @@ impl TermState for OrdTermState {
         let r: [u8; 8] = unsafe { mem::transmute(self.ord.to_be()) };
         r.to_vec()
     }
-
-    fn clone_to(&self) -> Box<TermState> {
-        Box::new(OrdTermState { ord: self.ord })
-    }
-
-    fn as_any(&self) -> &Any {
-        self
-    }
 }
 
 /// Access to the terms in a specific field.  See {@link Fields}.
 /// @lucene.experimental
-pub trait Terms: Send + Sync {
+pub trait Terms {
+    type Iterator: TermIterator;
     /// Returns an iterator that will step through all
     /// terms. This method will not return null. */
-    fn iterator(&self) -> Result<Box<TermIterator>>;
+    fn iterator(&self) -> Result<Self::Iterator>;
 
     /// Returns a TermsEnum that iterates over all terms and
     /// documents that are accepted by the provided {@link
@@ -152,7 +154,7 @@ pub trait Terms: Send + Sync {
     /// take deleted documents into account.  This returns
     /// null when there are no terms. */
     fn min(&self) -> Result<Option<Vec<u8>>> {
-        self.iterator()?.as_mut().next()
+        self.iterator()?.next()
     }
     /// Returns the largest term (in lexicographic order) in the field.
     /// Note that, just like other term measures, this measure does not
@@ -165,14 +167,14 @@ pub trait Terms: Send + Sync {
             return Ok(None);
         } else if size > 0 {
             let mut iterator = self.iterator()?;
-            iterator.as_mut().seek_exact_ord(size - 1)?;
-            let term = iterator.as_mut().term()?;
+            iterator.seek_exact_ord(size - 1)?;
+            let term = iterator.term()?;
             return Ok(Some(term.to_vec()));
         }
 
         // otherwise: binary search
         let mut iterator = self.iterator()?;
-        let v = iterator.as_mut().next()?;
+        let v = iterator.next()?;
         if v.is_none() {
             // empty: only possible from a FilteredTermsEnum...
             return Ok(v);
@@ -192,7 +194,7 @@ pub trait Terms: Send + Sync {
                 let mid = (low + high) / 2;
                 let length = scratch.len();
                 scratch[length - 1usize] = mid as u8;
-                if iterator.as_mut().seek_ceil(&scratch)? == SeekStatus::End {
+                if iterator.seek_ceil(&scratch)? == SeekStatus::End {
                     // scratch was to high
                     if mid == 0 {
                         scratch.pop();
@@ -227,54 +229,56 @@ pub trait Terms: Send + Sync {
     }
 }
 
-#[derive(Default, Debug)]
-pub struct EmptyTerms;
-
-impl EmptyTerms {
-    pub fn new() -> EmptyTerms {
-        EmptyTerms {}
-    }
-}
-
-impl Terms for EmptyTerms {
-    fn iterator(&self) -> Result<Box<TermIterator>> {
-        unimplemented!()
+impl<T: Terms> Terms for Arc<T> {
+    type Iterator = T::Iterator;
+    fn iterator(&self) -> Result<Self::Iterator> {
+        (**self).iterator()
     }
 
     fn size(&self) -> Result<i64> {
-        Ok(0)
+        (**self).size()
     }
 
     fn sum_total_term_freq(&self) -> Result<i64> {
-        Ok(0)
+        (**self).sum_total_term_freq()
     }
 
     fn sum_doc_freq(&self) -> Result<i64> {
-        Ok(0)
+        (**self).sum_doc_freq()
     }
 
     fn doc_count(&self) -> Result<i32> {
-        Ok(0)
+        (**self).doc_count()
     }
 
     fn has_freqs(&self) -> Result<bool> {
-        Ok(false)
+        (**self).has_freqs()
     }
 
     fn has_offsets(&self) -> Result<bool> {
-        Ok(false)
+        (**self).has_offsets()
     }
 
     fn has_positions(&self) -> Result<bool> {
-        Ok(false)
+        (**self).has_positions()
     }
 
     fn has_payloads(&self) -> Result<bool> {
-        Ok(false)
+        (**self).has_payloads()
+    }
+
+    fn min(&self) -> Result<Option<Vec<u8>>> {
+        (**self).min()
+    }
+
+    fn max(&self) -> Result<Option<Vec<u8>>> {
+        (**self).max()
+    }
+
+    fn stats(&self) -> Result<String> {
+        (**self).stats()
     }
 }
-
-pub type TermsRef = Arc<Terms>;
 
 /// Represents returned result from {@link #seekCeil}.
 #[derive(PartialEq, Debug)]
@@ -287,7 +291,9 @@ pub enum SeekStatus {
     NotFound,
 }
 
-pub trait TermIterator {
+pub trait TermIterator: 'static {
+    type Postings: PostingIterator;
+    type TermState: TermState;
     /// Increments the iteration to the next {@link BytesRef} in the iterator.
     /// Returns the resulting {@link BytesRef} or <code>null</code> if the end of
     /// the iterator is reached. The returned BytesRef may be re-used across calls
@@ -324,7 +330,7 @@ pub trait TermIterator {
     /// within bounds.
     fn seek_exact_ord(&mut self, ord: i64) -> Result<()>;
 
-    fn seek_exact_state(&mut self, text: &[u8], _state: &TermState) -> Result<()> {
+    fn seek_exact_state(&mut self, text: &[u8], _state: &Self::TermState) -> Result<()> {
         self.seek_exact(text).and_then(|r| {
             if r {
                 Ok(())
@@ -371,10 +377,10 @@ pub trait TermIterator {
     ///
     /// @param reuse pass a prior PostingsEnum for possible reuse
     /// @see #postings(PostingsEnum, int)
-    fn postings(&mut self) -> Result<Box<PostingIterator>> {
-        self.postings_with_flags(POSTING_ITERATOR_FLAG_FREQS)
+    fn postings(&mut self) -> Result<Self::Postings> {
+        self.postings_with_flags(PostingIteratorFlags::FREQS)
     }
-    fn postings_with_flags(&mut self, flags: i16) -> Result<Box<PostingIterator>>;
+    fn postings_with_flags(&mut self, flags: u16) -> Result<Self::Postings>;
 
     /// Expert: Returns the TermsEnums internal state to position the TermsEnum
     /// without re-seeking the term dictionary.
@@ -385,7 +391,7 @@ pub trait TermIterator {
     ///
     /// @see TermState
     /// @see #seekExact(BytesRef, TermState)
-    fn term_state(&mut self) -> Result<Box<TermState>> {
+    fn term_state(&mut self) -> Result<Self::TermState> {
         bail!(UnsupportedOperation(
             "TermIterator::term_state unsupported".into()
         ))
@@ -395,22 +401,16 @@ pub trait TermIterator {
     fn is_empty(&self) -> bool {
         false
     }
-
-    /// used for type cast
-    fn as_any(&self) -> &Any;
 }
 
-pub struct EmptyTermIterator {
-    data: Vec<u8>,
-}
+const EMPTY_BYTES: [u8; 0] = [];
 
-impl Default for EmptyTermIterator {
-    fn default() -> EmptyTermIterator {
-        EmptyTermIterator { data: vec![0; 1] }
-    }
-}
+#[derive(Default)]
+pub struct EmptyTermIterator;
 
 impl TermIterator for EmptyTermIterator {
+    type Postings = EmptyPostingIterator;
+    type TermState = UnreachableTermState;
     fn next(&mut self) -> Result<Option<Vec<u8>>> {
         Ok(None)
     }
@@ -424,7 +424,7 @@ impl TermIterator for EmptyTermIterator {
     }
 
     fn term(&self) -> Result<&[u8]> {
-        Ok(&self.data[0..0])
+        Ok(&EMPTY_BYTES)
     }
 
     fn ord(&self) -> Result<i64> {
@@ -439,28 +439,24 @@ impl TermIterator for EmptyTermIterator {
         Ok(-1)
     }
 
-    fn postings_with_flags(&mut self, _flags: i16) -> Result<Box<PostingIterator>> {
-        Ok(Box::new(EmptyPostingIterator::default()))
+    fn postings_with_flags(&mut self, _flags: u16) -> Result<Self::Postings> {
+        Ok(EmptyPostingIterator::default())
     }
 
     fn is_empty(&self) -> bool {
         true
     }
-
-    fn as_any(&self) -> &Any {
-        self
-    }
 }
 
-pub struct FilteredTermIterBase {
+pub struct FilteredTermIterBase<T: TermIterator> {
     pub initial_seek_term: Option<Vec<u8>>,
     pub do_seek: bool,
     pub actual_term: Option<Vec<u8>>,
-    pub terms: Box<TermIterator>,
+    pub terms: T,
 }
 
-impl FilteredTermIterBase {
-    pub fn new(terms: Box<TermIterator>, start_with_seek: bool) -> Self {
+impl<T: TermIterator> FilteredTermIterBase<T> {
+    pub fn new(terms: T, start_with_seek: bool) -> Self {
         FilteredTermIterBase {
             initial_seek_term: None,
             do_seek: start_with_seek,
@@ -488,9 +484,10 @@ pub enum AcceptStatus {
 }
 
 pub trait FilteredTermIterator {
-    fn base(&self) -> &FilteredTermIterBase;
+    type Iter: TermIterator;
+    fn base(&self) -> &FilteredTermIterBase<Self::Iter>;
 
-    fn base_mut(&mut self) -> &mut FilteredTermIterBase;
+    fn base_mut(&mut self) -> &mut FilteredTermIterBase<Self::Iter>;
 
     fn accept(&self, term: &[u8]) -> Result<AcceptStatus>;
 
@@ -499,8 +496,7 @@ pub trait FilteredTermIterator {
     }
 
     fn next_seek_term(&mut self) -> Option<Vec<u8>> {
-        let t = mem::replace(&mut self.base_mut().initial_seek_term, None);
-        t
+        self.base_mut().initial_seek_term.take()
     }
 }
 
@@ -508,6 +504,8 @@ impl<T> TermIterator for T
 where
     T: FilteredTermIterator + 'static,
 {
+    type Postings = <T::Iter as TermIterator>::Postings;
+    type TermState = <T::Iter as TermIterator>::TermState;
     fn next(&mut self) -> Result<Option<Vec<u8>>> {
         loop {
             if self.base().do_seek {
@@ -581,11 +579,7 @@ where
         self.base_mut().terms.total_term_freq()
     }
 
-    fn postings_with_flags(&mut self, flags: i16) -> Result<Box<PostingIterator>> {
+    fn postings_with_flags(&mut self, flags: u16) -> Result<Self::Postings> {
         self.base_mut().terms.postings_with_flags(flags)
-    }
-
-    fn as_any(&self) -> &Any {
-        self
     }
 }

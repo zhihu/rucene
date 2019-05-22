@@ -2,22 +2,22 @@ use core::search::match_all::{AllDocsIterator, ConstantScoreScorer};
 use core::search::Scorer;
 use core::util::DocId;
 
-use error::Result;
+use error::{ErrorKind::IllegalArgument, Result};
 
 #[allow(dead_code)]
-pub(crate) fn scorer_as_bits(max_doc: i32, scorer: Box<Scorer>) -> DocIteratorAsBits {
+pub(crate) fn scorer_as_bits(max_doc: i32, scorer: Box<dyn Scorer>) -> DocIteratorAsBits {
     DocIteratorAsBits::new(max_doc, scorer)
 }
 
 pub struct DocIteratorAsBits {
-    iterator: Box<Scorer>,
+    iterator: Box<dyn Scorer>,
     previous: DocId,
     previous_matched: bool,
     max_doc: i32,
 }
 
 impl DocIteratorAsBits {
-    pub fn new(max_doc: i32, scorer: Box<Scorer>) -> DocIteratorAsBits {
+    pub fn new(max_doc: i32, scorer: Box<dyn Scorer>) -> DocIteratorAsBits {
         DocIteratorAsBits {
             iterator: scorer,
             previous: -1,
@@ -29,7 +29,7 @@ impl DocIteratorAsBits {
     pub fn all_doc(max_doc: i32) -> DocIteratorAsBits {
         let scorer = Box::new(ConstantScoreScorer::new(
             1f32,
-            Box::new(AllDocsIterator::new(max_doc)),
+            AllDocsIterator::new(max_doc),
             max_doc as usize,
         ));
         DocIteratorAsBits {
@@ -43,16 +43,18 @@ impl DocIteratorAsBits {
     pub fn get(&mut self, index: usize) -> Result<bool> {
         let index = index as i32;
         if index < 0 || index >= self.max_doc {
-            bail!("{} is out of bounds: [0-{}]", index, self.max_doc);
+            bail!(IllegalArgument(format!(
+                "{} is out of bounds: [0-{}]",
+                index, self.max_doc
+            )));
         }
 
         if index < self.previous {
-            bail!(
+            bail!(IllegalArgument(format!(
                 "This Bits instance can only be consumed in order. Got called on [{}] while \
                  previously called on [{}].",
-                index,
-                self.previous
-            );
+                index, self.previous
+            )));
         }
 
         if index == self.previous {

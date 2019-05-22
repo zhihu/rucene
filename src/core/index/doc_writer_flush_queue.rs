@@ -1,45 +1,46 @@
+use core::codec::Codec;
 use core::index::bufferd_updates::FrozenBufferedUpdates;
 use core::index::doc_writer_delete_queue::DocumentsWriterDeleteQueue;
 use core::index::index_writer::IndexWriter;
+use core::index::merge_policy::MergePolicy;
+use core::index::merge_scheduler::MergeScheduler;
 use core::index::thread_doc_writer::{DocumentsWriterPerThread, FlushedSegment};
+use core::store::Directory;
 
 use error::Result;
-use std::collections::VecDeque;
-use std::mem;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
 
-pub struct DocumentsWriterFlushQueue {
-    lock: Arc<Mutex<()>>,
-    queue: VecDeque<FlushTicket>,
+use std::collections::VecDeque;
+use std::marker::PhantomData;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Mutex, MutexGuard};
+
+pub struct DocumentsWriterFlushQueue<D: Directory, C: Codec> {
+    queue: Mutex<VecDeque<FlushTicket<D, C>>>,
     // we track tickets separately since count must be present even before the ticket is
     // constructed ie. queue.size would not reflect it.
     ticket_count: AtomicU32,
-    purge_lock: Arc<Mutex<()>>,
+    purge_lock: Mutex<()>,
 }
 
-impl DocumentsWriterFlushQueue {
+impl<D: Directory, C: Codec> DocumentsWriterFlushQueue<D, C> {
     pub fn new() -> Self {
         DocumentsWriterFlushQueue {
-            lock: Arc::new(Mutex::new(())),
-            queue: VecDeque::with_capacity(10000),
+            queue: Mutex::new(VecDeque::with_capacity(10000)),
             ticket_count: AtomicU32::new(0),
-            purge_lock: Arc::new(Mutex::new(())),
+            purge_lock: Mutex::new(()),
         }
     }
 
-    pub fn add_deletes(&mut self, delete_queue: &DocumentsWriterDeleteQueue) -> Result<()> {
-        let lock = Arc::clone(&self.lock);
-        let _l = lock.lock()?;
+    pub fn add_deletes(&self, delete_queue: &DocumentsWriterDeleteQueue<C>) -> Result<()> {
+        let mut queue = self.queue.lock()?;
         // first inc the ticket count - freeze opens a window for any_change() to fail
         self.inc_tickets();
 
         match delete_queue.freeze_global_buffer(None) {
             Ok(frozen_updates) => {
-                self.queue
-                    .push_back(FlushTicket::Global(GlobalDeletesTicket::new(
-                        frozen_updates,
-                    )));
+                queue.push_back(FlushTicket::Global(GlobalDeletesTicket::new(
+                    frozen_updates,
+                )));
                 Ok(())
             }
             Err(e) => {
@@ -65,18 +66,17 @@ impl DocumentsWriterFlushQueue {
         self.ticket_count.load(Ordering::Relaxed)
     }
 
-    pub fn add_flush_ticket(
-        &mut self,
-        dwpt: &mut DocumentsWriterPerThread,
-    ) -> Result<&mut FlushTicket> {
-        let lock = Arc::clone(&self.lock);
-        let _l = lock.lock().unwrap();
+    pub fn add_flush_ticket<MS: MergeScheduler, MP: MergePolicy>(
+        &self,
+        dwpt: &mut DocumentsWriterPerThread<D, C, MS, MP>,
+    ) -> Result<*mut FlushTicket<D, C>> {
+        let mut queue = self.queue.lock()?;
         self.inc_tickets();
         match dwpt.prepare_flush() {
             Ok(update) => {
                 let ticket = SegmentFlushTicket::new(update);
-                self.queue.push_back(FlushTicket::Segment(Box::new(ticket)));
-                Ok(self.queue.back_mut().unwrap())
+                queue.push_back(FlushTicket::Segment(Box::new(ticket)));
+                Ok(queue.back_mut().unwrap())
             }
             Err(e) => {
                 self.dec_tickets();
@@ -85,38 +85,36 @@ impl DocumentsWriterFlushQueue {
         }
     }
 
-    fn add_segment(&self, ticket: &mut FlushTicket, segment: FlushedSegment) {
-        let lock = Arc::clone(&self.lock);
-        let _l = lock.lock().unwrap();
-        match ticket {
-            FlushTicket::Segment(s) => s.segment = Some(segment),
-            _ => unreachable!(),
-        }
+    pub fn force_purge<MS: MergeScheduler, MP: MergePolicy>(
+        &self,
+        writer: &IndexWriter<D, C, MS, MP>,
+    ) -> Result<u32> {
+        let queue = self.queue.lock()?;
+        self.inner_purge(writer, queue)
     }
 
-    pub fn force_purge(&mut self, writer: &mut IndexWriter) -> Result<u32> {
-        let lock = Arc::clone(&self.lock);
-        let l = lock.lock()?;
-        self.inner_purge(writer, &l)
-    }
-
-    pub fn try_purge(&mut self, writer: &mut IndexWriter) -> Result<u32> {
-        let purge_lock = Arc::clone(&self.purge_lock);
-        let lock_res = purge_lock.try_lock();
+    pub fn try_purge<MS: MergeScheduler, MP: MergePolicy>(
+        &self,
+        writer: &IndexWriter<D, C, MS, MP>,
+    ) -> Result<u32> {
+        let lock_res = self.purge_lock.try_lock();
         match lock_res {
             Ok(_l) => {
-                let lock = Arc::clone(&self.lock);
-                let l = lock.lock()?;
-                self.inner_purge(writer, &l)
+                let queue = self.queue.lock()?;
+                self.inner_purge(writer, queue)
             }
             _ => Ok(0),
         }
     }
 
-    fn inner_purge(&mut self, writer: &mut IndexWriter, _l: &MutexGuard<()>) -> Result<u32> {
+    fn inner_purge<MS: MergeScheduler, MP: MergePolicy>(
+        &self,
+        writer: &IndexWriter<D, C, MS, MP>,
+        mut queue: MutexGuard<VecDeque<FlushTicket<D, C>>>,
+    ) -> Result<u32> {
         let mut num_purged = 0u32;
         loop {
-            let can_publish = if let Some(ref ft) = self.queue.front_mut() {
+            let can_publish = if let Some(ref ft) = queue.front_mut() {
                 ft.can_publish()
             } else {
                 false
@@ -126,7 +124,7 @@ impl DocumentsWriterFlushQueue {
                 num_purged += 1;
                 self.ticket_count.fetch_sub(1, Ordering::AcqRel);
 
-                let mut head = self.queue.pop_front().unwrap();
+                let mut head = queue.pop_front().unwrap();
 
                 // if we block on publish -> lock IW -> lock BufferedDeletes we don't block
                 // concurrent segment flushes just because they want to append to the queue.
@@ -141,19 +139,23 @@ impl DocumentsWriterFlushQueue {
     }
 }
 
-trait IFlushTicket {
-    fn publish(&mut self, writer: &mut IndexWriter) -> Result<()>;
+trait IFlushTicket<D: Directory, C: Codec> {
+    fn publish<MS: MergeScheduler, MP: MergePolicy>(
+        &mut self,
+        writer: &IndexWriter<D, C, MS, MP>,
+    ) -> Result<()>;
+
     fn can_publish(&self) -> bool;
 
     /// Publishes the flushed segment, segment private deletes (if any) and its
     /// associated global delete (if present) to IndexWriter.  The actual
     /// publishing operation is synced on {@code IW -> BDS} so that the {@link SegmentInfo}'s
     /// delete generation is always GlobalPacket_deleteGeneration + 1
-    fn publish_flushed_segment(
+    fn publish_flushed_segment<MS: MergeScheduler, MP: MergePolicy>(
         &self,
-        index_writer: &mut IndexWriter,
-        new_segment: FlushedSegment,
-        global_packet: Option<FrozenBufferedUpdates>,
+        index_writer: &IndexWriter<D, C, MS, MP>,
+        new_segment: FlushedSegment<D, C>,
+        global_packet: Option<FrozenBufferedUpdates<C>>,
     ) -> Result<()> {
         debug!(
             "publish_flush_segment seg-private update={:?}",
@@ -170,11 +172,11 @@ trait IFlushTicket {
         index_writer.publish_flushed_segment(new_segment, global_packet)
     }
 
-    fn finish_flush(
+    fn finish_flush<MS: MergeScheduler, MP: MergePolicy>(
         &self,
-        index_writer: &mut IndexWriter,
-        new_segment: Option<FlushedSegment>,
-        buffered_update: Option<FrozenBufferedUpdates>,
+        index_writer: &IndexWriter<D, C, MS, MP>,
+        new_segment: Option<FlushedSegment<D, C>>,
+        buffered_update: Option<FrozenBufferedUpdates<C>>,
     ) -> Result<()> {
         // Finish the flushed segment and publish it to IndexWriter
         if let Some(segment) = new_segment {
@@ -190,24 +192,31 @@ trait IFlushTicket {
     }
 }
 
-pub struct GlobalDeletesTicket {
-    frozen_updates: Option<FrozenBufferedUpdates>,
+pub struct GlobalDeletesTicket<D: Directory, C: Codec> {
+    frozen_updates: Option<FrozenBufferedUpdates<C>>,
     published: bool,
+    _dir: PhantomData<D>,
+    _codec: PhantomData<C>,
 }
 
-impl GlobalDeletesTicket {
-    pub fn new(frozen_updates: FrozenBufferedUpdates) -> Self {
+impl<D: Directory, C: Codec> GlobalDeletesTicket<D, C> {
+    pub fn new(frozen_updates: FrozenBufferedUpdates<C>) -> Self {
         GlobalDeletesTicket {
             frozen_updates: Some(frozen_updates),
             published: false,
+            _dir: PhantomData,
+            _codec: PhantomData,
         }
     }
 }
 
-impl IFlushTicket for GlobalDeletesTicket {
-    fn publish(&mut self, writer: &mut IndexWriter) -> Result<()> {
+impl<D: Directory, C: Codec> IFlushTicket<D, C> for GlobalDeletesTicket<D, C> {
+    fn publish<MS: MergeScheduler, MP: MergePolicy>(
+        &mut self,
+        writer: &IndexWriter<D, C, MS, MP>,
+    ) -> Result<()> {
         debug_assert!(!self.published);
-        let fu = mem::replace(&mut self.frozen_updates, None);
+        let fu = self.frozen_updates.take();
         self.published = true;
         self.finish_flush(writer, None, fu)
     }
@@ -217,15 +226,15 @@ impl IFlushTicket for GlobalDeletesTicket {
     }
 }
 
-pub struct SegmentFlushTicket {
-    frozen_updates: Option<FrozenBufferedUpdates>,
+pub struct SegmentFlushTicket<D: Directory, C: Codec> {
+    frozen_updates: Option<FrozenBufferedUpdates<C>>,
     published: bool,
-    segment: Option<FlushedSegment>,
+    segment: Option<FlushedSegment<D, C>>,
     failed: bool,
 }
 
-impl SegmentFlushTicket {
-    pub fn new(frozen_updates: FrozenBufferedUpdates) -> Self {
+impl<D: Directory, C: Codec> SegmentFlushTicket<D, C> {
+    pub fn new(frozen_updates: FrozenBufferedUpdates<C>) -> Self {
         SegmentFlushTicket {
             frozen_updates: Some(frozen_updates),
             published: false,
@@ -234,7 +243,7 @@ impl SegmentFlushTicket {
         }
     }
 
-    pub fn set_segment(&mut self, segment: Option<FlushedSegment>) {
+    pub fn set_segment(&mut self, segment: Option<FlushedSegment<D, C>>) {
         debug_assert!(!self.failed);
         self.segment = segment;
     }
@@ -245,12 +254,15 @@ impl SegmentFlushTicket {
     }
 }
 
-impl IFlushTicket for SegmentFlushTicket {
-    fn publish(&mut self, writer: &mut IndexWriter) -> Result<()> {
+impl<D: Directory, C: Codec> IFlushTicket<D, C> for SegmentFlushTicket<D, C> {
+    fn publish<MS: MergeScheduler, MP: MergePolicy>(
+        &mut self,
+        writer: &IndexWriter<D, C, MS, MP>,
+    ) -> Result<()> {
         debug_assert!(!self.published);
         self.published = true;
-        let segment = mem::replace(&mut self.segment, None);
-        let frozen = mem::replace(&mut self.frozen_updates, None);
+        let segment = self.segment.take();
+        let frozen = self.frozen_updates.take();
 
         self.finish_flush(writer, segment, frozen)
     }
@@ -260,16 +272,16 @@ impl IFlushTicket for SegmentFlushTicket {
     }
 }
 
-pub enum FlushTicket {
-    Global(GlobalDeletesTicket),
-    Segment(Box<SegmentFlushTicket>),
+pub enum FlushTicket<D: Directory, C: Codec> {
+    Global(GlobalDeletesTicket<D, C>),
+    Segment(Box<SegmentFlushTicket<D, C>>),
 }
 
-impl FlushTicket {
-    pub fn set_segment(&mut self, segment: Option<FlushedSegment>) {
+impl<D: Directory, C: Codec> FlushTicket<D, C> {
+    pub fn set_segment(&mut self, segment: Option<FlushedSegment<D, C>>) {
         match self {
             FlushTicket::Segment(s) => {
-                s.segment = segment;
+                s.set_segment(segment);
             }
             _ => {
                 unreachable!();
@@ -289,8 +301,11 @@ impl FlushTicket {
     }
 }
 
-impl IFlushTicket for FlushTicket {
-    fn publish(&mut self, writer: &mut IndexWriter) -> Result<()> {
+impl<D: Directory, C: Codec> IFlushTicket<D, C> for FlushTicket<D, C> {
+    fn publish<MS: MergeScheduler, MP: MergePolicy>(
+        &mut self,
+        writer: &IndexWriter<D, C, MS, MP>,
+    ) -> Result<()> {
         match self {
             FlushTicket::Global(g) => g.publish(writer),
             FlushTicket::Segment(s) => s.publish(writer),

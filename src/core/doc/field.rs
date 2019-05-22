@@ -3,14 +3,12 @@ use core::attribute::{BytesTermAttribute, PayloadAttribute, TermToBytesRefAttrib
 use core::attribute::{CharTermAttribute, OffsetAttribute, PositionIncrementAttribute};
 use core::doc::FieldType;
 use core::index::{Fieldable, IndexOptions};
-use core::util::byte_ref::BytesRef;
-use core::util::{Numeric, VariantValue};
+use core::util::{BytesRef, Numeric, VariantValue};
 
 use error::{ErrorKind, Result};
 
 use std::cmp::Ordering;
 use std::collections::HashSet;
-use std::mem;
 
 #[derive(Debug)]
 pub struct Field {
@@ -18,7 +16,7 @@ pub struct Field {
     field_type: FieldType,
     fields_data: Option<VariantValue>,
     boost: f32,
-    token_stream: Option<Box<TokenStream>>,
+    token_stream: Option<Box<dyn TokenStream>>,
 }
 
 impl Field {
@@ -26,7 +24,7 @@ impl Field {
         name: String,
         field_type: FieldType,
         fields_data: Option<VariantValue>,
-        token_stream: Option<Box<TokenStream>>,
+        token_stream: Option<Box<dyn TokenStream>>,
     ) -> Field {
         Field {
             field_type,
@@ -74,7 +72,7 @@ impl Fieldable for Field {
     }
 
     // TODO currently this function should only be called once per doc field
-    fn token_stream(&mut self) -> Result<Box<TokenStream>> {
+    fn token_stream(&mut self) -> Result<Box<dyn TokenStream>> {
         debug_assert_ne!(self.field_type.index_options, IndexOptions::Null);
 
         if !self.field_type.tokenized {
@@ -96,8 +94,7 @@ impl Fieldable for Field {
         }
 
         if self.token_stream.is_some() {
-            let stream = mem::replace(&mut self.token_stream, None);
-            Ok(stream.unwrap())
+            Ok(self.token_stream.take().unwrap())
         } else {
             // TODO currently not support analyzer
             unimplemented!()

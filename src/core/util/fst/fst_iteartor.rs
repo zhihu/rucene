@@ -5,7 +5,6 @@ pub struct FSTIterBase<F: OutputFactory> {
     fst: FST<F>,
     arcs: Vec<Arc<F::Value>>,
     output: Vec<F::Value>,
-    no_output: F::Value,
     fst_reader: FSTBytesReader, // a reader of self.fst
     upto: usize,
     target_length: usize,
@@ -30,7 +29,6 @@ impl<F: OutputFactory> FSTIterBase<F> {
             fst,
             arcs,
             output,
-            no_output,
             fst_reader,
             upto: 0,
             target_length: 0,
@@ -176,7 +174,6 @@ pub trait FSTIterator<F: OutputFactory> {
 pub struct BytesRefFSTIterator<F: OutputFactory> {
     base: FSTIterBase<F>,
     current: Vec<u8>,
-    current_length: usize,
     // target: Vec<u8>,
 }
 
@@ -184,11 +181,7 @@ impl<F: OutputFactory> BytesRefFSTIterator<F> {
     pub fn new(fst: FST<F>) -> Self {
         let base = FSTIterBase::new(fst);
         let current = vec![0u8; 10];
-        BytesRefFSTIterator {
-            base,
-            current,
-            current_length: 0,
-        }
+        BytesRefFSTIterator { base, current }
     }
 
     pub fn init(&mut self) {

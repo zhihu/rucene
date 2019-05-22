@@ -5,12 +5,9 @@
 #![feature(exact_size_is_empty)]
 #![feature(drain_filter)]
 #![feature(hashmap_internals)]
-//#![feature(vec_remove_item)]
 #![feature(fnbox)]
 #![feature(integer_atomics)]
 #![feature(vec_remove_item)]
-//#![feature(io)]
-//#![feature(repr_transparent)]
 
 #[macro_use]
 extern crate error_chain;
@@ -33,6 +30,7 @@ extern crate fasthash;
 extern crate flate2;
 extern crate memmap;
 extern crate num_traits;
+extern crate smallvec;
 extern crate thread_local;
 extern crate unicode_reader;
 

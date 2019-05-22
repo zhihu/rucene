@@ -1,7 +1,5 @@
 use core::store::DataInput;
 use core::util::byte_block_pool::ByteBlockPool;
-use core::util::byte_block_pool::{BYTE_BLOCK_MASK, BYTE_BLOCK_SIZE, LEVEL_SIZE_ARRAY,
-                                  NEXT_LEVEL_ARRAY};
 
 use std::io;
 use std::ptr;
@@ -56,14 +54,14 @@ impl ByteSliceReader {
         self.pool = pool;
         self.end_index = end_index;
         self.level = 0;
-        self.buffer_upto = start_index / BYTE_BLOCK_SIZE;
-        self.buffer_offset = self.buffer_upto * BYTE_BLOCK_SIZE;
-        self.upto = start_index & BYTE_BLOCK_MASK;
+        self.buffer_upto = start_index / ByteBlockPool::BYTE_BLOCK_SIZE;
+        self.buffer_offset = self.buffer_upto * ByteBlockPool::BYTE_BLOCK_SIZE;
+        self.upto = start_index & ByteBlockPool::BYTE_BLOCK_MASK;
 
-        let first_size = LEVEL_SIZE_ARRAY[0];
+        let first_size = ByteBlockPool::LEVEL_SIZE_ARRAY[0];
         self.limit = if start_index + first_size >= end_index {
             // There is noly this one slice to read
-            end_index & BYTE_BLOCK_MASK
+            end_index & ByteBlockPool::BYTE_BLOCK_MASK
         } else {
             self.upto + first_size - 4
         };
@@ -84,12 +82,12 @@ impl ByteSliceReader {
                 + ((buffer[self.limit + 2] as usize & 0xff) << 8)
                 + (buffer[self.limit + 3] as usize & 0xff)
         };
-        self.level = NEXT_LEVEL_ARRAY[self.level];
-        let new_size = LEVEL_SIZE_ARRAY[self.level];
+        self.level = ByteBlockPool::NEXT_LEVEL_ARRAY[self.level];
+        let new_size = ByteBlockPool::LEVEL_SIZE_ARRAY[self.level];
 
-        self.buffer_upto = next_index / BYTE_BLOCK_SIZE;
-        self.buffer_offset = self.buffer_upto * BYTE_BLOCK_SIZE;
-        self.upto = next_index & BYTE_BLOCK_MASK;
+        self.buffer_upto = next_index / ByteBlockPool::BYTE_BLOCK_SIZE;
+        self.buffer_offset = self.buffer_upto * ByteBlockPool::BYTE_BLOCK_SIZE;
+        self.upto = next_index & ByteBlockPool::BYTE_BLOCK_MASK;
         if next_index + new_size >= self.end_index {
             // We are advancing to the final slice
             debug_assert!(self.end_index >= next_index);

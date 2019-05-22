@@ -1,36 +1,39 @@
-use core::codec::lucene60::points_reader::{DATA_CODEC_NAME, DATA_EXTENSION, DATA_VERSION_CURRENT,
-                                           INDEX_EXTENSION, INDEX_VERSION_CURRENT, META_CODEC_NAME};
-use core::codec::BoxedPointsReader;
-use core::codec::Lucene60PointsReader;
-use core::codec::{merge_point_values, PointsWriter};
-use core::codec::{write_footer, write_index_header};
-use core::index::segment_file_name;
-use core::index::FieldInfo;
-use core::index::LiveDocsDocMap;
-use core::index::{IntersectVisitor, PointValues, Relation};
-use core::index::{MergeState, SegmentWriteState};
-use core::store::IndexOutput;
+use core::codec::lucene60::points_reader::{
+    DATA_CODEC_NAME, DATA_EXTENSION, DATA_VERSION_CURRENT, INDEX_EXTENSION, INDEX_VERSION_CURRENT,
+    META_CODEC_NAME,
+};
+use core::codec::{
+    merge_point_values, write_footer, write_index_header, Codec, Lucene60PointsReader,
+    MutablePointsReader, PointsReader, PointsReaderEnum, PointsWriter,
+};
+use core::index::{
+    segment_file_name, FieldInfo, IntersectVisitor, LiveDocsDocMap, MergeState, PointValues,
+    Relation, SegmentWriteState,
+};
+use core::store::{DataOutput, Directory};
 use core::util::bkd::{BKDWriter, DEFAULT_MAX_MB_SORT_IN_HEAP, DEFAULT_MAX_POINTS_IN_LEAF_NODE};
 use core::util::DocId;
 
-use error::Result;
+use error::{ErrorKind::IllegalState, Result};
 use std::collections::btree_map::BTreeMap;
 use std::sync::Arc;
 
 // Writes dimensional values
-pub struct Lucene60PointsWriter {
+pub struct Lucene60PointsWriter<D: Directory, DW: Directory, C: Codec> {
     // Output used to write the BKD tree data file
-    data_out: Box<IndexOutput>,
+    data_out: DW::IndexOutput,
     // Maps field name to file pointer in the data file where the BKD index is located.
     index_fps: BTreeMap<String, i64>,
-    write_state: SegmentWriteState,
+    write_state: SegmentWriteState<D, DW, C>,
     max_points_in_leaf_node: i32,
     max_mb_sort_in_heap: f64,
     finished: bool,
 }
 
-impl Lucene60PointsWriter {
-    pub fn new(write_state: &SegmentWriteState) -> Result<Lucene60PointsWriter> {
+impl<D: Directory, DW: Directory, C: Codec> Lucene60PointsWriter<D, DW, C> {
+    pub fn new(
+        write_state: &SegmentWriteState<D, DW, C>,
+    ) -> Result<Lucene60PointsWriter<D, DW, C>> {
         let write_state = write_state.clone();
         debug_assert!(write_state.field_infos.has_doc_values);
         let data_file_name = segment_file_name(
@@ -42,7 +45,7 @@ impl Lucene60PointsWriter {
             .directory
             .create_output(&data_file_name, &write_state.context)?;
         write_index_header(
-            data_out.as_mut(),
+            &mut data_out,
             DATA_CODEC_NAME,
             DATA_VERSION_CURRENT,
             write_state.segment_info.get_id(),
@@ -60,32 +63,18 @@ impl Lucene60PointsWriter {
     }
 }
 
-pub struct ValuesIntersectVisitor<'a> {
-    writer: &'a mut BKDWriter,
-}
-
-impl<'a> ValuesIntersectVisitor<'a> {
-    pub fn new(writer: &'a mut BKDWriter) -> ValuesIntersectVisitor<'a> {
-        ValuesIntersectVisitor { writer }
-    }
-}
-
-impl<'a> IntersectVisitor for ValuesIntersectVisitor<'a> {
-    fn visit(&mut self, _doc_id: DocId) -> Result<()> {
-        bail!("IllegalStateException");
-    }
-
-    fn visit_by_packed_value(&mut self, doc_id: DocId, packed_value: &[u8]) -> Result<()> {
-        self.writer.add(packed_value, doc_id)
-    }
-
-    fn compare(&self, _min_packed_value: &[u8], _max_packed_value: &[u8]) -> Relation {
-        Relation::CellCrossesQuery
-    }
-}
-
-impl PointsWriter for Lucene60PointsWriter {
-    fn write_field(&mut self, field_info: &FieldInfo, values: BoxedPointsReader) -> Result<()> {
+impl<D: Directory, DW: Directory + 'static, C: Codec> PointsWriter
+    for Lucene60PointsWriter<D, DW, C>
+{
+    fn write_field<P, MP>(
+        &mut self,
+        field_info: &FieldInfo,
+        values: PointsReaderEnum<P, MP>,
+    ) -> Result<()>
+    where
+        P: PointsReader,
+        MP: MutablePointsReader,
+    {
         let single_value_per_doc =
             values.size(&field_info.name)? == values.doc_count(&field_info.name)? as i64;
         let mut writer = BKDWriter::new(
@@ -101,13 +90,13 @@ impl PointsWriter for Lucene60PointsWriter {
         )?;
 
         match values {
-            BoxedPointsReader::Mutable(s) => {
-                let fp = writer.write_field(self.data_out.as_mut(), &field_info.name, s)?;
+            PointsReaderEnum::Mutable(s) => {
+                let fp = writer.write_field(&mut self.data_out, &field_info.name, s)?;
                 if fp != -1 {
                     self.index_fps.insert(field_info.name.clone(), fp);
                 }
             }
-            BoxedPointsReader::Simple(m) => {
+            PointsReaderEnum::Simple(m) => {
                 {
                     let mut visitor = ValuesIntersectVisitor::new(&mut writer);
                     m.intersect(&field_info.name, &mut visitor)?;
@@ -115,7 +104,7 @@ impl PointsWriter for Lucene60PointsWriter {
                 // We could have 0 points on merge since all docs with dimensional fields may be
                 // deleted:
                 if writer.point_count > 0 {
-                    let fp = writer.finish(self.data_out.as_mut())?;
+                    let fp = writer.finish(&mut self.data_out)?;
                     self.index_fps.insert(field_info.name.clone(), fp);
                 }
             }
@@ -123,7 +112,7 @@ impl PointsWriter for Lucene60PointsWriter {
         Ok(())
     }
 
-    fn merge(&mut self, merge_state: &MergeState) -> Result<()> {
+    fn merge<D1: Directory, C1: Codec>(&mut self, merge_state: &MergeState<D1, C1>) -> Result<()> {
         if merge_state.needs_index_sort {
             // TODO: can we gain back some optos even if index is sorted?
             // E.g. if sort results in large chunks of contiguous docs from one sub
@@ -171,7 +160,7 @@ impl PointsWriter for Lucene60PointsWriter {
                     // of the already sorted incoming segments, instead of
                     // trying to sort all points again as if we were simply
                     // reindexing them:
-                    let mut writer: BKDWriter = BKDWriter::new(
+                    let mut writer = BKDWriter::new(
                         self.write_state.segment_info.max_doc,
                         Arc::clone(&self.write_state.directory),
                         &self.write_state.segment_info.name,
@@ -212,7 +201,7 @@ impl PointsWriter for Lucene60PointsWriter {
                         }
                     }
 
-                    let fp = writer.merge(self.data_out.as_mut(), doc_maps, bkd_readers)?;
+                    let fp = writer.merge(&mut self.data_out, doc_maps, bkd_readers)?;
                     if fp != -1 {
                         self.index_fps.insert(field_info.name.clone(), fp);
                     }
@@ -227,11 +216,11 @@ impl PointsWriter for Lucene60PointsWriter {
 
     fn finish(&mut self) -> Result<()> {
         if self.finished {
-            bail!("Lucene60PointsWriter already finished");
+            bail!(IllegalState("already finished".into()));
         }
 
         self.finished = true;
-        write_footer(self.data_out.as_mut())?;
+        write_footer(&mut self.data_out)?;
         let index_file_name = segment_file_name(
             &self.write_state.segment_info.name,
             &self.write_state.segment_suffix,
@@ -242,7 +231,7 @@ impl PointsWriter for Lucene60PointsWriter {
             .directory
             .create_output(&index_file_name, &self.write_state.context)?;
         write_index_header(
-            index_output.as_mut(),
+            &mut index_output,
             META_CODEC_NAME,
             INDEX_VERSION_CURRENT,
             self.write_state.segment_info.get_id(),
@@ -263,6 +252,30 @@ impl PointsWriter for Lucene60PointsWriter {
             }
         }
 
-        write_footer(index_output.as_mut())
+        write_footer(&mut index_output)
+    }
+}
+
+pub struct ValuesIntersectVisitor<'a, D: Directory> {
+    writer: &'a mut BKDWriter<D>,
+}
+
+impl<'a, D: Directory> ValuesIntersectVisitor<'a, D> {
+    pub fn new(writer: &'a mut BKDWriter<D>) -> ValuesIntersectVisitor<'a, D> {
+        ValuesIntersectVisitor { writer }
+    }
+}
+
+impl<'a, D: Directory + 'static> IntersectVisitor for ValuesIntersectVisitor<'a, D> {
+    fn visit(&mut self, _doc_id: DocId) -> Result<()> {
+        bail!(IllegalState("".into()))
+    }
+
+    fn visit_by_packed_value(&mut self, doc_id: DocId, packed_value: &[u8]) -> Result<()> {
+        self.writer.add(packed_value, doc_id)
+    }
+
+    fn compare(&self, _min_packed_value: &[u8], _max_packed_value: &[u8]) -> Relation {
+        Relation::CellCrossesQuery
     }
 }

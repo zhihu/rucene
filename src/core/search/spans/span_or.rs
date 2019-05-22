@@ -1,8 +1,12 @@
+use core::codec::{Codec, CodecEnum, CodecPostingIterator, CodecTermState};
 use core::index::{LeafReaderContext, Term, TermContext};
 use core::search::disi::DisiPriorityQueue;
 use core::search::explanation::Explanation;
-use core::search::searcher::IndexSearcher;
-use core::search::spans::span::{build_sim_weight, term_contexts, PostingsFlag, NO_MORE_POSITIONS};
+use core::search::searcher::SearchPlanBuilder;
+use core::search::spans::span::{
+    build_sim_weight, term_contexts, PostingsFlag, SpanQueryEnum, SpanWeightEnum, SpansEnum,
+    NO_MORE_POSITIONS,
+};
 use core::search::spans::span::{SpanCollector, SpanQuery, SpanWeight, Spans};
 use core::search::term_query::TermQuery;
 use core::search::{DocIterator, Query, Scorer, SimWeight, Weight};
@@ -10,6 +14,7 @@ use core::util::DocId;
 
 use error::{ErrorKind, Result};
 
+use core::search::posting_iterator::PostingIterator;
 use std::cmp::{max, Ordering};
 use std::collections::BinaryHeap;
 use std::collections::HashMap;
@@ -20,28 +25,34 @@ const SPAN_OR_QUERY: &str = "span_or";
 
 pub struct SpanOrQuery {
     field: String,
-    clauses: Vec<Box<SpanQuery>>,
+    clauses: Vec<SpanQueryEnum>,
 }
 
 impl SpanOrQuery {
-    pub fn new(clauses: Vec<Box<SpanQuery>>) -> Result<Self> {
+    pub fn new(clauses: Vec<SpanQueryEnum>) -> Result<Self> {
         if clauses.len() < 2 {
             bail!(ErrorKind::IllegalArgument(
                 "clauses length must not be smaller than 2!".into()
             ));
         }
         for i in 0..clauses.len() - 1 {
-            if clauses[i].field() != clauses[i + 1].field() {
+            if SpanQuery::<CodecEnum>::field(&clauses[i])
+                != SpanQuery::<CodecEnum>::field(&clauses[i + 1])
+            {
                 bail!(ErrorKind::IllegalArgument(
                     "Clauses must have same field.".into()
                 ));
             }
         }
-        let field = clauses[0].field().to_string();
+        let field = SpanQuery::<CodecEnum>::field(&clauses[0]).to_string();
         Ok(SpanOrQuery { field, clauses })
     }
 
-    fn span_or_weight(&self, searcher: &IndexSearcher, needs_scores: bool) -> Result<SpanOrWeight> {
+    fn span_or_weight<C: Codec>(
+        &self,
+        searcher: &dyn SearchPlanBuilder<C>,
+        needs_scores: bool,
+    ) -> Result<SpanOrWeight<C>> {
         let mut sub_weights = Vec::with_capacity(self.clauses.len());
         for clause in &self.clauses {
             sub_weights.push(clause.span_weight(searcher, needs_scores)?);
@@ -55,25 +66,35 @@ impl SpanOrQuery {
     }
 }
 
-impl SpanQuery for SpanOrQuery {
+impl<C: Codec> SpanQuery<C> for SpanOrQuery {
+    type Weight = SpanOrWeight<C>;
+
+    fn span_weight(
+        &self,
+        searcher: &dyn SearchPlanBuilder<C>,
+        needs_scores: bool,
+    ) -> Result<Self::Weight> {
+        self.span_or_weight(searcher, needs_scores)
+    }
+
     fn field(&self) -> &str {
         &self.field
     }
-
-    fn span_weight(&self, searcher: &IndexSearcher, needs_scores: bool) -> Result<Box<SpanWeight>> {
-        Ok(Box::new(self.span_or_weight(searcher, needs_scores)?))
-    }
 }
 
-impl Query for SpanOrQuery {
-    fn create_weight(&self, searcher: &IndexSearcher, needs_scores: bool) -> Result<Box<Weight>> {
+impl<C: Codec> Query<C> for SpanOrQuery {
+    fn create_weight(
+        &self,
+        searcher: &dyn SearchPlanBuilder<C>,
+        needs_scores: bool,
+    ) -> Result<Box<dyn Weight<C>>> {
         Ok(Box::new(self.span_or_weight(searcher, needs_scores)?))
     }
 
     fn extract_terms(&self) -> Vec<TermQuery> {
         self.clauses
             .iter()
-            .flat_map(|c| c.extract_terms())
+            .flat_map(|c| Query::<C>::extract_terms(c))
             .collect()
     }
 
@@ -100,20 +121,20 @@ impl fmt::Display for SpanOrQuery {
     }
 }
 
-pub struct SpanOrWeight {
-    sim_weight: Option<Box<SimWeight>>,
-    sub_weights: Vec<Box<SpanWeight>>,
+pub struct SpanOrWeight<C: Codec> {
+    sim_weight: Option<Box<dyn SimWeight<C>>>,
+    sub_weights: Vec<SpanWeightEnum<C>>,
 }
 
-impl SpanOrWeight {
-    pub fn new(
+impl<C: Codec> SpanOrWeight<C> {
+    pub fn new<IS: SearchPlanBuilder<C> + ?Sized>(
         query: &SpanOrQuery,
-        sub_weights: Vec<Box<SpanWeight>>,
-        searcher: &IndexSearcher,
-        terms: HashMap<Term, Arc<TermContext>>,
+        sub_weights: Vec<SpanWeightEnum<C>>,
+        searcher: &IS,
+        terms: HashMap<Term, Arc<TermContext<CodecTermState<C>>>>,
     ) -> Result<Self> {
         assert!(sub_weights.len() >= 2);
-        let sim_weight = build_sim_weight(query.field(), searcher, terms, None)?;
+        let sim_weight = build_sim_weight(SpanQuery::<C>::field(query), searcher, terms, None)?;
         Ok(SpanOrWeight {
             sim_weight,
             sub_weights,
@@ -121,12 +142,12 @@ impl SpanOrWeight {
     }
 }
 
-impl SpanWeight for SpanOrWeight {
-    fn sim_weight(&self) -> Option<&SimWeight> {
+impl<C: Codec> SpanWeight<C> for SpanOrWeight<C> {
+    fn sim_weight(&self) -> Option<&SimWeight<C>> {
         self.sim_weight.as_ref().map(|x| &**x)
     }
 
-    fn sim_weight_mut(&mut self) -> Option<&mut SimWeight> {
+    fn sim_weight_mut(&mut self) -> Option<&mut SimWeight<C>> {
         if let Some(ref mut sim_weight) = self.sim_weight {
             Some(sim_weight.as_mut())
         } else {
@@ -136,9 +157,9 @@ impl SpanWeight for SpanOrWeight {
 
     fn get_spans(
         &self,
-        reader: &LeafReaderContext,
+        reader: &LeafReaderContext<'_, C>,
         required_postings: &PostingsFlag,
-    ) -> Result<Option<Box<Spans>>> {
+    ) -> Result<Option<SpansEnum<CodecPostingIterator<C>>>> {
         let mut sub_spans = Vec::with_capacity(self.sub_weights.len());
         for w in &self.sub_weights {
             if let Some(span) = w.get_spans(reader, required_postings)? {
@@ -152,21 +173,24 @@ impl SpanWeight for SpanOrWeight {
         let capasity = sub_spans.len();
         let by_doc_queue = DisiPriorityQueue::new(sub_spans);
 
-        Ok(Some(Box::new(SpanOrSpans::new(
+        Ok(Some(SpansEnum::Or(SpanOrSpans::new(
             by_doc_queue,
             BinaryHeap::with_capacity(capasity),
         ))))
     }
 
-    fn extract_term_contexts(&self, contexts: &mut HashMap<Term, Arc<TermContext>>) {
+    fn extract_term_contexts(
+        &self,
+        contexts: &mut HashMap<Term, Arc<TermContext<CodecTermState<C>>>>,
+    ) {
         for spans in &self.sub_weights {
             spans.extract_term_contexts(contexts)
         }
     }
 }
 
-impl Weight for SpanOrWeight {
-    fn create_scorer(&self, ctx: &LeafReaderContext) -> Result<Box<Scorer>> {
+impl<C: Codec> Weight<C> for SpanOrWeight<C> {
+    fn create_scorer(&self, ctx: &LeafReaderContext<'_, C>) -> Result<Option<Box<dyn Scorer>>> {
         self.do_create_scorer(ctx)
     }
 
@@ -186,12 +210,12 @@ impl Weight for SpanOrWeight {
         true
     }
 
-    fn explain(&self, reader: &LeafReaderContext, doc: DocId) -> Result<Explanation> {
+    fn explain(&self, reader: &LeafReaderContext<'_, C>, doc: DocId) -> Result<Explanation> {
         self.explain_span(reader, doc)
     }
 }
 
-impl fmt::Display for SpanOrWeight {
+impl<C: Codec> fmt::Display for SpanOrWeight<C> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let weights = {
             let query_strs: Vec<String> =
@@ -202,9 +226,9 @@ impl fmt::Display for SpanOrWeight {
     }
 }
 
-struct SpanOrSpans {
-    by_doc_queue: DisiPriorityQueue<Spans>,
-    by_position_queue: BinaryHeap<SpansElement>,
+pub struct SpanOrSpans<P: PostingIterator> {
+    by_doc_queue: DisiPriorityQueue<SpansEnum<P>>,
+    by_position_queue: BinaryHeap<SpansElement<P>>,
     top_position_spans_valid: bool,
     positions_cost: f32,
     last_doc_two_phase_matched: DocId,
@@ -213,14 +237,12 @@ struct SpanOrSpans {
     support_two_phase: bool,
 }
 
-unsafe impl Send for SpanOrSpans {}
+unsafe impl<P: PostingIterator> Send for SpanOrSpans<P> {}
 
-unsafe impl Sync for SpanOrSpans {}
-
-impl SpanOrSpans {
-    pub fn new(
-        by_doc_queue: DisiPriorityQueue<Spans>,
-        by_position_queue: BinaryHeap<SpansElement>,
+impl<P: PostingIterator> SpanOrSpans<P> {
+    fn new(
+        by_doc_queue: DisiPriorityQueue<SpansEnum<P>>,
+        by_position_queue: BinaryHeap<SpansElement<P>>,
     ) -> Self {
         let (positions_cost, match_cost, cost) = {
             let mut sum_position_cost = 0.0f32;
@@ -305,7 +327,7 @@ impl SpanOrSpans {
                     NO_MORE_POSITIONS
                 );
                 self.by_position_queue.push(SpansElement::new(
-                    list_at_current_doc.inner_mut() as *mut Spans
+                    list_at_current_doc.inner_mut() as *mut SpansEnum<P>
                 ));
             }
             if list_at_current_doc.next.is_null() {
@@ -320,7 +342,7 @@ impl SpanOrSpans {
     }
 }
 
-impl Spans for SpanOrSpans {
+impl<P: PostingIterator> Spans for SpanOrSpans<P> {
     fn next_start_position(&mut self) -> Result<i32> {
         if !self.top_position_spans_valid {
             self.by_position_queue.clear();
@@ -370,7 +392,7 @@ impl Spans for SpanOrSpans {
         self.by_position_queue.peek().unwrap().spans().width()
     }
 
-    fn collect(&mut self, collector: &mut SpanCollector) -> Result<()> {
+    fn collect(&mut self, collector: &mut impl SpanCollector) -> Result<()> {
         if self.top_position_spans_valid {
             self.by_position_queue
                 .peek_mut()
@@ -391,7 +413,7 @@ impl Spans for SpanOrSpans {
     }
 }
 
-impl DocIterator for SpanOrSpans {
+impl<P: PostingIterator> DocIterator for SpanOrSpans<P> {
     fn doc_id(&self) -> i32 {
         self.by_doc_queue.peek().doc
     }
@@ -461,38 +483,39 @@ impl DocIterator for SpanOrSpans {
     }
 }
 
-struct SpansElement {
-    spans_prt: *mut Spans,
+struct SpansElement<P: PostingIterator> {
+    spans_ptr: *mut SpansEnum<P>,
 }
 
-impl SpansElement {
-    fn new(spans_prt: *mut Spans) -> Self {
-        SpansElement { spans_prt }
+impl<P: PostingIterator> SpansElement<P> {
+    fn new(spans_ptr: *mut SpansEnum<P>) -> Self {
+        SpansElement { spans_ptr }
     }
 
     #[allow(mut_from_ref)]
-    fn spans(&self) -> &mut Spans {
-        unsafe { &mut *self.spans_prt }
+    #[inline]
+    fn spans(&self) -> &mut SpansEnum<P> {
+        unsafe { &mut *self.spans_ptr }
     }
 }
 
-impl Eq for SpansElement {}
+impl<P: PostingIterator> Eq for SpansElement<P> {}
 
-impl PartialEq for SpansElement {
-    fn eq(&self, other: &SpansElement) -> bool {
-        unsafe { (*self.spans_prt).doc_id().eq(&(*other.spans_prt).doc_id()) }
+impl<P: PostingIterator> PartialEq for SpansElement<P> {
+    fn eq(&self, other: &SpansElement<P>) -> bool {
+        self.spans().doc_id().eq(&other.spans().doc_id())
     }
 }
 
-impl Ord for SpansElement {
+impl<P: PostingIterator> Ord for SpansElement<P> {
     fn cmp(&self, other: &Self) -> Ordering {
         // reversed order by doc id for BinaryHeap
-        unsafe { (*other.spans_prt).doc_id().cmp(&(*self.spans_prt).doc_id()) }
+        other.spans().doc_id().cmp(&self.spans().doc_id())
     }
 }
 
-impl PartialOrd for SpansElement {
-    fn partial_cmp(&self, other: &SpansElement) -> Option<Ordering> {
+impl<P: PostingIterator> PartialOrd for SpansElement<P> {
+    fn partial_cmp(&self, other: &SpansElement<P>) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }

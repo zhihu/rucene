@@ -41,6 +41,16 @@ error_chain! {
             display("Unsupported Operation: {}", errmsg)
         }
 
+        AlreadyClosed(errmsg: String) {
+            description(errmsg)
+            display("Already Closed: {}", errmsg)
+        }
+
+        IOError(errmsg: String) {
+            description(errmsg)
+            display("IO Error: {}", errmsg)
+        }
+
         RuntimeError(errmsg: String) {
             description(errmsg)
             display("Runtime Error: {}", errmsg)

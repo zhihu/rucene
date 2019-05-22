@@ -1,27 +1,26 @@
-use core::codec::codec_util;
 use core::codec::lucene53::norms;
-use core::codec::NormsConsumer;
+use core::codec::{codec_util, Codec, NormsConsumer};
 use core::index::{segment_file_name, FieldInfo, SegmentWriteState};
-use core::store::IndexOutput;
+use core::store::{Directory, IndexOutput};
 use core::util::numeric::Numeric;
 use core::util::ReusableIterator;
 
 use error::Result;
 
-pub struct Lucene53NormsConsumer {
-    data: Box<IndexOutput>,
-    meta: Box<IndexOutput>,
+pub struct Lucene53NormsConsumer<O: IndexOutput> {
+    data: O,
+    meta: O,
     max_doc: i32,
 }
 
-impl Lucene53NormsConsumer {
-    pub fn new(
-        state: &SegmentWriteState,
+impl<O: IndexOutput> Lucene53NormsConsumer<O> {
+    pub fn new<D: Directory, DW: Directory<IndexOutput = O>, C: Codec>(
+        state: &SegmentWriteState<D, DW, C>,
         data_codec: &str,
         data_extension: &str,
         meta_codec: &str,
         meta_extension: &str,
-    ) -> Result<Lucene53NormsConsumer> {
+    ) -> Result<Self> {
         let data_name = segment_file_name(
             &state.segment_info.name,
             &state.segment_suffix,
@@ -29,7 +28,7 @@ impl Lucene53NormsConsumer {
         );
         let mut data = state.directory.create_output(&data_name, &state.context)?;
         codec_util::write_index_header(
-            data.as_mut(),
+            &mut data,
             data_codec,
             norms::VERSION_CURRENT,
             state.segment_info.get_id(),
@@ -43,7 +42,7 @@ impl Lucene53NormsConsumer {
         );
         let mut meta = state.directory.create_output(&meta_name, &state.context)?;
         codec_util::write_index_header(
-            meta.as_mut(),
+            &mut meta,
             meta_codec,
             norms::VERSION_CURRENT,
             state.segment_info.get_id(),
@@ -58,6 +57,9 @@ impl Lucene53NormsConsumer {
             max_doc,
         })
     }
+}
+
+impl<O: IndexOutput> Lucene53NormsConsumer<O> {
     fn add_constant(&mut self, constant: i64) -> Result<()> {
         self.meta.write_byte(0 as u8)?;
         self.meta.write_long(constant)
@@ -67,7 +69,7 @@ impl Lucene53NormsConsumer {
         &mut self,
         min_value: i64,
         max_value: i64,
-        values: &mut ReusableIterator<Item = Result<Numeric>>,
+        values: &mut impl ReusableIterator<Item = Result<Numeric>>,
     ) -> Result<()> {
         let len = if min_value >= i8::min_value() as i64 && max_value <= i8::max_value() as i64 {
             1
@@ -98,11 +100,11 @@ impl Lucene53NormsConsumer {
     }
 }
 
-impl NormsConsumer for Lucene53NormsConsumer {
+impl<O: IndexOutput> NormsConsumer for Lucene53NormsConsumer<O> {
     fn add_norms_field(
         &mut self,
         field_info: &FieldInfo,
-        values: &mut ReusableIterator<Item = Result<Numeric>>,
+        values: &mut impl ReusableIterator<Item = Result<Numeric>>,
     ) -> Result<()> {
         self.meta.write_vint(field_info.number as i32)?;
         let mut min_value = i64::max_value();
@@ -136,13 +138,13 @@ impl NormsConsumer for Lucene53NormsConsumer {
     }
 }
 
-impl Drop for Lucene53NormsConsumer {
+impl<O: IndexOutput> Drop for Lucene53NormsConsumer<O> {
     fn drop(&mut self) {
         let mut _success = false;
         // write EOF marker
         let _ = self.meta.write_vint(-1);
         // write checksum
-        let _ = codec_util::write_footer(self.meta.as_mut());
-        let _ = codec_util::write_footer(self.data.as_mut());
+        let _ = codec_util::write_footer(&mut self.meta);
+        let _ = codec_util::write_footer(&mut self.data);
     }
 }

@@ -1,5 +1,6 @@
-use error::*;
+use error::Result;
 
+use core::codec::Codec;
 use core::index::IndexReader;
 use core::util::DocId;
 
@@ -58,11 +59,11 @@ use std::sync::Arc;
 /// <h1>Advanced usage</h1>
 /// Custom structures can be created on top of single- or multi- dimensional basic types, on top of
 /// `BinaryPoint` for more flexibility, or via custom `Field` subclasses.
-pub trait PointValues: Send + Sync {
+pub trait PointValues {
     /// Finds all documents and points matching the provided visitor.
     /// This method does not enforce live documents, so it's up to the caller
     /// to test whether each document is deleted, if necessary.
-    fn intersect(&self, field_name: &str, visitor: &mut IntersectVisitor) -> Result<()>;
+    fn intersect(&self, field_name: &str, visitor: &mut impl IntersectVisitor) -> Result<()>;
 
     /// Returns minimum value for each dimension, packed, or null if `size` is 0
     fn min_packed_value(&self, field_name: &str) -> Result<Vec<u8>>;
@@ -86,13 +87,45 @@ pub trait PointValues: Send + Sync {
     fn as_any(&self) -> &Any;
 }
 
-pub type PointValuesRef = Arc<PointValues>;
+impl<T: PointValues + 'static> PointValues for Arc<T> {
+    fn intersect(&self, field_name: &str, visitor: &mut impl IntersectVisitor) -> Result<()> {
+        (**self).intersect(field_name, visitor)
+    }
+
+    fn min_packed_value(&self, field_name: &str) -> Result<Vec<u8>> {
+        (**self).min_packed_value(field_name)
+    }
+
+    fn max_packed_value(&self, field_name: &str) -> Result<Vec<u8>> {
+        (**self).max_packed_value(field_name)
+    }
+
+    fn num_dimensions(&self, field_name: &str) -> Result<usize> {
+        (**self).num_dimensions(field_name)
+    }
+
+    fn bytes_per_dimension(&self, field_name: &str) -> Result<usize> {
+        (**self).bytes_per_dimension(field_name)
+    }
+
+    fn size(&self, field_name: &str) -> Result<i64> {
+        (**self).size(field_name)
+    }
+
+    fn doc_count(&self, field_name: &str) -> Result<i32> {
+        (**self).doc_count(field_name)
+    }
+
+    fn as_any(&self) -> &Any {
+        (**self).as_any()
+    }
+}
 
 /// Return the cumulated number of points across all leaves of the given
 /// `IndexReader`. Leaves that do not have points for the given field
 /// are ignored.
 /// @see PointValues#size(String)
-pub fn point_values_size(reader: &IndexReader, field: &str) -> Result<i64> {
+pub fn point_values_size<C: Codec>(reader: &IndexReader<Codec = C>, field: &str) -> Result<i64> {
     let mut size = 0i64;
     for leaf_reader in reader.leaves() {
         if let Some(info) = leaf_reader.reader.field_info(field) {
@@ -110,7 +143,10 @@ pub fn point_values_size(reader: &IndexReader, field: &str) -> Result<i64> {
 /// of the given `IndexReader`. Leaves that do not have points for the
 /// given field are ignored.
 /// @see PointValues#getDocCount(String)
-pub fn point_values_doc_count(reader: &IndexReader, field: &str) -> Result<i32> {
+pub fn point_values_doc_count<C: Codec>(
+    reader: &IndexReader<Codec = C>,
+    field: &str,
+) -> Result<i32> {
     let mut count = 0i32;
     for leaf_reader in reader.leaves() {
         if let Some(info) = leaf_reader.reader.field_info(field) {
@@ -128,7 +164,10 @@ pub fn point_values_doc_count(reader: &IndexReader, field: &str) -> Result<i32> 
 /// `IndexReader`. Leaves that do not have points for the given field
 /// are ignored.
 /// @see PointValues#getMinPackedValue(String)
-pub fn point_values_min_packed_value(reader: &IndexReader, field: &str) -> Result<Vec<u8>> {
+pub fn point_values_min_packed_value<C: Codec>(
+    reader: &IndexReader<Codec = C>,
+    field: &str,
+) -> Result<Vec<u8>> {
     let mut min_value = Vec::new();
     for leaf_reader in reader.leaves() {
         if let Some(info) = leaf_reader.reader.field_info(field) {
@@ -166,7 +205,10 @@ pub fn point_values_min_packed_value(reader: &IndexReader, field: &str) -> Resul
 /// `IndexReader`. Leaves that do not have points for the given field
 /// are ignored.
 ///  @see PointValues#getMaxPackedValue(String)
-pub fn point_values_max_packed_value(reader: &IndexReader, field: &str) -> Result<Vec<u8>> {
+pub fn point_values_max_packed_value<C: Codec>(
+    reader: &IndexReader<Codec = C>,
+    field: &str,
+) -> Result<Vec<u8>> {
     let mut max_value = Vec::new();
     for leaf_reader in reader.leaves() {
         if let Some(info) = leaf_reader.reader.field_info(field) {

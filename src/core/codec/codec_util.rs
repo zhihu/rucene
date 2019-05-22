@@ -23,8 +23,8 @@ pub fn write_header<T: DataOutput + ?Sized>(out: &mut T, codec: &str, version: i
     out.write_int(version)
 }
 
-pub fn write_index_header<T: DataOutput + ?Sized>(
-    out: &mut T,
+pub fn write_index_header(
+    out: &mut impl DataOutput,
     codec: &str,
     version: i32,
     id: &[u8],
@@ -47,7 +47,7 @@ pub fn write_index_header<T: DataOutput + ?Sized>(
     out.write_bytes(&suffix.as_bytes(), 0, slen)
 }
 
-pub fn write_footer(output: &mut IndexOutput) -> Result<()> {
+pub fn write_footer(output: &mut impl IndexOutput) -> Result<()> {
     output.write_int(FOOTER_MAGIC)?;
     output.write_int(0)?;
     write_crc(output)
@@ -231,7 +231,7 @@ pub fn validate_footer<T: IndexInput + ?Sized>(input: &mut T) -> Result<()> {
     }
 }
 
-pub fn check_footer<T: ChecksumIndexInput + ?Sized>(input: &mut T) -> Result<i64> {
+pub fn check_footer(input: &mut impl ChecksumIndexInput) -> Result<i64> {
     validate_footer(input)?;
     let actual_checksum: i64 = input.checksum();
     let expected_checksum: i64 = read_crc(input)?;
