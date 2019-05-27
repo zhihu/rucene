@@ -20,7 +20,7 @@ use core::index::index_writer_config::{IndexWriterConfig, DISABLE_AUTO_FLUSH};
 use core::index::merge_policy::MergePolicy;
 use core::index::merge_scheduler::MergeScheduler;
 use core::index::thread_doc_writer::DocumentsWriterPerThreadPool;
-use core::index::thread_doc_writer::{DocumentsWriterPerThread, LockedThreadState, ThreadState};
+use core::index::thread_doc_writer::{DocumentsWriterPerThread, ThreadState};
 use core::util::Volatile;
 use error::{ErrorKind::IllegalState, Result};
 
@@ -37,7 +37,7 @@ use std::time::Duration;
 
 /// This class controls `DocumentsWriterPerThread` flushing during
 /// indexing. It tracks the memory consumption per
-/// `DocumentsWriterPerThread} and uses a configured {@link FlushPolicy` to
+/// `DocumentsWriterPerThread` and uses a configured `FlushPolicy` to
 /// decide if a `DocumentsWriterPerThread` must flush.
 ///
 /// In addition to the `FlushPolicy` the flush control might set certain
@@ -45,13 +45,13 @@ use std::time::Duration;
 /// `DocumentsWriterPerThread` exceeds the
 /// `IndexWriterConfig#getRAMPerThreadHardLimitMB()` to prevent address
 /// space exhaustion.
-pub struct DocumentsWriterFlushControl<
+pub(crate) struct DocumentsWriterFlushControl<
     D: Directory + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
 > {
-    lock: Arc<Mutex<()>>,
+    lock: Arc<Mutex<FlushControlLock>>,
     cond: Condvar,
     hard_max_bytes_per_dwpt: u64,
     pub active_bytes: u64,
@@ -88,6 +88,8 @@ pub struct DocumentsWriterFlushControl<
     inited: bool,
 }
 
+pub(crate) struct FlushControlLock;
+
 impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy>
     DocumentsWriterFlushControl<D, C, MS, MP>
 {
@@ -97,7 +99,7 @@ impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy>
     ) -> Self {
         let hard_max_bytes_per_dwpt = config.per_thread_hard_limit();
         DocumentsWriterFlushControl {
-            lock: Arc::new(Mutex::new(())),
+            lock: Arc::new(Mutex::new(FlushControlLock)),
             cond: Condvar::new(),
             hard_max_bytes_per_dwpt,
             active_bytes: 0,
@@ -158,7 +160,7 @@ impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy>
 
     unsafe fn flush_control_mut(
         &self,
-        _l: &MutexGuard<()>,
+        _l: &MutexGuard<FlushControlLock>,
     ) -> &mut DocumentsWriterFlushControl<D, C, MS, MP> {
         let control = self as *const DocumentsWriterFlushControl<D, C, MS, MP>
             as *mut DocumentsWriterFlushControl<D, C, MS, MP>;
@@ -184,23 +186,23 @@ impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy>
         &mut self,
         per_thread: &mut ThreadState<D, C, MS, MP>,
         is_update: bool,
-        lg: &MutexGuard<()>,
+        lg: &MutexGuard<FlushControlLock>,
     ) -> Result<Option<DocumentsWriterPerThread<D, C, MS, MP>>> {
         self.commit_per_thread_bytes(per_thread);
         if !per_thread.flush_pending() {
             unsafe {
                 let writer = self as *mut DocumentsWriterFlushControl<D, C, MS, MP>;
                 if is_update {
-                    self.flush_policy.on_update(&mut *writer, per_thread);
+                    self.flush_policy.on_update(&mut *writer, lg, per_thread);
                 } else {
-                    self.flush_policy.on_insert(&mut *writer, per_thread);
+                    self.flush_policy.on_insert(&mut *writer, lg, per_thread);
                 }
             }
 
             if !per_thread.flush_pending() && per_thread.bytes_used > self.hard_max_bytes_per_dwpt {
                 // Safety check to prevent a single DWPT exceeding its RAM limit. This
                 // is super important since we can not address more than 2048 MB per DWPT
-                self.do_set_flush_pending(per_thread, lg);
+                self.set_flush_pending(per_thread, lg);
             }
         }
         let flushing_dwpt = if self.is_full_flush() {
@@ -344,7 +346,7 @@ impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy>
         self.full_flush.load(Ordering::Acquire)
     }
 
-    fn assert_memory(&self, guard: &MutexGuard<()>) -> bool {
+    fn assert_memory(&self, guard: &MutexGuard<FlushControlLock>) -> bool {
         let max_ram_mb = self.config.ram_buffer_size_mb();
 
         // We can only assert if we have always been flushing by RAM usage; otherwise
@@ -394,7 +396,11 @@ impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy>
         self.do_after_flush(dwpt, &guard);
     }
 
-    fn do_after_flush(&self, dwpt: DocumentsWriterPerThread<D, C, MS, MP>, lg: &MutexGuard<()>) {
+    fn do_after_flush(
+        &self,
+        dwpt: DocumentsWriterPerThread<D, C, MS, MP>,
+        lg: &MutexGuard<FlushControlLock>,
+    ) {
         let flush_control_mut = unsafe { self.flush_control_mut(lg) };
 
         debug_assert!(flush_control_mut
@@ -437,11 +443,11 @@ impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy>
         self.flush_queue.len()
     }
 
-    fn num_flushing_dwpt(&self, _guard: &MutexGuard<()>) -> usize {
+    fn num_flushing_dwpt(&self, _guard: &MutexGuard<FlushControlLock>) -> usize {
         self.flushing_writers.len()
     }
 
-    fn num_blocked_flushes(&self, _guard: &MutexGuard<()>) -> usize {
+    fn num_blocked_flushes(&self, _guard: &MutexGuard<FlushControlLock>) -> usize {
         self.blocked_flushes.len()
     }
 
@@ -456,7 +462,7 @@ impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy>
 
     fn do_next_pending_flush(
         &self,
-        lg: &MutexGuard<()>,
+        lg: &MutexGuard<FlushControlLock>,
     ) -> Option<DocumentsWriterPerThread<D, C, MS, MP>> {
         let num_pending: usize;
         let full_flush: bool;
@@ -477,9 +483,8 @@ impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy>
 
             for i in 0..limit {
                 let next = self.per_thread_pool().get_thread_state(i);
-                let mut guard = next.lock().unwrap();
-                if guard.flush_pending() {
-                    if let Some(dwpt) = self.try_checkout_for_flush(&mut guard, lg) {
+                if next.flush_pending() {
+                    if let Some(dwpt) = self.try_checkout_for_flush(next.as_ref(), lg) {
                         return Some(dwpt);
                     }
                 }
@@ -489,10 +494,10 @@ impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy>
     }
 
     // TODO, actually we didn't lock the state, this should be done by the caller
-    pub fn obtain_and_lock(&self) -> Result<LockedThreadState<D, C, MS, MP>> {
+    pub fn obtain_and_lock(&self) -> Result<Arc<ThreadState<D, C, MS, MP>>> {
         let per_thread = self.per_thread_pool().get_and_lock()?;
         {
-            let mut guard = match per_thread.state.try_lock() {
+            let guard = match per_thread.lock.try_lock() {
                 Ok(g) => g,
                 Err(e) => {
                     bail!(IllegalState(format!(
@@ -502,14 +507,16 @@ impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy>
                 }
             };
 
-            if guard.inited()
-                && guard.dwpt().delete_queue.generation
+            let per_thread_mut = per_thread.thread_state_mut(&guard);
+
+            if per_thread_mut.inited()
+                && per_thread_mut.dwpt().delete_queue.generation
                     != self.documents_writer().delete_queue.generation
             {
                 // There is a flush-all in process and this DWPT is
                 // now stale -- enroll it for flush and try for
                 // another DWPT:
-                self.add_flushable_state(&mut guard);
+                self.add_flushable_state(per_thread_mut);
             }
         }
         // simply return the ThreadState even in a flush all case sine we already hold the lock
@@ -546,17 +553,18 @@ impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy>
         let limit = self.per_thread_pool().active_thread_state_count();
         for i in 0..limit {
             let next = self.per_thread_pool().get_thread_state(i);
-            let mut guard = next.lock().unwrap();
+            let guard = next.lock.lock().unwrap();
+            let per_thread_mut = next.thread_state_mut(&guard);
 
-            if !guard.inited() {
+            if !per_thread_mut.inited() {
                 continue;
             }
 
-            if guard.dwpt().delete_queue.generation != flushing_queue.generation {
+            if per_thread_mut.dwpt().delete_queue.generation != flushing_queue.generation {
                 // this one is already a new DWPT
                 continue;
             }
-            self.add_flushable_state(&mut guard);
+            self.add_flushable_state(per_thread_mut);
         }
 
         {
@@ -581,15 +589,17 @@ impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy>
         let limit = thread_pool.active_thread_state_count();
         for i in 0..limit {
             let state = thread_pool.get_thread_state(i);
-            let guard = state.lock().unwrap();
+            let guard = state.lock.lock().unwrap();
+            let per_thread_mut = state.thread_state_mut(&guard);
             assert!(
-                !guard.inited()
-                    || guard.dwpt().delete_queue.generation
+                !per_thread_mut.inited()
+                    || per_thread_mut.dwpt().delete_queue.generation
                         == self.documents_writer().delete_queue.generation
             );
             assert!(
-                !guard.inited()
-                    || guard.dwpt().delete_queue.as_ref() as *const DocumentsWriterDeleteQueue<C>
+                !per_thread_mut.inited()
+                    || per_thread_mut.dwpt().delete_queue.as_ref()
+                        as *const DocumentsWriterDeleteQueue<C>
                         == self.documents_writer().delete_queue.as_ref()
                             as *const DocumentsWriterDeleteQueue<C>
             );
@@ -640,9 +650,10 @@ impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy>
             let l = self.lock.lock().unwrap();
             let flush_control_mut = unsafe { self.flush_control_mut(&l) };
             if !per_therad.flush_pending() {
-                flush_control_mut.do_set_flush_pending(per_therad, &l);
+                flush_control_mut.set_flush_pending(per_therad, &l);
             }
-            let flushing_dwpt = flush_control_mut.internal_try_checkout_for_flush(per_therad);
+            let flushing_dwpt =
+                flush_control_mut.internal_try_checkout_for_flush_no_lock(per_therad);
             debug_assert!(flushing_dwpt.is_some());
             flush_control_mut
                 .full_flush_buffer
@@ -673,16 +684,10 @@ impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy>
         }
     }
 
-    pub fn set_flush_pending(&mut self, per_thread: &ThreadState<D, C, MS, MP>) {
-        let lock = Arc::clone(&self.lock);
-        let guard = lock.lock().unwrap();
-        self.do_set_flush_pending(per_thread, &guard);
-    }
-
-    fn do_set_flush_pending(
+    pub fn set_flush_pending(
         &mut self,
         per_thread: &ThreadState<D, C, MS, MP>,
-        guard: &MutexGuard<()>,
+        guard: &MutexGuard<FlushControlLock>,
     ) {
         if per_thread.dwpt().num_docs_in_ram > 0 {
             // write access synced
@@ -699,8 +704,8 @@ impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy>
 
     fn try_checkout_for_flush(
         &self,
-        per_thread: &mut ThreadState<D, C, MS, MP>,
-        lock: &MutexGuard<()>,
+        per_thread: &ThreadState<D, C, MS, MP>,
+        lock: &MutexGuard<FlushControlLock>,
     ) -> Option<DocumentsWriterPerThread<D, C, MS, MP>> {
         if per_thread.flush_pending() {
             let control_mut = unsafe { self.flush_control_mut(&lock) };
@@ -722,6 +727,19 @@ impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy>
     }
 
     fn internal_try_checkout_for_flush(
+        &mut self,
+        per_thread: &ThreadState<D, C, MS, MP>,
+    ) -> Option<DocumentsWriterPerThread<D, C, MS, MP>> {
+        if let Ok(lg) = per_thread.lock.try_lock() {
+            let thread_state_mut = per_thread.thread_state_mut(&lg);
+            self.internal_try_checkout_for_flush_no_lock(thread_state_mut)
+        } else {
+            self.update_stall_state();
+            None
+        }
+    }
+
+    fn internal_try_checkout_for_flush_no_lock(
         &mut self,
         per_thread: &mut ThreadState<D, C, MS, MP>,
     ) -> Option<DocumentsWriterPerThread<D, C, MS, MP>> {

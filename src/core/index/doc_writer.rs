@@ -19,7 +19,7 @@ use core::index::flush_policy::FlushByRamOrCountsPolicy;
 use core::index::index_writer::{IndexWriter, IndexWriterInner};
 use core::index::index_writer_config::IndexWriterConfig;
 use core::index::thread_doc_writer::{
-    DocumentsWriterPerThread, DocumentsWriterPerThreadPool, LockedThreadState, ThreadState,
+    DocumentsWriterPerThread, DocumentsWriterPerThreadPool, ThreadState,
 };
 use core::index::{Fieldable, SegmentInfo, Term};
 use core::search::Query;
@@ -95,7 +95,12 @@ use std::thread;
 // deleted so that the document is always atomically ("all
 // or none") added to the index.
 //
-pub struct DocumentsWriter<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy> {
+pub(crate) struct DocumentsWriter<
+    D: Directory + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+> {
     lock: Arc<Mutex<()>>,
     directory_orig: Arc<D>,
     directory: Arc<LockValidatingDirectoryWrapper<D>>,
@@ -199,8 +204,21 @@ where
         debug_assert!(self.inited);
         let has_events = self.pre_update()?;
 
-        let mut per_thread = self.flush_control.obtain_and_lock()?;
-        let (seq_no, flush_dwpt) = self.do_update_documents(&mut per_thread, docs, del_term)?;
+        let per_thread = self.flush_control.obtain_and_lock()?;
+        let (seq_no, flush_dwpt) = {
+            let l = match per_thread.lock.try_lock() {
+                Ok(g) => g,
+                Err(e) => {
+                    bail!(
+                        "update document try obtain per_thread.lock failed by: {:?}",
+                        e
+                    );
+                }
+            };
+            let per_thread_mut = per_thread.thread_state_mut(&l);
+            self.do_update_documents(per_thread_mut, docs, del_term)?
+        };
+
         self.per_thread_pool.release(per_thread);
 
         let has_event = self.post_update(flush_dwpt, has_events)?;
@@ -209,38 +227,29 @@ where
 
     fn do_update_documents<F: Fieldable>(
         &self,
-        per_thread: &mut LockedThreadState<D, C, MS, MP>,
+        per_thread: &mut ThreadState<D, C, MS, MP>,
         docs: Vec<Vec<F>>,
         // analyzer: Analyzer,
         del_term: Option<Term>,
     ) -> Result<(u64, Option<DocumentsWriterPerThread<D, C, MS, MP>>)> {
         let is_update = del_term.is_some();
-        let mut guard = match per_thread.state.try_lock() {
-            Ok(g) => g,
-            Err(e) => {
-                bail!(
-                    "update document try obtain per_thread.state failed by: {:?}",
-                    e
-                );
-            }
-        };
 
         // This must happen after we've pulled the ThreadState because IW.close
         // waits for all ThreadStates to be released:
         self.ensure_open()?;
-        self.ensure_inited(&mut guard)?;
-        debug_assert!(guard.inited());
-        let dwpt_num_docs = guard.dwpt().num_docs_in_ram;
+        self.ensure_inited(per_thread)?;
+        debug_assert!(per_thread.inited());
+        let dwpt_num_docs = per_thread.dwpt().num_docs_in_ram;
 
-        let res = guard.dwpt_mut().update_documents(docs, del_term);
+        let res = per_thread.dwpt_mut().update_documents(docs, del_term);
         let num_docs_in_ram = if res.is_err() {
             // TODO, we should only deal with AbortException here instead of
             // all errors
-            let mut dwpt = self.flush_control.do_on_abort(&mut guard);
+            let mut dwpt = self.flush_control.do_on_abort(per_thread);
             dwpt.as_mut().unwrap().abort();
             dwpt.as_ref().unwrap().num_docs_in_ram
         } else {
-            guard.dwpt().num_docs_in_ram
+            per_thread.dwpt().num_docs_in_ram
         };
 
         // We don't know whether the document actually
@@ -258,10 +267,10 @@ where
 
         let flush_dwpt = self
             .flush_control
-            .do_after_document(&mut guard, is_update)?;
+            .do_after_document(per_thread, is_update)?;
 
-        debug_assert!(seq_no > guard.last_seq_no());
-        guard.set_last_seq_no(seq_no);
+        debug_assert!(seq_no > per_thread.last_seq_no());
+        per_thread.set_last_seq_no(seq_no);
         Ok((seq_no, flush_dwpt))
     }
 
@@ -274,8 +283,20 @@ where
         debug_assert!(self.inited);
         let mut has_event = self.pre_update()?;
 
-        let mut per_thread = self.flush_control.obtain_and_lock()?;
-        let (seq_no, flush_dwpt) = self.do_update_document(&mut per_thread, doc, del_term)?;
+        let per_thread = self.flush_control.obtain_and_lock()?;
+        let (seq_no, flush_dwpt) = {
+            let guard = match per_thread.lock.try_lock() {
+                Ok(g) => g,
+                Err(e) => {
+                    bail!(
+                        "update document try obtain per_thread.state failed by: {:?}",
+                        e
+                    );
+                }
+            };
+            let per_thread_mut = per_thread.thread_state_mut(&guard);
+            self.do_update_document(per_thread_mut, doc, del_term)?
+        };
         self.per_thread_pool.release(per_thread);
 
         has_event = self.post_update(flush_dwpt, has_event)?;
@@ -285,39 +306,30 @@ where
 
     fn do_update_document<F: Fieldable>(
         &self,
-        per_thread: &mut LockedThreadState<D, C, MS, MP>,
+        per_thread: &mut ThreadState<D, C, MS, MP>,
         doc: Vec<F>,
         // analyzer: Analyzer,
         del_term: Option<Term>,
     ) -> Result<(u64, Option<DocumentsWriterPerThread<D, C, MS, MP>>)> {
         let is_update = del_term.is_some();
-        let mut guard = match per_thread.state.try_lock() {
-            Ok(g) => g,
-            Err(e) => {
-                bail!(
-                    "update document try obtain per_thread.state failed by: {:?}",
-                    e
-                );
-            }
-        };
 
         // This must happen after we've pulled the ThreadState because IW.close
         // waits for all ThreadStates to be released:
         self.ensure_open()?;
-        self.ensure_inited(&mut guard)?;
-        debug_assert!(guard.inited());
+        self.ensure_inited(per_thread)?;
+        debug_assert!(per_thread.inited());
 
-        let dwpt_num_docs = guard.dwpt().num_docs_in_ram;
-        let res = guard.dwpt_mut().update_document(doc, del_term);
+        let dwpt_num_docs = per_thread.dwpt().num_docs_in_ram;
+        let res = per_thread.dwpt_mut().update_document(doc, del_term);
         let num_docs_in_ram = if res.is_err() {
             // TODO, we should only deal with AbortException here instead of
             // all errors
-            let mut dwpt = self.flush_control.do_on_abort(&mut guard);
+            let mut dwpt = self.flush_control.do_on_abort(per_thread);
 
             dwpt.as_mut().unwrap().abort();
             dwpt.as_ref().unwrap().num_docs_in_ram
         } else {
-            guard.dwpt().num_docs_in_ram
+            per_thread.dwpt().num_docs_in_ram
         };
 
         // We don't know whether the document actually
@@ -335,10 +347,10 @@ where
 
         let flush_dwpt = self
             .flush_control
-            .do_after_document(&mut guard, is_update)?;
+            .do_after_document(per_thread, is_update)?;
 
-        debug_assert!(seq_no > guard.last_seq_no());
-        guard.set_last_seq_no(seq_no);
+        debug_assert!(seq_no > per_thread.last_seq_no());
+        per_thread.set_last_seq_no(seq_no);
         Ok((seq_no, flush_dwpt))
     }
 
@@ -482,8 +494,9 @@ where
 
         for i in 0..self.per_thread_pool.active_thread_state_count() {
             let per_thread = Arc::clone(&self.per_thread_pool.get_thread_state(i));
-            let mut guard = per_thread.lock()?;
-            self.abort_thread_state(&mut guard);
+            let lock_guard = per_thread.lock.lock()?;
+            let per_thread_mut = per_thread.thread_state_mut(&lock_guard);
+            self.abort_thread_state(per_thread_mut);
         }
         self.flush_control.abort_pending_flushes();
         self.flush_control.wait_for_flush()?;
@@ -501,8 +514,9 @@ where
         self.per_thread_pool.set_abort();
         for i in 0..self.per_thread_pool.active_thread_state_count() {
             let per_thread = Arc::clone(&self.per_thread_pool.get_thread_state(i));
-            let mut gurad = per_thread.lock().unwrap();
-            aborted_doc_count += self.abort_thread_state(&mut gurad);
+            let guard = per_thread.lock.lock().unwrap();
+            let per_thread_mut = per_thread.thread_state_mut(&guard);
+            aborted_doc_count += self.abort_thread_state(per_thread_mut);
         }
         self.delete_queue.clear()?;
 
@@ -662,8 +676,7 @@ where
         debug!("DW: start full flush");
 
         let (seq_no, flushing_queue) = {
-            let lock = Arc::clone(&self.lock);
-            let _l = lock.lock()?;
+            let _l = self.lock.lock()?;
             self.pending_changes_in_current_full_flush
                 .write(self.any_changes());
             self.flush_control.mark_for_full_flush()

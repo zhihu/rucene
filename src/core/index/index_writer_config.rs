@@ -64,7 +64,8 @@ impl Default for IndexWriterConfig<CodecEnum, SerialMergeScheduler, TieredMergeP
 impl<C: Codec, MS: MergeScheduler, MP: MergePolicy> IndexWriterConfig<C, MS, MP> {
     pub fn new(codec: Arc<C>, merge_scheduler: MS, merge_policy: MP) -> Self {
         IndexWriterConfig {
-            ram_buffer_size_mb: None,
+            ram_buffer_size_mb: Some(DEFAULT_RAM_BUFFER_SIZE_MB),
+            // ram_buffer_size_mb: None,
             use_compound_file: true,
             max_buffered_delete_terms: None,
             max_buffered_docs: None,
@@ -89,6 +90,14 @@ impl<C: Codec, MS: MergeScheduler, MP: MergePolicy> IndexWriterConfig<C, MS, MP>
     pub fn ram_buffer_size(&self) -> usize {
         debug_assert!(self.ram_buffer_size_mb.is_some());
         (self.ram_buffer_size_mb() * 1024.0 * 1024.0) as usize
+    }
+
+    pub fn set_ram_buffer_size(&mut self, size: f64) {
+        if size <= 0.0 {
+            self.ram_buffer_size_mb = None;
+        } else {
+            self.ram_buffer_size_mb = Some(size);
+        }
     }
 
     pub fn max_buffered_delete_terms(&self) -> u32 {

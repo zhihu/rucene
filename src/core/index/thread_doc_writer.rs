@@ -609,7 +609,7 @@ impl<D: Directory, C: Codec> FlushedSegment<D, C> {
 /// Once a `DocumentsWriterPerThread` is selected for flush the thread pool
 /// is reusing the flushing `DocumentsWriterPerThread`s ThreadState with a
 /// new `DocumentsWriterPerThread` instance.
-pub struct DocumentsWriterPerThreadPool<
+pub(crate) struct DocumentsWriterPerThreadPool<
     D: Directory + 'static,
     C: Codec,
     MS: MergeScheduler,
@@ -621,7 +621,7 @@ pub struct DocumentsWriterPerThreadPool<
 }
 
 struct DWPTPoolInner<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy> {
-    thread_states: Vec<Arc<Mutex<ThreadState<D, C, MS, MP>>>>,
+    thread_states: Vec<Arc<ThreadState<D, C, MS, MP>>>,
     // valid thread_state index in `self.thread_states`
     free_list: Vec<usize>,
 }
@@ -650,7 +650,7 @@ where
         self.inner.lock().unwrap().thread_states.len()
     }
 
-    pub fn get_thread_state(&self, i: usize) -> Arc<Mutex<ThreadState<D, C, MS, MP>>> {
+    pub fn get_thread_state(&self, i: usize) -> Arc<ThreadState<D, C, MS, MP>> {
         let guard = self.inner.lock().unwrap();
         debug_assert!(i < guard.thread_states.len());
         Arc::clone(&guard.thread_states[i])
@@ -673,20 +673,16 @@ where
     fn new_thread_state(
         &self,
         guard: MutexGuard<'_, DWPTPoolInner<D, C, MS, MP>>,
-    ) -> Result<LockedThreadState<D, C, MS, MP>> {
+    ) -> Result<Arc<ThreadState<D, C, MS, MP>>> {
         let mut l = guard;
         while self.aborted.read() {
             l = self.cond.wait(l)?;
         }
 
-        let thread_state = Arc::new(Mutex::new(ThreadState::new(None)));
+        let thread_state = Arc::new(ThreadState::new(None, l.thread_states.len()));
         l.thread_states.push(thread_state);
         let idx = l.thread_states.len() - 1;
-
-        Ok(LockedThreadState::new(
-            Arc::clone(&l.thread_states[idx]),
-            idx,
-        ))
+        Ok(Arc::clone(&l.thread_states[idx]))
     }
 
     pub fn reset(
@@ -702,10 +698,10 @@ where
 
     /// this method is used by DocumentsWriter/FlushControl to obtain a ThreadState
     /// to do an indexing operation (add/update_document).
-    pub fn get_and_lock(&self) -> Result<LockedThreadState<D, C, MS, MP>> {
+    pub fn get_and_lock(&self) -> Result<Arc<ThreadState<D, C, MS, MP>>> {
         let mut guard = self.inner.lock().unwrap();
         if let Some(mut idx) = guard.free_list.pop() {
-            if guard.thread_states[idx].lock().unwrap().dwpt.is_none() {
+            if guard.thread_states[idx].dwpt.is_none() {
                 // This thread-state is not initialized, e.g. it
                 // was just flushed. See if we can instead find
                 // another free thread state that already has docs
@@ -716,7 +712,7 @@ where
                 // freeing up RAM for larger segment flushes:
                 for i in 0..guard.free_list.len() {
                     let new_idx = guard.free_list[i];
-                    if guard.thread_states[new_idx].lock().unwrap().dwpt.is_some() {
+                    if guard.thread_states[new_idx].dwpt.is_some() {
                         // Use this one instead, and swap it with
                         // the un-initialized one:
                         guard.free_list[i] = idx;
@@ -726,16 +722,13 @@ where
                 }
             }
 
-            Ok(LockedThreadState::new(
-                Arc::clone(&guard.thread_states[idx]),
-                idx,
-            ))
+            Ok(Arc::clone(&guard.thread_states[idx]))
         } else {
             self.new_thread_state(guard)
         }
     }
 
-    pub fn release(&self, state: LockedThreadState<D, C, MS, MP>) {
+    pub fn release(&self, state: Arc<ThreadState<D, C, MS, MP>>) {
         let mut guard = self.inner.lock().unwrap();
         debug_assert!(!guard.free_list.contains(&state.index));
         guard.free_list.push(state.index);
@@ -745,12 +738,14 @@ where
         self.cond.notify_all();
     }
 
-    pub fn locked_state(&self, idx: usize) -> LockedThreadState<D, C, MS, MP> {
+    pub fn locked_state(&self, idx: usize) -> Arc<ThreadState<D, C, MS, MP>> {
         let guard = self.inner.lock().unwrap();
         debug_assert!(idx < guard.thread_states.len());
-        LockedThreadState::new(Arc::clone(&guard.thread_states[idx]), idx)
+        Arc::clone(&guard.thread_states[idx])
     }
 }
+
+pub(crate) struct ThreadStateLock;
 
 /// `ThreadState` references and guards a `DocumentsWriterPerThread`
 /// instance that is used during indexing to build a in-memory index
@@ -761,8 +756,9 @@ where
 /// thread a time. Users must acquire the lock via `ThreadState#lock()`
 /// and release the lock in a finally block via `ThreadState#unlock()`
 /// before accessing the state.
-/// NOTE: this struct should always be used under a Mutex
-pub struct ThreadState<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy> {
+pub(crate) struct ThreadState<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy>
+{
+    pub lock: Mutex<ThreadStateLock>,
     pub dwpt: Option<DocumentsWriterPerThread<D, C, MS, MP>>,
     // TODO this should really be part of DocumentsWriterFlushControl
     // write access guarded by DocumentsWriterFlushControl
@@ -772,6 +768,8 @@ pub struct ThreadState<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP:
     pub bytes_used: u64,
     // set by DocumentsWriter after each indexing op finishes
     last_seq_no: AtomicU64,
+    // index in DocumentsWriterPerThreadPool
+    index: usize,
 }
 
 impl<D, C, MS, MP> ThreadState<D, C, MS, MP>
@@ -781,13 +779,23 @@ where
     MS: MergeScheduler,
     MP: MergePolicy,
 {
-    fn new(dwpt: Option<DocumentsWriterPerThread<D, C, MS, MP>>) -> Self {
+    fn new(dwpt: Option<DocumentsWriterPerThread<D, C, MS, MP>>, index: usize) -> Self {
         ThreadState {
+            lock: Mutex::new(ThreadStateLock),
             dwpt,
             flush_pending: AtomicBool::new(false),
             bytes_used: 0,
             last_seq_no: AtomicU64::new(0),
+            index,
         }
+    }
+
+    pub fn thread_state_mut(
+        &self,
+        _lock: &MutexGuard<ThreadStateLock>,
+    ) -> &mut ThreadState<D, C, MS, MP> {
+        let state = self as *const ThreadState<D, C, MS, MP> as *mut ThreadState<D, C, MS, MP>;
+        unsafe { &mut *state }
     }
 
     pub fn dwpt(&self) -> &DocumentsWriterPerThread<D, C, MS, MP> {
@@ -825,25 +833,6 @@ where
 
     pub fn last_seq_no(&self) -> u64 {
         self.last_seq_no.load(Ordering::Acquire)
-    }
-}
-
-pub struct LockedThreadState<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy>
-{
-    pub state: Arc<Mutex<ThreadState<D, C, MS, MP>>>,
-    index: usize,
-    // index of this state in  DocumentsWriterPerThreadPool.thread_states
-}
-
-impl<D, C, MS, MP> LockedThreadState<D, C, MS, MP>
-where
-    D: Directory + 'static,
-    C: Codec,
-    MS: MergeScheduler,
-    MP: MergePolicy,
-{
-    pub fn new(state: Arc<Mutex<ThreadState<D, C, MS, MP>>>, index: usize) -> Self {
-        LockedThreadState { state, index }
     }
 }
 
