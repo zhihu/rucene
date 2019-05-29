@@ -76,9 +76,7 @@ impl<D: Directory, DW: Directory, C: Codec> Lucene60PointsWriter<D, DW, C> {
     }
 }
 
-impl<D: Directory, DW: Directory + 'static, C: Codec> PointsWriter
-    for Lucene60PointsWriter<D, DW, C>
-{
+impl<D: Directory, DW: Directory, C: Codec> PointsWriter for Lucene60PointsWriter<D, DW, C> {
     fn write_field<P, MP>(
         &mut self,
         field_info: &FieldInfo,
@@ -279,7 +277,7 @@ impl<'a, D: Directory> ValuesIntersectVisitor<'a, D> {
     }
 }
 
-impl<'a, D: Directory + 'static> IntersectVisitor for ValuesIntersectVisitor<'a, D> {
+impl<'a, D: Directory> IntersectVisitor for ValuesIntersectVisitor<'a, D> {
     fn visit(&mut self, _doc_id: DocId) -> Result<()> {
         bail!(IllegalState("".into()))
     }

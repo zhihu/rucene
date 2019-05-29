@@ -42,6 +42,7 @@ extern crate crossbeam;
 extern crate fasthash;
 extern crate flate2;
 extern crate memmap;
+extern crate num_cpus;
 extern crate num_traits;
 extern crate smallvec;
 extern crate thread_local;

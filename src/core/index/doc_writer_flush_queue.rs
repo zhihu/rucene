@@ -35,7 +35,7 @@ pub struct DocumentsWriterFlushQueue<D: Directory, C: Codec> {
     purge_lock: Mutex<()>,
 }
 
-impl<D: Directory, C: Codec> DocumentsWriterFlushQueue<D, C> {
+impl<D: Directory + Send + Sync + 'static, C: Codec> DocumentsWriterFlushQueue<D, C> {
     pub fn new() -> Self {
         DocumentsWriterFlushQueue {
             queue: Mutex::new(VecDeque::with_capacity(10000)),
@@ -152,7 +152,7 @@ impl<D: Directory, C: Codec> DocumentsWriterFlushQueue<D, C> {
     }
 }
 
-trait IFlushTicket<D: Directory, C: Codec> {
+trait IFlushTicket<D: Directory + Send + Sync + 'static, C: Codec> {
     fn publish<MS: MergeScheduler, MP: MergePolicy>(
         &mut self,
         writer: &IndexWriter<D, C, MS, MP>,
@@ -223,7 +223,11 @@ impl<D: Directory, C: Codec> GlobalDeletesTicket<D, C> {
     }
 }
 
-impl<D: Directory, C: Codec> IFlushTicket<D, C> for GlobalDeletesTicket<D, C> {
+impl<D, C> IFlushTicket<D, C> for GlobalDeletesTicket<D, C>
+where
+    D: Directory + Send + Sync + 'static,
+    C: Codec,
+{
     fn publish<MS: MergeScheduler, MP: MergePolicy>(
         &mut self,
         writer: &IndexWriter<D, C, MS, MP>,
@@ -267,7 +271,11 @@ impl<D: Directory, C: Codec> SegmentFlushTicket<D, C> {
     }
 }
 
-impl<D: Directory, C: Codec> IFlushTicket<D, C> for SegmentFlushTicket<D, C> {
+impl<D, C> IFlushTicket<D, C> for SegmentFlushTicket<D, C>
+where
+    D: Directory + Send + Sync + 'static,
+    C: Codec,
+{
     fn publish<MS: MergeScheduler, MP: MergePolicy>(
         &mut self,
         writer: &IndexWriter<D, C, MS, MP>,
@@ -314,7 +322,11 @@ impl<D: Directory, C: Codec> FlushTicket<D, C> {
     }
 }
 
-impl<D: Directory, C: Codec> IFlushTicket<D, C> for FlushTicket<D, C> {
+impl<D, C> IFlushTicket<D, C> for FlushTicket<D, C>
+where
+    D: Directory + Send + Sync + 'static,
+    C: Codec,
+{
     fn publish<MS: MergeScheduler, MP: MergePolicy>(
         &mut self,
         writer: &IndexWriter<D, C, MS, MP>,

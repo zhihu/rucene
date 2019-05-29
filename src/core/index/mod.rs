@@ -187,7 +187,23 @@ use core::util::bit_set::FixedBitSet;
 use core::util::string_util::ID_LENGTH;
 use core::util::{to_base36, DocId, Version};
 
-use error::{ErrorKind, Result};
+use error::{
+    ErrorKind::{IllegalArgument, IllegalState},
+    Result,
+};
+
+error_chain! {
+    types {
+        Error, ErrorKind, ResultExt;
+    }
+
+    errors {
+        MergeAborted(desc: String) {
+            description(desc)
+            display("merge is aborted: {}", desc)
+        }
+    }
+}
 
 // index file names
 pub const INDEX_FILE_SEGMENTS: &str = "segments";
@@ -436,10 +452,10 @@ impl<D: Directory, C: Codec> SegmentInfo<D, C> {
     fn check_file_name(&self, file: &str) -> Result<()> {
         let pattern = Regex::new(CODEC_FILE_PATTERN).unwrap();
         if !pattern.is_match(file) {
-            bail!(ErrorKind::IllegalArgument("invalid code file_name.".into()));
+            bail!(IllegalArgument("invalid code file_name.".into()));
         }
         if file.to_lowercase().ends_with(".tmp") {
-            bail!(ErrorKind::IllegalArgument(
+            bail!(IllegalArgument(
                 "invalid code file_name, can't end with .tmp extension".into()
             ));
         }
@@ -462,7 +478,7 @@ impl<D: Directory, C: Codec> SegmentInfo<D, C> {
 
     pub fn set_max_doc(&mut self, max_doc: i32) -> Result<()> {
         if self.max_doc != -1 {
-            bail!(ErrorKind::IllegalState("max_doc was already set".into()));
+            bail!(IllegalState("max_doc was already set".into()));
         }
         self.max_doc = max_doc;
         Ok(())
@@ -784,7 +800,7 @@ impl<D: Directory, C: Codec> SegmentCommitInfo<D, C> {
 
     pub fn set_del_count(&self, del_count: i32) -> Result<()> {
         if del_count < 0 || del_count > self.info.max_doc() {
-            bail!(ErrorKind::IllegalArgument("invalid del_count".into()));
+            bail!(IllegalArgument("invalid del_count".into()));
         }
         self.del_count.store(del_count, AtomicOrdering::Release);
         Ok(())

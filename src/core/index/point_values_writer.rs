@@ -40,10 +40,16 @@ pub struct PointValuesWriter {
 }
 
 impl PointValuesWriter {
-    pub fn new<D: Directory, C: Codec, MS: MergeScheduler, MP: MergePolicy>(
+    pub fn new<D, C, MS, MP>(
         doc_writer: &mut DocumentsWriterPerThread<D, C, MS, MP>,
         field_info: &FieldInfo,
-    ) -> PointValuesWriter {
+    ) -> PointValuesWriter
+    where
+        D: Directory + Send + Sync + 'static,
+        C: Codec,
+        MS: MergeScheduler,
+        MP: MergePolicy,
+    {
         let bytes = unsafe { ByteBlockPool::new(doc_writer.byte_block_allocator.copy_unsafe()) };
         PointValuesWriter {
             field_info: field_info.clone(),

@@ -14,6 +14,7 @@
 extern crate error_chain;
 extern crate serde_json;
 
+use core::index;
 use core::search;
 use core::search::collector;
 
@@ -85,6 +86,7 @@ error_chain! {
     links {
         Collector(collector::Error, collector::ErrorKind);
         Search(search::Error, search::ErrorKind);
+        Index(index::Error, index::ErrorKind);
     }
 }
 

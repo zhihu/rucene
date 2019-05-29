@@ -404,7 +404,7 @@ impl<T: PostingsArray + 'static> BytesStartArray for PostingsBytesStartArray<T> 
 // codecs; make separate container (tii/tis/skip/*) that can
 // be configured as any number of files 1..N
 pub struct FreqProxTermsWriterPerField<
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -427,7 +427,7 @@ pub struct FreqProxTermsWriterPerField<
 
 impl<D, C, MS, MP> FreqProxTermsWriterPerField<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -505,7 +505,7 @@ where
 
 impl<D, C, MS, MP> TermsHashPerField for FreqProxTermsWriterPerField<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -691,7 +691,7 @@ where
 
 impl<D, C, MS, MP> Eq for FreqProxTermsWriterPerField<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -700,7 +700,7 @@ where
 
 impl<D, C, MS, MP> PartialEq for FreqProxTermsWriterPerField<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -712,7 +712,7 @@ where
 
 impl<D, C, MS, MP> Ord for FreqProxTermsWriterPerField<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -724,7 +724,7 @@ where
 
 impl<D, C, MS, MP> PartialOrd for FreqProxTermsWriterPerField<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,

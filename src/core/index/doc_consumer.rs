@@ -69,7 +69,7 @@ pub trait DocConsumer<D: Directory, C: Codec> {
 }
 
 pub struct DefaultIndexingChain<
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -97,7 +97,7 @@ pub struct DefaultIndexingChain<
 
 impl<D, C, MS, MP> Default for DefaultIndexingChain<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -121,7 +121,7 @@ where
 
 impl<D, C, MS, MP> DefaultIndexingChain<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -164,10 +164,7 @@ where
     }
 
     /// Writes all buffered points.
-    fn write_points<DW: Directory + 'static>(
-        &mut self,
-        state: &SegmentWriteState<D, DW, C>,
-    ) -> Result<()> {
+    fn write_points<DW: Directory>(&mut self, state: &SegmentWriteState<D, DW, C>) -> Result<()> {
         let mut points_writer = None;
         for per_field in &mut self.field_hash {
             if per_field.point_values_writer.is_some() {
@@ -627,7 +624,7 @@ where
 
 impl<D, C, MS, MP> DocConsumer<D, C> for DefaultIndexingChain<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -671,10 +668,7 @@ where
         res
     }
 
-    fn flush<DW: Directory + 'static>(
-        &mut self,
-        state: &mut SegmentWriteState<D, DW, C>,
-    ) -> Result<()> {
+    fn flush<DW: Directory>(&mut self, state: &mut SegmentWriteState<D, DW, C>) -> Result<()> {
         debug_assert!(self.inited);
         // NOTE: caller (DocumentsWriterPerThread) handles
         // aborting on any exception from this method
@@ -838,13 +832,19 @@ impl<T: TermsHashPerField> PerField<T> {
         Ok(())
     }
 
-    fn invert<D: Directory, C: Codec, MS: MergeScheduler, MP: MergePolicy>(
+    fn invert<D, C, MS, MP>(
         &mut self,
         field: &mut impl Fieldable,
         doc_state: &DocState,
         first: bool,
         index_chain: &mut DefaultIndexingChain<D, C, MS, MP>,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        D: Directory + Send + Sync + 'static,
+        C: Codec,
+        MS: MergeScheduler,
+        MP: MergePolicy,
+    {
         if first {
             // First time we're seeing this field (indexed) in
             // this document:

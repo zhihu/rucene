@@ -376,7 +376,7 @@ impl<D: Directory> OfflinePointWriter<D> {
     }
 }
 
-impl<D: Directory + 'static> PointWriter for OfflinePointWriter<D> {
+impl<D: Directory> PointWriter for OfflinePointWriter<D> {
     type IndexOutput = IndexOutputRef<D::TempOutput>;
 
     fn append(&mut self, packed_value: &[u8], ord: i64, doc_id: DocId) -> Result<()> {

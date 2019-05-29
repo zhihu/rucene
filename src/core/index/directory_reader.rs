@@ -59,7 +59,7 @@ pub fn index_exist<D: Directory>(directory: &D) -> Result<bool> {
 }
 
 pub struct StandardDirectoryReader<
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -77,7 +77,7 @@ pub struct StandardDirectoryReader<
 
 impl<D, C, MS, MP> StandardDirectoryReader<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -321,7 +321,7 @@ where
 
 impl<D, C, MS, MP> IndexReader for StandardDirectoryReader<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -389,7 +389,7 @@ where
 
 impl<D, C, MS, MP> fmt::Debug for StandardDirectoryReader<D, C, MS, MP>
 where
-    D: Directory,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -411,7 +411,7 @@ where
 
 impl<D, C, MS, MP> AsRef<IndexReader<Codec = C>> for StandardDirectoryReader<D, C, MS, MP>
 where
-    D: Directory,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -423,7 +423,7 @@ where
 
 impl<D, C, MS, MP> Drop for StandardDirectoryReader<D, C, MS, MP>
 where
-    D: Directory,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,

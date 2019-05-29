@@ -98,7 +98,7 @@ impl<T: Copy> Volatile<T> {
     /// # Panics
     ///
     /// Ths method never panics.
-    pub fn update<F>(&mut self, f: F)
+    pub fn update<F>(&self, f: F)
     where
         F: FnOnce(&mut T),
     {

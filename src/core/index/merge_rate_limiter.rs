@@ -13,7 +13,8 @@
 
 use core::store::RateLimiter;
 
-use error::{ErrorKind::IllegalState, Result};
+use core::index::ErrorKind::MergeAborted;
+use error::{ErrorKind, Result};
 
 use std::f64;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -110,7 +111,7 @@ impl MergeRateLimiter {
 
     pub fn check_abort(&self) -> Result<()> {
         if self.abort.load(Ordering::Acquire) {
-            bail!(IllegalState("merge is aborted".into()));
+            bail!(ErrorKind::Index(MergeAborted("merge is aborted".into())));
         }
         Ok(())
     }

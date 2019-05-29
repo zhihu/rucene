@@ -80,9 +80,7 @@ impl<'a, D: Directory, O: IndexOutput> OneDimIntersectVisitor<'a, D, O> {
     }
 }
 
-impl<'a, D: Directory + 'static, O: IndexOutput> IntersectVisitor
-    for OneDimIntersectVisitor<'a, D, O>
-{
+impl<'a, D: Directory, O: IndexOutput> IntersectVisitor for OneDimIntersectVisitor<'a, D, O> {
     fn visit(&mut self, _doc_id: DocId) -> Result<()> {
         bail!(IllegalState("".into()))
     }
@@ -110,7 +108,7 @@ pub struct OneDimensionBKDWriter<'a, D: Directory, O: IndexOutput> {
     bkd_writer: *mut BKDWriter<D>,
 }
 
-impl<'a, D: Directory + 'static, O: IndexOutput> OneDimensionBKDWriter<'a, D, O> {
+impl<'a, D: Directory, O: IndexOutput> OneDimensionBKDWriter<'a, D, O> {
     pub fn new(
         out: &'a mut O,
         bkd_writer: &mut BKDWriter<D>,
@@ -353,7 +351,7 @@ pub struct BKDWriter<D: Directory> {
     scratch_out: GrowableByteArrayDataOutput,
 }
 
-impl<D: Directory + 'static> BKDWriter<D> {
+impl<D: Directory> BKDWriter<D> {
     pub fn new(
         max_doc: i32,
         temp_dir: Arc<D>,
@@ -726,7 +724,7 @@ impl<D: Directory + 'static> BKDWriter<D> {
     }
 }
 
-impl<D: Directory + 'static> BKDWriter<D> {
+impl<D: Directory> BKDWriter<D> {
     fn spill_to_offline(&mut self) -> Result<()> {
         // For each .add we just append to this input file, then in .finish we sort this input and
         // resursively build the tree:

@@ -40,8 +40,9 @@ pub struct SegmentMerger<D: Directory + 'static, DW: Directory, C: Codec> {
 impl<D, DW, C> SegmentMerger<D, DW, C>
 where
     D: Directory + 'static,
-    DW: Directory + 'static,
+    DW: Directory,
     C: Codec,
+    <DW as Directory>::IndexOutput: 'static,
 {
     pub fn new(
         readers: Vec<Arc<SegmentReader<D, C>>>,

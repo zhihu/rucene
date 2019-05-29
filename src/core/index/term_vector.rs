@@ -34,7 +34,7 @@ use std::collections::BTreeMap;
 use std::ptr;
 
 pub struct TermVectorsConsumer<
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -56,7 +56,7 @@ pub struct TermVectorsConsumer<
 
 impl<D, C, MS, MP> TermVectorsConsumer<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -171,7 +171,7 @@ where
 
 impl<D, C, MS, MP> TermsHash<D, C> for TermVectorsConsumer<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -272,7 +272,7 @@ where
 }
 
 pub struct TermVectorsConsumerPerField<
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -288,8 +288,12 @@ pub struct TermVectorsConsumerPerField<
     parent: *mut TermVectorsConsumer<D, C, MS, MP>,
 }
 
-impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy>
-    TermVectorsConsumerPerField<D, C, MS, MP>
+impl<D, C, MS, MP> TermVectorsConsumerPerField<D, C, MS, MP>
+where
+    D: Directory + Send + Sync + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
 {
     pub fn new(
         terms_writer: &mut TermVectorsConsumer<D, C, MS, MP>,
@@ -417,8 +421,12 @@ impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy>
     }
 }
 
-impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy> TermsHashPerField
-    for TermVectorsConsumerPerField<D, C, MS, MP>
+impl<D, C, MS, MP> TermsHashPerField for TermVectorsConsumerPerField<D, C, MS, MP>
+where
+    D: Directory + Send + Sync + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
 {
     type P = TermVectorPostingsArray;
 
@@ -573,29 +581,45 @@ impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy> Term
     }
 }
 
-impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy> Eq
-    for TermVectorsConsumerPerField<D, C, MS, MP>
+impl<D, C, MS, MP> Eq for TermVectorsConsumerPerField<D, C, MS, MP>
+where
+    D: Directory + Send + Sync + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
 {
 }
 
-impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy> PartialEq
-    for TermVectorsConsumerPerField<D, C, MS, MP>
+impl<D, C, MS, MP> PartialEq for TermVectorsConsumerPerField<D, C, MS, MP>
+where
+    D: Directory + Send + Sync + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
 {
     fn eq(&self, other: &Self) -> bool {
         self.base.field_info.name.eq(&other.base.field_info.name)
     }
 }
 
-impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy> Ord
-    for TermVectorsConsumerPerField<D, C, MS, MP>
+impl<D, C, MS, MP> Ord for TermVectorsConsumerPerField<D, C, MS, MP>
+where
+    D: Directory + Send + Sync + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
 {
     fn cmp(&self, other: &Self) -> Ordering {
         self.base.field_info.name.cmp(&other.base.field_info.name)
     }
 }
 
-impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy> PartialOrd
-    for TermVectorsConsumerPerField<D, C, MS, MP>
+impl<D, C, MS, MP> PartialOrd for TermVectorsConsumerPerField<D, C, MS, MP>
+where
+    D: Directory + Send + Sync + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
 {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))

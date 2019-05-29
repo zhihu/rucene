@@ -46,7 +46,7 @@ use std::time::Duration;
 /// `IndexWriterConfig#getRAMPerThreadHardLimitMB()` to prevent address
 /// space exhaustion.
 pub(crate) struct DocumentsWriterFlushControl<
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -90,7 +90,7 @@ pub(crate) struct DocumentsWriterFlushControl<
 
 pub(crate) struct FlushControlLock;
 
-impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy>
+impl<D: Directory + Send + Sync + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy>
     DocumentsWriterFlushControl<D, C, MS, MP>
 {
     pub fn new(
@@ -776,14 +776,19 @@ impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy>
     }
 }
 
-struct BlockedFlush<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy> {
+struct BlockedFlush<
+    D: Directory + Send + Sync + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+> {
     dwpt: DocumentsWriterPerThread<D, C, MS, MP>,
     bytes: u64,
 }
 
 impl<D, C, MS, MP> BlockedFlush<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,

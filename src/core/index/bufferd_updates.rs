@@ -340,11 +340,16 @@ impl<C: Codec> BufferedUpdatesStream<C> {
         self.bytes_used.load(Ordering::Acquire)
     }
 
-    pub fn apply_deletes_and_updates<D: Directory, MS: MergeScheduler, MP: MergePolicy>(
+    pub fn apply_deletes_and_updates<D, MS, MP>(
         &self,
         pool: &ReaderPool<D, C, MS, MP>,
         infos: &[Arc<SegmentCommitInfo<D, C>>],
-    ) -> Result<ApplyDeletesResult<D, C>> {
+    ) -> Result<ApplyDeletesResult<D, C>>
+    where
+        D: Directory + Send + Sync + 'static,
+        MS: MergeScheduler,
+        MP: MergePolicy,
+    {
         let _l = self.lock.lock().unwrap();
         let updates_stream = unsafe {
             let stream = self as *const BufferedUpdatesStream<C> as *mut BufferedUpdatesStream<C>;
@@ -371,12 +376,17 @@ impl<C: Codec> BufferedUpdatesStream<C> {
 
     /// Resolves the buffered deleted Term/Query/docIDs, into actual deleted
     /// doc_ids in hte live_docs MutableBits for each SegmentReader
-    fn do_apply_deletes_and_updates<D: Directory, MS: MergeScheduler, MP: MergePolicy>(
+    fn do_apply_deletes_and_updates<D, MS, MP>(
         &mut self,
         pool: &ReaderPool<D, C, MS, MP>,
         infos: &[Arc<SegmentCommitInfo<D, C>>],
         seg_states: &mut Vec<SegmentState<D, C, MS, MP>>,
-    ) -> Result<Option<ApplyDeletesResult<D, C>>> {
+    ) -> Result<Option<ApplyDeletesResult<D, C>>>
+    where
+        D: Directory + Send + Sync + 'static,
+        MS: MergeScheduler,
+        MP: MergePolicy,
+    {
         let mut coalesce_updates = CoalescedUpdates::default();
 
         // We only init these on demand, when we find our first deletes that need to be applied:
@@ -517,10 +527,15 @@ impl<C: Codec> BufferedUpdatesStream<C> {
     }
 
     /// Delete by query
-    fn apply_query_deletes<'a, D: Directory + 'static, MS: MergeScheduler, MP: MergePolicy>(
+    fn apply_query_deletes<'a, D, MS, MP>(
         queries: impl Iterator<Item = &'a (Arc<dyn Query<C>>, DocId)>,
         seg_state: &mut SegmentState<D, C, MS, MP>,
-    ) -> Result<u64> {
+    ) -> Result<u64>
+    where
+        D: Directory + Send + Sync + 'static,
+        MS: MergeScheduler,
+        MP: MergePolicy,
+    {
         let mut del_count: u64 = 0;
         let mut rld = seg_state.rld.inner.lock()?;
         let mut searcher = DefaultIndexSearcher::new(Arc::clone(rld.reader()));
@@ -554,11 +569,16 @@ impl<C: Codec> BufferedUpdatesStream<C> {
     }
 
     /// Merge sorts the deleted terms and all segments to resolve terms to doc_ids for deletion.
-    fn apply_term_deletes<D: Directory + 'static, MS: MergeScheduler, MP: MergePolicy>(
+    fn apply_term_deletes<D, MS, MP>(
         &mut self,
         updates: &CoalescedUpdates<C>,
         seg_states: &mut [SegmentState<D, C, MS, MP>],
-    ) -> Result<u64> {
+    ) -> Result<u64>
+    where
+        D: Directory + Send + Sync + 'static,
+        MS: MergeScheduler,
+        MP: MergePolicy,
+    {
         let start = Instant::now();
         let num_readers = seg_states.len();
 
@@ -714,12 +734,17 @@ impl<C: Codec> BufferedUpdatesStream<C> {
     }
 
     /// Opens SegmentReader and inits SegmentState for each segment.
-    fn open_segment_states<D: Directory, MS: MergeScheduler, MP: MergePolicy>(
+    fn open_segment_states<D, MS, MP>(
         &self,
         pool: &ReaderPool<D, C, MS, MP>,
         infos: &[Arc<SegmentCommitInfo<D, C>>],
         seg_states: &mut Vec<SegmentState<D, C, MS, MP>>,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        D: Directory + Send + Sync + 'static,
+        MS: MergeScheduler,
+        MP: MergePolicy,
+    {
         for info in infos {
             match SegmentState::new(pool, info) {
                 Ok(state) => seg_states.push(state),
@@ -737,13 +762,18 @@ impl<C: Codec> BufferedUpdatesStream<C> {
     }
 
     /// Close segment states previously opened with openSegmentStates.
-    fn close_segment_states<D: Directory, MS: MergeScheduler, MP: MergePolicy>(
+    fn close_segment_states<D, MS, MP>(
         &mut self,
         pool: &ReaderPool<D, C, MS, MP>,
         seg_states: &mut [SegmentState<D, C, MS, MP>],
         success: bool,
         gen: i64,
-    ) -> Result<ApplyDeletesResult<D, C>> {
+    ) -> Result<ApplyDeletesResult<D, C>>
+    where
+        D: Directory + Send + Sync + 'static,
+        MS: MergeScheduler,
+        MP: MergePolicy,
+    {
         let mut first_err = Ok(ApplyDeletesResult::new(false, 0, vec![]));
         let mut total_del_count = 0;
         let mut all_deleted = vec![];
@@ -874,7 +904,12 @@ impl<D: Directory, C: Codec> ApplyDeletesResult<D, C> {
     }
 }
 
-struct SegmentState<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy> {
+struct SegmentState<
+    D: Directory + Send + Sync + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+> {
     del_gen: i64,
     rld: Arc<ReadersAndUpdates<D, C, MS, MP>>,
     start_del_count: usize,
@@ -884,8 +919,12 @@ struct SegmentState<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: Me
     any: bool,
 }
 
-impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy>
-    SegmentState<D, C, MS, MP>
+impl<D, C, MS, MP> SegmentState<D, C, MS, MP>
+where
+    D: Directory + Send + Sync + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
 {
     fn new(pool: &ReaderPool<D, C, MS, MP>, info: &Arc<SegmentCommitInfo<D, C>>) -> Result<Self> {
         let rld: Arc<ReadersAndUpdates<D, C, MS, MP>> = pool.get_or_create(info)?;
@@ -909,13 +948,22 @@ impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy>
     }
 }
 
-struct SegmentStateRef<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy> {
+struct SegmentStateRef<
+    D: Directory + Send + Sync + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+> {
     states: *const [SegmentState<D, C, MS, MP>],
     index: usize,
 }
 
-impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy>
-    SegmentStateRef<D, C, MS, MP>
+impl<D, C, MS, MP> SegmentStateRef<D, C, MS, MP>
+where
+    D: Directory + Send + Sync + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
 {
     fn new(states: &[SegmentState<D, C, MS, MP>], index: usize) -> Self {
         Self { states, index }
@@ -923,8 +971,12 @@ impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy>
 }
 
 /// use for iter terms on binary heap
-impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy> Ord
-    for SegmentStateRef<D, C, MS, MP>
+impl<D, C, MS, MP> Ord for SegmentStateRef<D, C, MS, MP>
+where
+    D: Directory + Send + Sync + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
 {
     fn cmp(&self, other: &Self) -> CmpOrdering {
         // reversed order
@@ -942,21 +994,33 @@ impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy> Ord
     }
 }
 
-impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy> PartialOrd
-    for SegmentStateRef<D, C, MS, MP>
+impl<D, C, MS, MP> PartialOrd for SegmentStateRef<D, C, MS, MP>
+where
+    D: Directory + Send + Sync + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
 {
     fn partial_cmp(&self, other: &Self) -> Option<CmpOrdering> {
         Some(self.cmp(other))
     }
 }
 
-impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy> Eq
-    for SegmentStateRef<D, C, MS, MP>
+impl<D, C, MS, MP> Eq for SegmentStateRef<D, C, MS, MP>
+where
+    D: Directory + Send + Sync + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
 {
 }
 
-impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy> PartialEq
-    for SegmentStateRef<D, C, MS, MP>
+impl<D, C, MS, MP> PartialEq for SegmentStateRef<D, C, MS, MP>
+where
+    D: Directory + Send + Sync + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
 {
     fn eq(&self, other: &Self) -> bool {
         unsafe {

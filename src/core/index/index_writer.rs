@@ -40,7 +40,8 @@ use core::util::io::delete_file_ignoring_error;
 use core::util::string_util::random_id;
 use core::util::{to_base36, DerefWrapper, DocId, VERSION_LATEST};
 
-use error::ErrorKind::{AlreadyClosed, IllegalArgument, IllegalState, RuntimeError};
+use core::index::ErrorKind::MergeAborted;
+use error::ErrorKind::{AlreadyClosed, IllegalArgument, IllegalState, Index, RuntimeError};
 use error::{Error, Result};
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -83,13 +84,18 @@ pub const INDEX_WRITE_LOCK_NAME: &str = "write.lock";
 /// (files that were created since the last commit, but are no longer
 /// referenced by the "front" of the index). For this, IndexFileDeleter
 /// keeps track of the last non commit checkpoint.
-pub struct IndexWriter<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy> {
+pub struct IndexWriter<
+    D: Directory + Send + Sync + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+> {
     writer: Arc<IndexWriterInner<D, C, MS, MP>>,
 }
 
 impl<D, C, MS, MP> Clone for IndexWriter<D, C, MS, MP>
 where
-    D: Directory,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -103,7 +109,7 @@ where
 
 impl<D, C, MS, MP> IndexWriter<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -496,7 +502,7 @@ where
 // crate public field accesser
 impl<D, C, MS, MP> IndexWriter<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -605,6 +611,11 @@ where
     pub(crate) fn next_merge(&self) -> Option<OneMerge<D, C>> {
         self.writer.next_merge()
     }
+
+    pub(crate) fn has_pending_merges(&self) -> bool {
+        let _l = self.writer.lock.lock().unwrap();
+        !self.writer.pending_merges.is_empty()
+    }
 }
 
 // TODO: maybe we should impl this for `IndexWriterInner`,
@@ -612,7 +623,7 @@ where
 // instead of IndexWriterInner
 impl<D, C, MS, MP> Drop for IndexWriter<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -634,7 +645,7 @@ where
 }
 
 pub(crate) struct IndexWriterInner<
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -725,7 +736,7 @@ pub(crate) struct IndexWriterInner<
 
 unsafe impl<D, C, MS, MP> Send for IndexWriterInner<D, C, MS, MP>
 where
-    D: Directory + Send + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -734,7 +745,7 @@ where
 
 unsafe impl<D, C, MS, MP> Sync for IndexWriterInner<D, C, MS, MP>
 where
-    D: Directory + Sync + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -743,7 +754,7 @@ where
 
 impl<D, C, MS, MP> IndexWriterInner<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -2575,7 +2586,7 @@ where
         debug_assert!(!merge.segments.is_empty());
         if self.stop_merges {
             merge.rate_limiter.set_abort();
-            bail!(IllegalState("merge is abort!".into()));
+            bail!(Index(MergeAborted("merge is abort!".into())));
         }
 
         let mut is_external = false;
@@ -2609,7 +2620,7 @@ where
             self.merging_segments.insert(info.info.name.clone());
         }
 
-        debug_assert_eq!(merge.estimated_merge_bytes, 0);
+        debug_assert_eq!(merge.estimated_merge_bytes.read(), 0);
         debug_assert_eq!(merge.total_merge_bytes, 0);
 
         for info in &merge.segments {
@@ -2618,7 +2629,9 @@ where
                 debug_assert!((del_count as i32) <= info.info.max_doc);
                 let total_size = info.size_in_bytes();
                 let del_ratio = del_count as f64 / info.info.max_doc as f64;
-                merge.estimated_merge_bytes += (total_size as f64 * (1.0 - del_ratio)) as u64;
+                merge
+                    .estimated_merge_bytes
+                    .update(|bytes| *bytes += (total_size as f64 * (1.0 - del_ratio)) as u64);
                 merge.total_merge_bytes = total_size as u64;
             }
         }
@@ -2636,6 +2649,7 @@ where
         if let Err(e) = Self::do_merge(index_writer, merge) {
             index_writer.writer.tragic_event(e, "merge")?;
         }
+
         Ok(())
     }
 
@@ -2666,7 +2680,16 @@ where
                 )?;
             }
         }
-        res
+        match res {
+            Err(Error(Index(MergeAborted(_)), _)) => {
+                let segments: Vec<_> = merge.segments.iter().map(|s| &s.info.name).collect();
+                warn!("the merge for segments {:?} is aborted!", segments);
+                // the merge is aborted, ignore this error
+                Ok(())
+            }
+            Ok(()) => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 
     fn execute_merge(
@@ -2891,6 +2914,7 @@ where
             context,
         )?;
         merge.rate_limiter.check_abort()?;
+        merge.merge_start_time.write(Some(SystemTime::now()));
 
         // This is where all the work happens:
         if merger.should_merge() {
@@ -3347,7 +3371,12 @@ where
 /// 1) applying deletes, 2) doing merges, 3) handing out a real-time reader.
 /// This pool reuses instances of the SegmentReaders in all these places if it
 /// is in "near real-time mode" (getReader() has been called on this instance).
-pub struct ReaderPool<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy> {
+pub struct ReaderPool<
+    D: Directory + Send + Sync + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+> {
     lock: Mutex<()>,
     reader_map: Arc<Mutex<HashMap<String, Arc<ReadersAndUpdates<D, C, MS, MP>>>>>,
     // key is SegmentCommitInfo.
@@ -3358,7 +3387,7 @@ pub struct ReaderPool<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: 
 
 impl<D, C, MS, MP> ReaderPool<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -3602,7 +3631,7 @@ where
     }
 }
 
-impl<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy> Drop
+impl<D: Directory + Send + Sync + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy> Drop
     for ReaderPool<D, C, MS, MP>
 {
     fn drop(&mut self) {
@@ -3643,8 +3672,12 @@ fn read_field_infos<D: Directory, C: Codec>(si: &SegmentCommitInfo<D, C>) -> Res
 
 // Used by IndexWriter to hold open SegmentReaders (for searching or merging),
 // plus pending deletes and updates, for a given segment
-pub struct ReadersAndUpdates<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy>
-{
+pub struct ReadersAndUpdates<
+    D: Directory + Send + Sync + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+> {
     // Not final because we replace (clone) when we need to
     // change it and it's been shared:
     pub info: Arc<SegmentCommitInfo<D, C>>,
@@ -3655,7 +3688,7 @@ pub struct ReadersAndUpdates<D: Directory + 'static, C: Codec, MS: MergeSchedule
 
 impl<D, C, MS, MP> ReadersAndUpdates<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -3786,7 +3819,7 @@ where
 
 pub struct ReadersAndUpdatesInner<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -3818,7 +3851,7 @@ where
 
 impl<D, C, MS, MP> ReadersAndUpdatesInner<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -4172,14 +4205,8 @@ where
     }
 }
 
-// impl AsRef<Directory + 'static> for RateLimitFilterDirectory {
-//    fn as_ref(&self) -> &(Directory + 'static) {
-//        self
-//    }
-//}
-
 struct MergedDeletesAndUpdates<
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -4190,7 +4217,7 @@ struct MergedDeletesAndUpdates<
 
 impl<D, C, MS, MP> Default for MergedDeletesAndUpdates<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -4205,7 +4232,7 @@ where
 
 impl<D, C, MS, MP> MergedDeletesAndUpdates<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,

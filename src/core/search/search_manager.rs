@@ -58,22 +58,32 @@ pub struct SearcherManager<C: Codec, T, SF: SearcherFactory<C>> {
 }
 
 impl<C: Codec, T, SF: SearcherFactory<C>> SearcherManager<C, T, SF> {
-    pub fn from_writer<D: Directory, MS: MergeScheduler, MP: MergePolicy>(
+    pub fn from_writer<D, MS, MP>(
         writer: &IndexWriter<D, C, MS, MP>,
         apply_all_deletes: bool,
         write_all_deletes: bool,
         searcher_factory: SF,
         refresh_listener: Option<T>,
-    ) -> Result<Self> {
+    ) -> Result<Self>
+    where
+        D: Directory + Send + Sync + 'static,
+        MS: MergeScheduler,
+        MP: MergePolicy,
+    {
         let reader = writer.get_reader(apply_all_deletes, write_all_deletes)?;
         Self::new(reader, searcher_factory, refresh_listener)
     }
 
-    pub fn new<D: Directory, MS: MergeScheduler, MP: MergePolicy>(
+    pub fn new<D, MS, MP>(
         reader: StandardDirectoryReader<D, C, MS, MP>,
         searcher_factory: SF,
         refresh_listener: Option<T>,
-    ) -> Result<Self> {
+    ) -> Result<Self>
+    where
+        D: Directory + Send + Sync + 'static,
+        MS: MergeScheduler,
+        MP: MergePolicy,
+    {
         let current = searcher_factory.new_searcher(Arc::new(reader))?;
         let manager_base = ReferenceManagerBase::new(Arc::new(current));
         Ok(SearcherManager {

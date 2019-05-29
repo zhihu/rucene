@@ -71,7 +71,7 @@ impl TermsHashBase {
         track_allocations: bool,
     ) -> Self
     where
-        D: Directory,
+        D: Directory + Send + Sync + 'static,
         C: Codec,
         MS: MergeScheduler,
         MP: MergePolicy,
@@ -142,7 +142,7 @@ pub trait TermsHash<D: Directory, C: Codec> {
 }
 
 pub struct FreqProxTermsWriter<
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -153,7 +153,7 @@ pub struct FreqProxTermsWriter<
 
 impl<D, C, MS, MP> FreqProxTermsWriter<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -242,7 +242,7 @@ fn apply_deletes<D: Directory, DW: Directory, C: Codec>(
 
 impl<D, C, MS, MP> TermsHash<D, C> for FreqProxTermsWriter<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -335,13 +335,19 @@ where
 /// Implements limited (iterators only, no stats) `Fields`
 /// interface over the in-RAM buffered fields/terms/postings,
 /// to flush postings through the PostingsFormat
-struct FreqProxFields<'a, D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy> {
+struct FreqProxFields<
+    'a,
+    D: Directory + Send + Sync + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+> {
     fields: BTreeMap<String, &'a FreqProxTermsWriterPerField<D, C, MS, MP>>,
 }
 
 impl<'a, D, C, MS, MP> FreqProxFields<'a, D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -357,7 +363,7 @@ where
 
 impl<'a, D, C, MS, MP> Fields for FreqProxFields<'a, D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -380,14 +386,19 @@ where
     }
 }
 
-struct FreqProxTerms<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy> {
+struct FreqProxTerms<
+    D: Directory + Send + Sync + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+> {
     // TODO use raw pointer because we need to return box
     terms_writer: *const FreqProxTermsWriterPerField<D, C, MS, MP>,
 }
 
 impl<D, C, MS, MP> FreqProxTerms<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -403,7 +414,7 @@ where
 
 impl<D, C, MS, MP> Terms for FreqProxTerms<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -449,8 +460,12 @@ where
     }
 }
 
-struct FreqProxTermsIterator<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy>
-{
+struct FreqProxTermsIterator<
+    D: Directory + Send + Sync + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+> {
     // TODO use raw pointer because we need to return box
     terms_writer: *const FreqProxTermsWriterPerField<D, C, MS, MP>,
     num_terms: usize,
@@ -460,7 +475,7 @@ struct FreqProxTermsIterator<D: Directory + 'static, C: Codec, MS: MergeSchedule
 
 impl<D, C, MS, MP> FreqProxTermsIterator<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -495,7 +510,7 @@ where
 
 impl<D, C, MS, MP> TermIterator for FreqProxTermsIterator<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -601,7 +616,12 @@ where
     }
 }
 
-struct FreqProxDocsIterator<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy> {
+struct FreqProxDocsIterator<
+    D: Directory + Send + Sync + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+> {
     // TODO use raw pointer because we need to return box
     terms_writer: *const FreqProxTermsWriterPerField<D, C, MS, MP>,
     reader: ByteSliceReader,
@@ -614,7 +634,7 @@ struct FreqProxDocsIterator<D: Directory + 'static, C: Codec, MS: MergeScheduler
 
 impl<D, C, MS, MP> Clone for FreqProxDocsIterator<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -634,7 +654,7 @@ where
 
 impl<D, C, MS, MP> FreqProxDocsIterator<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -667,7 +687,7 @@ where
 
 unsafe impl<D, C, MS, MP> Send for FreqProxDocsIterator<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -676,7 +696,7 @@ where
 
 impl<D, C, MS, MP> PostingIterator for FreqProxDocsIterator<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -710,7 +730,7 @@ where
 
 impl<D, C, MS, MP> DocIterator for FreqProxDocsIterator<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -763,7 +783,7 @@ where
 }
 
 struct FreqProxPostingsIterator<
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -787,7 +807,7 @@ struct FreqProxPostingsIterator<
 
 impl<D, C, MS, MP> FreqProxPostingsIterator<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -829,7 +849,7 @@ where
 
 impl<D, C, MS, MP> Clone for FreqProxPostingsIterator<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -856,7 +876,7 @@ where
 
 unsafe impl<D, C, MS, MP> Send for FreqProxPostingsIterator<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -865,7 +885,7 @@ where
 
 impl<D, C, MS, MP> PostingIterator for FreqProxPostingsIterator<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -919,7 +939,7 @@ where
 
 impl<D, C, MS, MP> DocIterator for FreqProxPostingsIterator<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -975,15 +995,19 @@ where
     }
 }
 
-enum FreqProxPostingIterEnum<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy>
-{
+enum FreqProxPostingIterEnum<
+    D: Directory + Send + Sync + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+> {
     Postings(FreqProxPostingsIterator<D, C, MS, MP>),
     Docs(FreqProxDocsIterator<D, C, MS, MP>),
 }
 
 impl<D, C, MS, MP> PostingIterator for FreqProxPostingIterEnum<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -1026,7 +1050,7 @@ where
 
 impl<D, C, MS, MP> DocIterator for FreqProxPostingIterEnum<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,

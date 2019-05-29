@@ -190,7 +190,7 @@ pub enum PointWriterEnum<D: Directory> {
     Offline(OfflinePointWriter<D>),
 }
 
-impl<D: Directory + 'static> PointWriter for PointWriterEnum<D> {
+impl<D: Directory> PointWriter for PointWriterEnum<D> {
     type IndexOutput = PointWriterOutput<D>;
 
     fn append(&mut self, packed_value: &[u8], ord: i64, doc_id: DocId) -> Result<()> {

@@ -54,11 +54,15 @@ pub(crate) trait FlushPolicy {
     /// Note: This method is called synchronized on the given
     /// `DocumentsWriterFlushControl` and it is guaranteed that the calling
     /// thread holds the lock on the given `ThreadState`
-    fn on_delete<D: Directory, C: Codec, MS: MergeScheduler, MP: MergePolicy>(
+    fn on_delete<D, C, MS, MP>(
         &self,
         control: &mut DocumentsWriterFlushControl<D, C, MS, MP>,
         state: Option<&ThreadState<D, C, MS, MP>>,
-    );
+    ) where
+        D: Directory + Send + Sync + 'static,
+        C: Codec,
+        MS: MergeScheduler,
+        MP: MergePolicy;
 
     /// Called for each document update on the given `ThreadState`'s
     /// `DocumentsWriterPerThread`.
@@ -66,12 +70,17 @@ pub(crate) trait FlushPolicy {
     /// Note: This method is called  synchronized on the given
     /// `DocumentsWriterFlushControl` and it is guaranteed that the calling
     /// thread holds the lock on the given `ThreadState`
-    fn on_update<D: Directory, C: Codec, MS: MergeScheduler, MP: MergePolicy>(
+    fn on_update<D, C, MS, MP>(
         &self,
         control: &mut DocumentsWriterFlushControl<D, C, MS, MP>,
         lg: &MutexGuard<FlushControlLock>,
         state: &ThreadState<D, C, MS, MP>,
-    ) {
+    ) where
+        D: Directory + Send + Sync + 'static,
+        C: Codec,
+        MS: MergeScheduler,
+        MP: MergePolicy,
+    {
         self.on_insert(control, lg, state);
         self.on_delete(control, Some(state));
     }
@@ -82,28 +91,33 @@ pub(crate) trait FlushPolicy {
     /// Note: This method is synchronized by the given
     /// `DocumentsWriterFlushControl` and it is guaranteed that the calling
     /// thread holds the lock on the given `ThreadState`
-    fn on_insert<D: Directory, C: Codec, MS: MergeScheduler, MP: MergePolicy>(
+    fn on_insert<D, C, MS, MP>(
         &self,
         control: &mut DocumentsWriterFlushControl<D, C, MS, MP>,
         lg: &MutexGuard<FlushControlLock>,
         state: &ThreadState<D, C, MS, MP>,
-    );
+    ) where
+        D: Directory + Send + Sync + 'static,
+        C: Codec,
+        MS: MergeScheduler,
+        MP: MergePolicy;
 
     /// Returns the current most RAM consuming non-pending `ThreadState` with
     /// at least one indexed document.
     ///
     /// @Return: Arc<ThreadState>, the largest pending writer
     ///          None: if the current is the largest
-    fn find_largest_non_pending_writer<
-        D: Directory,
-        C: Codec,
-        MS: MergeScheduler,
-        MP: MergePolicy,
-    >(
+    fn find_largest_non_pending_writer<D, C, MS, MP>(
         &self,
         control: &DocumentsWriterFlushControl<D, C, MS, MP>,
         per_thread_state: &ThreadState<D, C, MS, MP>,
-    ) -> Option<Arc<ThreadState<D, C, MS, MP>>> {
+    ) -> Option<Arc<ThreadState<D, C, MS, MP>>>
+    where
+        D: Directory + Send + Sync + 'static,
+        C: Codec,
+        MS: MergeScheduler,
+        MP: MergePolicy,
+    {
         debug_assert!(per_thread_state.dwpt().num_docs_in_ram > 0);
         let mut max_ram_so_far = per_thread_state.bytes_used;
         // the dwpt which needs to be flushed eventually
@@ -186,7 +200,7 @@ impl<C: Codec, MS: MergeScheduler, MP: MergePolicy> FlushByRamOrCountsPolicy<C, 
     }
 
     fn mark_largest_writer_pending<
-        D: Directory,
+        D: Directory + Send + Sync + 'static,
         C1: Codec,
         MS1: MergeScheduler,
         MP1: MergePolicy,
@@ -208,11 +222,16 @@ impl<C: Codec, MS: MergeScheduler, MP: MergePolicy> FlushByRamOrCountsPolicy<C, 
 impl<C1: Codec, MS1: MergeScheduler, MP1: MergePolicy> FlushPolicy
     for FlushByRamOrCountsPolicy<C1, MS1, MP1>
 {
-    fn on_delete<D: Directory, C: Codec, MS: MergeScheduler, MP: MergePolicy>(
+    fn on_delete<D, C, MS, MP>(
         &self,
         control: &mut DocumentsWriterFlushControl<D, C, MS, MP>,
         _state: Option<&ThreadState<D, C, MS, MP>>,
-    ) {
+    ) where
+        D: Directory + Send + Sync + 'static,
+        C: Codec,
+        MS: MergeScheduler,
+        MP: MergePolicy,
+    {
         if self.index_write_config.flush_on_delete_terms() {
             // flush this state by num del terms
             if control.num_global_term_deletes()
@@ -234,12 +253,17 @@ impl<C1: Codec, MS1: MergeScheduler, MP1: MergePolicy> FlushPolicy
         }
     }
 
-    fn on_insert<D: Directory, C: Codec, MS: MergeScheduler, MP: MergePolicy>(
+    fn on_insert<D, C, MS, MP>(
         &self,
         control: &mut DocumentsWriterFlushControl<D, C, MS, MP>,
         lg: &MutexGuard<FlushControlLock>,
         state: &ThreadState<D, C, MS, MP>,
-    ) {
+    ) where
+        D: Directory + Send + Sync + 'static,
+        C: Codec,
+        MS: MergeScheduler,
+        MP: MergePolicy,
+    {
         if self.index_write_config.flush_on_doc_count()
             && state.dwpt().num_docs_in_ram >= self.index_write_config.max_buffered_docs()
         {

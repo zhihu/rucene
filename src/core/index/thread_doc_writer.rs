@@ -65,7 +65,7 @@ impl DocState {
 }
 
 pub struct DocumentsWriterPerThread<
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -102,7 +102,7 @@ pub struct DocumentsWriterPerThread<
 
 impl<D, C, MS, MP> DocumentsWriterPerThread<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -610,7 +610,7 @@ impl<D: Directory, C: Codec> FlushedSegment<D, C> {
 /// is reusing the flushing `DocumentsWriterPerThread`s ThreadState with a
 /// new `DocumentsWriterPerThread` instance.
 pub(crate) struct DocumentsWriterPerThreadPool<
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -620,7 +620,12 @@ pub(crate) struct DocumentsWriterPerThreadPool<
     cond: Condvar,
 }
 
-struct DWPTPoolInner<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy> {
+struct DWPTPoolInner<
+    D: Directory + Send + Sync + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+> {
     thread_states: Vec<Arc<ThreadState<D, C, MS, MP>>>,
     // valid thread_state index in `self.thread_states`
     free_list: Vec<usize>,
@@ -628,7 +633,7 @@ struct DWPTPoolInner<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: M
 
 impl<D, C, MS, MP> DocumentsWriterPerThreadPool<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -756,8 +761,12 @@ pub(crate) struct ThreadStateLock;
 /// thread a time. Users must acquire the lock via `ThreadState#lock()`
 /// and release the lock in a finally block via `ThreadState#unlock()`
 /// before accessing the state.
-pub(crate) struct ThreadState<D: Directory + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy>
-{
+pub(crate) struct ThreadState<
+    D: Directory + Send + Sync + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+> {
     pub lock: Mutex<ThreadStateLock>,
     pub dwpt: Option<DocumentsWriterPerThread<D, C, MS, MP>>,
     // TODO this should really be part of DocumentsWriterFlushControl
@@ -774,7 +783,7 @@ pub(crate) struct ThreadState<D: Directory + 'static, C: Codec, MS: MergeSchedul
 
 impl<D, C, MS, MP> ThreadState<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,

@@ -96,7 +96,7 @@ use std::thread;
 // or none") added to the index.
 //
 pub(crate) struct DocumentsWriter<
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -128,7 +128,7 @@ pub(crate) struct DocumentsWriter<
 
 impl<D, C, MS, MP> DocumentsWriter<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -731,7 +731,7 @@ where
 
 impl<D, C, MS, MP> Drop for DocumentsWriter<D, C, MS, MP>
 where
-    D: Directory + 'static,
+    D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
@@ -747,7 +747,7 @@ where
 /// only rely on the serializeability within its process method. All actions that
 /// must happen before or after a certain action must be encoded inside the
 /// {@link #process(IndexWriter, boolean, boolean)} method.
-pub trait Event<D: Directory + 'static, C: Codec> {
+pub trait Event<D: Directory + Send + Sync + 'static, C: Codec> {
     /// Processes the event. This method is called by the `IndexWriter`
     /// passed as the first argument.
     fn process<MS: MergeScheduler, MP: MergePolicy>(
@@ -766,7 +766,7 @@ pub enum WriterEvent<D: Directory, C: Codec> {
     DeleteNewFiles(HashSet<String>),
 }
 
-impl<D: Directory + 'static, C: Codec> Event<D, C> for WriterEvent<D, C> {
+impl<D: Directory + Send + Sync + 'static, C: Codec> Event<D, C> for WriterEvent<D, C> {
     fn process<MS: MergeScheduler, MP: MergePolicy>(
         &self,
         writer: &IndexWriter<D, C, MS, MP>,
