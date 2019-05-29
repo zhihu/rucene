@@ -3,6 +3,12 @@ name = "rucene"
 version = "0.1.0"
 authors = ["Zhihu Search Team"]
 repository = "https://github.com/zhihu/rucene"
+license-file = "LICENSE"
+description = """
+Rucene is a Rust port of the popular Apache Lucene project. Rucene is 
+not a complete application, but rather a code library and API that 
+can easily be used to add full text search capabilities to applications.
+"""
 
 [dependencies]
 bytes = "0.4"
@@ -27,7 +33,6 @@ thread_local = "0.3"
 unicode_reader = "0.1.1"
 num-traits = "0.2"
 byteorder = "1"
-clippy = { version = "*", optional = true }
 
 # The release profile, used for `cargo build --release`
 [profile.release]
