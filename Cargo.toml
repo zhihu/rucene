@@ -1,7 +1,8 @@
 [package]
 name = "rucene"
 version = "0.1.0"
-authors = ["Search Team"]
+authors = ["Zhihu Search Team"]
+repository = "https://github.com/zhihu/rucene"
 
 [dependencies]
 bytes = "0.4"
