@@ -744,7 +744,7 @@ impl<'a, T: PostingsWriterBase, O: IndexOutput> TermsWriter<'a, T, O> {
             let prefix_top_size = self.pending.len() - self.prefix_starts[idx];
             if prefix_top_size >= self.block_tree_writer.min_items_in_block {
                 self.write_blocks(idx + 1, prefix_top_size)?;
-                self.prefix_starts[idx].wrapping_sub(prefix_top_size - 1);
+                self.prefix_starts[idx] = self.prefix_starts[idx].wrapping_sub(prefix_top_size - 1);
             }
         }
 
