@@ -24,11 +24,11 @@ use core::index::{FieldInfo, FieldInfos, Fieldable};
 use core::store::Directory;
 use core::store::{DataOutput, GrowableByteArrayDataOutput, IOContext, IndexOutput};
 use core::util::bit_util::{BitsRequired, UnsignedShift, ZigZagEncoding};
+use core::util::numeric::Numeric;
 use core::util::packed_misc::Format;
 use core::util::packed_misc::VERSION_CURRENT as PACKED_VERSION_CURRENT;
 use core::util::packed_misc::{get_writer_no_header, Writer};
 use core::util::DocId;
-use core::util::Numeric;
 
 use error::{
     ErrorKind::{IllegalArgument, IllegalState, RuntimeError},
@@ -37,7 +37,7 @@ use error::{
 
 use std::sync::Arc;
 
-pub struct CompressingStoredFieldsIndexWriter<O: IndexOutput> {
+pub(crate) struct CompressingStoredFieldsIndexWriter<O: IndexOutput> {
     fields_index_output: O,
     block_size: usize,
     total_docs: usize,
@@ -51,8 +51,8 @@ pub struct CompressingStoredFieldsIndexWriter<O: IndexOutput> {
 
 impl<O: IndexOutput> CompressingStoredFieldsIndexWriter<O> {
     pub fn new(output: O, block_size: usize) -> Result<CompressingStoredFieldsIndexWriter<O>> {
-        if block_size <= 0 {
-            bail!(IllegalArgument("blockSize must be positive".into()));
+        if block_size == 0 {
+            bail!(IllegalArgument("block size must be 0".into()));
         }
 
         let mut writer = CompressingStoredFieldsIndexWriter {
@@ -199,6 +199,7 @@ impl<O: IndexOutput> CompressingStoredFieldsIndexWriter<O> {
     }
 }
 
+/// `StoredFieldsWriter` impl for `CompressingStoredFieldsFormat`
 pub struct CompressingStoredFieldsWriter<O: IndexOutput> {
     index_writer: CompressingStoredFieldsIndexWriter<O>,
     fields_stream: O,
@@ -426,7 +427,7 @@ impl<O: IndexOutput + 'static> CompressingStoredFieldsWriter<O> {
     fn write_zfloat(out: &mut impl DataOutput, f: f32) -> Result<()> {
         let int_val = f as i32;
         let float_bits = f.to_bits() as i32;
-        if f == int_val as f32
+        if (f - int_val as f32).abs() < ::std::f32::EPSILON
             && int_val >= -1
             && int_val <= 0x7D
             && float_bits != NEGATIVE_ZERO_FLOAT
@@ -465,14 +466,14 @@ impl<O: IndexOutput + 'static> CompressingStoredFieldsWriter<O> {
         let int_val = d as i32;
         let double_bits = d.to_bits() as i64;
 
-        if d == int_val as f64
+        if (d - int_val as f64).abs() < ::std::f64::EPSILON
             && int_val >= -1
             && int_val <= 0x7C
             && double_bits != NEGATIVE_ZERO_DOUBLE
         {
             // small integer value [-1..124]: single byte
             out.write_byte((0x80 | (int_val + 1)) as u8)?;
-        } else if d == (d as f32) as f64 {
+        } else if (d - (d as f32) as f64).abs() < ::std::f64::EPSILON {
             // d has an accurate float representation: 5 bytes
             out.write_byte(0xFE as u8)?;
             out.write_int((d as f32).to_bits() as i32)?;
@@ -491,8 +492,9 @@ impl<O: IndexOutput + 'static> CompressingStoredFieldsWriter<O> {
     /// Writes a long in a variable-length format.  Writes between one and
     /// ten bytes. Small values or values representing timestamps with day,
     /// hour or second precision typically require fewer bytes.
+    ///
     /// <p>
-    /// ZLong --&gt; Header, Bytes*?
+    /// ZLong --> Header, Bytes*?
     /// <ul>
     /// <li>Header --&gt; The first two bits indicate the compression scheme:
     /// <ul>
@@ -554,7 +556,8 @@ impl<O: IndexOutput + 'static> CompressingStoredFieldsWriter<O> {
     /// flushes), over time the compression ratio can degrade. This is a safety switch.
     fn too_dirty(candidate: &CompressingStoredFieldsReader) -> bool {
         // more than 1% dirty, or more than hard limit of 1024 dirty chunks
-        candidate.num_dirty_chunks > 1024 || candidate.num_dirty_chunks * 100 > candidate.num_chunks
+        candidate.num_dirty_chunks() > 1024
+            || candidate.num_dirty_chunks() * 100 > candidate.num_chunks()
     }
 }
 
@@ -681,7 +684,7 @@ impl<O: IndexOutput + 'static> StoredFieldsWriter for CompressingStoredFieldsWri
             let live_docs = merge_state.live_docs[i].as_ref();
             // if its some other format, or an older version of this format, or safety switch:
             if let Some(ref mut fields_reader) = matching_fields_reader {
-                if fields_reader.version != VERSION_CURRENT {
+                if fields_reader.version() != VERSION_CURRENT {
                     // naive merge:
                     for doc_id in 0..max_doc {
                         if !live_docs.get(doc_id as usize)? {
@@ -692,9 +695,9 @@ impl<O: IndexOutput + 'static> StoredFieldsWriter for CompressingStoredFieldsWri
                         self.finish_document()?;
                         doc_count += 1;
                     }
-                } else if fields_reader.compression_mode == self.compress_mode &&
-                    fields_reader.chunk_size == self.chunk_size as i32 &&
-                    fields_reader.packed_ints_version == PACKED_VERSION_CURRENT &&
+                } else if fields_reader.compression_mode() == self.compress_mode &&
+                    fields_reader.chunk_size() == self.chunk_size as i32 &&
+                    fields_reader.packed_ints_version() == PACKED_VERSION_CURRENT &&
                     live_docs.is_empty() &&         // this indicate that live_docs is MatchAll, equal to live_docs == null in Java
                         !Self::too_dirty(fields_reader)
                 {
@@ -702,7 +705,7 @@ impl<O: IndexOutput + 'static> StoredFieldsWriter for CompressingStoredFieldsWri
                     // its not worth fine-graining this if there are deletions.
 
                     // if the format is older, its always handled by the naive merge case above
-                    debug_assert_eq!(fields_reader.version, VERSION_CURRENT);
+                    debug_assert_eq!(fields_reader.version(), VERSION_CURRENT);
 
                     // flush any pending chunks
                     if self.num_buffered_docs > 0 {
@@ -714,13 +717,12 @@ impl<O: IndexOutput + 'static> StoredFieldsWriter for CompressingStoredFieldsWri
                     // boundaries, read the docstart + doccount from the chunk
                     // header (we write a new header, since doc numbers will
                     // change), and just copy the bytes directly.
-                    let raw_docs = &mut fields_reader.fields_stream;
-                    let start_index = fields_reader.index_reader.start_pointer(0)?;
-                    raw_docs.seek(start_index)?;
+                    let start_index = fields_reader.index_reader().start_pointer(0)?;
+                    fields_reader.fields_stream_mut().seek(start_index)?;
                     let mut doc_id = 0;
                     while doc_id < max_doc {
                         // read header
-                        let base = raw_docs.read_vint()?;
+                        let base = fields_reader.fields_stream_mut().read_vint()?;
                         if base != doc_id {
                             bail!(
                                 "CorruptIndex: invalid state: base={}, doc_id={}",
@@ -728,7 +730,7 @@ impl<O: IndexOutput + 'static> StoredFieldsWriter for CompressingStoredFieldsWri
                                 doc_id
                             );
                         }
-                        let code: i32 = raw_docs.read_vint()?;
+                        let code: i32 = fields_reader.fields_stream_mut().read_vint()?;
 
                         // write a new index entry and new header for this chunk.
                         let buffered_docs = code.unsigned_shift(1);
@@ -757,35 +759,38 @@ impl<O: IndexOutput + 'static> StoredFieldsWriter for CompressingStoredFieldsWri
                         // fast enough and is a source of redundancy for
                         // detecting bad things.
                         let end = if doc_id == max_doc {
-                            fields_reader.max_pointer
+                            fields_reader.max_pointer()
                         } else {
-                            fields_reader.index_reader.start_pointer(doc_id)?
+                            fields_reader.index_reader().start_pointer(doc_id)?
                         };
-                        let len = (end - raw_docs.file_pointer()) as usize;
-                        self.fields_stream.copy_bytes(raw_docs.as_mut(), len)?;
+                        let len = (end - fields_reader.fields_stream_mut().file_pointer()) as usize;
+                        self.fields_stream
+                            .copy_bytes(fields_reader.fields_stream_mut(), len)?;
                     }
 
-                    if raw_docs.file_pointer() != fields_reader.max_pointer {
+                    if fields_reader.fields_stream_mut().file_pointer()
+                        != fields_reader.max_pointer()
+                    {
                         bail!(
                             "CorruptIndex: invalid state: raw_docs.file_pointer={}, \
                              fields_reader.max_pointer={}",
-                            raw_docs.file_pointer(),
-                            fields_reader.max_pointer
+                            fields_reader.fields_stream_mut().file_pointer(),
+                            fields_reader.max_pointer()
                         );
                     }
 
                     // since we bulk merged all chunks, we inherit any dirty ones from this segment.
                     debug_assert!(
-                        fields_reader.num_chunks >= 0 && fields_reader.num_dirty_chunks >= 0
+                        fields_reader.num_chunks() >= 0 && fields_reader.num_dirty_chunks() >= 0
                     );
-                    self.num_chunks += fields_reader.num_chunks as usize;
-                    self.num_dirty_chunks += fields_reader.num_dirty_chunks as usize;
+                    self.num_chunks += fields_reader.num_chunks() as usize;
+                    self.num_dirty_chunks += fields_reader.num_dirty_chunks() as usize;
                 } else {
                     // optimized merge, we copy serialized (but decompressed) bytes directly
                     // even on simple docs (1 stored field), it seems to help by about 20%
 
                     // if the format is older, its always handled by the naive merge case above
-                    debug_assert_eq!(fields_reader.version, VERSION_CURRENT);
+                    debug_assert_eq!(fields_reader.version(), VERSION_CURRENT);
 
                     for doc_id in 0..max_doc {
                         if !live_docs.get(doc_id as usize)? {
@@ -793,12 +798,10 @@ impl<O: IndexOutput + 'static> StoredFieldsWriter for CompressingStoredFieldsWri
                         }
                         fields_reader.document(doc_id)?;
                         self.start_document()?;
-                        self.buffered_docs.copy_bytes(
-                            &mut fields_reader.current_doc.input,
-                            fields_reader.current_doc.length,
-                        )?;
-                        self.num_stored_fields_in_doc =
-                            fields_reader.current_doc.num_stored_fields as usize;
+                        let current_doc = fields_reader.current_doc_mut();
+                        self.buffered_docs
+                            .copy_bytes(&mut current_doc.input, current_doc.length)?;
+                        self.num_stored_fields_in_doc = current_doc.num_stored_fields as usize;
                         self.finish_document()?;
                         doc_count += 1;
                     }

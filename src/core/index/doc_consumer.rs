@@ -39,7 +39,7 @@ use core::index::{
 use core::store::{Directory, IOContext};
 use core::util::{BytesRef, Counter, DocId, VariantValue};
 
-use core::search::bm25_similarity::BM25Similarity;
+use core::search::BM25Similarity;
 
 use error::{
     ErrorKind::{IllegalArgument, UnsupportedOperation},
@@ -68,7 +68,7 @@ pub trait DocConsumer<D: Directory, C: Codec> {
     fn abort(&mut self) -> Result<()>;
 }
 
-pub struct DefaultIndexingChain<
+pub(crate) struct DefaultIndexingChain<
     D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
@@ -327,7 +327,7 @@ where
         let mut field_count = field_count;
         if field.field_type().index_options != IndexOptions::Null {
             // if the field omits norms, the boost cannot be indexed.
-            if field.field_type().omit_norms && field.boost() != 1.0f32 {
+            if field.field_type().omit_norms && (field.boost() - 1.0).abs() < ::std::f32::EPSILON {
                 bail!(UnsupportedOperation(Cow::Borrowed(
                     "You cannot set an index-time boost: norms are omitted"
                 )));
@@ -733,7 +733,7 @@ where
     }
 }
 
-pub struct PerField<T: TermsHashPerField> {
+pub(crate) struct PerField<T: TermsHashPerField> {
     name: String,
     field_info: *mut FieldInfo,
     // similarity: Similarity,

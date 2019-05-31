@@ -14,11 +14,11 @@
 use core::codec::{Codec, CodecFieldsProducer, FieldsProducer};
 use core::index::doc_id_merger::{doc_id_merger_of_count, DocIdMergerSubBase};
 use core::index::doc_id_merger::{DocIdMerger, DocIdMergerEnum, DocIdMergerSub};
-use core::index::field_info::Fields;
 use core::index::index_writer::INDEX_MAX_POSITION;
 use core::index::merge_state::{LiveDocsDocMap, MergeFieldsProducer};
 use core::index::multi_terms::{MultiPostingIterEnum, MultiTermIteratorEnum, MultiTerms};
 use core::index::term::*;
+use core::index::Fields;
 use core::index::IndexReader;
 use core::index::MergeState;
 use core::index::ReaderSlice;
@@ -37,7 +37,7 @@ use std::mem;
 use std::ptr;
 use std::sync::Arc;
 
-pub struct MultiFields<T: FieldsProducer> {
+pub(crate) struct MultiFields<T: FieldsProducer> {
     subs: Vec<T>,
     #[allow(dead_code)]
     sub_slices: Vec<ReaderSlice>,
@@ -130,7 +130,7 @@ fn fields<C: Codec, IR: IndexReader<Codec = C> + ?Sized>(
         Ok(FieldsEnum::Multi(MultiFields::new(fields, slices)))
     }
 }
-pub fn get_terms<C: Codec, IR: IndexReader<Codec = C> + ?Sized>(
+pub(crate) fn get_terms<C: Codec, IR: IndexReader<Codec = C> + ?Sized>(
     reader: &IR,
     field: &str,
 ) -> Result<Option<TermsEnum<<CodecFieldsProducer<C> as Fields>::Terms>>> {
@@ -185,7 +185,7 @@ impl<T: FieldsProducer> Fields for FieldsEnum<T> {
     }
 }
 
-pub enum TermsEnum<T: Terms> {
+pub(crate) enum TermsEnum<T: Terms> {
     Raw(T),
     Multi(Arc<MultiTerms<T>>),
 }
@@ -278,7 +278,7 @@ impl<T: Terms> Terms for TermsEnum<T> {
 }
 
 /// Exposes `PostingIterator`, merged from `PostingIterator` API of sub-segments.
-pub struct MultiPostingsIterator<T: PostingIterator> {
+pub(crate) struct MultiPostingsIterator<T: PostingIterator> {
     subs: Vec<IterWithSlice<T>>,
     num_subs: usize,
     upto: usize,
@@ -398,7 +398,7 @@ impl<T: PostingIterator> DocIterator for MultiPostingsIterator<T> {
     }
 }
 
-pub struct IterWithSlice<T: PostingIterator> {
+pub(crate) struct IterWithSlice<T: PostingIterator> {
     pub postings_iter: T,
     pub slice: ReaderSlice,
 }
@@ -430,7 +430,7 @@ impl<C: Codec> FieldsMergeState<C> {
 
 /// A `Fields` implementation that merges multiple Fields into one,
 /// and maps around deleted documents. This is used for merging.
-pub struct MappedMultiFields<C: Codec, T: FieldsProducer> {
+pub(crate) struct MappedMultiFields<C: Codec, T: FieldsProducer> {
     fields: MultiFields<T>,
     fields_state: Arc<FieldsMergeState<C>>,
 }
@@ -466,7 +466,7 @@ impl<C: Codec, T: FieldsProducer> Fields for MappedMultiFields<C, T> {
     }
 }
 
-pub struct MappedMultiTerms<C: Codec, T: Terms> {
+pub(crate) struct MappedMultiTerms<C: Codec, T: Terms> {
     terms: Arc<MultiTerms<T>>,
     field: String,
     fields_state: Arc<FieldsMergeState<C>>,
@@ -548,7 +548,7 @@ impl<C: Codec, T: Terms> Terms for MappedMultiTerms<C, T> {
     }
 }
 
-pub struct MappedMultiTermsIterator<C: Codec, T: TermIterator> {
+pub(crate) struct MappedMultiTermsIterator<C: Codec, T: TermIterator> {
     fields_state: Arc<FieldsMergeState<C>>,
     field: String,
     terms: MultiTermIteratorEnum<T>,
@@ -608,7 +608,7 @@ impl<C: Codec, T: TermIterator> TermIterator for MappedMultiTermsIterator<C, T> 
     }
 }
 
-pub enum MappedMultiTermsIterEnum<C: Codec, T: TermIterator> {
+pub(crate) enum MappedMultiTermsIterEnum<C: Codec, T: TermIterator> {
     Mapped(MappedMultiTermsIterator<C, T>),
     Multi(MultiTermIteratorEnum<T>),
 }
@@ -717,7 +717,7 @@ impl<C: Codec, T: TermIterator> TermIterator for MappedMultiTermsIterEnum<C, T> 
     }
 }
 
-pub struct MappingMultiPostingsIter<T: PostingIterator> {
+pub(crate) struct MappingMultiPostingsIter<T: PostingIterator> {
     _field: String,
     doc_id_merger: DocIdMergerEnum<MappingPostingsSub<T>>,
     current: *mut MappingPostingsSub<T>, // current is point to doc_id_merge
@@ -837,7 +837,7 @@ impl<T: PostingIterator> DocIterator for MappingMultiPostingsIter<T> {
     }
 }
 
-pub struct MappingPostingsSub<T: PostingIterator> {
+pub(crate) struct MappingPostingsSub<T: PostingIterator> {
     // postings: Option<MultiPostingIterEnum<T>>,
     postings: Option<T>,
     base: DocIdMergerSubBase,
@@ -875,7 +875,7 @@ impl<T: PostingIterator> DocIdMergerSub for MappingPostingsSub<T> {
     }
 }
 
-pub enum MappedMultiPostingIterEnum<T: PostingIterator> {
+pub(crate) enum MappedMultiPostingIterEnum<T: PostingIterator> {
     Mapped(MappingMultiPostingsIter<T>),
     Multi(MultiPostingIterEnum<T>),
 }

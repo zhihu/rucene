@@ -20,12 +20,12 @@ use error::Result;
 
 use num_traits::float::Float;
 
-/// An indexed {@code float} field for fast range filters.  If you also
-/// need to store the value, you should add a separate {@link StoredField} instance.
+/// An indexed `f32` field for fast range filters.
 ///
-/// Finding all documents within an N-dimensional at search time is
-/// efficient.  Multiple values for the same field in one document
-/// is allowed.
+/// If you also need to store the value, you should add a separate `StoredField` instance.
+///
+/// Finding all documents within an N-dimensional at search time is efficient.
+/// Multiple values for the same field in one document is allowed.
 ///
 /// This field defines static factory methods for creating common queries
 pub struct FloatPoint;

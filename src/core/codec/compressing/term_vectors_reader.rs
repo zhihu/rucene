@@ -46,24 +46,27 @@ use std::cmp::Ordering;
 use std::sync::Arc;
 
 // hard limit on the maximum number of documents per chunk
-pub const MAX_DOCUMENTS_PER_CHUNK: i32 = 128;
+pub(crate) const MAX_DOCUMENTS_PER_CHUNK: i32 = 128;
 
-pub const VECTORS_EXTENSION: &str = "tvd";
-pub const VECTORS_INDEX_EXTENSION: &str = "tvx";
+pub(crate) const VECTORS_EXTENSION: &str = "tvd";
+pub(crate) const VECTORS_INDEX_EXTENSION: &str = "tvx";
 
-pub const CODEC_SFX_IDX: &str = "Index";
-pub const CODEC_SFX_DAT: &str = "Data";
+pub(crate) const CODEC_SFX_IDX: &str = "Index";
+pub(crate) const CODEC_SFX_DAT: &str = "Data";
 
-pub const VERSION_START: i32 = 0;
-pub const VERSION_CHUNK_STATS: i32 = 1;
-pub const VERSION_CURRENT: i32 = VERSION_CHUNK_STATS;
-pub const PACKED_BLOCK_SIZE: i32 = 64;
+pub(crate) const VERSION_START: i32 = 0;
+pub(crate) const VERSION_CHUNK_STATS: i32 = 1;
+pub(crate) const VERSION_CURRENT: i32 = VERSION_CHUNK_STATS;
+pub(crate) const PACKED_BLOCK_SIZE: i32 = 64;
 
-pub const POSITIONS: i32 = 0x01;
-pub const OFFSETS: i32 = 0x02;
-pub const PAYLOADS: i32 = 0x04;
-pub const FLAGS_BITS: i32 = 3; // (POSITIONS | OFFSETS | PAYLOADS).bits_required() as i32
+pub(crate) const POSITIONS: i32 = 0x01;
+pub(crate) const OFFSETS: i32 = 0x02;
+pub(crate) const PAYLOADS: i32 = 0x04;
+// (POSITIONS | OFFSETS | PAYLOADS).bits_required() as i32
+pub(crate) const FLAGS_BITS: i32 = 3;
 
+/// A `TermVectorsFormat` that that compresses chunks of documents together in
+/// order to improve the compression ratio.
 #[derive(Clone)]
 pub struct CompressingTermVectorsFormat {
     format_name: String,
@@ -145,20 +148,21 @@ impl TermVectorsFormat for CompressingTermVectorsFormat {
     }
 }
 
+/// `TermVectorsReader` for `CompressingTermVectorsFormat`
 pub struct CompressingTermVectorsReader {
     field_infos: Arc<FieldInfos>,
-    pub index_reader: Arc<CompressingStoredFieldsIndexReader>,
-    pub vectors_stream: Arc<dyn IndexInput>,
-    pub version: i32,
-    pub packed_ints_version: i32,
-    pub compression_mode: CompressionMode,
+    index_reader: Arc<CompressingStoredFieldsIndexReader>,
+    vectors_stream: Arc<dyn IndexInput>,
+    version: i32,
+    packed_ints_version: i32,
+    compression_mode: CompressionMode,
     decompressor: Decompressor,
-    pub chunk_size: i32,
+    chunk_size: i32,
     num_docs: i32,
     reader: BlockPackedReaderIterator,
-    pub num_chunks: i64,
-    pub num_dirty_chunks: i64,
-    pub max_pointer: i64,
+    num_chunks: i64,
+    num_dirty_chunks: i64,
+    max_pointer: i64,
 }
 
 impl CompressingTermVectorsReader {
@@ -257,6 +261,51 @@ impl CompressingTermVectorsReader {
             num_dirty_chunks,
             max_pointer,
         })
+    }
+
+    #[inline]
+    pub(crate) fn index_reader(&self) -> &CompressingStoredFieldsIndexReader {
+        &*self.index_reader
+    }
+
+    #[inline]
+    pub(crate) fn vectors_input(&self) -> &dyn IndexInput {
+        &*self.vectors_stream
+    }
+
+    #[inline]
+    pub(crate) fn version(&self) -> i32 {
+        self.version
+    }
+
+    #[inline]
+    pub(crate) fn packed_ints_version(&self) -> i32 {
+        self.packed_ints_version
+    }
+
+    #[inline]
+    pub(crate) fn compression_mode(&self) -> CompressionMode {
+        self.compression_mode
+    }
+
+    #[inline]
+    pub(crate) fn chunk_size(&self) -> i32 {
+        self.chunk_size
+    }
+
+    #[inline]
+    pub(crate) fn num_chunks(&self) -> i64 {
+        self.num_chunks
+    }
+
+    #[inline]
+    pub(crate) fn num_dirty_chunks(&self) -> i64 {
+        self.num_dirty_chunks
+    }
+
+    #[inline]
+    pub(crate) fn max_pointer(&self) -> i64 {
+        self.max_pointer
     }
 
     // field -> term index -> position index
@@ -835,7 +884,7 @@ impl TermVectorsReader for CompressingTermVectorsReader {
     }
 }
 
-pub struct TVFieldsData {
+struct TVFieldsData {
     pub prefix_lengths: Vec<Vec<i32>>,
     pub suffix_lengths: Vec<Vec<i32>>,
     pub term_freqs: Vec<Vec<i32>>,
@@ -848,16 +897,16 @@ pub struct TVFieldsData {
 }
 
 pub struct TVFields {
-    pub field_infos: Arc<FieldInfos>,
-    pub field_nums: Vec<i32>,
-    pub field_flags: Vec<i32>,
-    pub field_num_offs: Vec<i32>,
-    pub num_terms: Vec<i32>,
-    pub field_lengths: Vec<i32>,
-    pub fields_data: Arc<TVFieldsData>,
+    field_infos: Arc<FieldInfos>,
+    field_nums: Vec<i32>,
+    field_flags: Vec<i32>,
+    field_num_offs: Vec<i32>,
+    num_terms: Vec<i32>,
+    field_lengths: Vec<i32>,
+    fields_data: Arc<TVFieldsData>,
     // position in field_data.suffix_bytes
-    pub suffix_bytes_position: OffsetAndLength,
-    pub payload_bytes_position: OffsetAndLength,
+    suffix_bytes_position: OffsetAndLength,
+    payload_bytes_position: OffsetAndLength,
 }
 
 impl TVFields {
@@ -1009,7 +1058,7 @@ pub struct TVTerms {
 }
 
 impl TVTerms {
-    pub fn new(
+    fn new(
         num_terms: i32,
         flags: i32,
         fields_data: Arc<TVFieldsData>,
@@ -1088,7 +1137,7 @@ pub struct TVTermsIterator {
 }
 
 impl TVTermsIterator {
-    pub fn new(
+    fn new(
         num_terms: i32,
         _flag: i32,
         fields_data: Arc<TVFieldsData>,
@@ -1228,7 +1277,7 @@ pub struct TVPostingsIterator {
 }
 
 impl TVPostingsIterator {
-    pub fn new(
+    fn new(
         freq: i32,
         position_index: i32,
         fields_data: Arc<TVFieldsData>,

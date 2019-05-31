@@ -176,7 +176,7 @@ pub struct FST<F: OutputFactory> {
     // the FST is very large (more than 1 GB).  If the FST is less than 1
     // GB then bytesArray is set instead.
     pub bytes_store: BytesStore,
-    // Used at read time when the FST fits into a single byte[].
+    // Used at read time when the FST fits into a single Vec<u8>.
     bytes_array: Vec<u8>,
     // flag of whether use bytes_store or bytes_array
     use_bytes_array: bool,

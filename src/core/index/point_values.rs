@@ -23,53 +23,32 @@ use std::sync::Arc;
 /// Access to indexed numeric values.
 ///
 /// Points represent numeric values and are indexed differently than ordinary text. Instead of an
-/// inverted index, points are indexed with datastructures such as <a href="https://en.wikipedia.org/wiki/K-d_tree">KD-trees</a>.
+/// inverted index, points are indexed with data structures such as [KD-trees](https://en.wikipedia.org/wiki/K-d_tree).
 /// These structures are optimized for operations such as `range`, `distance`, `nearest-neighbor`,
-/// and <i>point-in-polygon</i> queries.
-/// <h1>Basic Point Types</h1>
-/// <table summary="Basic point types in Java and Lucene">
-///   <tr><th>Java type</th><th>Lucene class</th></tr>
-///   <tr><td>{@code int}</td><td>{@link IntPoint}</td></tr>
-///   <tr><td>{@code long}</td><td>{@link LongPoint}</td></tr>
-///   <tr><td>{@code float}</td><td>{@link FloatPoint}</td></tr>
-///   <tr><td>{@code double}</td><td>{@link DoublePoint}</td></tr>
-///   <tr><td>{@code byte[]}</td><td>{@link BinaryPoint}</td></tr>
-/// <tr><td>{@link BigInteger}</td><td><a
-/// href="{@docRoot}/../sandbox/org/apache/lucene/document/BigIntegerPoint.
-/// html">BigIntegerPoint</a>*</td></tr> <tr><td>{@link InetAddress}</td><td><a
-/// href="{@docRoot}/../sandbox/org/apache/lucene/document/InetAddressPoint.
-/// html">InetAddressPoint</a>*</td></tr> </table>
-/// * in the <i>lucene-sandbox</i> jar<br>
-/// <p>
-/// Basic Lucene point types behave like their java peers: for example {@link IntPoint} represents
-/// a signed 32-bit {@link Integer}, supporting values ranging from {@link Integer#MIN_VALUE} to
-/// {@link Integer#MAX_VALUE}, ordered consistent with {@link Integer#compareTo(Integer)}. In
-/// addition to indexing support, point classes also contain static methods (such as {@link
-/// IntPoint#newRangeQuery(String, int, int)}) for creating common queries. For example:
-/// <pre class="prettyprint">
-///   // add year 1970 to document
-///   document.add(new IntPoint("year", 1970));
-///   // index document
-///   writer.addDocument(document);
-///   ...
-///   // issue range query of 1960-1980
-///   Query query = IntPoint.newRangeQuery("year", 1960, 1980);
-///   TopDocs docs = searcher.search(query, ...);
-/// </pre>
-/// <h1>Geospatial Point Types</h1>
-/// Although basic point types such as {@link DoublePoint} support points in multi-dimensional
-/// space too, Lucene has specialized classes for location data. These classes are optimized for
-/// location data: they are more space-efficient and support special operations such as
-/// <i>distance</i> and <i>polygon</i> queries. There are currently two implementations: <br>
-/// <ol>
-/// <li><a href="{@docRoot}/../sandbox/org/apache/lucene/document/LatLonPoint.
-/// html">LatLonPoint</a> in <i>lucene-sandbox</i>: indexes {@code (latitude,longitude)} as {@code
-/// (x,y)} in two-dimensional space. <li><a href="{@docRoot}/..
-/// /spatial3d/org/apache/lucene/spatial3d/Geo3DPoint.html">Geo3DPoint</a>* in
-/// <i>lucene-spatial3d</i>: indexes {@code (latitude,longitude)} as {@code (x,y,z)} in
-/// three-dimensional space. </ol>
-/// * does <b>not</b> support altitude, 3D here means "uses three dimensions under-the-hood"<br>
-/// <h1>Advanced usage</h1>
+/// and *point-in-polygon* queries.
+/// Basic Point Types:
+/// | data type | Rucene struct |
+/// | --------- | ------------- |
+/// | `i32` | `IntPoint` |
+/// | `i64` | `LongPoint` |
+/// | `f32` | `FloatPoint` |
+/// | `f64` | `DoublePoint` |
+/// | `Vec<u8>` | `BinaryPoint` |
+///
+/// Basic Rucene point types behave like their rust peers: for example `IntPoint` represents
+/// a signed `i32`, supporting values ranging from `i32::min_value()` to `i32::max_value()`,
+/// ordered consistent with `i32` ord. In addition to indexing support, point structs also
+/// contain static methods (such as {@link IntPoint#newRangeQuery(String, int, int)}) for
+/// creating common queries. For example:
+/// ```rust, ignore
+/// use rucene::core::doc::IntPoint;
+/// use rucene::core::search::collector::TopDocsCollector;
+/// // issue range query of 1960-1980
+/// let query = IntPoint::new_range_query("year".into(), 1960, 1980);
+/// let mut collector = TopDocsCollector::new(10);
+/// let docs = searcher.search(query, &mut collector);
+/// ```
+///
 /// Custom structures can be created on top of single- or multi- dimensional basic types, on top of
 /// `BinaryPoint` for more flexibility, or via custom `Field` subclasses.
 pub trait PointValues {
@@ -289,7 +268,7 @@ pub trait IntersectVisitor {
 }
 
 /// Maximum number of bytes for each dimension
-pub const MAX_NUM_BYTES: u32 = 16;
+pub(crate) const MAX_NUM_BYTES: u32 = 16;
 
 /// Maximum number of dimensions
-pub const MAX_DIMENSIONS: u32 = 8; // TODO should be replaced by BKDWriter.MAX_DIMS
+pub(crate) const MAX_DIMENSIONS: u32 = 8; // TODO should be replaced by BKDWriter.MAX_DIMS

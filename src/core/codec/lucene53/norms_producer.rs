@@ -29,6 +29,7 @@ struct NormsEntry {
     offset: u64,
 }
 
+/// Reader for `Lucene53NormsFormat`
 pub struct Lucene53NormsProducer {
     max_doc: DocId,
     data: Box<dyn IndexInput>,

@@ -61,11 +61,11 @@ impl<'a, IV: IntersectVisitor + 'a> IntersectState<'a, IV> {
     }
 }
 
-/// Handles intersection of an multi-dimensional shape in byte[] space with a block KD-tree
+/// Handles intersection of an multi-dimensional shape in bytes space with a block KD-tree
 /// previously written with `BKDWriter`.
 
 pub struct BKDReader {
-    /// Packed array of byte[] holding all split values in the full binary tree:
+    /// Packed array of bytes holding all split values in the full binary tree:
     pub leaf_node_offset: i32,
     pub num_dims: usize,
     pub bytes_per_dim: usize,
@@ -890,18 +890,18 @@ impl IndexTree for LegacyIndexTree {
     }
 }
 
-/// Reads the new packed byte[] index format which can be up to ~63% smaller than the legacy index
+/// Reads the new packed bytes index format which can be up to ~63% smaller than the legacy index
 /// format on 20M NYC taxis tests.  This
 /// format takes advantage of the limited access pattern to the BKD tree at search time, i.e.
 /// starting at the root node and recursing  downwards one child at a time.
 pub struct PackedIndexTree {
-    // used to read the packed byte[]
+    // used to read the packed bytes
     input: ByteArrayDataInput<ByteArrayRef>,
     // holds the minimum (left most) leaf block file pointer for each level we've recursed to:
     leaf_block_fp_stack: Vec<i64>,
-    // holds the address, in the packed byte[] index, of the left-node of each level:
+    // holds the address, in the packed bytes index, of the left-node of each level:
     left_node_positions: Vec<i32>,
-    // holds the address, in the packed byte[] index, of the right-node of each level:
+    // holds the address, in the packed bytes index, of the right-node of each level:
     right_node_positions: Vec<i32>,
     // holds the splitDim for each level:
     split_dims: Vec<i32>,

@@ -22,7 +22,6 @@ use core::codec::{Codec, CodecTermState};
 use core::index::LeafReaderContext;
 use core::index::{get_terms, IndexReader, SearchLeafReader};
 use core::index::{Term, TermContext, Terms};
-use core::search::bm25_similarity::BM25Similarity;
 use core::search::bulk_scorer::BulkScorer;
 use core::search::cache_policy::{QueryCachingPolicy, UsageTrackingQueryCachingPolicy};
 use core::search::collector::{self, Collector, ParallelLeafCollector, SearchCollector};
@@ -30,13 +29,12 @@ use core::search::explanation::Explanation;
 use core::search::match_all::{ConstantScoreQuery, MatchAllDocsQuery};
 use core::search::query_cache::{LRUQueryCache, QueryCache};
 use core::search::statistics::{CollectionStatistics, TermStatistics};
-use core::search::term_query::TermQuery;
+use core::search::BM25Similarity;
+use core::search::TermQuery;
 use core::search::{Query, Scorer, Weight, NO_MORE_DOCS};
 use core::search::{SimScorer, SimWeight, Similarity, SimilarityProducer};
-use core::util::bits::Bits;
 use core::util::thread_pool::{DefaultContext, ThreadPool, ThreadPoolBuilder};
-use core::util::DocId;
-use core::util::KeyedContext;
+use core::util::{Bits, DocId, KeyedContext};
 
 use error::{Error, ErrorKind, Result};
 
@@ -613,8 +611,8 @@ mod tests {
     use core::index::tests::*;
     use core::search::collector::top_docs::*;
     use core::search::collector::*;
-    use core::search::term_query::TermQuery;
     use core::search::tests::*;
+    use core::search::TermQuery;
     use core::search::*;
     use core::util::DocId;
     use std::sync::atomic::Ordering;

@@ -21,19 +21,18 @@ use std::fmt;
 
 use core::codec::{Codec, CodecTermState};
 use core::index::{LeafReaderContext, Term, TermIterator, Terms};
-use core::search::conjunction::ConjunctionScorer;
 use core::search::explanation::Explanation;
 use core::search::posting_iterator::{PostingIterator, PostingIteratorFlags};
 use core::search::searcher::SearchPlanBuilder;
 use core::search::statistics::{CollectionStatistics, TermStatistics};
-use core::search::term_query::TermQuery;
+use core::search::ConjunctionScorer;
+use core::search::TermQuery;
 use core::search::{
     two_phase_next, DocIterator, Query, Scorer, SimScorer, SimWeight, Similarity, Weight,
     NO_MORE_DOCS,
 };
 use core::util::bit_set::{BitSet, FixedBitSet, ImmutableBitSet};
-use core::util::bits::Bits;
-use core::util::{DocId, KeyedContext};
+use core::util::{Bits, DocId, KeyedContext};
 
 pub const PHRASE: &str = "phrase";
 
@@ -649,14 +648,6 @@ impl<T: PostingIterator + 'static> ExactPhraseScorer<T> {
         Ok(self.freq)
     }
 
-    pub fn matches(&mut self) -> Result<bool> {
-        Ok(self.phrase_freq()? > 0)
-    }
-
-    pub fn match_cost(&self) -> f32 {
-        self.match_cost
-    }
-
     pub fn do_next(&mut self, doc_id: DocId) -> Result<DocId> {
         let mut doc = doc_id;
         loop {
@@ -696,6 +687,24 @@ impl<T: PostingIterator + 'static> DocIterator for ExactPhraseScorer<T> {
 
     fn cost(&self) -> usize {
         self.conjunction.cost()
+    }
+
+    fn matches(&mut self) -> Result<bool> {
+        Ok(self.phrase_freq()? > 0)
+    }
+
+    fn match_cost(&self) -> f32 {
+        self.match_cost
+    }
+
+    /// advance to the next approximate match doc
+    fn approximate_next(&mut self) -> Result<DocId> {
+        self.conjunction.next()
+    }
+
+    /// Advances to the first approximate doc beyond the current doc
+    fn approximate_advance(&mut self, target: DocId) -> Result<DocId> {
+        self.conjunction.advance(target)
     }
 }
 

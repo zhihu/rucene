@@ -24,5 +24,4 @@ mod doc_values_consumer;
 pub use self::doc_values_consumer::*;
 
 mod term_iterator;
-
-pub use self::term_iterator::*;
+pub(crate) use self::term_iterator::*;

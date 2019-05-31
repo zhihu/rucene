@@ -16,13 +16,14 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::mem;
 use std::path::PathBuf;
+use std::ptr;
 use std::sync::{Arc, Mutex};
 
+use core::codec::codec_util::CODEC_MAGIC;
 use core::codec::{
     codec_util, Codec, CodecNormsProducer, CodecPointsReader, CodecStoredFieldsReader,
     CodecTVReader, CompoundFormat, FieldInfosFormat, Lucene50CompoundReader, NormsFormat,
     PointsFormat, PostingsFormat, SegmentInfoFormat, StoredFieldsFormat, TermVectorsFormat,
-    CODEC_MAGIC,
 };
 use core::index::index_commit::IndexCommit;
 use core::index::merge_policy::OneMerge;
@@ -34,9 +35,8 @@ use core::store::{
     BufferedChecksumIndexInput, ChecksumIndexInput, Directory, IOContext, IndexInput, IndexOutput,
 };
 use core::util::external::deferred::Deferred;
-use core::util::ptr_eq;
 use core::util::string_util::{id2str, random_id, ID_LENGTH};
-use core::util::{to_base36, Version, VERSION_LATEST};
+use core::util::{numeric::to_base36, Version, VERSION_LATEST};
 use error::ErrorKind::{IOError, IllegalState, NumError};
 use error::Result;
 
@@ -692,7 +692,7 @@ where
     T: Fn((&Arc<D>, &str)) -> Result<Output>,
 {
     if let Some(commit) = commit {
-        if !ptr_eq(directory.as_ref(), commit.directory()) {
+        if !ptr::eq(directory.as_ref(), commit.directory()) {
             bail!(IOError(
                 "the specified commit does not match the specified Directory".into()
             ));

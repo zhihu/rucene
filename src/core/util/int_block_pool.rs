@@ -31,7 +31,7 @@ const NEXT_LEVEL_ARRAY: [usize; 10] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 9];
 const LEVEL_SIZE_ARRAY: [usize; 10] = [2, 4, 8, 16, 32, 64, 128, 256, 512, 1024];
 
 /// Class that Posting and PostingVector use to write byte
-/// streams into shared fixed-size byte[] arrays.  The idea
+/// streams into shared fixed-size bytes arrays.  The idea
 /// is to allocate slices of increasing lengths For
 /// example, the first slice is 5 bytes, the next slice is
 /// 14, etc.  We start by writing our bytes into the first

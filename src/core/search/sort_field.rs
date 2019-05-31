@@ -18,8 +18,7 @@ use core::index::{
 };
 use core::search::field_comparator::*;
 use core::util::numeric::{sortable_double_bits, sortable_float_bits};
-use core::util::BitsRef;
-use core::util::VariantValue;
+use core::util::{BitsRef, VariantValue};
 
 use error::ErrorKind::IllegalArgument;
 use error::Result;

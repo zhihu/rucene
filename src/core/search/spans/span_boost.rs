@@ -24,7 +24,7 @@ use core::search::spans::{
     span_or::{SpanOrQuery, SpanOrWeight},
     span_term::{SpanTermQuery, SpanTermWeight},
 };
-use core::search::term_query::TermQuery;
+use core::search::TermQuery;
 use core::search::{Query, Scorer, SimScorer, SimWeight, Weight};
 use core::util::{DocId, KeyedContext};
 

@@ -25,6 +25,7 @@ use core::codec::per_field::PerFieldFieldsReader;
 use core::codec::FieldReaderRef;
 use std::sync::Arc;
 
+///  Abstract API that produces terms, doc, freq, prox, offset and payloads postings
 pub trait FieldsProducer: Fields {
     /// Checks consistency of this reader.
     /// Note that this may be costly in terms of I/O, e.g.
@@ -63,6 +64,7 @@ impl<T: FieldsProducer> Fields for Arc<T> {
     }
 }
 
+/// `FieldsProducer` impl for `PostingsFormatEnum`
 pub enum FieldsProducerEnum {
     Lucene50(BlockTreeTermsReader),
 }
@@ -102,11 +104,25 @@ impl Fields for FieldsProducerEnum {
     }
 }
 
+/// Abstract API that produces numeric, binary, sorted, sortedset,
+/// and sortednumeric docvalues.
+///
+/// NOTE: the returned instance must always be thread-safe, this is different from
+/// the Lucene restraint
 pub trait DocValuesProducer: Send + Sync {
+    /// Returns `NumericDocValues` for this field.
     fn get_numeric(&self, field_info: &FieldInfo) -> Result<Arc<dyn NumericDocValues>>;
+
+    ///  Returns `BinaryDocValues` for this field.
     fn get_binary(&self, field_info: &FieldInfo) -> Result<Arc<dyn BinaryDocValues>>;
+
+    ///  Returns `SortedDocValues` for this field.
     fn get_sorted(&self, field: &FieldInfo) -> Result<Arc<dyn SortedDocValues>>;
+
+    ///  Returns `SortedNumericDocValues` for this field.
     fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Arc<dyn SortedNumericDocValues>>;
+
+    ///  Returns `SortedSetDocValues` for this field.
     fn get_sorted_set(&self, field: &FieldInfo) -> Result<Arc<dyn SortedSetDocValues>>;
     /// Returns a `bits` at the size of `reader.max_doc()`, with turned on bits for each doc_id
     /// that does have a value for this field.
@@ -117,11 +133,13 @@ pub trait DocValuesProducer: Send + Sync {
     /// may involve computing a checksum value against large data files.
     fn check_integrity(&self) -> Result<()>;
 
+    /// Returns an instance optimized for merging.
     fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>>;
 }
 
 pub type DocValuesProducerRef = Arc<dyn DocValuesProducer>;
 
+/// Abstract API that produces field normalization values
 pub trait NormsProducer {
     fn norms(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>>;
     fn check_integrity(&self) -> Result<()> {

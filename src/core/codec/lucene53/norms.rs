@@ -19,12 +19,12 @@ use core::store::Directory;
 
 use error::Result;
 
-pub const DATA_CODEC: &str = "Lucene53NormsData";
-pub const DATA_EXTENSION: &str = "nvd";
-pub const METADATA_CODEC: &str = "Lucene53NormsMetadata";
-pub const METADATA_EXTENSION: &str = "nvm";
-pub const VERSION_START: i32 = 0;
-pub const VERSION_CURRENT: i32 = VERSION_START;
+pub(crate) const DATA_CODEC: &str = "Lucene53NormsData";
+pub(crate) const DATA_EXTENSION: &str = "nvd";
+pub(crate) const METADATA_CODEC: &str = "Lucene53NormsMetadata";
+pub(crate) const METADATA_EXTENSION: &str = "nvm";
+pub(crate) const VERSION_START: i32 = 0;
+pub(crate) const VERSION_CURRENT: i32 = VERSION_START;
 
 #[derive(Copy, Clone, Default)]
 pub struct Lucene53NormsFormat;

@@ -240,8 +240,8 @@ impl BytesRefHash {
 
     /// Adds a "arbitrary" int offset instead of a BytesRef
     /// term.  This is used in the indexer to hold the hash for term
-    /// vectors, because they do not redundantly store the byte[] term
-    /// directly and instead reference the byte[] term
+    /// vectors, because they do not redundantly store the bytes term
+    /// directly and instead reference the bytes term
     /// already stored by the postings BytesRefHash.  See
     /// add(int textStart) in TermsHashPerField.
     pub fn add_by_pool_offset(&mut self, offset: usize) -> i32 {

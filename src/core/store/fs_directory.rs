@@ -22,7 +22,7 @@ use core::index::segment_file_name;
 use core::store::LockFactory;
 use core::store::{Directory, IOContext};
 use core::store::{FSIndexOutput, IndexInput, MmapIndexInput};
-use core::util::to_base36;
+use core::util::numeric::to_base36;
 use error::ErrorKind::IllegalState;
 use error::Result;
 

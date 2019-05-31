@@ -100,7 +100,7 @@ const HISTOGRAM_SIZE: usize = 257;
 // buckets below this size will be sorted with introsort
 const LENGTH_THRESHOLD: usize = 100;
 
-pub struct DefaultIntroSelector<'a, 'b, P: MutablePointsReader> {
+pub(crate) struct DefaultIntroSelector<'a, 'b, P: MutablePointsReader> {
     k: i32,
     num_bytes_to_compare: i32,
     offset: usize,

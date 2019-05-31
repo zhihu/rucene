@@ -31,9 +31,10 @@ use core::search::posting_iterator::EmptyPostingIterator;
 use core::search::NO_MORE_DOCS;
 use core::store::Directory;
 use core::util::bkd::LongBitSet;
-use core::util::numeric::Numeric;
 use core::util::packed_misc::COMPACT;
-use core::util::{BitsRef, BytesRef, DocId, LongValues, MatchNoBits, ReusableIterator};
+use core::util::{
+    numeric::Numeric, BitsRef, BytesRef, DocId, LongValues, MatchNoBits, ReusableIterator,
+};
 
 use error::Result;
 
@@ -121,10 +122,10 @@ impl<D: Directory, DW: Directory, C: Codec> FieldsConsumer for FieldsConsumerEnu
     }
 }
 
-/// Abstract API that consumes numeric, binary and
-/// sorted docvalues.  Concrete implementations of this
-/// actually do "something" with the docvalues (write it into
-/// the index in a specific format).
+/// Abstract API that consumes numeric, binary and sorted docvalues.
+///
+/// Concrete implementations of this actually do "something" with the
+/// doc values (write it into the index in a specific format).
 pub trait DocValuesConsumer {
     fn add_numeric_field(
         &mut self,
@@ -441,7 +442,7 @@ pub fn is_single_valued(
     Ok(true)
 }
 
-pub fn singleton_view<'a, RI1, RI2>(
+pub(crate) fn singleton_view<'a, RI1, RI2>(
     doc_to_value_count: &'a mut RI1,
     values: &'a mut RI2,
     missing_value: Numeric,
@@ -457,7 +458,7 @@ where
     SingletonViewIter::new(doc_to_value_count, values, missing_value)
 }
 
-pub struct SingletonViewIter<'a, RI1, RI2> {
+pub(crate) struct SingletonViewIter<'a, RI1, RI2> {
     doc_to_value_count: &'a mut RI1,
     values: &'a mut RI2,
     missing_value: Numeric,

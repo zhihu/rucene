@@ -19,7 +19,7 @@ use core::search::posting_iterator::PostingIterator;
 use core::search::searcher::SearchPlanBuilder;
 use core::search::spans::span::{build_sim_weight, PostingsFlag, SpansEnum, NO_MORE_POSITIONS};
 use core::search::spans::span::{SpanCollector, SpanQuery, SpanWeight, Spans};
-use core::search::term_query::TermQuery;
+use core::search::TermQuery;
 use core::search::{DocIterator, Query, Scorer, SimWeight, Weight, NO_MORE_DOCS};
 use core::util::{DocId, KeyedContext};
 

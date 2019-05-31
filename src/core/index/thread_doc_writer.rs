@@ -62,7 +62,7 @@ impl DocState {
     }
 }
 
-pub struct DocumentsWriterPerThread<
+pub(crate) struct DocumentsWriterPerThread<
     D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,

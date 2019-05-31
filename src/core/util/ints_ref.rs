@@ -18,8 +18,8 @@ use std::hash::{Hash, Hasher};
 use core::util::bit_util::UnsignedShift;
 // const EMPTY_INTS: [i32; 0] = [0i32; 0];
 
-/// represents int[], as a slice (offset + length) into an
-/// existing int[].
+/// represents &[i32], as a slice (offset + length) into an
+/// existing Vec<i32>.
 #[derive(Clone)]
 pub struct IntsRef {
     ints: *const [i32],

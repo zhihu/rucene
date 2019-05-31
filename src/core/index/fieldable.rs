@@ -13,10 +13,13 @@
 
 use core::analysis::TokenStream;
 use core::doc::FieldType;
-use core::util::{Numeric, VariantValue};
+use core::util::{numeric::Numeric, VariantValue};
 
 use error::Result;
 
+/// Represents a single field for indexing.
+///
+/// `IndexWriter` consumes Vec<Fieldable> as a document.
 pub trait Fieldable {
     fn name(&self) -> &str;
     fn field_type(&self) -> &FieldType;

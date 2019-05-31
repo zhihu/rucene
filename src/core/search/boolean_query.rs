@@ -16,13 +16,13 @@ use std::fmt;
 
 use core::codec::Codec;
 use core::index::LeafReaderContext;
-use core::search::conjunction::ConjunctionScorer;
 use core::search::disjunction::DisjunctionSumScorer;
 use core::search::explanation::Explanation;
 use core::search::match_all::ConstantScoreQuery;
 use core::search::req_opt::ReqOptScorer;
 use core::search::searcher::SearchPlanBuilder;
-use core::search::term_query::TermQuery;
+use core::search::ConjunctionScorer;
+use core::search::TermQuery;
 use core::search::{Query, Scorer, Weight};
 use core::util::DocId;
 use error::{ErrorKind::IllegalArgument, Result};
@@ -317,7 +317,7 @@ impl<C: Codec> Weight<C> for BooleanWeight<C> {
             let result = Explanation::new(true, sum, "sum of:".to_string(), subs);
 
             let coord_factor = 1.0f32;
-            if coord_factor != 1.0f32 {
+            if (coord_factor - 1.0).abs() < ::std::f32::EPSILON {
                 Ok(Explanation::new(
                     true,
                     sum * coord_factor,

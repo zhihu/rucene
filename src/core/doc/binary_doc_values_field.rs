@@ -16,7 +16,7 @@ use std::ops::Deref;
 use core::analysis::TokenStream;
 use core::doc::{BinaryTokenStream, Field, FieldType, BINARY_DOC_VALUES_FIELD_TYPE};
 use core::index::Fieldable;
-use core::util::{BytesRef, Numeric, VariantValue};
+use core::util::{numeric::Numeric, BytesRef, VariantValue};
 
 use error::Result;
 

@@ -122,10 +122,10 @@ impl SegmentTermsIterFrame {
     pub(crate) fn init(&mut self, ste: &mut SegmentTermIteratorInner, ord: isize) {
         {
             let fr = ste.field_reader();
-            let mut state = fr.parent.postings_reader.new_term_state();
+            let mut state = fr.parent().postings_reader().new_term_state();
             state.total_term_freq = -1;
             self.state = state;
-            self.version_auto_prefix = fr.parent.is_any_auto_prefix_terms();
+            self.version_auto_prefix = fr.parent().is_any_auto_prefix_terms();
         }
         self.ste = ste;
         self.ord = ord;
@@ -171,7 +171,7 @@ impl SegmentTermsIterFrame {
     // Does initial decode of next block of terms; this
     // doesn't actually decode the docFreq, totalTermFreq,
     // postings details (frq/prx offset, etc.) metadata;
-    // it just loads them as byte[] blobs which are then
+    // it just loads them as bytes blobs which are then
     // decoded on-demand if the metadata is ever requested
     // for any term in this block.  This enables terms-only
     // intensive consumes (eg certain MTQs, respelling) to
@@ -428,7 +428,7 @@ impl SegmentTermsIterFrame {
             }
 
             // metadata
-            for i in 0..self.terms_iter().field_reader().longs_size {
+            for i in 0..self.terms_iter().field_reader().longs_size() {
                 self.longs[i] = self.bytes_reader.read_vlong()?;
             }
             lucene50_decode_term(

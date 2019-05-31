@@ -16,8 +16,8 @@ use core::codec::lucene60::points_reader::{
     META_CODEC_NAME,
 };
 use core::codec::{
-    merge_point_values, write_footer, write_index_header, Codec, Lucene60PointsReader,
-    MutablePointsReader, PointsReader, PointsReaderEnum, PointsWriter,
+    codec_util, merge_point_values, Codec, Lucene60PointsReader, MutablePointsReader, PointsReader,
+    PointsReaderEnum, PointsWriter,
 };
 use core::index::{
     segment_file_name, FieldInfo, IntersectVisitor, LiveDocsDocMap, MergeState, PointValues,
@@ -57,7 +57,7 @@ impl<D: Directory, DW: Directory, C: Codec> Lucene60PointsWriter<D, DW, C> {
         let mut data_out = write_state
             .directory
             .create_output(&data_file_name, &write_state.context)?;
-        write_index_header(
+        codec_util::write_index_header(
             &mut data_out,
             DATA_CODEC_NAME,
             DATA_VERSION_CURRENT,
@@ -231,7 +231,7 @@ impl<D: Directory, DW: Directory, C: Codec> PointsWriter for Lucene60PointsWrite
         }
 
         self.finished = true;
-        write_footer(&mut self.data_out)?;
+        codec_util::write_footer(&mut self.data_out)?;
         let index_file_name = segment_file_name(
             &self.write_state.segment_info.name,
             &self.write_state.segment_suffix,
@@ -241,7 +241,7 @@ impl<D: Directory, DW: Directory, C: Codec> PointsWriter for Lucene60PointsWrite
             .write_state
             .directory
             .create_output(&index_file_name, &self.write_state.context)?;
-        write_index_header(
+        codec_util::write_index_header(
             &mut index_output,
             META_CODEC_NAME,
             INDEX_VERSION_CURRENT,
@@ -263,11 +263,11 @@ impl<D: Directory, DW: Directory, C: Codec> PointsWriter for Lucene60PointsWrite
             }
         }
 
-        write_footer(&mut index_output)
+        codec_util::write_footer(&mut index_output)
     }
 }
 
-pub struct ValuesIntersectVisitor<'a, D: Directory> {
+struct ValuesIntersectVisitor<'a, D: Directory> {
     writer: &'a mut BKDWriter<D>,
 }
 

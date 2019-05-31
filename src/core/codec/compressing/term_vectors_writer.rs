@@ -251,6 +251,7 @@ impl DocData {
     }
 }
 
+/// `TermVectorsWriter` for `CompressingTermVectorsFormat`
 pub struct CompressingTermVectorsWriter<O: IndexOutput> {
     index_writer: CompressingStoredFieldsIndexWriter<O>,
     vectors_stream: O,
@@ -447,7 +448,7 @@ impl<O: IndexOutput> CompressingTermVectorsWriter<O> {
         let bits_required = max_field.bits_required() as i32;
         let token = ((num_dist_fields - 1).min(0x07) << 5) | bits_required;
         self.vectors_stream.write_byte(token as u8)?;
-        if num_dist_fields - 1 >= 0x07 {
+        if num_dist_fields > 0x07 {
             self.vectors_stream.write_vint(num_dist_fields - 1 - 0x07)?;
         }
 
@@ -773,7 +774,8 @@ impl<O: IndexOutput> CompressingTermVectorsWriter<O> {
     /// compression ratio can degrade. This is a safety switch.
     fn too_dirty(candidate: &CompressingTermVectorsReader) -> bool {
         // more than 1% dirty, or more than hard limit of 1024 dirty chunks
-        candidate.num_dirty_chunks > 1024 || candidate.num_dirty_chunks * 100 > candidate.num_chunks
+        candidate.num_dirty_chunks() > 1024
+            || candidate.num_dirty_chunks() * 100 > candidate.num_chunks()
     }
 }
 
@@ -996,10 +998,10 @@ impl<O: IndexOutput> TermVectorsWriter for CompressingTermVectorsWriter<O> {
             let live_docs = merge_state.live_docs[i].as_ref();
             match matching_vectors_reader {
                 Some(ref mut vectors_reader)
-                    if vectors_reader.compression_mode == self.compress_mode
-                        && vectors_reader.chunk_size == self.chunk_size as i32
-                        && vectors_reader.version == VERSION_CURRENT
-                        && vectors_reader.packed_ints_version == PACKED_VERSION_CURRENT
+                    if vectors_reader.compression_mode() == self.compress_mode
+                        && vectors_reader.chunk_size() == self.chunk_size as i32
+                        && vectors_reader.version() == VERSION_CURRENT
+                        && vectors_reader.packed_ints_version() == PACKED_VERSION_CURRENT
                         && live_docs.len() == 0
                         && !Self::too_dirty(vectors_reader) =>
                 {
@@ -1015,8 +1017,8 @@ impl<O: IndexOutput> TermVectorsWriter for CompressingTermVectorsWriter<O> {
                     // iterate over each chunk. we use the vectors index to find chunk boundaries,
                     // read the docstart + doccount from the chunk header (we write a new header,
                     // since doc numbers will change), and just copy the bytes directly.
-                    let mut raw_docs = vectors_reader.vectors_stream.as_ref().clone()?;
-                    let start_index = vectors_reader.index_reader.start_pointer(0)?;
+                    let mut raw_docs = vectors_reader.vectors_input().clone()?;
+                    let start_index = vectors_reader.index_reader().start_pointer(0)?;
                     raw_docs.seek(start_index)?;
                     let mut doc_id = 0;
                     while doc_id < max_doc {
@@ -1058,29 +1060,29 @@ impl<O: IndexOutput> TermVectorsWriter for CompressingTermVectorsWriter<O> {
                         // fast enough and is a source of redundancy for
                         // detecting bad things.
                         let end = if doc_id == max_doc {
-                            vectors_reader.max_pointer
+                            vectors_reader.max_pointer()
                         } else {
-                            vectors_reader.index_reader.start_pointer(doc_id)?
+                            vectors_reader.index_reader().start_pointer(doc_id)?
                         };
                         let len = (end - raw_docs.file_pointer()) as usize;
                         self.vectors_stream.copy_bytes(raw_docs.as_mut(), len)?;
                     }
 
-                    if raw_docs.file_pointer() != vectors_reader.max_pointer {
+                    if raw_docs.file_pointer() != vectors_reader.max_pointer() {
                         bail!(
                             "CorruptIndex: invalid state: raw_docs.file_pointer={}, \
                              fields_reader.max_pointer={}",
                             raw_docs.file_pointer(),
-                            vectors_reader.max_pointer
+                            vectors_reader.max_pointer()
                         );
                     }
 
                     // since we bulk merged all chunks, we inherit any dirty ones from this segment.
                     debug_assert!(
-                        vectors_reader.num_chunks >= 0 && vectors_reader.num_dirty_chunks >= 0
+                        vectors_reader.num_chunks() >= 0 && vectors_reader.num_dirty_chunks() >= 0
                     );
-                    self.num_chunks += vectors_reader.num_chunks as usize;
-                    self.num_dirty_chunks += vectors_reader.num_dirty_chunks as usize;
+                    self.num_chunks += vectors_reader.num_chunks() as usize;
+                    self.num_dirty_chunks += vectors_reader.num_dirty_chunks() as usize;
                 }
                 _ => {
                     // navie merge

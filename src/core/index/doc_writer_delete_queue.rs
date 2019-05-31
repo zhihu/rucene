@@ -328,10 +328,7 @@ impl<C: Codec> DeleteListNode<C> {
 }
 
 fn same_node<C: Codec>(n1: &Arc<DeleteListNode<C>>, n2: &Arc<DeleteListNode<C>>) -> bool {
-    ptr::eq(
-        n1.as_ref() as *const DeleteListNode<C>,
-        n2.as_ref() as *const DeleteListNode<C>,
-    )
+    ptr::eq(n1.as_ref(), n2.as_ref())
 }
 
 impl<C: Codec> DeleteListNode<C> {

@@ -16,8 +16,10 @@ use error::Result;
 
 use std::sync::Arc;
 
+/// information that make get doc values more faster
 pub type NumericDocValuesContext = BitsContext;
 
+/// A per-document numeric value.
 pub trait NumericDocValues: Send + Sync {
     fn get_with_ctx(
         &self,
@@ -32,6 +34,7 @@ pub trait NumericDocValues: Send + Sync {
 
 pub type NumericDocValuesRef = Arc<dyn NumericDocValues>;
 
+/// a `NumericDocValues` that always produce 0
 #[derive(Default)]
 pub struct EmptyNumericDocValues;
 

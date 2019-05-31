@@ -31,6 +31,7 @@ const CODEC_NAME: &str = "Lucene50LiveDocs";
 const VERSION_START: i32 = 0;
 const VERSION_CURRENT: i32 = VERSION_START;
 
+/// Lucene 5.0 live docs format
 #[derive(Copy, Clone)]
 pub struct Lucene50LiveDocsFormat {}
 

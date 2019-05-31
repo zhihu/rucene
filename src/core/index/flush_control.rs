@@ -353,7 +353,9 @@ impl<D: Directory + Send + Sync + 'static, C: Codec, MS: MergeScheduler, MP: Mer
         // We can only assert if we have always been flushing by RAM usage; otherwise
         // the assert will false trip if e.g. the flush-by-doc-count * doc size was
         // large enough to use far more RAM than the sudden change to IWC's maxRAMBufferSizeMB:
-        if max_ram_mb != DISABLE_AUTO_FLUSH as f64 && !self.flush_by_ram_was_disabled.get() {
+        if (max_ram_mb - DISABLE_AUTO_FLUSH as f64) > ::std::f64::EPSILON
+            && !self.flush_by_ram_was_disabled.get()
+        {
             self.max_configured_ram_buffer
                 .set(max_ram_mb.max(self.max_configured_ram_buffer.get()));
             let ram = self.flush_bytes + self.active_bytes;

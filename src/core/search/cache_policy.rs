@@ -17,8 +17,8 @@ use std::sync::Mutex;
 use core::codec::Codec;
 use core::search::match_all::{CONSTANT, MATCH_ALL};
 use core::search::point_range::POINT_RANGE;
-use core::search::term_query::TERM;
 use core::search::Weight;
+use core::search::TERM;
 
 use error::Result;
 

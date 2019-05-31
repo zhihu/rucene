@@ -69,11 +69,12 @@ impl TermPosition {
     }
 }
 
-pub const FLAG_OFFSETS: i32 = 2;
-pub const FLAG_PAYLOADS: i32 = 4;
-pub const FLAG_FREQUENCIES: i32 = 8;
-pub const FLAG_POSITIONS: i32 = 16;
-pub const FLAG_CACHE: i32 = 32;
+const FLAG_OFFSETS: i32 = 2;
+const FLAG_PAYLOADS: i32 = 4;
+const FLAG_FREQUENCIES: i32 = 8;
+const FLAG_POSITIONS: i32 = 16;
+#[allow(dead_code)]
+const FLAG_CACHE: i32 = 32;
 
 /// Holds all information on a particular term in a field.
 pub struct LeafIndexFieldTerm<T: PostingIterator> {

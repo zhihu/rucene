@@ -59,7 +59,7 @@ impl SortedNumericDocValues for EmptySortedNumericDocValues {
     }
 }
 
-pub struct AddressedSortedNumericDocValues<T: LongValues> {
+pub(crate) struct AddressedSortedNumericDocValues<T: LongValues> {
     values: Box<dyn LongValues>,
     ord_index: T,
 }

@@ -19,7 +19,6 @@ use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::iter::Iterator;
-use std::mem::discriminant;
 use std::result;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -32,10 +31,11 @@ use core::index::point_values;
 use core::index::term::*;
 use core::index::{DocValuesType, IndexOptions};
 
-fn variant_eq<T>(a: &T, b: &T) -> bool {
-    discriminant(a) == discriminant(b)
-}
-
+/// Access to the Field Info file that describes document fields and whether or
+/// not they are indexed. Each segment has a separate Field Info file. Objects
+/// of this class are thread-safe for multiple readers, but only one thread can
+/// be adding documents at a time, with no other reader or writer threads
+/// accessing this object.
 #[derive(Clone, Debug)]
 pub struct FieldInfo {
     pub name: String,
@@ -172,10 +172,7 @@ impl FieldInfo {
     }
 
     pub fn set_doc_values_type(&mut self, dv_type: DocValuesType) -> Result<()> {
-        if !self.doc_values_type.null()
-            && !dv_type.null()
-            && !variant_eq(&self.doc_values_type, &dv_type)
-        {
+        if !self.doc_values_type.null() && !dv_type.null() && self.doc_values_type != dv_type {
             bail!(IllegalArgument(format!(
                 "Illegal Argument: cannot change DocValues type from {:?} to {:?} for field \"{}\"",
                 self.doc_values_type, dv_type, self.name
@@ -307,7 +304,7 @@ pub type FieldInfoRef = Arc<FieldInfo>;
 /// being added to the index. The information collected in this class is
 /// also used to calculate the normalization factor for a field.
 #[derive(Debug)]
-pub struct FieldInvertState {
+pub(crate) struct FieldInvertState {
     pub name: String,
     pub position: i32,
     pub length: i32,
@@ -366,6 +363,7 @@ impl FieldInvertState {
     }
 }
 
+/// Collection of `FieldInfo`s (accessible by number or by name).
 #[derive(Clone)]
 pub struct FieldInfos {
     pub has_freq: bool,
@@ -508,7 +506,7 @@ impl FieldInfos {
     }
 }
 
-pub struct FieldInfosBuilder<T: AsRef<FieldNumbers>> {
+pub(crate) struct FieldInfosBuilder<T: AsRef<FieldNumbers>> {
     pub by_name: HashMap<String, FieldInfo>,
     pub global_field_numbers: T,
 }
@@ -527,6 +525,8 @@ impl<T: AsRef<FieldNumbers>> FieldInfosBuilder<T> {
         }
     }
 
+    #[allow(dead_code)]
+    // TODO: used for doc values update
     pub fn add_infos(&mut self, other: &FieldInfos) -> Result<()> {
         for v in other.by_number.values() {
             self.add(v.as_ref())?;
@@ -1014,6 +1014,7 @@ impl FieldDimensions {
     }
 }
 
+/// Flex API for access to fields and terms
 pub trait Fields {
     type Terms: Terms;
     fn fields(&self) -> Vec<String>;

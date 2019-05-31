@@ -59,8 +59,7 @@ impl TermState for OrdTermState {
     }
 }
 
-/// Access to the terms in a specific field.  See {@link Fields}.
-/// @lucene.experimental
+/// Access to the terms in a specific field.  See `Fields`.
 pub trait Terms {
     type Iterator: TermIterator;
     /// Returns an iterator that will step through all
@@ -496,6 +495,11 @@ pub enum AcceptStatus {
     End,
 }
 
+/// enumerating a subset of all terms.
+///
+/// Term enumerations are always ordered by `BytesRef`. Each term in the enumeration is
+/// greater than all that precede it.
+/// *Please Note*: Consumers of this iterator cannot call seek(), it is forward only.
 pub trait FilteredTermIterator {
     type Iter: TermIterator;
     fn base(&self) -> &FilteredTermIterBase<Self::Iter>;

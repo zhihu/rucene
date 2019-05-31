@@ -11,10 +11,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::index::BoxedBinaryDocValuesEnum;
-use core::index::SortedDocValuesTermIterator;
+use core::codec::{BoxedBinaryDocValuesEnum, CompressedBinaryDocValues};
 use core::index::{
-    BinaryDocValues, CompressedBinaryDocValues, DocValuesTermIterator, LongBinaryDocValues,
+    BinaryDocValues, DocValuesTermIterator, LongBinaryDocValues, SortedDocValuesTermIterator,
 };
 use core::util::bit_util;
 use core::util::DocId;
@@ -110,7 +109,7 @@ impl<T: SortedDocValues + ?Sized> BinaryDocValues for Arc<T> {
 }
 
 #[derive(Clone)]
-pub struct TailoredSortedDocValues {
+pub(crate) struct TailoredSortedDocValues {
     inner: Arc<TailoredSortedDocValuesInner>,
 }
 

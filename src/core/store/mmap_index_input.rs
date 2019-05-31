@@ -317,6 +317,8 @@ impl RandomAccessInput for MmapIndexInput {
 
 #[cfg(test)]
 mod tests {
+    extern crate tempfile;
+
     use super::*;
     use core::store::DataOutput;
     use core::store::FSIndexOutput;
@@ -325,8 +327,9 @@ mod tests {
 
     #[test]
     fn test_mmap_index_input() {
-        let path: PathBuf = Path::new("test.txt").into();
         let name = "test.txt";
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path: PathBuf = temp_dir.path().join(name);
 
         let mut fsout = FSIndexOutput::new(&path).unwrap();
         fsout.write_byte(b'a').unwrap();
@@ -336,7 +339,7 @@ mod tests {
         fsout.write_byte(b'b').unwrap();
         fsout.flush().unwrap();
 
-        let mmap_input = MmapIndexInput::new(name).unwrap();
+        let mmap_input = MmapIndexInput::new(&path).unwrap();
         let mut slice = mmap_input.slice("from3", 3, 13).unwrap();
         assert_eq!(slice.read_long().unwrap(), 567_890_i64);
         assert_eq!(slice.read_int().unwrap(), 1_234_567_i32);

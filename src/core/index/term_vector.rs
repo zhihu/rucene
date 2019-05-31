@@ -33,7 +33,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::ptr;
 
-pub struct TermVectorsConsumer<
+pub(crate) struct TermVectorsConsumer<
     D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
@@ -91,11 +91,6 @@ where
             per_fields: vec![],
             inited: false,
         }
-    }
-
-    pub fn init(&mut self) {
-        // self.base.init();
-        self.inited = true;
     }
 
     pub fn terms_writer(&mut self) -> &mut TermVectorsWriterEnum<D::IndexOutput> {
@@ -271,7 +266,7 @@ where
     }
 }
 
-pub struct TermVectorsConsumerPerField<
+pub(crate) struct TermVectorsConsumerPerField<
     D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
@@ -341,17 +336,13 @@ where
         // of a given field in the doc.  At this point we flush
         // our hash into the DocWriter.
         self.base.bytes_hash.sort();
-        self.term_vectors_writer()
-            .writer
-            .as_mut()
-            .unwrap()
-            .start_field(
-                &self.base.field_info,
-                num_postings,
-                self.do_vector_positions,
-                self.do_vector_offsets,
-                self.has_payloads,
-            )?;
+        self.term_vectors_writer().terms_writer().start_field(
+            &self.base.field_info,
+            num_postings,
+            self.do_vector_positions,
+            self.do_vector_offsets,
+            self.has_payloads,
+        )?;
         for j in 0..num_postings {
             let term_id = self.base.bytes_hash.ids[j] as usize;
             let freq = self.base.postings_array.freqs[term_id];

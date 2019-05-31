@@ -26,7 +26,7 @@ use error::Result;
 use std::cmp::Ordering;
 use std::mem;
 
-pub struct MultiTerms<T: Terms> {
+pub(crate) struct MultiTerms<T: Terms> {
     subs: Vec<T>,
     #[allow(dead_code)]
     sub_slices: Vec<ReaderSlice>,
@@ -156,7 +156,7 @@ impl<T: Terms> Terms for MultiTerms<T> {
     }
 }
 
-pub struct TermIteratorIndex<T: TermIterator> {
+pub(crate) struct TermIteratorIndex<T: TermIterator> {
     pub sub_index: usize,
     pub terms: Option<T>,
 }
@@ -177,7 +177,7 @@ impl<T: TermIterator> TermIteratorIndex<T> {
 
 /// Exposes `TermsEnum` API, merged from `TermsEnum` API of sub-segments.
 /// This does a merge sort, by term text, of the sub-readers
-pub struct MultiTermIterator<T: TermIterator> {
+pub(crate) struct MultiTermIterator<T: TermIterator> {
     queue: TermMergeQueue<T>,
     pub subs: Vec<TermIteratorWithSlice<T>>,
     current_subs_indexes: Vec<usize>,
@@ -629,7 +629,7 @@ impl<T: TermIterator> TermIteratorWithSlice<T> {
     }
 }
 
-pub enum MultiTermIteratorEnum<T: TermIterator> {
+pub(crate) enum MultiTermIteratorEnum<T: TermIterator> {
     Multi(MultiTermIterator<T>),
     Raw(T),
     Empty(EmptyTermIterator),
@@ -749,7 +749,7 @@ impl<T: TermIterator> TermIterator for MultiTermIteratorEnum<T> {
     }
 }
 
-pub enum MultiPostingIterEnum<T: PostingIterator> {
+pub(crate) enum MultiPostingIterEnum<T: PostingIterator> {
     Multi(MultiPostingsIterator<T>),
     Raw(T),
     Empty(EmptyPostingIterator),

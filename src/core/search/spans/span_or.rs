@@ -21,7 +21,7 @@ use core::search::spans::span::{
     NO_MORE_POSITIONS,
 };
 use core::search::spans::span::{SpanCollector, SpanQuery, SpanWeight, Spans};
-use core::search::term_query::TermQuery;
+use core::search::TermQuery;
 use core::search::{DocIterator, Query, Scorer, SimWeight, Weight};
 use core::util::DocId;
 

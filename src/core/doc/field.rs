@@ -16,7 +16,7 @@ use core::attribute::{BytesTermAttribute, PayloadAttribute, TermToBytesRefAttrib
 use core::attribute::{CharTermAttribute, OffsetAttribute, PositionIncrementAttribute};
 use core::doc::FieldType;
 use core::index::{Fieldable, IndexOptions};
-use core::util::{BytesRef, Numeric, VariantValue};
+use core::util::{numeric::Numeric, BytesRef, VariantValue};
 
 use error::{ErrorKind, Result};
 

@@ -35,6 +35,9 @@ unicode_reader = "0.1.1"
 num-traits = "0.2"
 byteorder = "1"
 
+[dev-dependencies]
+tempfile = "3.0.8"
+
 # The release profile, used for `cargo build --release`
 [profile.release]
 debug = true

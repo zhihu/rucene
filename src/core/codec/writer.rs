@@ -30,8 +30,7 @@ use core::search::{DocIterator, NO_MORE_DOCS};
 use core::store::{DataInput, DataOutput, Directory, IndexOutput};
 use core::util::bit_set::FixedBitSet;
 use core::util::bit_util::UnsignedShift;
-use core::util::BytesRef;
-use core::util::{DocId, Numeric, VariantValue};
+use core::util::{numeric::Numeric, BytesRef, DocId, VariantValue};
 
 use error::ErrorKind::{IllegalArgument, IllegalState, UnsupportedOperation};
 use error::Result;
@@ -194,7 +193,7 @@ pub fn merge_point_values<D: Directory, C: Codec, P: PointsWriter>(
     writer.finish()
 }
 
-pub struct MergePointsReader<C: Codec> {
+pub(crate) struct MergePointsReader<C: Codec> {
     field_info: FieldInfo,
     points_readers: Vec<Option<MergePointValuesEnum<Arc<CodecPointsReader<C>>>>>,
     fields_infos: Vec<Arc<FieldInfos>>,
@@ -345,17 +344,17 @@ pub trait PostingsWriterBase {
         docs_seen: &mut FixedBitSet,
     ) -> Result<Option<BlockTermState>>;
 
-    /// Encode metadata as long[] and byte[]. {@code absolute} controls whether
+    /// Encode metadata as [i64] and [u8]. {@param absolute} controls whether
     /// current term is delta encoded according to latest term.
     /// Usually elements in {@code longs} are file pointers, so each one always
-    /// increases when a new term is consumed. {@code out} is used to write generic
+    /// increases when a new term is consumed. {@param out} is used to write generic
     /// bytes, which are not monotonic.
     ///
-    /// NOTE: sometimes long[] might contain "don't care" values that are unused, e.g.
+    /// NOTE: sometimes [i64] might contain "don't care" values that are unused, e.g.
     /// the pointer to postings list may not be defined for some terms but is defined
     /// for others, if it is designed to inline  some postings data in term dictionary.
     /// In this case, the postings writer should always use the last value, so that each
-    /// element in metadata long[] remains monotonic.
+    /// element in metadata [i64] remains monotonic.
     fn encode_term(
         &mut self,
         longs: &mut [i64],
@@ -366,13 +365,14 @@ pub trait PostingsWriterBase {
     ) -> Result<()>;
 
     /// Sets the current field for writing, and returns the
-    /// fixed length of long[] metadata (which is fixed per
+    /// fixed length of [i64] metadata (which is fixed per
     /// field), called when the writing switches to another field.
     // TODO: better name?
     fn set_field(&mut self, field_info: &FieldInfo) -> i32;
 }
 
 /// Codec API for writing term vectors:
+///
 /// For every document, {@link #startDocument(int)} is called,
 /// informing the Codec how many fields will be written.
 /// {@link #startField(FieldInfo, int, boolean, boolean, boolean)} is called for
@@ -927,7 +927,7 @@ impl<S: StoredFieldsWriter, R: StoredFieldsReader> DocIdMergerSub for StoredFiel
     }
 }
 
-pub struct MergeVisitor<S: StoredFieldsWriter> {
+pub(crate) struct MergeVisitor<S: StoredFieldsWriter> {
     value: Option<VariantValue>,
     current_field: *const FieldInfo,
     fields_writer: *mut S,

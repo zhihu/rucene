@@ -24,7 +24,7 @@ use std::sync::Arc;
 /// Utility trait to help merging documents from sub-readers according to either simple
 /// concatenated (unsorted) order, or by a specified index-time sort, skipping
 /// deleted documents and remapping non-deleted documents.
-pub trait DocIdMerger {
+pub(crate) trait DocIdMerger {
     type Sub: DocIdMergerSub;
 
     /// Reuse API, currently only used by postings during merge
@@ -34,7 +34,7 @@ pub trait DocIdMerger {
     fn next(&mut self) -> Result<Option<&mut Self::Sub>>;
 }
 
-pub fn doc_id_merger_of_count<T: DocIdMergerSub>(
+pub(crate) fn doc_id_merger_of_count<T: DocIdMergerSub>(
     subs: Vec<T>,
     max_count: usize,
     index_sorted: bool,
@@ -48,7 +48,7 @@ pub fn doc_id_merger_of_count<T: DocIdMergerSub>(
     }
 }
 
-pub fn doc_id_merger_of<T: DocIdMergerSub>(
+pub(crate) fn doc_id_merger_of<T: DocIdMergerSub>(
     subs: Vec<T>,
     index_sorted: bool,
 ) -> Result<DocIdMergerEnum<T>> {
@@ -57,7 +57,7 @@ pub fn doc_id_merger_of<T: DocIdMergerSub>(
 }
 
 #[derive(Clone)]
-pub struct DocIdMergerSubBase {
+pub(crate) struct DocIdMergerSubBase {
     pub mapped_doc_id: DocId,
     pub doc_map: Arc<LiveDocsDocMap>,
 }
@@ -72,7 +72,7 @@ impl DocIdMergerSubBase {
 }
 
 /// Represents one sub-reader being merged
-pub trait DocIdMergerSub {
+pub(crate) trait DocIdMergerSub {
     fn next_doc(&mut self) -> Result<DocId>;
 
     fn base(&self) -> &DocIdMergerSubBase;
@@ -80,7 +80,7 @@ pub trait DocIdMergerSub {
     fn base_mut(&mut self) -> &mut DocIdMergerSubBase;
 }
 
-pub enum DocIdMergerEnum<T: DocIdMergerSub> {
+pub(crate) enum DocIdMergerEnum<T: DocIdMergerSub> {
     Sequential(SequentialDocIdMerger<T>),
     Sorted(SortedDocIdMerger<T>),
 }
@@ -121,7 +121,7 @@ impl<T: DocIdMergerSub> DocIdMerger for DocIdMergerEnum<T> {
     }
 }
 
-pub struct SequentialDocIdMerger<T: DocIdMergerSub> {
+pub(crate) struct SequentialDocIdMerger<T: DocIdMergerSub> {
     subs: Vec<T>,
     current_index: usize,
     next_index: usize,
@@ -180,7 +180,7 @@ impl<T: DocIdMergerSub> DocIdMerger for SequentialDocIdMerger<T> {
     }
 }
 
-pub struct SortedDocIdMerger<T: DocIdMergerSub> {
+pub(crate) struct SortedDocIdMerger<T: DocIdMergerSub> {
     subs: Vec<T>,
     queue: BinaryHeap<DocIdMergerSubRef<T>>,
 }

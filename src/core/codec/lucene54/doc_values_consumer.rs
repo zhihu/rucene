@@ -19,12 +19,11 @@ use core::index::{segment_file_name, FieldInfo, SegmentWriteState};
 use core::store::{DataOutput, IndexOutput};
 use core::store::{Directory, RAMOutputStream};
 use core::util::math;
-use core::util::numeric::Numeric;
 use core::util::packed::{AbstractBlockPackedWriter, MonotonicBlockPackedWriter};
 use core::util::packed::{DirectMonotonicWriter, DirectWriter};
 use core::util::packed_misc::VERSION_CURRENT as PACKED_VERSION_CURRENT;
 use core::util::string_util::{bytes_difference, sort_key_length};
-use core::util::{BytesRef, PagedBytes, ReusableIterator};
+use core::util::{numeric::Numeric, BytesRef, PagedBytes, ReusableIterator};
 
 use error::Result;
 use std::collections::hash_map::DefaultHasher;
@@ -184,7 +183,7 @@ impl<O: IndexOutput> Lucene54DocValuesConsumer<O> {
         };
 
         let format = if unique_values.is_some()
-            && count as i32 <= i32::max_value()
+            && count <= i32::max_value() as i64
             && (unique_values.as_ref().unwrap().len() == 1
                 || (unique_values.as_ref().unwrap().len() == 2
                     && missing_count > 0
@@ -470,19 +469,17 @@ impl<O: IndexOutput> Lucene54DocValuesConsumer<O> {
         // for fixed width data, look at the avg(shared prefix) before deciding how to encode:
         // prefix compression "costs" worst case 2 bytes per term because we must store suffix
         // lengths. so if we share at least 3 bytes on average, always compress.
-        if min_length == max_length
-            && prefix_sum as i64 <= 3 * (num_values >> Lucene54DocValuesFormat::INTERVAL_SHIFT)
-        {
-            // no index needed: not very compressible, direct addressing by mult
-            values.reset();
-            self.add_binary_field(field_info, values)?;
-        } else if (num_values as i32) < Lucene54DocValuesFormat::REVERSE_INTERVAL_COUNT {
+
+        // no index needed: not very compressible, direct addressing by mult
+        if (min_length == max_length && prefix_sum as i64 <= 3 * (num_values >> Lucene54DocValuesFormat::INTERVAL_SHIFT))
             // low cardinality: waste a few KB of ram, but can't really use fancy index etc
+            || ((num_values as i32) < Lucene54DocValuesFormat::REVERSE_INTERVAL_COUNT)
+        {
             values.reset();
             self.add_binary_field(field_info, values)?;
         } else {
-            debug_assert!(num_values > 0); // we don't have to handle the empty case
-                                           // header
+            // we don't have to handle the empty case header
+            debug_assert!(num_values > 0);
             self.meta.write_vint(field_info.number as i32)?;
             self.meta.write_byte(Lucene54DocValuesFormat::BINARY)?;
             self.meta
@@ -628,7 +625,7 @@ impl<O: IndexOutput> Lucene54DocValuesConsumer<O> {
 
     /// writes reverse term index: used for binary searching a term into a range of 64 blocks
     /// for every 64 blocks (1024 terms) we store a term, trimming any suffix unnecessary for
-    /// comparison terms are written as a contiguous byte[], but never spanning 2^15 byte
+    /// comparison terms are written as a contiguous bytes, but never spanning 2^15 byte
     /// boundaries.
     fn add_reverse_term_index(
         &mut self,
@@ -804,7 +801,7 @@ impl<O: IndexOutput> DocValuesConsumer for Lucene54DocValuesConsumer<O> {
         field_info: &FieldInfo,
         values: &mut impl ReusableIterator<Item = Result<BytesRef>>,
     ) -> Result<()> {
-        // write the byte[] data
+        // write the bytes data
         self.meta.write_vint(field_info.number as i32)?;
         self.meta.write_byte(Lucene54DocValuesFormat::BINARY)?;
         let mut min_length = i32::max_value();
@@ -857,7 +854,7 @@ impl<O: IndexOutput> DocValuesConsumer for Lucene54DocValuesConsumer<O> {
         self.meta.write_vlong(count)?;
         self.meta.write_long(start_fp)?;
 
-        // if minLength == maxLength, it's a fixed-length byte[], we are done (the addresses are
+        // if minLength == maxLength, it's a fixed-length bytes, we are done (the addresses are
         // implicit) otherwise, we need to record the length fields...
 
         if min_length != max_length {

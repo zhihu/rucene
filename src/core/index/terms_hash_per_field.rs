@@ -36,7 +36,7 @@ use error::Result;
 
 const HASH_INIT_SIZE: usize = 4;
 
-pub struct TermsHashPerFieldBase<T: PostingsArray> {
+pub(crate) struct TermsHashPerFieldBase<T: PostingsArray> {
     // Copied from our perThread
     pub int_pool: *mut IntBlockPool,
     pub byte_pool: *mut ByteBlockPool,
@@ -214,7 +214,7 @@ impl<T: PostingsArray + 'static> TermsHashPerFieldBase<T> {
     }
 }
 
-pub trait TermsHashPerField: Ord + PartialOrd + Eq + PartialEq {
+pub(crate) trait TermsHashPerField: Ord + PartialOrd + Eq + PartialEq {
     type P: PostingsArray + 'static;
     fn base(&self) -> &TermsHashPerFieldBase<Self::P>;
     fn base_mut(&mut self) -> &mut TermsHashPerFieldBase<Self::P>;
@@ -403,7 +403,7 @@ impl<T: PostingsArray + 'static> BytesStartArray for PostingsBytesStartArray<T> 
 // TODO: break into separate freq and prox writers as
 // codecs; make separate container (tii/tis/skip/*) that can
 // be configured as any number of files 1..N
-pub struct FreqProxTermsWriterPerField<
+pub(crate) struct FreqProxTermsWriterPerField<
     D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
@@ -734,7 +734,7 @@ where
     }
 }
 
-pub struct FreqProxPostingsArray {
+pub(crate) struct FreqProxPostingsArray {
     pub base: ParallelPostingsArray,
     pub term_freqs: Vec<u32>,
     // # times this term occurs in the current doc

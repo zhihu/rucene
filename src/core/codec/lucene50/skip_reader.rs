@@ -112,7 +112,7 @@ impl Read for SkipBuffer {
 /// If we use the interface directly in Lucene50SkipReader, it may silly try to read
 /// another skip data after the only skip point is loaded.
 ///
-/// To illustrate this, we can call skipTo(d[5]), since skip point d[3] has smaller docId,
+/// To illustrate this, we can call skip_to(d\[5\]), since skip point d\[3\] has smaller docId,
 /// and numSkipped+blockSize== df, the MultiLevelSkipListReader will assume the skip list
 /// isn't exhausted yet, and try to load a non-existed skip point
 ///

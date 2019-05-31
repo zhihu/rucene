@@ -26,19 +26,19 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-pub const DATA_CODEC_NAME: &str = "Lucene60PointsFormatData";
-pub const META_CODEC_NAME: &str = "Lucene60PointsFormatMeta";
+pub(crate) const DATA_CODEC_NAME: &str = "Lucene60PointsFormatData";
+pub(crate) const META_CODEC_NAME: &str = "Lucene60PointsFormatMeta";
 
 // Filename extension for the leaf blocks
-pub const DATA_EXTENSION: &str = "dim";
+pub(crate) const DATA_EXTENSION: &str = "dim";
 // Filename extension for the index per field
-pub const INDEX_EXTENSION: &str = "dii";
+pub(crate) const INDEX_EXTENSION: &str = "dii";
 
-pub const DATA_VERSION_START: i32 = 0;
-pub const DATA_VERSION_CURRENT: i32 = DATA_VERSION_START;
+pub(crate) const DATA_VERSION_START: i32 = 0;
+pub(crate) const DATA_VERSION_CURRENT: i32 = DATA_VERSION_START;
 
-pub const INDEX_VERSION_START: i32 = 0;
-pub const INDEX_VERSION_CURRENT: i32 = INDEX_VERSION_START;
+pub(crate) const INDEX_VERSION_START: i32 = 0;
+pub(crate) const INDEX_VERSION_CURRENT: i32 = INDEX_VERSION_START;
 
 #[derive(Copy, Clone)]
 pub struct Lucene60PointsFormat;

@@ -25,15 +25,11 @@ use core::search::explanation::Explanation;
 use core::search::searcher::{IndexSearcher, SearchPlanBuilder};
 use core::search::statistics::CollectionStatistics;
 use core::search::statistics::TermStatistics;
-use core::search::term_query::TermQuery;
 use core::search::top_docs::TopDocs;
 use core::util::{DocId, IndexedContext, KeyedContext, VariantValue};
 use error::Result;
 
 pub mod collector;
-pub mod conjunction;
-pub mod disjunction;
-pub mod filter_query;
 pub mod match_all;
 pub mod min_score;
 pub mod point_range;
@@ -52,17 +48,33 @@ pub mod top_docs;
 pub mod util;
 
 // Queries
-pub mod boolean_query;
-pub mod boost;
-pub mod phrase_query;
-pub mod query_string;
-pub mod term_query;
+mod boolean_query;
+pub use self::boolean_query::*;
+
+mod boost;
+pub use self::boost::*;
+
+pub mod filter_query;
+pub use self::filter_query::*;
+
+mod phrase_query;
+pub use self::phrase_query::{PhraseQuery, PhraseWeight, PHRASE};
+
+mod query_string;
+pub use self::query_string::QueryStringQueryBuilder;
+
+mod term_query;
+pub use self::term_query::{TermQuery, TermWeight, TERM};
 
 // Scorers
-pub mod term_scorer;
+pub mod conjunction;
+mod term_scorer;
+pub use self::conjunction::ConjunctionScorer;
+pub mod disjunction;
 
 // Similarities
-pub mod bm25_similarity;
+mod bm25_similarity;
+pub use self::bm25_similarity::*;
 
 // IndexSearcher
 pub mod searcher;
@@ -193,6 +205,7 @@ impl PartialEq for DocIterator {
     }
 }
 
+/// a `DocIterator` that means no matching doc is available
 #[derive(Clone)]
 pub struct EmptyDocIterator {
     doc_id: DocId,

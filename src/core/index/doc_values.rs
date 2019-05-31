@@ -33,6 +33,7 @@ use error::Result;
 use std::rc::Rc;
 use std::sync::Arc;
 
+/// provide utility methods and constants for DocValues
 pub struct DocValues;
 
 impl DocValues {

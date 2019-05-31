@@ -60,7 +60,6 @@ impl MergeRateLimiter {
         self.check_abort()?;
 
         let mb_per_sec = self.mb_per_sec.read();
-        assert!(mb_per_sec > 0.0);
         let seconds_to_pause = bytes as f64 / 1024.0 / 1024.0 / mb_per_sec;
         // Time we should sleep until; this is purely instantaneous
         // rate (just adds seconds onto the last time we had paused to);
@@ -76,14 +75,14 @@ impl MergeRateLimiter {
         // NOTE: except maybe on real-time JVMs, minimum realistic
         // wait/sleep time is 1 msec; if you pass just 1 nsec the impl
         // rounds up to 1 msec, so we don't bother unless it's > 2 msec:
-        if cur_pause_dur <= Duration::from_nanos(2_000_000) {
+        if cur_pause_dur <= Duration::from_millis(2) {
             return Ok(PauseResult::No);
         }
 
         // Defensive: sleep for at most 250 msec; the loop above will call us
         // again if we should keep sleeping:
-        if cur_pause_dur > Duration::from_nanos(250_000_000) {
-            cur_pause_dur = Duration::from_nanos(250_000_000);
+        if cur_pause_dur > Duration::from_millis(250) {
+            cur_pause_dur = Duration::from_millis(250);
         }
 
         // CMS can wake us up here if it changes our target rate:

@@ -545,12 +545,6 @@ impl<D: Directory> BKDWriter<D> {
                 "max_points_in_leaf_node must be > 0".into()
             ));
         }
-        if max_points_in_leaf_node > i32::max_value() {
-            bail!(IllegalArgument(format!(
-                "max_points_in_leaf_node must be <= {}",
-                i32::max_value()
-            )));
-        }
         if max_mb_sort_in_heap < 0.0 {
             bail!(IllegalArgument("max_mb_sort_in_heap must be >= 0.0".into()));
         }
@@ -898,7 +892,7 @@ impl<D: Directory> BKDWriter<D> {
         // Reused while packing the index
         let mut write_buffer = RAMOutputStream::new(false);
 
-        // This is the "file" we append the byte[] to:
+        // This is the "file" we append the bytes to:
         let mut blocks = vec![];
         let mut last_split_values = vec![0u8; self.bytes_per_dim * self.num_dims];
         let mut negative_deltas = vec![false; self.num_dims];
@@ -1851,7 +1845,7 @@ impl<D: Directory> Drop for BKDWriter<D> {
     }
 }
 
-pub struct BKDWriterMSBIntroSorter<D: Directory> {
+pub(crate) struct BKDWriterMSBIntroSorter<D: Directory> {
     bkd_writer: *mut BKDWriter<D>,
     heap_writer: *mut HeapPointWriter,
     dim: i32,

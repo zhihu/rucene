@@ -44,7 +44,7 @@ use error::{ErrorKind, Result};
 /// streams per token.  Consumers of this class, eg {@link
 /// FreqProxTermsWriter} and {@link TermVectorsConsumer},
 /// write their own byte streams under each term.
-pub struct TermsHashBase {
+pub(crate) struct TermsHashBase {
     // next_terms_hash: TermsHash,
     pub int_pool: IntBlockPool,
     pub byte_pool: ByteBlockPool,
@@ -93,16 +93,6 @@ impl TermsHashBase {
         }
     }
 
-    // TODO: this must be call anytime after self's address won't move anymore
-    // other the term_byte_pool pointer is like point to an invalid address
-    pub fn init(&mut self) {
-        self.term_byte_pool = &mut self.byte_pool;
-    }
-
-    pub fn abort(&mut self) {
-        self.reset();
-    }
-
     // clear all state
     pub fn reset(&mut self) {
         // we don't reuse so we drop everything and don't fill with 0
@@ -111,7 +101,7 @@ impl TermsHashBase {
     }
 }
 
-pub trait TermsHash<D: Directory, C: Codec> {
+pub(crate) trait TermsHash<D: Directory, C: Codec> {
     type PerField: TermsHashPerField;
     fn base(&self) -> &TermsHashBase;
     fn base_mut(&mut self) -> &mut TermsHashBase;
@@ -141,7 +131,7 @@ pub trait TermsHash<D: Directory, C: Codec> {
     ) -> Result<()>;
 }
 
-pub struct FreqProxTermsWriter<
+pub(crate) struct FreqProxTermsWriter<
     D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
@@ -180,8 +170,6 @@ where
         self.base.term_byte_pool = &mut self.base.byte_pool;
         self.next_terms_hash.base.term_byte_pool = &mut self.base.byte_pool;
         self.next_terms_hash.inited = true;
-        // self.base.init();
-        // self.next_terms_hash.init();
     }
 }
 

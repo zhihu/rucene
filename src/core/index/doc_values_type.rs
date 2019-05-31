@@ -25,12 +25,12 @@ pub enum DocValuesType {
     /// [u8]. The stored [u8] is presorted and allows access via document id,
     /// ordinal and by-value.  Values must be `<= 32766` bytes.
     Sorted,
-    /// A pre-sorted [Number]. Fields with this type store numeric values in sorted
+    /// A pre-sorted \[Numeric\]. Fields with this type store numeric values in sorted
     /// order according to `i64::cmp`.
     SortedNumeric,
     /// A pre-sorted Set<[u8]>. Fields with this type only store distinct byte values
     /// and store additional offset pointers per document to dereference the shared
-    /// byte[]s. The stored byte[] is presorted and allows access via document id,
+    /// bytes. The stored bytes is presorted and allows access via document id,
     /// ordinal and by-value.  Values must be `<= 32766` bytes.
     SortedSet,
 }

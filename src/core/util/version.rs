@@ -23,7 +23,7 @@ use error::{ErrorKind::IllegalArgument, Result};
 /// that you supply to components in Lucene, do not simply
 /// change the version at search-time, but instead also adjust
 /// your indexing code to match, and re-index.
-#[derive(Clone, Copy, Debug, Serialize, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Hash)]
 pub struct Version {
     /// Major version, the difference between stable and trunk */
     pub major: i32,
@@ -190,14 +190,6 @@ impl ToString for Version {
         }
     }
 }
-
-impl PartialEq for Version {
-    fn eq(&self, other: &Version) -> bool {
-        self.encode() == other.encode()
-    }
-}
-
-impl Eq for Version {}
 
 impl Ord for Version {
     fn cmp(&self, other: &Self) -> Ordering {

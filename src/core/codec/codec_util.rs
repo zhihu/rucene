@@ -11,6 +11,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Utility functions for reading and writing versioned headers.
+//!
+//! Writing codec headers is useful to ensure that a file is in
+//! the format you think it is.
+
 use core::store::{BufferedChecksumIndexInput, ChecksumIndexInput};
 use core::store::{DataInput, DataOutput, IndexInput, IndexOutput};
 
@@ -20,9 +25,23 @@ use error::ErrorKind::{CorruptIndex, IllegalArgument, IllegalState};
 use error::Result;
 use std::io::Read;
 
+/// Constant to identify the start of a codec header.
 pub const CODEC_MAGIC: i32 = 0x3FD7_6C17;
+/// Constant to identify the start of a codec footer.
 pub const FOOTER_MAGIC: i32 = !CODEC_MAGIC;
 
+/// Writes a codec header, which records both a string to identify the file and a version number.
+///
+/// This header can be parsed and validated with {@link #check_header()}.
+///
+/// CodecHeader --> Magic,CodecName,Version
+/// * Magic -->  DataOutput#write_int. This identifies the start of the header. It is always
+///   `CODEC_MAGIC`.
+/// * CodecName --> DataOutput#write_string. This is a string to identify this file.
+/// * Version --> DataOutput#write_int. Records the version of the file.
+///
+/// Note that the length of a codec header depends only upon the name of the codec,
+/// so this length can be computed at any time with {@link #header_len(&str)}.
 pub fn write_header<T: DataOutput + ?Sized>(out: &mut T, codec: &str, version: i32) -> Result<()> {
     let clen = codec.len();
     if clen >= 128 {
@@ -36,6 +55,22 @@ pub fn write_header<T: DataOutput + ?Sized>(out: &mut T, codec: &str, version: i
     out.write_int(version)
 }
 
+/// Writes a codec header for an index file, which records both a string to
+/// identify the format of the file, a version number, and data to identify
+/// the file instance (ID and auxiliary suffix such as generation).
+///
+/// This header can be parsed and validated with check_index_header().
+///
+/// IndexHeader --> CodecHeader,ObjectID,ObjectSuffix
+/// * CodecHeader   --> {@link #writeHeader}
+/// * ObjectID     --> DataOutput#write_byte
+/// * ObjectSuffix --> SuffixLength,SuffixBytes
+/// * SuffixLength  --> DataOutput#write_byte
+/// * SuffixBytes   --> {@link DataOutput#writeByte byte}<sup>SuffixLength</sup>
+///
+/// Note that the length of an index header depends only upon the
+/// name of the codec and suffix, so this length can be computed at any time
+/// with {@link #index_header_length(String,String)}.
 pub fn write_index_header(
     out: &mut impl DataOutput,
     codec: &str,
@@ -60,20 +95,37 @@ pub fn write_index_header(
     out.write_bytes(&suffix.as_bytes(), 0, slen)
 }
 
+/// Writes a codec footer, which records both a checksum
+/// algorithm ID and a checksum. This footer can
+/// be parsed and validated with check_footer(ChecksumIndexInput).
+///
+/// CodecFooter --> Magic,AlgorithmID,Checksum
+/// * Magic --> {@link DataOutput#writeInt Uint32}. This identifies the start of the footer. It is
+///   always {@value #FOOTER_MAGIC}.
+/// * AlgorithmID --> {@link DataOutput#write_Int}. This indicates the checksum algorithm used.
+///   Currently this is always 0, for zlib-crc32.
+/// * Checksum --> {@link DataOutput#write_long}. The actual checksum value for all previous bytes
+///   in the stream, including the bytes from Magic and AlgorithmID.
 pub fn write_footer(output: &mut impl IndexOutput) -> Result<()> {
     output.write_int(FOOTER_MAGIC)?;
     output.write_int(0)?;
     write_crc(output)
 }
 
+/// Computes the length of a codec header.
 fn header_length(codec: &str) -> usize {
     9 + codec.len()
 }
 
+/// Computes the length of an index header.
 pub fn index_header_length(codec: &str, suffix: &str) -> usize {
     header_length(codec) + ID_LENGTH + 1 + suffix.len()
 }
 
+/// Reads and validates a header previously written with `writer_header`.
+///
+/// When reading a file, supply the expected `Codec` and an expected version range
+/// (min_version to max_version)
 pub fn check_header<T: DataInput + ?Sized>(
     data_input: &mut T,
     codec: &str,
@@ -90,6 +142,8 @@ pub fn check_header<T: DataInput + ?Sized>(
     check_header_no_magic(data_input, codec, min_ver, max_ver)
 }
 
+/// Like `check_header` except this version assumes the first i32 has already
+/// been read and validated from the input.
 pub fn check_header_no_magic<T: DataInput + ?Sized>(
     data_input: &mut T,
     codec: &str,
@@ -113,6 +167,10 @@ pub fn check_header_no_magic<T: DataInput + ?Sized>(
     Ok(actual_ver)
 }
 
+/// Reads and validates a header previously written with write_index_header().
+///
+/// When reading a file, supply the expected `Codec` and an expected version range
+/// (min_version to max_version), and object ID and suffix.
 pub fn check_index_header<T: DataInput + ?Sized>(
     data_input: &mut T,
     codec: &str,
@@ -143,6 +201,7 @@ fn check_index_header_id<T: DataInput + ?Sized>(
     Ok(())
 }
 
+/// Expert: just reads and verifies the suffix of an index header
 pub fn check_index_header_suffix<T: DataInput + ?Sized>(
     data_input: &mut T,
     expected_suffix: &str,
@@ -206,6 +265,7 @@ pub fn verify_and_copy_index_header<I: IndexInput + ?Sized, O: DataOutput + ?Siz
     output.write_bytes(&suffix_bytes, 0, suffix_length)
 }
 
+/// Computes the length of a codec footer.
 #[inline(always)]
 pub fn footer_length() -> usize {
     16
@@ -244,6 +304,8 @@ pub fn validate_footer<T: IndexInput + ?Sized>(input: &mut T) -> Result<()> {
     }
 }
 
+/// Validates the codec footer previously written by writer_footer(), optionally
+/// passing an unexpected exception that has already occurred.
 pub fn check_footer(input: &mut impl ChecksumIndexInput) -> Result<i64> {
     validate_footer(input)?;
     let actual_checksum: i64 = input.checksum();
@@ -273,6 +335,7 @@ fn write_crc<T: IndexOutput + ?Sized>(output: &mut T) -> Result<()> {
     output.write_long(value)
 }
 
+/// Returns (but does not validate) the checksum previously written by check_footer().
 pub fn retrieve_checksum<T: IndexInput + ?Sized>(input: &mut T) -> Result<i64> {
     let length = input.len();
     let footer_length = footer_length() as u64;
@@ -289,6 +352,8 @@ pub fn retrieve_checksum<T: IndexInput + ?Sized>(input: &mut T) -> Result<i64> {
 }
 
 // TODO: duplicates to refactor
+
+/// validate the input checksum
 pub fn check_checksum<T: IndexInput + ?Sized>(input: &mut T, actual_checksum: i64) -> Result<()> {
     let expected_checksum: i64 = read_crc(input)?;
     if actual_checksum != expected_checksum {
@@ -300,6 +365,10 @@ pub fn check_checksum<T: IndexInput + ?Sized>(input: &mut T, actual_checksum: i6
     Ok(())
 }
 
+/// Clones the provided input, reads all bytes from the file, and calls check_footer().
+///
+/// Note that this method may be slow, as it must process the entire file.
+/// If you just need to extract the checksum value, call {@link #retrieve_checksum}.
 pub fn checksum_entire_file<T: IndexInput + ?Sized>(input: &T) -> Result<i64> {
     let mut index = input.clone()?;
     index.seek(0)?;

@@ -20,10 +20,8 @@ use core::util::{LongValues, LongValuesContext};
 use error::ErrorKind::{CorruptIndex, IllegalArgument};
 use error::Result;
 
-use std::sync::Arc;
-
 /// Provides random access to a stream written with MonotonicBlockPackedWriter
-pub struct MonotonicBlockPackedReader {
+pub(crate) struct MonotonicBlockPackedReader {
     block_shift: usize,
     block_mask: usize,
     value_count: usize,
@@ -33,8 +31,6 @@ pub struct MonotonicBlockPackedReader {
     #[allow(dead_code)]
     sum_bpv: i64,
 }
-
-pub type MonotonicBlockPackedReaderRef = Arc<MonotonicBlockPackedReader>;
 
 impl MonotonicBlockPackedReader {
     pub fn expected(origin: i64, average: f32, index: i32) -> i64 {

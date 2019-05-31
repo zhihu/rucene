@@ -309,9 +309,9 @@ impl<D: Directory> io::Write for PointWriterOutput<D> {
     }
 }
 
-/// BitSet of fixed length (numBits), backed by accessible ({@link #getBits})
-/// long[], accessed with a long index. Use it only if you intend to store more
-/// than 2.1B bits, otherwise you should use {@link FixedBitSet}.
+/// BitSet of fixed length (num_bits), backed by accessible ({@link #getBits})
+/// Vec<i64>, accessed with a long index. Use it only if you intend to store more
+/// than 2.1B bits, otherwise you should use `FixedBitSet`.
 ///
 /// @lucene.internal
 pub struct LongBitSet {
@@ -373,7 +373,7 @@ impl LongBitSet {
     }
 }
 
-pub struct UtilMSBIntroSorter<P: MutablePointsReader> {
+pub(crate) struct UtilMSBIntroSorter<P: MutablePointsReader> {
     k: i32,
     packed_bytes_length: i32,
     pivot_doc: i32,

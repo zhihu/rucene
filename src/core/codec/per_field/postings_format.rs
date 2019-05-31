@@ -32,10 +32,10 @@ use error::Result;
 // const PER_FIELD_NAME: &str = "PerField40";
 /// {@link FieldInfo} attribute name used to store the
 /// format name for each field. */
-pub const PER_FIELD_POSTING_FORMAT_KEY: &str = "PerFieldPostingsFormat.format";
+pub(crate) const PER_FIELD_POSTING_FORMAT_KEY: &str = "PerFieldPostingsFormat.format";
 
 /// segment suffix name for each field. */
-pub const PER_FIELD_POSTING_SUFFIX_KEY: &str = "PerFieldPostingsFormat.suffix";
+pub(crate) const PER_FIELD_POSTING_SUFFIX_KEY: &str = "PerFieldPostingsFormat.suffix";
 
 fn get_suffix(format: &str, suffix: &str) -> String {
     format!("{}_{}", format, suffix)

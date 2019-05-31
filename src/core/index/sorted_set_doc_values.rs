@@ -11,9 +11,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::codec::{BoxedBinaryDocValuesEnum, CompressedBinaryDocValues};
 use core::index::{
-    BoxedBinaryDocValuesEnum, CompressedBinaryDocValues, DocValuesTermIterator,
-    LongBinaryDocValues, NumericDocValues, SortedSetDocValuesTermIterator,
+    DocValuesTermIterator, LongBinaryDocValues, NumericDocValues, SortedSetDocValuesTermIterator,
 };
 
 use core::util::bit_util;
@@ -24,6 +24,7 @@ use error::Result;
 use core::util::packed::MixinMonotonicLongValues;
 use std::sync::Arc;
 
+/// When returned by next_ord() it means there are no more ordinals for the document.
 pub const NO_MORE_ORDS: i64 = -1;
 
 pub type SortedSetDocValuesContext = (i64, i64, i64);
@@ -83,13 +84,20 @@ impl SortedSetDocValues for EmptySortedSetDocValues {
     }
 }
 
+/// Extension of `SortedSetDocValues` that supports random access to the ordinals of a document.
+///
+/// Operations via this API are independent of the iterator api next_ord()
+/// and do not impact its state.
+///
+/// Codecs can optionally extend this API if they support constant-time access
+/// to ordinals for the document.
 pub trait RandomAccessOrds: SortedSetDocValues {
     fn ord_at(&self, ctx: &SortedSetDocValuesContext, index: i32) -> Result<i64>;
     fn cardinality(&self, ctx: &SortedSetDocValuesContext) -> i32;
 }
 
 #[derive(Clone)]
-pub struct AddressedRandomAccessOrds {
+pub(crate) struct AddressedRandomAccessOrds {
     inner: Arc<AddressedRandomAccessOrdsInner>,
 }
 
@@ -169,7 +177,7 @@ impl RandomAccessOrds for AddressedRandomAccessOrds {
     }
 }
 
-pub struct AddressedRandomAccessOrdsInner {
+struct AddressedRandomAccessOrdsInner {
     binary: BoxedBinaryDocValuesEnum,
     ordinals: Box<dyn LongValues>,
     ord_index: MixinMonotonicLongValues,
@@ -260,7 +268,7 @@ impl AddressedRandomAccessOrdsInner {
 }
 
 #[derive(Clone)]
-pub struct TabledRandomAccessOrds {
+pub(crate) struct TabledRandomAccessOrds {
     inner: Arc<TabledRandomAccessOrdsInner>,
 }
 

@@ -21,6 +21,12 @@ pub enum Status {
     Stop,
 }
 
+/// Expert: provides a low-level means of accessing the stored field
+/// values in an index.
+///
+/// NOTE: a `StoredFieldVisitor` implementation should not try to load or visit other
+/// stored documents in the same reader because the implementation of stored fields for
+/// most codecs is not reentrant and you will see strange exceptions as a result.
 pub trait StoredFieldVisitor {
     fn binary_field(&mut self, field_info: &FieldInfo, value: Vec<u8>) -> Result<()>;
     fn string_field(&mut self, field_info: &FieldInfo, value: Vec<u8>) -> Result<()>;

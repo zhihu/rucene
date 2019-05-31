@@ -18,7 +18,7 @@ use core::util::packed::{
     LongValuesIterator, PackedLongValuesBuilder, PackedLongValuesBuilderType, DEFAULT_PAGE_SIZE,
 };
 use core::util::packed_misc::COMPACT;
-use core::util::{DocId, Numeric, ReusableIterator};
+use core::util::{numeric::Numeric, DocId, ReusableIterator};
 
 use core::store::Directory;
 use error::Result;

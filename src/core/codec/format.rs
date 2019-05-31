@@ -20,7 +20,7 @@ use core::index::{
 use core::store::{Directory, IOContext, IndexOutput};
 use core::util::bit_set::FixedBitSet;
 use core::util::string_util::ID_LENGTH;
-use core::util::{Bits, BitsRef, BytesRef, Numeric, ReusableIterator};
+use core::util::{numeric::Numeric, Bits, BitsRef, BytesRef, ReusableIterator};
 
 use error::{ErrorKind::IllegalArgument, Result};
 
@@ -28,7 +28,6 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 /// Encodes/decodes compound files
-/// @lucene.experimental
 pub trait CompoundFormat {
     // TODO, this method should use a generic associated type as return type with is not
     // currently supported. so we just hard code the type because when we need return another
@@ -90,6 +89,7 @@ pub trait PostingsFormat {
     fn name(&self) -> &str;
 }
 
+/// composite `PostingsFormat` use for `CodecEnum`
 pub enum PostingsFormatEnum {
     Lucene50(Lucene50PostingsFormat),
 }
@@ -196,10 +196,9 @@ pub trait TermVectorsFormat {
 //    }
 //}
 
-/// Encodes/decodes {@link FieldInfos}
-/// @lucene.experimental
+/// Encodes/decodes `FieldInfos`
 pub trait FieldInfosFormat {
-    /// Read the {@link FieldInfos} previously written with {@link #write}. */
+    /// Read the `FieldInfos` previously written with {@link #write}. */
     fn read<D: Directory, DW: Directory, C: Codec>(
         &self,
         directory: &DW,
@@ -208,8 +207,7 @@ pub trait FieldInfosFormat {
         io_context: &IOContext,
     ) -> Result<FieldInfos>;
 
-    /// Writes the provided {@link FieldInfos} to the
-    /// directory. */
+    /// Writes the provided `FieldInfos` to the directory.
     fn write<D: Directory, DW: Directory, C: Codec>(
         &self,
         directory: &DW,
@@ -220,17 +218,14 @@ pub trait FieldInfosFormat {
     ) -> Result<()>;
 }
 
-/// Expert: Controls the format of the
-/// {@link SegmentInfo} (segment metadata file).
-/// @see SegmentInfo
-/// @lucene.experimental
+/// Expert: Controls the format of the `SegmentInfo` (segment metadata file).
 pub trait SegmentInfoFormat {
-    /// Read {@link SegmentInfo} data from a directory.
-    /// @param directory directory to read from
-    /// @param segmentName name of the segment to read
-    /// @param segmentID expected identifier for the segment
-    /// @return infos instance to be populated with data
-    /// @throws IOException If an I/O error occurs
+    /// Read `SegmentInfo` data from a directory.
+    ///
+    /// @param directory: directory to read from
+    /// @param segment_name: name of the segment to read
+    /// @param segment_id: expected identifier for the segment
+    /// @return infos: instance to be populated with data
     fn read<D: Directory, C: Codec>(
         &self,
         directory: &Arc<D>,
@@ -239,7 +234,8 @@ pub trait SegmentInfoFormat {
         context: &IOContext,
     ) -> Result<SegmentInfo<D, C>>;
 
-    /// Write {@link SegmentInfo} data.
+    /// Write `SegmentInfo` data.
+    ///
     /// The codec must add its SegmentInfo filename(s) to {@code info} before doing i/o.
     /// @throws IOException If an I/O error occurs
     fn write<D: Directory, DW: Directory, C: Codec>(
@@ -536,7 +532,6 @@ impl<O: IndexOutput> NormsConsumer for NormsConsumerEnum<O> {
 }
 
 /// Format for live/deleted documents
-/// @lucene.experimental */
 pub trait LiveDocsFormat {
     /// Creates a new Bits, with all bits set, for the specified size.
     fn new_live_docs(&self, size: usize) -> Result<FixedBitSet>;

@@ -20,7 +20,7 @@ use core::codec::compressing::{
 use core::codec::format::StoredFieldsFormat;
 use core::codec::writer::StoredFieldsWriterEnum;
 use core::codec::Codec;
-use core::index::field_info::FieldInfos;
+use core::index::FieldInfos;
 use core::index::SegmentInfo;
 use core::store::{Directory, IOContext};
 use error::{Error as CoreError, ErrorKind::IllegalState, Result};
@@ -45,6 +45,7 @@ impl FromStr for StoredFieldCompressMode {
     }
 }
 
+/// Lucene 5.0 stored fields format.
 #[derive(Copy, Clone)]
 pub struct Lucene50StoredFieldsFormat {
     #[allow(dead_code)]

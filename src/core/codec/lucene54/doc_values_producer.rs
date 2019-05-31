@@ -11,40 +11,40 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::codec::{codec_util, Codec, DocValuesProducer, Lucene54DocValuesFormat, NumberType};
+use core::codec::{
+    codec_util, Codec, CompressedBinaryTermIterator, DocValuesProducer, Lucene54DocValuesFormat,
+    NumberType,
+};
 use core::index::{
     segment_file_name, AddressedRandomAccessOrds, AddressedSortedNumericDocValues, BinaryDocValues,
-    CompressedBinaryDocValues, DocValues, DocValuesType, FieldInfo, FieldInfos,
-    FixedBinaryDocValues, NumericDocValues, SegmentInfo, SegmentReadState, SortedDocValues,
+    DocValues, DocValuesType, FieldInfo, FieldInfos, FixedBinaryDocValues, LongBinaryDocValues,
+    NumericDocValues, SeekStatus, SegmentInfo, SegmentReadState, SortedDocValues,
     SortedNumericDocValues, SortedSetDocValues, TabledRandomAccessOrds,
-    TabledSortedNumericDocValues, TailoredSortedDocValues, VariableBinaryDocValues,
+    TabledSortedNumericDocValues, TailoredSortedDocValues, TermIterator, VariableBinaryDocValues,
 };
 use core::store::{BufferedChecksumIndexInput, Directory, IndexInput};
 use core::util::{
     packed::{
         DirectMonotonicMeta, DirectMonotonicReader, DirectReader, MonotonicBlockPackedReader,
     },
-    BitsRef, DeltaLongValues, GcdLongValues, LiveBits, LiveLongValues, LongValues, MatchAllBits,
-    MatchNoBits, PagedBytes, PagedBytesReader, SparseBits, SparseLongValues, TableLongValues,
+    BitsRef, DeltaLongValues, DocId, GcdLongValues, LiveBits, LiveLongValues, LongValues,
+    MatchAllBits, MatchNoBits, PagedBytes, PagedBytesReader, SparseBits, SparseLongValues,
+    TableLongValues,
 };
 
 use error::ErrorKind::{CorruptIndex, IllegalArgument};
 use error::Result;
 
-use core::util::bits::{Bits, BitsContext};
 use core::util::packed::MixinMonotonicLongValues;
+use core::util::{Bits, BitsContext};
 use std::borrow::BorrowMut;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-pub struct ReverseTermsIndex {
+pub(crate) struct ReverseTermsIndex {
     pub term_addresses: MonotonicBlockPackedReader,
     pub terms: PagedBytesReader,
 }
-
-pub type ReverseTermsIndexRef = Arc<ReverseTermsIndex>;
-
-type NumericEntryLink = Arc<NumericEntry>;
 
 /// meta-data entry for a numeric docvalues field
 struct NumericEntry {
@@ -62,7 +62,7 @@ struct NumericEntry {
     number_type: NumberType,
     table: Vec<i64>,
     monotonic_meta: Option<Arc<DirectMonotonicMeta>>,
-    non_missing_values: Option<NumericEntryLink>,
+    non_missing_values: Option<Arc<NumericEntry>>,
 }
 
 impl NumericEntry {
@@ -87,13 +87,13 @@ impl NumericEntry {
 
 /// metadata entry for a binary docvalues field
 #[derive(Clone)]
-pub struct BinaryEntry {
+struct BinaryEntry {
     missing_offset: i64,
     offset: i64,
     pub count: i64,
     min_length: i32,
     pub max_length: i32,
-    // offset to the addressing data that maps a value to its slice of the byte[]
+    // offset to the addressing data that maps a value to its slice of the [u8]
     addresses_offset: i64,
     addresses_end_offset: i64,
 
@@ -150,12 +150,12 @@ pub struct Lucene54DocValuesProducer {
     max_doc: i32,
     data: Box<dyn IndexInput>,
     merging: bool,
-    numerics: HashMap<String, NumericEntryLink>,
+    numerics: HashMap<String, Arc<NumericEntry>>,
     binaries: HashMap<String, BinaryEntry>,
     sorted_sets: HashMap<String, SortedSetEntry>,
     sorted_numerics: HashMap<String, SortedSetEntry>,
-    ords: HashMap<String, NumericEntryLink>,
-    ord_indexes: HashMap<String, NumericEntryLink>,
+    ords: HashMap<String, Arc<NumericEntry>>,
+    ord_indexes: HashMap<String, Arc<NumericEntry>>,
     address_instances: RwLock<HashMap<String, Arc<MonotonicBlockPackedReader>>>,
     reverse_index_instances: RwLock<HashMap<String, Arc<ReverseTermsIndex>>>,
 }
@@ -265,12 +265,12 @@ impl Lucene54DocValuesProducer {
         meta: &mut dyn IndexInput,
         infos: &FieldInfos,
         segment_info: &SegmentInfo<D, C>,
-        numerics: &mut HashMap<String, NumericEntryLink>,
+        numerics: &mut HashMap<String, Arc<NumericEntry>>,
         binaries: &mut HashMap<String, BinaryEntry>,
         sorted_sets: &mut HashMap<String, SortedSetEntry>,
         sorted_numerics: &mut HashMap<String, SortedSetEntry>,
-        ords: &mut HashMap<String, NumericEntryLink>,
-        ord_indexes: &mut HashMap<String, NumericEntryLink>,
+        ords: &mut HashMap<String, Arc<NumericEntry>>,
+        ord_indexes: &mut HashMap<String, Arc<NumericEntry>>,
     ) -> Result<i32> {
         let mut num_fields = 0;
         let mut field_number = meta.read_vint()?;
@@ -489,7 +489,7 @@ impl Lucene54DocValuesProducer {
         info: &FieldInfo,
         segment_info: &SegmentInfo<D, C>,
         meta: &mut dyn IndexInput,
-    ) -> Result<Option<NumericEntryLink>> {
+    ) -> Result<Option<Arc<NumericEntry>>> {
         let mut entry = NumericEntry::new();
         entry.format = meta.read_vint()?;
         entry.missing_offset = meta.read_long()?;
@@ -677,7 +677,7 @@ impl Lucene54DocValuesProducer {
         segment_info: &SegmentInfo<D, C>,
         meta: &mut dyn IndexInput,
         binaries: &mut HashMap<String, BinaryEntry>,
-        ords: &mut HashMap<String, NumericEntryLink>,
+        ords: &mut HashMap<String, Arc<NumericEntry>>,
     ) -> Result<()> {
         // sorted = binary + numeric
         if meta.read_vint()? != info.number as i32 {
@@ -723,8 +723,8 @@ impl Lucene54DocValuesProducer {
         segment_info: &SegmentInfo<D, C>,
         meta: &mut dyn IndexInput,
         binaries: &mut HashMap<String, BinaryEntry>,
-        ords: &mut HashMap<String, NumericEntryLink>,
-        ord_indexes: &mut HashMap<String, NumericEntryLink>,
+        ords: &mut HashMap<String, Arc<NumericEntry>>,
+        ord_indexes: &mut HashMap<String, Arc<NumericEntry>>,
     ) -> Result<()> {
         // sorted_set = binary + numeric (addresses) + ord_index
         if meta.read_vint()? != info.number as i32 {
@@ -791,7 +791,7 @@ impl Lucene54DocValuesProducer {
         segment_info: &SegmentInfo<D, C>,
         meta: &mut dyn IndexInput,
         binaries: &mut HashMap<String, BinaryEntry>,
-        ords: &mut HashMap<String, NumericEntryLink>,
+        ords: &mut HashMap<String, Arc<NumericEntry>>,
     ) -> Result<()> {
         // sorted_set_table = binary + ord_set table + ordset index
         if meta.read_vint()? != info.number as i32 {
@@ -847,13 +847,13 @@ impl Lucene54DocValuesProducer {
 }
 
 impl Lucene54DocValuesProducer {
-    fn get_numeric_const_compressed(&self, entry: &NumericEntryLink) -> Result<LiveLongValues> {
+    fn get_numeric_const_compressed(&self, entry: &Arc<NumericEntry>) -> Result<LiveLongValues> {
         let constant = entry.min_value;
         let inbox = self.get_live_bits(entry.missing_offset, entry.count as usize)?;
         Ok(LiveLongValues::new(inbox, constant))
     }
 
-    fn get_numeric_delta_compressed(&self, entry: &NumericEntryLink) -> Result<DeltaLongValues> {
+    fn get_numeric_delta_compressed(&self, entry: &Arc<NumericEntry>) -> Result<DeltaLongValues> {
         let slice = self
             .data
             .random_access_slice(entry.offset, entry.end_offset - entry.offset)?;
@@ -863,7 +863,7 @@ impl Lucene54DocValuesProducer {
         Ok(DeltaLongValues::new(inbox, delta))
     }
 
-    fn get_numeric_gcd_compressed(&self, entry: &NumericEntryLink) -> Result<GcdLongValues> {
+    fn get_numeric_gcd_compressed(&self, entry: &Arc<NumericEntry>) -> Result<GcdLongValues> {
         let slice = self
             .data
             .random_access_slice(entry.offset, entry.end_offset - entry.offset)?;
@@ -874,7 +874,7 @@ impl Lucene54DocValuesProducer {
         Ok(GcdLongValues::new(inbox, base, mult))
     }
 
-    fn get_numeric_table_compressed(&self, entry: &NumericEntryLink) -> Result<TableLongValues> {
+    fn get_numeric_table_compressed(&self, entry: &Arc<NumericEntry>) -> Result<TableLongValues> {
         let data = self.data.as_ref().clone()?;
         let slice = data.random_access_slice(entry.offset, entry.end_offset - entry.offset)?;
         let slice = Arc::from(slice);
@@ -885,7 +885,7 @@ impl Lucene54DocValuesProducer {
 
     fn get_numeric_sparse_compressed(
         &self,
-        entry: &NumericEntryLink,
+        entry: &Arc<NumericEntry>,
     ) -> Result<SparseLongValues<MixinMonotonicLongValues>> {
         let docs_with_field = Arc::new(self.get_sparse_live_bits_by_entry(&entry)?);
 
@@ -906,7 +906,7 @@ impl Lucene54DocValuesProducer {
 
     fn get_numeric_by_entry_outbound(
         &self,
-        entry: &NumericEntryLink,
+        entry: &Arc<NumericEntry>,
     ) -> Result<Box<dyn NumericDocValues>> {
         let fmt = entry.format;
         match fmt {
@@ -937,7 +937,7 @@ impl Lucene54DocValuesProducer {
         }
     }
 
-    fn get_numeric_by_entry(&self, entry: &NumericEntryLink) -> Result<Box<dyn LongValues>> {
+    fn get_numeric_by_entry(&self, entry: &Arc<NumericEntry>) -> Result<Box<dyn LongValues>> {
         let fmt = entry.format;
         match fmt {
             Lucene54DocValuesFormat::CONST_COMPRESSED => {
@@ -1110,7 +1110,10 @@ impl Lucene54DocValuesProducer {
 }
 
 impl Lucene54DocValuesProducer {
-    fn get_ord_index_instance(&self, entry: &NumericEntryLink) -> Result<MixinMonotonicLongValues> {
+    fn get_ord_index_instance(
+        &self,
+        entry: &Arc<NumericEntry>,
+    ) -> Result<MixinMonotonicLongValues> {
         let data = self
             .data
             .random_access_slice(entry.offset, entry.end_offset - entry.offset)?;
@@ -1545,4 +1548,84 @@ impl Bits for LiveBitsEnum {
             LiveBitsEnum::None(b) => b.is_empty(),
         }
     }
+}
+
+pub(crate) struct CompressedBinaryDocValues {
+    num_values: i64,
+    num_index_values: i64,
+    num_reverse_index_values: i64,
+    max_term_length: i32,
+    data: Box<dyn IndexInput>,
+    reverse_index: Arc<ReverseTermsIndex>,
+    addresses: Arc<MonotonicBlockPackedReader>,
+}
+
+impl CompressedBinaryDocValues {
+    fn new(
+        bytes: &BinaryEntry,
+        addresses: Arc<MonotonicBlockPackedReader>,
+        reverse_index: Arc<ReverseTermsIndex>,
+        data: Box<dyn IndexInput>,
+    ) -> Result<CompressedBinaryDocValues> {
+        let max_term_length = bytes.max_length;
+        let num_reverse_index_values = reverse_index.term_addresses.size() as i64;
+        let num_values = bytes.count;
+        let num_index_values = addresses.size() as i64;
+
+        let dv = CompressedBinaryDocValues {
+            num_values,
+            num_index_values,
+            num_reverse_index_values,
+            max_term_length,
+            data,
+            reverse_index,
+            addresses,
+        };
+        Ok(dv)
+    }
+
+    pub fn lookup_term(&self, key: &[u8]) -> Result<i64> {
+        let mut term_iterator = self.get_term_iterator()?;
+        match term_iterator.seek_ceil(key)? {
+            SeekStatus::Found => term_iterator.ord(),
+            SeekStatus::NotFound => {
+                let val = -term_iterator.ord()? - 1;
+                Ok(val)
+            }
+            _ => Ok(-self.num_values - 1),
+        }
+    }
+
+    pub fn get_term_iterator(&self) -> Result<CompressedBinaryTermIterator> {
+        let data = IndexInput::clone(self.data.as_ref())?;
+        CompressedBinaryTermIterator::new(
+            data,
+            self.max_term_length as usize,
+            self.num_reverse_index_values,
+            Arc::clone(&self.reverse_index),
+            Arc::clone(&self.addresses),
+            self.num_values,
+            self.num_index_values,
+        )
+    }
+}
+
+impl LongBinaryDocValues for CompressedBinaryDocValues {
+    fn get64(&self, id: i64) -> Result<Vec<u8>> {
+        let mut term_iterator = self.get_term_iterator()?;
+        term_iterator.seek_exact_ord(id)?;
+        let term = term_iterator.term()?;
+        Ok(term.to_vec())
+    }
+}
+
+impl BinaryDocValues for CompressedBinaryDocValues {
+    fn get(&self, doc_id: DocId) -> Result<Vec<u8>> {
+        CompressedBinaryDocValues::get64(self, i64::from(doc_id))
+    }
+}
+
+pub(crate) enum BoxedBinaryDocValuesEnum {
+    General(Box<dyn LongBinaryDocValues>),
+    Compressed(CompressedBinaryDocValues),
 }

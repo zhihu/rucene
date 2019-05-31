@@ -16,7 +16,7 @@ use core::index::LeafReaderContext;
 use core::search::disi::*;
 use core::search::explanation::Explanation;
 use core::search::searcher::SearchPlanBuilder;
-use core::search::term_query::TermQuery;
+use core::search::TermQuery;
 use core::search::{two_phase_next, DocIterator, Query, Scorer, Weight};
 use core::util::DocId;
 use error::ErrorKind::IllegalArgument;

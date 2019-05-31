@@ -49,9 +49,10 @@ const MEMORY_USAGE: i32 = 14;
 const MIN_MATCH: i32 = 4; // minimum length of a match
 const MAX_DISTANCE: i32 = 1 << 16; // maximum distance of a reference
 const LAST_LITERALS: i32 = 5; // the last 5 bytes must be encoded as literals
-const HASH_LOG_HC: i32 = 15; // log size of the dictionary for compressHC
-                             // const HASH_TABLE_SIZE_HC: i32 = 1 << HASH_LOG_HC;
-                             // const OPTIMAL_ML: i32 = 0x0fi32 + 4 - 1; // match length that doesn't require an additional byte
+                              // log size of the dictionary for compress_hc
+const HASH_LOG_HC: i32 = 15;
+// const HASH_TABLE_SIZE_HC: i32 = 1 << HASH_LOG_HC;
+// const OPTIMAL_ML: i32 = 0x0fi32 + 4 - 1; // match length that doesn't require an additional byte
 
 /// LZ4 compression and decompression routines.
 ///
@@ -103,17 +104,16 @@ impl LZ4 {
     }
 
     /// Decompress at least <code>decompressedLen</code> bytes into
-    /// <code>dest[dOff:]</code>. Please note that <code>dest</code> must be large
+    /// dest. Please note that <code>dest</code> must be large
     /// enough to be able to hold <b>all</b> decompressed data (meaning that you
     /// need to know the total decompressed length).
     pub fn decompress<R: DataInput + ?Sized>(
         compressed: &mut R,
         decompressed_len: usize,
         dest: &mut [u8],
-        dest_off: usize,
     ) -> Result<usize> {
         let dest_end = dest.len();
-        let mut dest_off = dest_off;
+        let mut dest_off = 0;
         loop {
             let token = i32::from(compressed.read_byte()?) & 0xff;
             let mut literal_len = token.unsigned_shift(4);
@@ -245,7 +245,7 @@ impl LZ4 {
     /// Compress <code>bytes[off:off+len]</code> into <code>out</code> using
     /// at most 16KB of memory. <code>ht</code> shouldn't be shared across threads
     /// but can safely be reused.
-    pub fn compress<R: DataOutput + ?Sized>(
+    fn compress<R: DataOutput + ?Sized>(
         bytes: &[u8],
         off: usize,
         len: usize,
@@ -305,7 +305,7 @@ impl LZ4 {
     }
 }
 
-pub struct LZ4HashTable {
+struct LZ4HashTable {
     hash_log: i32,
     hash_table: Option<MutableEnum>,
 }
@@ -409,7 +409,7 @@ impl LZ4HashTable {
 //    // TODO 这个类暂时看起来好像并没用，所以部分剩余的方法就不实现了
 //}
 
-pub trait Compress {
+pub(crate) trait Compress {
     fn compress(
         &mut self,
         bytes: &[u8],
@@ -419,16 +419,9 @@ pub trait Compress {
     ) -> Result<()>;
 }
 
-pub struct LZ4FastCompressor {
+#[derive(Default)]
+struct LZ4FastCompressor {
     ht: LZ4HashTable,
-}
-
-impl Default for LZ4FastCompressor {
-    fn default() -> LZ4FastCompressor {
-        LZ4FastCompressor {
-            ht: LZ4HashTable::default(),
-        }
-    }
 }
 
 impl Compress for LZ4FastCompressor {
@@ -519,7 +512,7 @@ impl Write for VecReadWriteBuf {
     }
 }
 
-pub struct DeflateCompressor {
+struct DeflateCompressor {
     compressor: DeflateEncoder<VecReadWriteBuf>,
     compressed: Vec<u8>,
 }
@@ -593,7 +586,7 @@ pub trait Decompress: Clone {
 }
 
 #[derive(Clone)]
-pub struct LZ4Decompressor;
+struct LZ4Decompressor;
 
 impl Decompress for LZ4Decompressor {
     fn decompress<R: DataInput + ?Sized>(
@@ -610,7 +603,7 @@ impl Decompress for LZ4Decompressor {
         if bytes.len() < original_length + 7 {
             bytes.resize(original_length + 7, 0u8);
         }
-        let decompressed_len = LZ4::decompress(input, offset + length, bytes.as_mut(), 0)?;
+        let decompressed_len = LZ4::decompress(input, offset + length, bytes.as_mut())?;
         if decompressed_len > original_length {
             bail!(
                 "Corrupted: lengths mismatch: {} > {}",
@@ -625,7 +618,7 @@ impl Decompress for LZ4Decompressor {
 }
 
 #[derive(Clone)]
-pub struct DeflateDecompressor;
+struct DeflateDecompressor;
 
 impl Default for DeflateDecompressor {
     fn default() -> DeflateDecompressor {
@@ -670,7 +663,15 @@ impl Decompress for DeflateDecompressor {
     }
 }
 
-pub enum Decompressor {
+/// A decompressor.
+///
+/// Current we support [`LZ4`](http://www.lz4.org) and
+/// [`Deflate`](https://en.wikipedia.org/wiki/DEFLATE) two algorithms.
+#[derive(Clone)]
+pub struct Decompressor(DecompressorEnum);
+
+#[derive(Clone)]
+enum DecompressorEnum {
     LZ4(LZ4Decompressor),
     Deflate(DeflateDecompressor),
 }
@@ -685,8 +686,8 @@ impl Decompress for Decompressor {
         bytes: &mut Vec<u8>,
         bytes_position: &mut OffsetAndLength,
     ) -> Result<()> {
-        match *self {
-            Decompressor::LZ4(ref d) => d.decompress(
+        match &self.0 {
+            DecompressorEnum::LZ4(d) => d.decompress(
                 input,
                 original_length,
                 offset,
@@ -694,7 +695,7 @@ impl Decompress for Decompressor {
                 bytes,
                 bytes_position,
             ),
-            Decompressor::Deflate(ref d) => d.decompress(
+            DecompressorEnum::Deflate(d) => d.decompress(
                 input,
                 original_length,
                 offset,
@@ -706,23 +707,29 @@ impl Decompress for Decompressor {
     }
 }
 
-impl Clone for Decompressor {
-    fn clone(&self) -> Self {
-        match *self {
-            Decompressor::LZ4(ref d) => Decompressor::LZ4(d.clone()),
-            Decompressor::Deflate(ref d) => Decompressor::Deflate(d.clone()),
-        }
-    }
-}
-
+/// A compression mode. Tells how much effort should be spent on compression and
+/// decompression of stored fields.
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
 pub enum CompressionMode {
+    /// A compression mode that trades compression ratio for speed. Although the
+    /// compression ratio might remain high, compression and decompression are
+    /// very fast. Use this mode with indices that have a high update rate but
+    /// should be able to load documents from disk quickly.
     FAST,
+    /// A compression mode that trades speed for compression ratio. Although
+    /// compression and decompression might be slow, this compression mode should
+    /// provide a good compression ratio. This mode might be interesting if/when
+    /// your index size is much bigger than your OS cache.
     HighCompression,
-    // FastDecompression,  // 暂时没有看到使用，故先不实现
+    // FastDecompression,  // currently not implemented
 }
 
-pub enum Compressor {
+/// A data compressor.
+///
+/// Current we support [`LZ4`](http://www.lz4.org) and
+/// [`Deflate`](https://en.wikipedia.org/wiki/DEFLATE) two algorithms.
+pub struct Compressor(CompressorEnum);
+enum CompressorEnum {
     LZ4Fast(LZ4FastCompressor),
     Deflate(DeflateCompressor),
 }
@@ -735,29 +742,33 @@ impl Compress for Compressor {
         len: usize,
         out: &mut impl DataOutput,
     ) -> Result<()> {
-        match *self {
-            Compressor::LZ4Fast(ref mut c) => c.compress(bytes, off, len, out),
-            Compressor::Deflate(ref mut c) => c.compress(bytes, off, len, out),
+        match &mut self.0 {
+            CompressorEnum::LZ4Fast(c) => c.compress(bytes, off, len, out),
+            CompressorEnum::Deflate(c) => c.compress(bytes, off, len, out),
         }
     }
 }
 
 impl CompressionMode {
-    pub fn new_compressor(&self) -> Compressor {
-        match *self {
-            CompressionMode::FAST => Compressor::LZ4Fast(LZ4FastCompressor::default()),
+    pub(crate) fn new_compressor(self) -> Compressor {
+        match self {
+            CompressionMode::FAST => {
+                Compressor(CompressorEnum::LZ4Fast(LZ4FastCompressor::default()))
+            }
             // notes:
             // 3 is the highest level that doesn't have lazy match evaluation
             // 6 is the default, higher than that is just a waste of cpu
-            CompressionMode::HighCompression => Compressor::Deflate(DeflateCompressor::new(6)),
+            CompressionMode::HighCompression => {
+                Compressor(CompressorEnum::Deflate(DeflateCompressor::new(6)))
+            }
         }
     }
 
     pub fn new_decompressor(self) -> Decompressor {
         match self {
-            CompressionMode::FAST => Decompressor::LZ4(LZ4Decompressor {}),
+            CompressionMode::FAST => Decompressor(DecompressorEnum::LZ4(LZ4Decompressor {})),
             CompressionMode::HighCompression => {
-                Decompressor::Deflate(DeflateDecompressor::default())
+                Decompressor(DecompressorEnum::Deflate(DeflateDecompressor::default()))
             }
         }
     }

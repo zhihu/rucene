@@ -66,7 +66,7 @@ pub struct FstBuilder<F: OutputFactory> {
     // Used for the BIT_TARGET_NEXT optimization (whereby
     // instead of storing the address of the target node for
     // a given arc, we mark a single bit noting that the next
-    // node in the byte[] is the target node):
+    // node in the bytes is the target node):
     pub last_frozen_node: i64,
     // Reused temporarily while building the FST:
     pub reused_bytes_per_arc: Vec<usize>,
@@ -413,10 +413,9 @@ impl<F: OutputFactory> FstBuilder<F> {
             || self.frontier[0].input_count < self.min_suffix_count2 as i64
             || self.frontier[0].num_arcs == 0
         {
-            if self.fst.empty_output.is_none() {
-                return Ok(None);
-            } else if self.min_suffix_count1 > 0 || self.min_suffix_count2 > 0 {
-                // empty string got pruned
+            if self.fst.empty_output.is_none()
+                || (self.min_suffix_count1 > 0 || self.min_suffix_count2 > 0)
+            {
                 return Ok(None);
             }
         } else if self.min_suffix_count2 != 0 {

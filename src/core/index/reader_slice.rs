@@ -12,7 +12,7 @@
 // limitations under the License.
 
 #[derive(Copy, Clone)]
-pub struct ReaderSlice {
+pub(crate) struct ReaderSlice {
     pub start: i32,
     pub length: i32,
     pub reader_index: usize,

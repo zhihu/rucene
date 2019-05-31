@@ -11,23 +11,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::codec::{Lucene54DocValuesFormat, ReverseTermsIndexRef};
+use core::codec::{Lucene54DocValuesFormat, ReverseTermsIndex};
 use core::index::{SeekStatus, TermIterator, UnreachableTermState};
 use core::search::posting_iterator::EmptyPostingIterator;
 use core::store::IndexInput;
 use core::util::bit_util::UnsignedShift;
-use core::util::packed::MonotonicBlockPackedReaderRef;
+use core::util::packed::MonotonicBlockPackedReader;
 use core::util::LongValues;
 
 use error::ErrorKind::UnsupportedOperation;
 use error::Result;
 
 use std::cmp::Ordering;
+use std::sync::Arc;
 
-pub struct CompressedBinaryTermIterator {
+pub(crate) struct CompressedBinaryTermIterator {
     num_reverse_index_values: i64,
-    reverse_index: ReverseTermsIndexRef,
-    addresses: MonotonicBlockPackedReaderRef,
+    reverse_index: Arc<ReverseTermsIndex>,
+    addresses: Arc<MonotonicBlockPackedReader>,
     num_values: i64,
     num_index_values: i64,
     current_ord: i64,
@@ -46,8 +47,8 @@ impl CompressedBinaryTermIterator {
         input: Box<dyn IndexInput>,
         max_term_length: usize,
         num_reverse_index_values: i64,
-        reverse_index: ReverseTermsIndexRef,
-        addresses: MonotonicBlockPackedReaderRef,
+        reverse_index: Arc<ReverseTermsIndex>,
+        addresses: Arc<MonotonicBlockPackedReader>,
         num_values: i64,
         num_index_values: i64,
     ) -> Result<CompressedBinaryTermIterator> {

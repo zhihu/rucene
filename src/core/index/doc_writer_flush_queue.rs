@@ -27,7 +27,7 @@ use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
-pub struct DocumentsWriterFlushQueue<D: Directory, C: Codec> {
+pub(crate) struct DocumentsWriterFlushQueue<D: Directory, C: Codec> {
     queue: Mutex<VecDeque<FlushTicket<D, C>>>,
     // we track tickets separately since count must be present even before the ticket is
     // constructed ie. queue.size would not reflect it.

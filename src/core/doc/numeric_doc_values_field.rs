@@ -15,7 +15,7 @@ use core::analysis::TokenStream;
 use core::doc::NUMERIC_DOC_VALUES_FIELD_TYPE;
 use core::doc::{Field, FieldType};
 use core::index::Fieldable;
-use core::util::{Numeric, VariantValue};
+use core::util::{numeric::Numeric, VariantValue};
 
 use error::Result;
 

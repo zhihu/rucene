@@ -19,14 +19,10 @@ pub const GB: i32 = MB * 1024;
 pub const ABSOLUTE_MIN_SORT_BUFFER_SIZE: i32 = MB / 2;
 pub const MIN_BUFFER_SIZE_MSG: &str = "At least 0.5MB RAM buffer is needed";
 
-pub struct BufferSize {}
+pub struct BufferSize;
 
 impl BufferSize {
     pub fn new(bytes: i32) -> Result<BufferSize> {
-        if bytes > i32::max_value() {
-            bail!(IllegalArgument("Buffer too large".into()));
-        }
-
         if bytes < ABSOLUTE_MIN_SORT_BUFFER_SIZE {
             bail!(IllegalArgument(format!(
                 "{}:{}",

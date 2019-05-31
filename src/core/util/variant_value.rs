@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
-use core::util::Numeric;
+use core::util::numeric::Numeric;
 
 #[derive(Debug, Clone, Deserialize)]
 pub enum VariantValue {

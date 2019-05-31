@@ -29,7 +29,7 @@ use error::Result;
 use core::store::Directory;
 use std::any::Any;
 
-pub struct PointValuesWriter {
+pub(crate) struct PointValuesWriter {
     field_info: FieldInfo,
     bytes: ByteBlockPool,
     doc_ids: Vec<DocId>,
@@ -101,7 +101,7 @@ impl PointValuesWriter {
     }
 }
 
-pub struct TempMutablePointsReader {
+pub(crate) struct TempMutablePointsReader {
     point_values_writer: *const PointValuesWriter,
     ords: Vec<usize>,
 }

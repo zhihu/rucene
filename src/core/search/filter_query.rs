@@ -15,11 +15,11 @@ use core::codec::Codec;
 use core::index::LeafReaderContext;
 use core::search::explanation::Explanation;
 use core::search::searcher::SearchPlanBuilder;
-use core::search::term_query::TermQuery;
+use core::search::TermQuery;
 use core::search::{two_phase_next, DocIterator, FeatureResult};
 use core::search::{Query, Scorer, Weight};
-use core::util::context::IndexedContext;
 use core::util::DocId;
+use core::util::IndexedContext;
 use error::Result;
 
 use std::fmt;
@@ -35,9 +35,11 @@ pub trait FilterFunction<C: Codec>: fmt::Display {
 }
 
 pub trait LeafFilterFunction: Send + Sync {
+    /// return true if matching doc can be collected, else the doc would be skipped
     fn matches(&mut self, doc_id: DocId) -> Result<bool>;
 }
 
+/// a `Query` wrapper that do extra filters for matched docs
 pub struct FilterQuery<C: Codec> {
     query: Box<dyn Query<C>>,
     filters: Vec<Arc<FilterFunction<C>>>,

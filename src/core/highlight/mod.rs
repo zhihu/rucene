@@ -15,8 +15,7 @@ use core::codec::Codec;
 use core::index::{Fields, IndexReader, LeafReaderContext, Term, TermIterator, Terms};
 use core::search::{
     posting_iterator::{PostingIterator, PostingIteratorFlags},
-    term_query::TermQuery,
-    DocIterator, Query,
+    DocIterator, Query, TermQuery,
 };
 use core::util::DocId;
 use error::Result;

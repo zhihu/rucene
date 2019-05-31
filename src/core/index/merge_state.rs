@@ -48,7 +48,7 @@ pub struct MergeState<D: Directory + 'static, C: Codec> {
     pub doc_maps: Vec<Arc<LiveDocsDocMap>>,
     /// Only used by IW when it must remap deletes that arrived against the
     /// merging segments while a merge was running:
-    pub leaf_doc_maps: Vec<DocMapEnum>,
+    pub leaf_doc_maps: Vec<MergeDocMap>,
     /// `SegmentInfo` of the newly merged segment.
     // WARN: pointer to OneMerge.info.info, must used carefully
     pub segment_info: *mut SegmentInfo<D, C>,
@@ -90,7 +90,7 @@ impl<D: Directory + 'static, C: Codec> MergeState<D, C> {
 
         let mut leaf_doc_maps = Vec::with_capacity(num_readers);
         for _ in 0..seg_readers.len() {
-            leaf_doc_maps.push(DocMapEnum::Default(DefaultDocMap::default()));
+            leaf_doc_maps.push(MergeDocMap(DocMapEnum::Default(DefaultDocMap::default())));
         }
         let mut needs_index_sort = false;
         let readers: Vec<ReaderWrapperEnum<D, C>> = Self::maybe_sort_readers(
@@ -164,7 +164,7 @@ impl<D: Directory + 'static, C: Codec> MergeState<D, C> {
     fn maybe_sort_readers(
         seg_readers: Vec<Arc<SegmentReader<D, C>>>,
         segment_info: &SegmentInfo<D, C>,
-        leaf_doc_maps: &mut Vec<DocMapEnum>,
+        leaf_doc_maps: &mut Vec<MergeDocMap>,
         needs_index_sort: &mut bool,
     ) -> Result<Vec<ReaderWrapperEnum<D, C>>> {
         if segment_info.index_sort.is_none() {
@@ -201,8 +201,9 @@ impl<D: Directory + 'static, C: Codec> MergeState<D, C> {
                 if let Some(sort_doc_map) = sort_doc_map {
                     *needs_index_sort = true;
                     let doc_map_ref = Arc::new(sort_doc_map);
-                    leaf_doc_maps[readers.len()] =
-                        DocMapEnum::Sorted(DocMapBySortDocMap::new(Arc::clone(&doc_map_ref)));
+                    leaf_doc_maps[readers.len()] = MergeDocMap(DocMapEnum::Sorted(
+                        DocMapBySortDocMap::new(Arc::clone(&doc_map_ref)),
+                    ));
                     let reader = SlowCodecReaderWrapper::new(Arc::new(SortingLeafReader::new(
                         MergeReaderWrapper::new(leaf)?,
                         doc_map_ref,
@@ -571,8 +572,8 @@ impl<R: StoredFieldsReader + 'static, L: LeafReader + 'static> StoredFieldsReade
 
     fn as_any(&self) -> &::std::any::Any {
         match self {
-            MergeStoredReaderEnum::Raw(s) => s,
-            MergeStoredReaderEnum::LeafReader(s) => s,
+            MergeStoredReaderEnum::Raw(s) => s.as_any(),
+            MergeStoredReaderEnum::LeafReader(s) => s.as_any(),
         }
     }
 }
@@ -984,29 +985,34 @@ enum MergeTermIteratorEnum<T: TermIterator> {
     Sorting(SortingTermsIterator<T>),
 }
 
-pub trait DocMap {
+/// A map of doc IDs use for merge.
+pub(crate) trait DocMap {
     /// Return the mapped doc_id or -1 if the given doc is not mapped
     fn get(&self, doc_id: DocId) -> Result<DocId>;
 }
 
-pub enum DocMapEnum {
-    Default(DefaultDocMap),
-    LiveDocs(LiveDocsDocMap),
-    Sorted(DocMapBySortDocMap),
-}
+/// Only used by IW when it must remap deletes that arrived against the
+/// merging segments while a merge was running:
+pub struct MergeDocMap(DocMapEnum);
 
-impl DocMap for DocMapEnum {
+impl DocMap for MergeDocMap {
     fn get(&self, doc_id: i32) -> Result<DocId> {
-        match self {
+        match &self.0 {
             DocMapEnum::Default(d) => d.get(doc_id),
-            DocMapEnum::LiveDocs(l) => l.get(doc_id),
+            // DocMapEnum::LiveDocs(l) => l.get(doc_id),
             DocMapEnum::Sorted(s) => s.get(doc_id),
         }
     }
 }
 
+enum DocMapEnum {
+    Default(DefaultDocMap),
+    // LiveDocs(LiveDocsDocMap),
+    Sorted(DocMapBySortDocMap),
+}
+
 #[derive(Default)]
-pub struct DefaultDocMap;
+pub(crate) struct DefaultDocMap;
 
 impl DocMap for DefaultDocMap {
     fn get(&self, doc_id: DocId) -> Result<DocId> {
@@ -1014,7 +1020,7 @@ impl DocMap for DefaultDocMap {
     }
 }
 
-pub struct DocMapBySortDocMap {
+pub(crate) struct DocMapBySortDocMap {
     doc_map: Arc<PackedLongDocMap>,
 }
 
@@ -1030,6 +1036,7 @@ impl DocMap for DocMapBySortDocMap {
     }
 }
 
+/// `DocMap` based on live docs `Bits`
 pub struct LiveDocsDocMap {
     live_docs: BitsRef,
     del_docs: PackedLongValues,

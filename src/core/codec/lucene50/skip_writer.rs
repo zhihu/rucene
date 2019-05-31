@@ -34,7 +34,7 @@ const SKIP_MULTIPLIER: u32 = 8;
 /// block, only record skip data at the start its start point(if it exist).
 ///
 /// For each skip point, we will record:
-/// 1. docID in former position, i.e. for position 12, record docID[11], etc.
+/// 1. doc_id in former position, i.e. for position 12, record doc_id\[11\], etc.
 /// 2. its related file points(position, payload),
 /// 3. related numbers or uptos(position, payload).
 /// 4. start offset.

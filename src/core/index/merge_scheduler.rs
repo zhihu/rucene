@@ -269,12 +269,10 @@ impl ConcurrentMergeSchedulerInner {
                 0.0
             } else if task.merge.max_num_segments.get().is_some() {
                 self.force_merge_mb_per_sec
-            } else if !self.do_auto_io_throttle {
-                f64::INFINITY
-            } else if (task.merge.estimated_merge_bytes.read() as f64)
-                < MIN_BIG_MERGE_MB * 1024.0 * 1024.0
+            } else if !self.do_auto_io_throttle
+                || ((task.merge.estimated_merge_bytes.read() as f64)
+                    < MIN_BIG_MERGE_MB * 1024.0 * 1024.0)
             {
-                // Don't rate limit small merges:
                 f64::INFINITY
             } else {
                 self.target_mb_per_sec

@@ -31,9 +31,11 @@ mod live_docs;
 
 pub use self::live_docs::*;
 
-pub mod skip_reader;
-pub mod skip_writer;
-pub mod util;
+mod skip_reader;
+pub use self::skip_reader::Lucene50SkipReader;
+mod skip_writer;
+pub use self::skip_writer::Lucene50SkipWriter;
+mod util;
 
 use core::codec::compressing::CompressingTermVectorsFormat;
 

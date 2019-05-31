@@ -219,7 +219,7 @@ impl<O: IndexOutput> Lucene50PostingsWriter<O> {
     }
 
     /// Sets the current field for writing, and returns the
-    /// fixed length of long[] metadata (which is fixed per
+    /// fixed length of Vec<i64> metadata (which is fixed per
     /// field), called when the writing switches to another field.
     fn set_field_base(&mut self, field_info: &FieldInfo) -> i32 {
         // self.index_options = field_info.index_options;

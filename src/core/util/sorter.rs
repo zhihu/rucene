@@ -391,14 +391,14 @@ pub fn check_range(from: i32, to: i32) {
     assert!(from <= to);
 }
 
-pub trait MSBSorter {
+pub(crate) trait MSBSorter {
     type Fallback: Sorter;
     fn byte_at(&self, i: i32, k: i32) -> Option<u8>;
     fn msb_swap(&mut self, i: i32, j: i32);
     fn fallback_sorter(&mut self, k: i32) -> Self::Fallback;
 }
 
-pub struct DefaultMSBIntroSorter {
+pub(crate) struct DefaultMSBIntroSorter {
     k: i32,
     max_length: i32,
     pivot: Vec<u8>,
@@ -497,7 +497,7 @@ const MSB_HISTOGRAM_SIZE: usize = 257;
 // buckets below this size will be sorted with introsort
 const LENGTH_THRESHOLD: usize = 100;
 
-pub struct MSBRadixSorter<T: MSBSorter> {
+pub(crate) struct MSBRadixSorter<T: MSBSorter> {
     histograms: Vec<Vec<i32>>,
     end_offsets: Vec<i32>,
     common_prefix: Vec<i32>,

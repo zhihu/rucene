@@ -22,16 +22,16 @@ use error::Result;
 use std::fmt;
 use std::io::Read;
 
-const MAX_WORD_LEN: usize = 255;
+// NOTE: this length is length by byte, so it's different from Lucene's word length
+const MAX_WORD_LEN: usize = 511;
 #[allow(dead_code)]
 const IO_BUFFER_SIZE: usize = 4096;
 
-/// A tokenizer that divides text at whitespace characters as defined by
-/// {@link Character#isWhitespace(int)}.  Note: That definition explicitly excludes the
-/// non-breaking space. Adjacent sequences of non-Whitespace characters form tokens.
+/// A tokenizer that divides text at whitespace characters.
 ///
-/// @see UnicodeWhitespaceTokenizer
-pub struct WhitespaceTokenizer {
+/// Note: That definition explicitly excludes the non-breaking space.
+/// Adjacent sequences of non-Whitespace characters form tokens.
+pub struct WhitespaceTokenizer<R: Read> {
     offset: usize,
     buffer_index: usize,
     data_len: usize,
@@ -39,10 +39,10 @@ pub struct WhitespaceTokenizer {
     term_attr: CharTermAttribute,
     offset_attr: OffsetAttribute,
     io_buffer: CharacterBuffer,
-    reader: Box<dyn Read>,
+    reader: R,
 }
 
-impl fmt::Debug for WhitespaceTokenizer {
+impl<R: Read> fmt::Debug for WhitespaceTokenizer<R> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("WhitespaceTokenizer")
             .field("offset", &self.offset)
@@ -56,8 +56,8 @@ impl fmt::Debug for WhitespaceTokenizer {
     }
 }
 
-impl WhitespaceTokenizer {
-    pub fn new(reader: Box<Read>) -> Self {
+impl<R: Read> WhitespaceTokenizer<R> {
+    pub fn new(reader: R) -> Self {
         WhitespaceTokenizer {
             offset: 0,
             buffer_index: 0,
@@ -92,7 +92,7 @@ impl WhitespaceTokenizer {
     }
 }
 
-impl TokenStream for WhitespaceTokenizer {
+impl<R: Read> TokenStream for WhitespaceTokenizer<R> {
     fn increment_token(&mut self) -> Result<bool> {
         self.clear_attributes();
         let mut length = 0;
@@ -125,7 +125,7 @@ impl TokenStream for WhitespaceTokenizer {
                 end += 1;
                 length += cur_char.len_utf8();
                 self.term_attr.push_char(cur_char);
-                if self.term_attr.char_cnt >= MAX_WORD_LEN {
+                if self.term_attr.len() >= MAX_WORD_LEN {
                     break;
                 }
             } else if length > 0 {

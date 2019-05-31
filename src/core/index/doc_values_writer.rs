@@ -19,7 +19,6 @@ use core::search::NO_MORE_DOCS;
 use core::store::{DataInput, DataOutput, Directory};
 use core::util::bit_set::{BitSet, FixedBitSet};
 use core::util::bit_util::BitsRequired;
-use core::util::bits::Bits;
 use core::util::byte_block_pool::{ByteBlockPool, DirectTrackingAllocator};
 use core::util::bytes_ref_hash::{self, BytesRefHash, DirectByteStartArray};
 use core::util::packed::{
@@ -28,9 +27,9 @@ use core::util::packed::{
 };
 use core::util::packed_misc::{COMPACT, FAST};
 use core::util::sorter::{Sorter, BINARY_SORT_THRESHOLD};
-use core::util::BytesRef;
 use core::util::{
-    Counter, DocId, Numeric, PagedBytes, PagedBytesDataInput, ReusableIterator, VariantValue,
+    numeric::Numeric, Bits, BytesRef, Counter, DocId, PagedBytes, PagedBytesDataInput,
+    ReusableIterator, VariantValue,
 };
 
 use error::{
@@ -43,11 +42,6 @@ use std::collections::HashMap;
 use std::fmt;
 
 pub trait DocValuesWriter {
-    //    fn as_numeric(&mut self) -> &mut NumericDocValuesWriter;
-    //    fn as_binary(&mut self) -> &mut BinaryDocValuesWriter;
-    //    fn as_sorted(&mut self) -> &mut SortedDocValuesWriter;
-    //    fn as_sorted_numeric(&mut self) -> &mut SortedNumericDocValuesWriter;
-    //    fn as_sorted_set(&mut self) -> &mut SortedSetDocValuesWriter;
     fn finish(&mut self, num_doc: i32);
 
     fn flush<D: Directory, DW: Directory, C: Codec, W: DocValuesConsumer>(
@@ -103,12 +97,13 @@ impl DocValuesWriter for DocValuesWriterEnum {
     }
 }
 
-/// Buffers up pending byte[] per doc, then flushes when
+/// Buffers up pending bytes per doc, then flushes when
 /// segment flushes.
-pub const MAX_ARRAY_LENGTH: usize = (i32::max_value() - 1024) as usize;
+const MAX_ARRAY_LENGTH: usize = (i32::max_value() - 1024) as usize;
 // 32 KB block sizes for PagedBytes storage:
-pub const BLOCK_BITS: usize = 15;
+const BLOCK_BITS: usize = 15;
 
+/// Buffers up pending bytes per doc, then flushes when segment flushes.
 pub struct BinaryDocValuesWriter {
     bytes: PagedBytes,
     lengths: PackedLongValuesBuilder,
@@ -192,7 +187,7 @@ impl DocValuesWriter for BinaryDocValuesWriter {
     }
 }
 
-pub const MISSING: i64 = 0;
+const MISSING: i64 = 0;
 
 pub struct NumericDocValuesWriter {
     pending: PackedLongValuesBuilder,
@@ -466,7 +461,7 @@ impl<'a> ReusableIterator for SNValuesIterator<'a> {
     }
 }
 
-pub const EMPTY_ORD: i64 = -1;
+const EMPTY_ORD: i64 = -1;
 
 pub struct SortedDocValuesWriter {
     // stream of all values
@@ -929,32 +924,32 @@ impl<'a> ReusableIterator for SortedSetOrdCountIterator<'a> {
     }
 }
 
-/// Rough logic: OBJ_HEADER + 3*PTR + INT
-/// Term: OBJ_HEADER + 2*PTR
-/// Term.field: 2*OBJ_HEADER + 4*INT + PTR + string.length*CHAR
-/// Term.bytes: 2*OBJ_HEADER + 2*INT + PTR + bytes.length
-/// String: 2*OBJ_HEADER + 4*INT + PTR + string.length*CHAR
+// Rough logic: OBJ_HEADER + 3*PTR + INT
+// Term: OBJ_HEADER + 2*PTR
+// Term.field: 2*OBJ_HEADER + 4*INT + PTR + string.length*CHAR
+// Term.bytes: 2*OBJ_HEADER + 2*INT + PTR + bytes.length
+// String: 2*OBJ_HEADER + 4*INT + PTR + string.length*CHAR
 /// T: OBJ_HEADER
 // reference size is 4, if we have compressed oops, else 8
-pub const NUM_BYTES_OBJECT_REF: i32 = 4;
-pub const NUM_BYTES_OBJECT_HEADER: i32 = 8 + NUM_BYTES_OBJECT_REF;
-pub const RAW_SIZE_IN_BYTES: i32 =
+pub(crate) const NUM_BYTES_OBJECT_REF: i32 = 4;
+pub(crate) const NUM_BYTES_OBJECT_HEADER: i32 = 8 + NUM_BYTES_OBJECT_REF;
+pub(crate) const RAW_SIZE_IN_BYTES: i32 =
     8 * NUM_BYTES_OBJECT_HEADER + 8 * NUM_BYTES_OBJECT_REF + 8 * INT_BYTES;
-pub const NUM_BYTES_OBJECT_ALIGNMENT: i32 = 8;
+pub(crate) const NUM_BYTES_OBJECT_ALIGNMENT: i32 = 8;
 
-pub fn align_object_size(size: i32) -> i32 {
+pub(crate) fn align_object_size(size: i32) -> i32 {
     let size = size + (NUM_BYTES_OBJECT_ALIGNMENT - 1);
     size - size % NUM_BYTES_OBJECT_ALIGNMENT
 }
 
-pub trait SizeInBytesCalc {
+pub(crate) trait SizeInBytesCalc {
     fn value_size_in_bytes(&self) -> usize;
 
     fn size_in_bytes(&self) -> usize;
 }
 
 /// An in-place update to a DocValues field.
-pub struct DocValuesUpdate {
+struct DocValuesUpdate {
     pub doc_values_type: DocValuesType,
     pub term: Term,
     pub field: String,
@@ -1000,12 +995,14 @@ impl fmt::Display for DocValuesUpdate {
     }
 }
 
-pub struct BinaryDocValuesUpdate {
+#[allow(dead_code)]
+struct BinaryDocValuesUpdate {
     update: DocValuesUpdate,
 }
 
 impl BinaryDocValuesUpdate {
-    pub fn new(term: Term, field: String, value: VariantValue) -> BinaryDocValuesUpdate {
+    #[allow(dead_code)]
+    fn new(term: Term, field: String, value: VariantValue) -> BinaryDocValuesUpdate {
         BinaryDocValuesUpdate {
             update: DocValuesUpdate::new(DocValuesType::Binary, term, field, value),
         }
@@ -1049,7 +1046,7 @@ impl SizeInBytesCalc for NumericDocValuesUpdate {
     }
 }
 
-pub struct DocValuesFieldUpdatesValue {
+pub(crate) struct DocValuesFieldUpdatesValue {
     doc_values_type: DocValuesType,
     numeric_value: Option<Numeric>,
     binary_value: Option<BytesRef>,
@@ -1058,7 +1055,7 @@ pub struct DocValuesFieldUpdatesValue {
 /// An iterator over documents and their updated values. Only documents with
 /// updates are returned by this iterator, and the documents are returned in
 /// increasing order.
-pub trait DocValuesFieldUpdatesIterator {
+pub(crate) trait DocValuesFieldUpdatesIterator {
     /// Returns the next document which has an update, or
     /// {@link DocIdSetIterator#NO_MORE_DOCS} if there are no more documents to return.
     fn next_doc(&mut self) -> Result<DocId>;
@@ -1074,27 +1071,31 @@ pub trait DocValuesFieldUpdatesIterator {
     fn reset(&mut self);
 }
 
-pub const PAGE_SIZE: usize = 1024;
+const PAGE_SIZE: usize = 1024;
 
 /// Returns the estimated capacity of a {@link PagedGrowableWriter} given the actual
 /// number of stored elements.
-pub fn estimate_capacity(size: usize) -> usize {
+#[allow(dead_code)]
+fn estimate_capacity(size: usize) -> usize {
     let extra = if size % PAGE_SIZE == 0 { 0 } else { 1 };
 
     (size / PAGE_SIZE + extra as usize) * PAGE_SIZE
 }
 
 #[derive(Default)]
-pub struct Container {
+#[allow(dead_code)]
+struct Container {
     numeric_dv_updates: HashMap<String, NumericDocValuesFieldUpdates>,
     binary_dv_updates: HashMap<String, BinaryDocValuesFieldUpdates>,
 }
 
 impl Container {
+    #[allow(dead_code)]
     pub fn new() -> Container {
         Default::default()
     }
 
+    #[allow(dead_code)]
     pub fn any(&self) -> bool {
         for updates in self.numeric_dv_updates.values() {
             if updates.any() {
@@ -1111,10 +1112,12 @@ impl Container {
         false
     }
 
+    #[allow(dead_code)]
     pub fn size(&self) -> usize {
         self.numeric_dv_updates.len() + self.binary_dv_updates.len()
     }
 
+    #[allow(dead_code)]
     pub fn get_updates(
         &self,
         field: &str,
@@ -1140,6 +1143,7 @@ impl Container {
         }
     }
 
+    #[allow(dead_code)]
     pub fn new_updates(
         &mut self,
         field: &str,
@@ -1179,7 +1183,7 @@ impl Container {
     }
 }
 
-pub trait DocValuesFieldUpdates {
+pub(crate) trait DocValuesFieldUpdates {
     /// Add an update to a document. For unsetting a value you should pass
     /// {@code null}.
     fn add(&mut self, doc: DocId, value: &DocValuesFieldUpdatesValue) -> Result<()>;
@@ -1208,7 +1212,7 @@ pub trait DocValuesFieldUpdates {
     fn as_base(&self) -> &DocValuesFieldUpdates;
 }
 
-pub struct NumericDocValuesFieldUpdatesIterator {
+struct NumericDocValuesFieldUpdatesIterator {
     updates: *const NumericDocValuesFieldUpdates,
     // long so we don't overflow if size == Integer.MAX_VALUE
     idx: DocId,
@@ -1217,7 +1221,7 @@ pub struct NumericDocValuesFieldUpdatesIterator {
 }
 
 impl NumericDocValuesFieldUpdatesIterator {
-    pub fn new(updates: &NumericDocValuesFieldUpdates) -> NumericDocValuesFieldUpdatesIterator {
+    fn new(updates: &NumericDocValuesFieldUpdates) -> NumericDocValuesFieldUpdatesIterator {
         NumericDocValuesFieldUpdatesIterator {
             updates,
             idx: 0,
@@ -1266,7 +1270,7 @@ impl DocValuesFieldUpdatesIterator for NumericDocValuesFieldUpdatesIterator {
     }
 }
 
-pub struct NumericDocValuesInPlaceMergeSorter {
+struct NumericDocValuesInPlaceMergeSorter {
     updates: *mut NumericDocValuesFieldUpdates,
     pivot_index: i32,
 }
@@ -1327,7 +1331,7 @@ impl Sorter for NumericDocValuesInPlaceMergeSorter {
     }
 }
 
-pub struct NumericDocValuesFieldUpdates {
+pub(crate) struct NumericDocValuesFieldUpdates {
     pub field: String,
     pub doc_values_type: DocValuesType,
     pub bits_per_value: i32,
@@ -1337,6 +1341,7 @@ pub struct NumericDocValuesFieldUpdates {
 }
 
 impl NumericDocValuesFieldUpdates {
+    #[allow(dead_code)]
     pub fn new(field: &str, max_doc: i32) -> NumericDocValuesFieldUpdates {
         let bits_per_value = (max_doc - 1).bits_required() as i32;
         let docs = PagedMutableHugeWriter::new(1, PAGE_SIZE, bits_per_value, COMPACT);
@@ -1427,7 +1432,7 @@ impl DocValuesFieldUpdates for NumericDocValuesFieldUpdates {
     }
 }
 
-pub struct BinaryDocValuesFieldUpdatesIterator {
+struct BinaryDocValuesFieldUpdatesIterator {
     updates: *mut BinaryDocValuesFieldUpdates,
     // long so we don't overflow if size == Integer.MAX_VALUE
     idx: DocId,
@@ -1438,6 +1443,7 @@ pub struct BinaryDocValuesFieldUpdatesIterator {
 }
 
 impl BinaryDocValuesFieldUpdatesIterator {
+    #[allow(dead_code)]
     pub fn new(updates: &mut BinaryDocValuesFieldUpdates) -> BinaryDocValuesFieldUpdatesIterator {
         BinaryDocValuesFieldUpdatesIterator {
             updates,
@@ -1494,13 +1500,13 @@ impl DocValuesFieldUpdatesIterator for BinaryDocValuesFieldUpdatesIterator {
     }
 }
 
-pub struct BinaryDocValuesInPlaceMergeSorter {
+struct BinaryDocValuesInPlaceMergeSorter {
     updates: *mut BinaryDocValuesFieldUpdates,
     pivot_index: i32,
 }
 
 impl BinaryDocValuesInPlaceMergeSorter {
-    pub fn new(updates: &mut BinaryDocValuesFieldUpdates) -> BinaryDocValuesInPlaceMergeSorter {
+    fn new(updates: &mut BinaryDocValuesFieldUpdates) -> BinaryDocValuesInPlaceMergeSorter {
         BinaryDocValuesInPlaceMergeSorter {
             updates,
             pivot_index: 0,
@@ -1560,7 +1566,7 @@ impl Sorter for BinaryDocValuesInPlaceMergeSorter {
     }
 }
 
-pub struct BinaryDocValuesFieldUpdates {
+pub(crate) struct BinaryDocValuesFieldUpdates {
     pub field: String,
     pub doc_values_type: DocValuesType,
     pub bits_per_value: i32,
@@ -1572,6 +1578,7 @@ pub struct BinaryDocValuesFieldUpdates {
 }
 
 impl BinaryDocValuesFieldUpdates {
+    #[allow(dead_code)]
     pub fn new(field: &str, max_doc: i32) -> BinaryDocValuesFieldUpdates {
         let bits_per_value = (max_doc - 1).bits_required() as i32;
         let docs = PagedMutableHugeWriter::new(1, PAGE_SIZE, bits_per_value, COMPACT);

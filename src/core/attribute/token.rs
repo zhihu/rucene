@@ -16,6 +16,10 @@ use error::{ErrorKind, Result};
 
 use std::fmt;
 
+/// Sets the custom term frequency of a term within one document.
+///
+/// If this attribute is present in your analysis chain for a given field,
+/// that field must be indexed with IndexOptions#DocsAndFreqs
 pub struct TermFrequencyAttribute {
     term_freq: u32,
 }
@@ -51,6 +55,7 @@ impl TermFrequencyAttribute {
     }
 }
 
+/// The start and end character offset of a Token.
 #[derive(Debug, Default)]
 pub struct OffsetAttribute {
     start_offset: usize,
@@ -72,10 +77,17 @@ impl OffsetAttribute {
         self.end_offset = 0;
     }
 
+    /// Returns this Token's starting offset, the position of the first character
+    /// corresponding to this token in the source text.
+    ///
+    /// Note that the difference between `#end_offset()` and `#start_offset()` may
+    /// not be equal to term.len(), as the term text may have been altered by a
+    /// stemmer or some other filter.
     pub fn start_offset(&self) -> usize {
         self.start_offset
     }
 
+    /// Set the starting and ending offset.
     pub fn set_offset(&mut self, start_offset: usize, end_offset: usize) -> Result<()> {
         // TODO: we could assert that this is set-once, ie,
         // current values are -1?  Very few token filters should
@@ -96,15 +108,39 @@ impl OffsetAttribute {
         Ok(())
     }
 
+    /// Returns this Token's ending offset, one greater than the position of the
+    /// last character corresponding to this token in the source text. The length
+    /// of the token in the source text is (end_offset() - start_offset()).
     pub fn end_offset(&self) -> usize {
         self.end_offset
     }
 
+    /// end this attribute
     pub fn end(&mut self) {
         self.clear();
     }
 }
 
+/// Determines the position of this token relative to the previous Token in a
+/// TokenStream, used in phrase searching.
+///
+/// The default value is one.
+///
+/// Some common uses for this are:
+///
+/// * Set it to zero to put multiple terms in the same position.  This is
+/// useful if, e.g., a word has multiple stems.  Searches for phrases
+/// including either stem will match.  In this case, all but the first stem's
+/// increment should be set to zero: the increment of the first instance
+/// should be one.  Repeating a token with an increment of zero can also be
+/// used to boost the scores of matches on that token.
+///
+/// * Set it to values greater than one to inhibit exact phrase matches.
+/// If, for example, one does not want phrases to match across removed stop
+/// words, then one could build a stop word filter that removes stop words and
+/// also sets the increment to the number of stop words removed before each
+/// non-stop word.  Then exact phrase queries will only match when the terms
+/// occur with no intervening stop words.
 #[derive(Debug, Clone, Copy)]
 pub struct PositionIncrementAttribute {
     position_increment: u32,
@@ -141,6 +177,14 @@ impl PositionIncrementAttribute {
     }
 }
 
+/// The payload of a Token.
+///
+/// The payload is stored in the index at each position, and can
+/// be used to influence scoring when using Payload-based queries.
+///
+/// NOTE: because the payload will be stored at each position, it's usually
+/// best to use the minimum number of bytes necessary. Some codec implementations
+/// may optimize payload storage when all payloads have the same length.
 #[derive(Debug)]
 pub struct PayloadAttribute {
     payload: Vec<u8>,
@@ -172,6 +216,10 @@ impl PayloadAttribute {
     }
 }
 
+/// This attribute is requested by TermsHashPerField to index the contents.
+/// This attribute can be used to customize the final bytes encoding of terms.
+///
+/// Consumers of this attribute call `get_bytes_ref` for each term.
 pub trait TermToBytesRefAttribute {
     fn get_bytes_ref(&self) -> BytesRef;
 
@@ -204,17 +252,12 @@ const MIN_BUFFER_SIZE: usize = 10;
 #[derive(Debug)]
 pub struct CharTermAttribute {
     pub term_buffer: Vec<u8>,
-    pub term_length: usize, // count by byte
-    pub char_cnt: usize,    /* count by chars
-                             * builder: BytesRefBuilder, */
 }
 
 impl Default for CharTermAttribute {
     fn default() -> Self {
         CharTermAttribute {
             term_buffer: Vec::with_capacity(MIN_BUFFER_SIZE),
-            term_length: 0,
-            char_cnt: 0,
         }
     }
 }
@@ -224,32 +267,34 @@ impl CharTermAttribute {
         Default::default()
     }
 
-    pub fn push_char(&mut self, c: char) {
-        let char_len = c.len_utf8();
-        if self.term_buffer.len() < self.term_length + char_len {
-            self.term_buffer.resize(self.term_length + char_len, 0u8);
-        }
-        c.encode_utf8(&mut self.term_buffer[self.term_length..]);
-        self.term_length += char_len;
-        self.char_cnt += 1;
+    /// Returns the length of this character sequence. the length is calculated
+    /// by byte instead by char
+    pub fn len(&self) -> usize {
+        self.term_buffer.len()
     }
 
+    pub fn push_char(&mut self, c: char) {
+        let char_len = c.len_utf8();
+        let term_len = self.term_buffer.len();
+        self.term_buffer.resize(term_len + char_len, 0u8);
+        c.encode_utf8(&mut self.term_buffer[term_len..]);
+    }
+
+    /// Copies the contents of buffer, starting at offset for length chars, into the term buffer vec
     pub fn copy_buffer(&mut self, buffer: &[u8]) {
         self.term_buffer.resize(buffer.len(), 0u8);
         self.term_buffer[0..buffer.len()].copy_from_slice(buffer);
-        self.term_length = buffer.len();
     }
 
+    /// Appends the specified string to this char sequence.
     pub fn append(&mut self, s: &str) {
-        for c in s.chars() {
-            self.push_char(c);
-        }
+        self.term_buffer.extend(s.bytes())
     }
 
-    pub fn resize_buffer(&mut self, new_size: usize) {
-        self.term_buffer.resize(new_size, 0u8);
-    }
-
+    /// Set number of valid characters (length of the term) in  the term buffer vector.
+    /// Use this to truncate the term buffer or to synchronize with external manipulation
+    /// of the termBuffer.
+    /// Note: to grow the size of the array, use {@link #resizeBuffer(int)} first.
     pub fn set_length(&mut self, length: usize) -> Result<()> {
         if length > self.term_buffer.len() {
             bail!(ErrorKind::IllegalArgument(format!(
@@ -257,26 +302,23 @@ impl CharTermAttribute {
                 length
             )));
         }
-        self.term_length = length;
+        self.term_buffer.truncate(length);
         Ok(())
     }
 
+    /// Sets the length of the termBuffer to zero. Use this method before appending contents
     pub fn set_empty(&mut self) {
-        self.term_length = 0;
-    }
-
-    pub fn end(&mut self) {
-        self.clear();
+        self.term_buffer.clear();
     }
 }
 
 impl TermToBytesRefAttribute for CharTermAttribute {
     fn get_bytes_ref(&self) -> BytesRef {
-        BytesRef::new(&self.term_buffer[0..self.term_length])
+        BytesRef::new(&self.term_buffer)
     }
 
     fn clear(&mut self) {
-        self.term_length = 0;
+        self.term_buffer.clear();
     }
 
     fn end(&mut self) {
@@ -284,6 +326,9 @@ impl TermToBytesRefAttribute for CharTermAttribute {
     }
 }
 
+/// This attribute can be used if you have the raw term bytes to be indexed.
+///
+/// It can be used as replacement for `CharTermAttribute`, if binary terms should be indexed.
 #[derive(Default)]
 pub struct BytesTermAttribute {
     bytes: BytesRef,

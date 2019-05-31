@@ -20,6 +20,7 @@ use core::util::ReusableIterator;
 
 use error::Result;
 
+/// Writer for `Lucene53NormsFormat`
 pub struct Lucene53NormsConsumer<O: IndexOutput> {
     data: O,
     meta: O,

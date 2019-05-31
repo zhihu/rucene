@@ -69,14 +69,14 @@ use std::mem;
 /// --> DocFreq, TotalTermFreq - FieldSummary --> NumFields, <FieldNumber, NumTerms,
 /// RootCodeLength, Byte<sup>RootCodeLength</sup>, SumTotalTermFreq?,
 /// SumDocFreq, DocCount, LongsSize, MinTerm, MaxTerm><sup>NumFields</sup> - Header -->
-/// `CodecUtil#writeHeader CodecHeader} - DirOffset --> `DataOutput#writeLong Uint64}
-/// - MinTerm,MaxTerm --> `DataOutput#writeVInt VInt} length followed by the byte[]
+/// `CodecUtil#writeHeader CodecHeader} - DirOffset --> `DataOutput#write_long Uint64}
+/// - MinTerm,MaxTerm --> `DataOutput#write_vint VInt} length followed by the bytes
 /// - EntryCount,SuffixLength,StatsLength,DocFreq,MetaLength,NumFields,
-///   FieldNumber,RootCodeLength,DocCount,LongsSize --> `DataOutput#writeVInt VInt}
-/// - TotalTermFreq,NumTerms,SumTotalTermFreq,SumDocFreq --> `DataOutput#writeVLong VLong}
-/// - Footer --> `CodecUtil#writeFooter CodecFooter}
+///   FieldNumber,RootCodeLength,DocCount,LongsSize --> `DataOutput#write_vint VInt}
+/// - TotalTermFreq,NumTerms,SumTotalTermFreq,SumDocFreq --> `DataOutput#write_vlong VLong}
+/// - Footer --> `codec_util#writeFooter CodecFooter}
 /// Notes:
-///    - Header is a `CodecUtil#writeHeader CodecHeader} storing the version information for the
+///    - Header is a `codec_util#writeHeader CodecHeader} storing the version information for the
 ///      BlockTree implementation.
 ///    - DirOffset is a pointer to the FieldSummary section.
 ///    - DocFreq is the count of documents which contain the term.
@@ -104,12 +104,12 @@ use std::mem;
 /// when a given term cannot exist on disk (in the .tim file), saving a disk seek.
 ///   - TermsIndex (.tip) --> Header, FSTIndex<sup>NumFields</sup>
 ///     <IndexStartFP><sup>NumFields</sup>, DirOffset, Footer
-///   - Header --> `CodecUtil#writeHeader CodecHeader`
+///   - Header --> `codec_util#writeHeader CodecHeader`
 ///   - DirOffset --> `DataOutput#writeLong Uint64`
-///   - IndexStartFP --> `DataOutput#writeVLong VLong`
+///   - IndexStartFP --> `DataOutput#write_vlong VLong`
 ///   TODO: better describe FST output here
-///   - FSTIndex --> `FST FST<byte[]>`
-///   - Footer --> `CodecUtil#writeFooter CodecFooter`
+///   - FSTIndex --> `FST FST<Vec<u8>>`
+///   - Footer --> `codec_util::writeFooter CodecFooter`
 /// Notes:
 ///   - The .tip file contains a separate FST for each field.  The FST maps a term prefix to the
 ///     on-disk block that holds all terms starting with that prefix.  Each field's IndexStartFP
@@ -519,7 +519,7 @@ impl<'a, T: PostingsWriterBase, O: IndexOutput> TermsWriter<'a, T, O> {
         }
         self.block_tree_writer.terms_out.write_vint(code as i32)?;
 
-        // 1st pass: pack term suffix bytes into byte[] blob
+        // 1st pass: pack term suffix bytes into bytes blob
         // TODO: cutover to bulk int codec... simple64?
 
         // We optimize the leaf block case (block has only terms), writing a more
@@ -543,7 +543,7 @@ impl<'a, T: PostingsWriterBase, O: IndexOutput> TermsWriter<'a, T, O> {
                             || (term.term_bytes[prefix_length] as i32 & 0xff) >= floor_lead_label
                     );
 
-                    // Write term stats, to separate byte[] blob:
+                    // Write term stats, to separate bytes blob:
                     self.stats_writer.write_vint(term.state.doc_freq)?;
                     if self.field_info.index_options != IndexOptions::Docs {
                         assert!(term.state.total_term_freq >= term.state.doc_freq as i64);
@@ -595,7 +595,7 @@ impl<'a, T: PostingsWriterBase, O: IndexOutput> TermsWriter<'a, T, O> {
                         self.suffix_writer
                             .write_bytes(&term.term_bytes, prefix_length, suffix)?;
 
-                        // Write term stats, to separate byte[] blob:
+                        // Write term stats, to separate bytes blob:
                         self.stats_writer.write_vint(term.state.doc_freq)?;
                         if self.field_info.index_options != IndexOptions::Docs {
                             assert!(term.state.total_term_freq >= term.state.doc_freq as i64);
@@ -658,7 +658,7 @@ impl<'a, T: PostingsWriterBase, O: IndexOutput> TermsWriter<'a, T, O> {
         // this would take more space but would enable binary
         // search on lookup
 
-        // Write suffixes byte[] blob to terms dict output:
+        // Write suffixes bytes blob to terms dict output:
         let term_addr =
             (self.suffix_writer.file_pointer() << 1) as i32 + if is_leaf_block { 1 } else { 0 };
         self.block_tree_writer.terms_out.write_vint(term_addr)?;
@@ -666,7 +666,7 @@ impl<'a, T: PostingsWriterBase, O: IndexOutput> TermsWriter<'a, T, O> {
             .write_to(&mut self.block_tree_writer.terms_out)?;
         self.suffix_writer.reset();
 
-        // Write term stats data byte[] blob
+        // Write term stats data bytes blob
         self.block_tree_writer
             .terms_out
             .write_vint(self.stats_writer.file_pointer() as i32)?;
@@ -674,7 +674,7 @@ impl<'a, T: PostingsWriterBase, O: IndexOutput> TermsWriter<'a, T, O> {
             .write_to(&mut self.block_tree_writer.terms_out)?;
         self.stats_writer.reset();
 
-        // Write term meta data byte[] blob
+        // Write term meta data bytes blob
         self.block_tree_writer
             .terms_out
             .write_vint(self.meta_writer.file_pointer() as i32)?;

@@ -15,7 +15,7 @@ use core::codec::{Codec, DocValuesFormat, DocValuesProducer};
 use core::index::FieldInfos;
 use core::index::{SegmentCommitInfo, SegmentReadState};
 use core::store::{Directory, IOContext};
-use core::util::to_base36;
+use core::util::numeric::to_base36;
 use error::ErrorKind::IllegalState;
 use error::Result;
 

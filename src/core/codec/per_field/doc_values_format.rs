@@ -29,9 +29,7 @@ use core::index::SortedSetDocValues;
 use core::index::{DocValuesType, FieldInfo};
 use core::index::{SegmentReadState, SegmentWriteState};
 use core::store::Directory;
-use core::util::numeric::Numeric;
-use core::util::BytesRef;
-use core::util::{BitsRef, ReusableIterator};
+use core::util::{numeric::Numeric, BitsRef, BytesRef, ReusableIterator};
 
 use error::ErrorKind::{IllegalArgument, IllegalState};
 use error::Result;
@@ -39,10 +37,10 @@ use error::Result;
 const PER_FIELD_NAME: &str = "PerFieldDV40";
 
 /// `FieldInfo` attribute name used to store the format name for each field
-pub const PER_FIELD_VALUE_FORMAT_KEY: &str = "PerFieldDocValuesFormat.format";
+pub(crate) const PER_FIELD_VALUE_FORMAT_KEY: &str = "PerFieldDocValuesFormat.format";
 
 /// `FieldInfo` attribute name used to store the segment suffix name for each field
-pub const PER_FIELD_VALUE_SUFFIX_KEY: &str = "PerFieldDocValuesFormat.suffix";
+pub(crate) const PER_FIELD_VALUE_SUFFIX_KEY: &str = "PerFieldDocValuesFormat.suffix";
 
 fn get_suffix(format: &str, suffix: &str) -> String {
     format!("{}_{}", format, suffix)
@@ -82,7 +80,7 @@ impl DocValuesFormat for PerFieldDocValuesFormat {
     }
 }
 
-pub struct DocValuesFieldsReader {
+struct DocValuesFieldsReader {
     fields: BTreeMap<String, DocValuesProducerRef>,
 }
 
@@ -222,6 +220,7 @@ struct ConsumerAndSuffix<D: Directory, DW: Directory, C: Codec> {
     suffix: i32,
 }
 
+/// `DocValuesConsumer` for `PerFieldDocValuesFormat`
 pub struct DocValuesFieldsWriter<D: Directory, DW: Directory, C: Codec> {
     formats: HashMap<String, ConsumerAndSuffix<D, DW, C>>,
     suffixes: HashMap<String, i32>,

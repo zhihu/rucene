@@ -73,7 +73,7 @@ pub trait PostingIterator: DocIterator {
     /// Returns the payload at this position, or null if no
     /// payload was indexed. You should not modify anything
     /// (neither members of the returned BytesRef nor bytes
-    /// in the byte[]). */
+    /// in the bytes). */
     fn payload(&self) -> Result<Payload>;
 }
 

@@ -31,7 +31,6 @@ type Data = [usize; DATA_WORDS];
 pub struct Deferred {
     call: unsafe fn(*mut u8),
     data: Data,
-    //_marker: PhantomData<*mut ()>, // !Send + !Sync
 }
 
 impl fmt::Debug for Deferred {
@@ -42,6 +41,7 @@ impl fmt::Debug for Deferred {
 
 impl Deferred {
     /// Constructs a new `Deferred` from a `FnOnce()`.
+    #[allow(clippy::cast_ptr_alignment)]
     pub fn new<F: FnOnce() + 'static>(f: F) -> Self {
         let size = mem::size_of::<F>();
         let align = mem::align_of::<F>();
@@ -59,7 +59,6 @@ impl Deferred {
                 Deferred {
                     call: call::<F>,
                     data,
-                    //_marker: PhantomData,
                 }
             } else {
                 let b: Box<F> = Box::new(f);
@@ -74,7 +73,6 @@ impl Deferred {
                 Deferred {
                     call: call::<F>,
                     data,
-                    //_marker: PhantomData,
                 }
             }
         }

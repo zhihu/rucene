@@ -12,87 +12,66 @@
 // limitations under the License.
 
 mod index_options;
-
 pub use self::index_options::*;
 
 mod doc_values_type;
-
 pub use self::doc_values_type::*;
 
 mod index_writer;
-
 pub use self::index_writer::*;
 
 mod norm_values_writer;
-
 pub use self::norm_values_writer::*;
 
 mod numeric_doc_values;
-
 pub use self::numeric_doc_values::*;
 
 mod binary_doc_values;
-
 pub use self::binary_doc_values::*;
 
 mod sorted_numeric_doc_values;
-
 pub use self::sorted_numeric_doc_values::*;
 
 mod sorted_doc_values_term_iterator;
-
 pub use self::sorted_doc_values_term_iterator::*;
 
 mod sorted_set_doc_values_term_iterator;
-
 pub use self::sorted_set_doc_values_term_iterator::*;
 
 mod doc_values;
-
 pub use self::doc_values::*;
 
 mod doc_values_writer;
-
 pub use self::doc_values_writer::*;
 
 mod sorted_doc_values;
-
 pub use self::sorted_doc_values::*;
 
 mod singleton_sorted_numeric_doc_values;
-
 pub use self::singleton_sorted_numeric_doc_values::*;
 
 mod sorted_set_doc_values;
-
 pub use self::sorted_set_doc_values::*;
 
 mod singleton_sorted_set_doc_values;
-
-pub use self::singleton_sorted_set_doc_values::*;
+pub(crate) use self::singleton_sorted_set_doc_values::*;
 
 mod segment_doc_values;
-
 pub use self::segment_doc_values::*;
 
 mod segment_reader;
-
 pub use self::segment_reader::*;
 
 mod directory_reader;
-
 pub use self::directory_reader::*;
 
 mod segment;
-
 pub use self::segment::*;
 
 mod point_values;
-
 pub use self::point_values::*;
 
-pub mod field_info;
-
+mod field_info;
 pub use self::field_info::*;
 
 mod leaf_reader;
@@ -114,15 +93,14 @@ pub use self::index_lookup::*;
 
 mod multi_fields;
 
-pub use self::multi_fields::*;
+pub(crate) use self::multi_fields::*;
 
 mod multi_terms;
 
-pub use self::multi_terms::*;
+pub(crate) use self::multi_terms::*;
 
 mod reader_slice;
-
-pub use self::reader_slice::*;
+pub(crate) use self::reader_slice::*;
 
 mod stored_field_visitor;
 
@@ -134,11 +112,11 @@ pub use self::merge_state::*;
 
 mod point_values_writer;
 
-pub use self::point_values_writer::*;
+pub(crate) use self::point_values_writer::*;
 
 pub use self::doc_values_term_iterator::DocValuesTermIterator;
 
-pub mod doc_id_merger;
+pub(crate) mod doc_id_merger;
 
 mod bufferd_updates;
 mod byte_slice_reader;
@@ -184,8 +162,9 @@ use core::index::bufferd_updates::BufferedUpdates;
 use core::search::sort::Sort;
 use core::store::{Directory, IOContext};
 use core::util::bit_set::FixedBitSet;
+use core::util::numeric::to_base36;
 use core::util::string_util::ID_LENGTH;
-use core::util::{to_base36, DocId, Version};
+use core::util::{DocId, Version};
 
 use error::{
     ErrorKind::{IllegalArgument, IllegalState},
@@ -206,13 +185,14 @@ error_chain! {
 }
 
 // index file names
-pub const INDEX_FILE_SEGMENTS: &str = "segments";
-pub const INDEX_FILE_PENDING_SEGMENTS: &str = "pending_segments";
-pub const INDEX_FILE_OLD_SEGMENT_GEN: &str = "segments.gen";
+const INDEX_FILE_SEGMENTS: &str = "segments";
+const INDEX_FILE_PENDING_SEGMENTS: &str = "pending_segments";
+const INDEX_FILE_OLD_SEGMENT_GEN: &str = "segments.gen";
 
 const CODEC_FILE_PATTERN: &str = r"_[a-z0-9]+(_.*)?\..*";
 
-pub fn matches_extension(filename: &str, ext: &str) -> bool {
+#[allow(dead_code)]
+fn matches_extension(filename: &str, ext: &str) -> bool {
     filename.ends_with(ext)
 }
 
@@ -307,6 +287,32 @@ fn strip_extension(filename: &str) -> &str {
     }
 }
 
+/// `IndexReader` providing an interface for accessing a point-in-time view of an index.
+///
+/// Any changes made to the index via `IndexWriter` will not be visible until a new
+/// `IndexReader` is opened.  It's best to use {@link
+/// StandardDirectoryReader#open(IndexWriter)} to obtain an `IndexReader`, if your
+/// `IndexWriter` is in-process.  When you need to re-open to see changes to the
+/// index, it's best to use {@link DirectoryReader#openIfChanged(DirectoryReader)}
+/// since the new reader will share resources with the previous
+/// one when possible.  Search of an index is done entirely
+/// through this abstract interface, so that any subclass which
+/// implements it is searchable.
+///
+/// IndexReader instances for indexes on disk are usually constructed
+/// with a call to one of the static StandardDirectoryReader::open() methods.
+///
+/// For efficiency, in this API documents are often referred to via
+/// *document numbers*, non-negative integers which each name a unique
+/// document in the index.  These document numbers are ephemeral -- they may change
+/// as documents are added to and deleted from an index.  Clients should thus not
+/// rely on a given document having the same number between sessions.
+///
+/// NOTE: `IndexReader` instances are completely thread
+/// safe, meaning multiple threads can call any of its methods,
+/// concurrently.  If your application requires external
+/// synchronization, you should *not* synchronize on the
+/// `IndexReader` instance; use your own (non-Lucene) objects instead.
 pub trait IndexReader {
     type Codec: Codec;
     fn leaves(&self) -> Vec<LeafReaderContext<'_, Self::Codec>>;
@@ -348,8 +354,8 @@ pub trait IndexReader {
     }
 }
 
-pub const SEGMENT_USE_COMPOUND_YES: u8 = 0x01;
-pub const SEGMENT_USE_COMPOUND_NO: u8 = 0xff;
+pub(crate) const SEGMENT_USE_COMPOUND_YES: u8 = 0x01;
+pub(crate) const SEGMENT_USE_COMPOUND_NO: u8 = 0xff;
 
 pub struct SegmentInfo<D: Directory, C: Codec> {
     pub name: String,
@@ -1161,7 +1167,7 @@ pub mod tests {
     use super::*;
     use core::codec::tests::TestCodec;
     use core::codec::*;
-    use core::search::bm25_similarity::BM25Similarity;
+    use core::search::BM25Similarity;
     use core::util::external::deferred::Deferred;
     use core::util::*;
 
@@ -1208,13 +1214,13 @@ pub mod tests {
 
     pub struct MockLeafReader {
         codec: TestCodec,
-        doc_base: DocId,
+        max_doc: DocId,
         live_docs: BitsRef,
         field_infos: FieldInfos,
     }
 
     impl MockLeafReader {
-        pub fn new(doc_base: DocId) -> MockLeafReader {
+        pub fn new(max_doc: DocId) -> MockLeafReader {
             let mut infos = Vec::new();
             let field_info_one = FieldInfo::new(
                 "test".to_string(),
@@ -1249,7 +1255,7 @@ pub mod tests {
 
             MockLeafReader {
                 codec: TestCodec::default(),
-                doc_base,
+                max_doc,
                 live_docs: Arc::new(MatchAllBits::new(0usize)),
                 field_infos: FieldInfos::new(infos).unwrap(),
             }
@@ -1310,7 +1316,7 @@ pub mod tests {
         }
 
         fn max_doc(&self) -> DocId {
-            0
+            self.max_doc
         }
 
         fn get_docs_with_field(&self, _field: &str) -> Result<BitsRef> {
@@ -1346,7 +1352,7 @@ pub mod tests {
         }
 
         fn num_docs(&self) -> i32 {
-            0
+            self.max_doc
         }
 
         fn core_cache_key(&self) -> &str {

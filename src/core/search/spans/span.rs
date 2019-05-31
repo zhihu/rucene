@@ -14,7 +14,6 @@
 use core::codec::{Codec, CodecPostingIterator, CodecTermState};
 use core::index::{LeafReaderContext, SearchLeafReader};
 use core::index::{Term, TermContext};
-use core::search::conjunction::ConjunctionScorer;
 use core::search::explanation::Explanation;
 use core::search::posting_iterator::{PostingIterator, PostingIteratorFlags};
 use core::search::searcher::SearchPlanBuilder;
@@ -25,7 +24,8 @@ use core::search::spans::span_near::{
 };
 use core::search::spans::span_or::{SpanOrQuery, SpanOrSpans, SpanOrWeight};
 use core::search::spans::span_term::{SpanTermQuery, SpanTermWeight, TermSpans};
-use core::search::term_query::TermQuery;
+use core::search::ConjunctionScorer;
+use core::search::TermQuery;
 use core::search::{DocIterator, Query, Scorer, SimScorer, SimWeight, Weight, NO_MORE_DOCS};
 use core::util::{DocId, KeyedContext};
 

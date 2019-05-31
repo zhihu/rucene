@@ -1602,7 +1602,7 @@ impl Mutable for Packed64 {
         }
         debug_assert_eq!(from_index % n_aligned_values, 0);
 
-        // compute the long[] blocks for nAlignedValues consecutive values and
+        // compute the [i64] blocks for n_aligned_values consecutive values and
         // use them to set as many values as possible without applying any mask
         // or shift
         let aligned_blocks = (n_aligned_values * self.bits_per_value) >> 6;
@@ -2629,7 +2629,7 @@ impl PackedIntDecoder for BulkOperationPacked {
     fn decode_long_to_int(&self, blocks: &[i64], values: &mut [i32], iterations: usize) {
         if self.bits_per_value > 32 {
             panic!(format!(
-                "Cannot decode {} -bits values into an int[]",
+                "Cannot decode {} -bits values into an i32 slice",
                 self.bits_per_value
             ));
         }
@@ -2815,7 +2815,7 @@ impl PackedIntDecoder for BulkOperationPackedSingleBlock {
     fn decode_long_to_int(&self, blocks: &[i64], values: &mut [i32], iterations: usize) {
         if self.bits_per_value > 32 {
             panic!(format!(
-                "Cannot decode {} -bits values into an int[]",
+                "Cannot decode {} -bits values into an i32 slice",
                 self.bits_per_value
             ));
         }
@@ -2828,7 +2828,7 @@ impl PackedIntDecoder for BulkOperationPackedSingleBlock {
     fn decode_byte_to_int(&self, blocks: &[u8], values: &mut [i32], iterations: usize) {
         if self.bits_per_value > 32 {
             panic!(format!(
-                "Cannot decode {} -bits values into an int[]",
+                "Cannot decode {} -bits values into an i32 slice",
                 self.bits_per_value
             ));
         }

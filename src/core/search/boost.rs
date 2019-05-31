@@ -19,7 +19,7 @@ use core::codec::Codec;
 use core::index::LeafReaderContext;
 use core::search::explanation::Explanation;
 use core::search::searcher::SearchPlanBuilder;
-use core::search::term_query::TermQuery;
+use core::search::TermQuery;
 use core::search::{Query, Scorer, Weight};
 use core::util::DocId;
 

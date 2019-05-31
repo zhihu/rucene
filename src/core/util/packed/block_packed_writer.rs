@@ -41,7 +41,7 @@ impl BaseBlockPackedWriter {
         }
     }
 
-    // same as DataOutput.writeVLong but accepts negative values
+    // same as DataOutput.write_vlong but accepts negative values
     pub fn write_vlong(out: &mut impl DataOutput, mut i: i64) -> Result<()> {
         let mut k = 0;
         while (i & (!0x7Fi64)) != 0i64 && k < 8 {
@@ -161,7 +161,7 @@ impl AbstractBlockPackedWriter for BlockPackedWriter {
             // no need to delta-encode
             min = 0;
         } else if min > 0 {
-            // make min as small as possible so that writeVLong requires fewer bytes
+            // make min as small as possible so that write_vlong requires fewer bytes
             min = 0i64.max(max - max_value(bits_required));
         }
 

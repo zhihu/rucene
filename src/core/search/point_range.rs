@@ -21,7 +21,7 @@ use core::index::{LeafReader, LeafReaderContext};
 use core::search::explanation::Explanation;
 use core::search::match_all::{AllDocsIterator, ConstantScoreScorer};
 use core::search::searcher::SearchPlanBuilder;
-use core::search::term_query::TermQuery;
+use core::search::TermQuery;
 use core::search::{DocIdSet, Query, Scorer, Weight};
 use core::search::{DocIterator, EmptyDocIterator};
 use core::util::doc_id_set::{DocIdSetDocIterEnum, DocIdSetEnum};

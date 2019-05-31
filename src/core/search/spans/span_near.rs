@@ -20,7 +20,7 @@ use core::search::spans::span::{
 };
 use core::search::spans::span::{term_contexts, ConjunctionSpanBase, ConjunctionSpans};
 use core::search::spans::span::{SpanCollector, SpanQuery, SpanWeight, Spans};
-use core::search::term_query::TermQuery;
+use core::search::TermQuery;
 use core::search::{DocIterator, Query, Scorer, SimWeight, Weight, NO_MORE_DOCS};
 use core::util::{DocId, KeyedContext, BM25_SIMILARITY_IDF};
 

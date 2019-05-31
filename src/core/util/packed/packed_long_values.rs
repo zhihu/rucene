@@ -22,11 +22,11 @@ use core::util::{DocId, LongValues, LongValuesContext, ReusableIterator};
 use error::Result;
 use std::mem;
 
-pub const DEFAULT_PAGE_SIZE: usize = 1024;
-pub const MIN_PAGE_SIZE: usize = 64;
+pub(crate) const DEFAULT_PAGE_SIZE: usize = 1024;
+pub(crate) const MIN_PAGE_SIZE: usize = 64;
 // More than 1M doesn't really makes sense with these appending buffers
 // since their goal is to try to have small numbers of bits per value
-pub const MAX_PAGE_SIZE: usize = 1 << 20;
+pub(crate) const MAX_PAGE_SIZE: usize = 1 << 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub enum PackedLongValuesBuilderType {
@@ -35,6 +35,7 @@ pub enum PackedLongValuesBuilderType {
     Monotonic,
 }
 
+/// Utility class to compress integers into a `LongValues` instance.
 pub struct PackedLongValues {
     page_shift: usize,
     page_mask: usize,

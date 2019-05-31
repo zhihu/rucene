@@ -67,24 +67,26 @@ impl OfflinePointReader {
             );
         }
 
-        // let mut is_checksum = false;
-        // Best-effort checksumming:
-        let mut input = if start == 0
-            && length * bytes_per_doc as usize == file_length as usize - footer_length
-        {
-            // If we are going to read the entire file, e.g. because BKDWriter is now
-            // partitioning it, we open with checksums:
+        let mut input = temp_dir.open_input(temp_file_name, &IOContext::READ_ONCE)?;
 
-            // is_checksum = true;
-            // temp_dir.open_checksum_input(temp_file_name, IOContext::READ_ONCE)?
-            temp_dir.open_input(temp_file_name, &IOContext::READ_ONCE)?
-        } else {
-            // Since we are going to seek somewhere in the middle of a possibly huge
-            // file, and not read all bytes from there, don't use ChecksumIndexInput here.
-            // This is typically fine, because this same file will later be read fully,
-            // at another level of the BKDWriter recursion
-            temp_dir.open_input(temp_file_name, &IOContext::READ_ONCE)?
-        };
+        //        let mut is_checksum = false;
+        //        // Best-effort checksumming:
+        //        let mut input = if start == 0
+        //            && length * bytes_per_doc as usize == file_length as usize - footer_length
+        //        {
+        //            // If we are going to read the entire file, e.g. because BKDWriter is now
+        //            // partitioning it, we open with checksums:
+        //
+        //            // is_checksum = true;
+        //            temp_dir.open_checksum_input(temp_file_name, IOContext::READ_ONCE)?
+        //
+        //        } else {
+        //            // Since we are going to seek somewhere in the middle of a possibly huge
+        //            // file, and not read all bytes from there, don't use ChecksumIndexInput here.
+        //            // This is typically fine, because this same file will later be read fully,
+        //            // at another level of the BKDWriter recursion
+        //            temp_dir.open_input(temp_file_name, &IOContext::READ_ONCE)?
+        //        };
 
         let seek_fp = start as i64 * bytes_per_doc as i64;
         input.as_mut().seek(seek_fp)?;

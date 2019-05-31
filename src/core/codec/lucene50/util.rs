@@ -30,9 +30,9 @@ const ALL_VALUES_EQUAL: i32 = 0;
 pub const MAX_ENCODED_SIZE: usize = BLOCK_SIZE as usize * 4;
 
 /// Upper limit of the number of values that might be decoded in a single call to
-/// {@link #readBlock(IndexInput, byte[], int[])}. Although values after
+/// {@link #read_block(IndexInput, [u8], [i32])}. Although values after
 /// <code>BLOCK_SIZE</code> are garbage, it is necessary to allocate value buffers
-/// whose size is {@code >= MAX_DATA_SIZE} to avoid {@link ArrayIndexOutOfBoundsException}s.
+/// whose size is `MAX_DATA_SIZE` to avoid `IndexOutOfBounds` Error.
 static mut MAX_DATA_SIZE: usize = 0;
 
 static START: Once = ONCE_INIT;

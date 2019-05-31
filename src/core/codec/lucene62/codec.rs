@@ -30,6 +30,8 @@ use core::codec::per_field::PerFieldFieldsReader;
 use std::convert::TryFrom;
 use std::sync::Arc;
 
+/// Implements the Lucene 6.2 index format, with configurable per-field postings
+/// and docvalues formats.
 pub struct Lucene62Codec {
     postings_format: PerFieldPostingsFormat,
     field_infos_format: Lucene60FieldInfosFormat,

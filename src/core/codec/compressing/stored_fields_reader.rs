@@ -43,38 +43,46 @@ use core::util::BytesRef;
 use core::util::DocId;
 
 /// Extension of stored fields file
-pub const STORED_FIELDS_EXTENSION: &str = "fdt";
+pub(crate) const STORED_FIELDS_EXTENSION: &str = "fdt";
 /// Extension of stored fields index file
-pub const STORED_FIELDS_INDEX_EXTENSION: &str = "fdx";
+pub(crate) const STORED_FIELDS_INDEX_EXTENSION: &str = "fdx";
 
-pub const CODEC_SFX_IDX: &str = "Index";
-pub const CODEC_SFX_DAT: &str = "Data";
+pub(crate) const CODEC_SFX_IDX: &str = "Index";
+pub(crate) const CODEC_SFX_DAT: &str = "Data";
 
-pub const VERSION_START: i32 = 0;
-pub const VERSION_CHUNK_STATS: i32 = 1;
-pub const VERSION_CURRENT: i32 = VERSION_CHUNK_STATS;
+pub(crate) const VERSION_START: i32 = 0;
+pub(crate) const VERSION_CHUNK_STATS: i32 = 1;
+pub(crate) const VERSION_CURRENT: i32 = VERSION_CHUNK_STATS;
 
-pub const STRING: i32 = 0x00;
-pub const BYTE_ARR: i32 = 0x01;
-pub const NUMERIC_INT: i32 = 0x02;
-pub const NUMERIC_FLOAT: i32 = 0x03;
-pub const NUMERIC_LONG: i32 = 0x04;
-pub const NUMERIC_DOUBLE: i32 = 0x05;
+pub(crate) const STRING: i32 = 0x00;
+pub(crate) const BYTE_ARR: i32 = 0x01;
+pub(crate) const NUMERIC_INT: i32 = 0x02;
+pub(crate) const NUMERIC_FLOAT: i32 = 0x03;
+pub(crate) const NUMERIC_LONG: i32 = 0x04;
+pub(crate) const NUMERIC_DOUBLE: i32 = 0x05;
 
-pub const TYPE_BITS: i32 = 3; // NUMERIC_DOUBLE.bits_required()
-pub const TYPE_MASK: i32 = 7; // 3 bits max value, PackedInts.maxValue(TYPE_BITS)
+pub(crate) const TYPE_BITS: i32 = 3; // NUMERIC_DOUBLE.bits_required()
+pub(crate) const TYPE_MASK: i32 = 7; // 3 bits max value, PackedInts.maxValue(TYPE_BITS)
 
 // -0 isn't compressed
-pub const NEGATIVE_ZERO_FLOAT: i32 = -2_147_483_648; // f32::to_bits(-0f32) as i32;
-pub const NEGATIVE_ZERO_DOUBLE: i64 = -9_223_372_036_854_775_808; // f64::to_bits(-0f64) as i64;
-                                                                  // for compression of timestamps
-pub const SECOND: i64 = 1000;
-pub const HOUR: i64 = 60 * 60 * SECOND;
-pub const DAY: i64 = HOUR * 24;
-pub const SECOND_ENCODING: i32 = 0x40;
-pub const HOUR_ENCODING: i32 = 0x80;
-pub const DAY_ENCODING: i32 = 0xC0;
+pub(crate) const NEGATIVE_ZERO_FLOAT: i32 = -2_147_483_648; // f32::to_bits(-0f32) as i32;
+pub(crate) const NEGATIVE_ZERO_DOUBLE: i64 = -9_223_372_036_854_775_808; // f64::to_bits(-0f64) as i64;
+                                                                         // for compression of timestamps
+pub(crate) const SECOND: i64 = 1000;
+pub(crate) const HOUR: i64 = 60 * 60 * SECOND;
+pub(crate) const DAY: i64 = HOUR * 24;
+pub(crate) const SECOND_ENCODING: i32 = 0x40;
+pub(crate) const HOUR_ENCODING: i32 = 0x80;
+pub(crate) const DAY_ENCODING: i32 = 0xC0;
 
+/// A `StoredFieldsFormat` that compresses documents in chunks in
+/// order to improve the compression ratio.
+///
+/// For a chunk size of chunk_size bytes, `StoredFieldsFormat` does not support
+/// documents larger than (2^31 - chunk_size) bytes.
+///
+/// For optimal performance, you should use a `MergePolicy` that returns
+/// segments that have the biggest byte size first.
 pub struct CompressingStoredFieldsFormat {
     format_name: String,
     segment_suffix: String,
@@ -154,7 +162,7 @@ impl StoredFieldsFormat for CompressingStoredFieldsFormat {
     }
 }
 
-pub struct CompressingStoredFieldsIndexReader {
+pub(crate) struct CompressingStoredFieldsIndexReader {
     max_doc: i32,
     doc_bases: Vec<i32>,
     start_pointers: Vec<i64>,
@@ -294,21 +302,22 @@ impl CompressingStoredFieldsIndexReader {
     }
 }
 
+/// `StoredFieldsReader` impl for `CompressingStoredFieldsFormat`
 pub struct CompressingStoredFieldsReader {
-    pub version: i32,
+    version: i32,
     field_infos: Arc<FieldInfos>,
-    pub index_reader: Arc<CompressingStoredFieldsIndexReader>,
-    pub max_pointer: i64,
-    pub fields_stream: Box<dyn IndexInput>,
-    pub chunk_size: i32,
-    pub packed_ints_version: i32,
-    pub compression_mode: CompressionMode,
+    index_reader: Arc<CompressingStoredFieldsIndexReader>,
+    max_pointer: i64,
+    fields_stream: Box<dyn IndexInput>,
+    chunk_size: i32,
+    packed_ints_version: i32,
+    compression_mode: CompressionMode,
     decompressor: Decompressor,
     num_docs: i32,
     merging: bool,
-    pub num_chunks: i64,
+    num_chunks: i64,
     // number of compressed blocks written
-    pub num_dirty_chunks: i64,
+    num_dirty_chunks: i64,
     // number of incomplete compressed blocks written
     // the next fiels are for `BlockState` in lucene
     doc_base: DocId,
@@ -322,7 +331,7 @@ pub struct CompressingStoredFieldsReader {
     spare: Vec<u8>,
     spare_position: OffsetAndLength,
     // from document data input
-    pub current_doc: SerializedDocument,
+    current_doc: SerializedDocument,
     // current decompressed byte length for filed `bytes`
 }
 
@@ -429,6 +438,55 @@ impl CompressingStoredFieldsReader {
                 input: DocumentInput::Bytes(ByteArrayDataInput::new(BytesRef::default())),
             },
         })
+    }
+
+    #[inline]
+    pub(crate) fn version(&self) -> i32 {
+        self.version
+    }
+
+    #[inline]
+    pub(crate) fn index_reader(&self) -> &CompressingStoredFieldsIndexReader {
+        self.index_reader.as_ref()
+    }
+
+    #[inline]
+    pub(crate) fn chunk_size(&self) -> i32 {
+        self.chunk_size
+    }
+
+    #[inline]
+    pub(crate) fn packed_ints_version(&self) -> i32 {
+        self.packed_ints_version
+    }
+
+    #[inline]
+    pub(crate) fn compression_mode(&self) -> CompressionMode {
+        self.compression_mode
+    }
+
+    #[inline]
+    pub(crate) fn num_chunks(&self) -> i64 {
+        self.num_chunks
+    }
+
+    #[inline]
+    pub(crate) fn num_dirty_chunks(&self) -> i64 {
+        self.num_dirty_chunks
+    }
+
+    #[inline]
+    pub(crate) fn max_pointer(&self) -> i64 {
+        self.max_pointer
+    }
+
+    #[inline]
+    pub(crate) fn fields_stream_mut(&mut self) -> &mut dyn IndexInput {
+        &mut *self.fields_stream
+    }
+
+    pub(crate) fn current_doc_mut(&mut self) -> &mut SerializedDocument {
+        &mut self.current_doc
     }
 
     fn copy_for_merge(&self) -> Result<CompressingStoredFieldsReader> {
@@ -920,7 +978,7 @@ impl StoredFieldsReader for CompressingStoredFieldsReader {
     }
 }
 
-pub struct CompressingStoredFieldsInput {
+pub(crate) struct CompressingStoredFieldsInput {
     reader: *mut CompressingStoredFieldsReader,
 }
 
@@ -981,7 +1039,7 @@ impl Read for CompressingStoredFieldsInput {
     }
 }
 
-pub enum DocumentInput {
+pub(crate) enum DocumentInput {
     Compressing(CompressingStoredFieldsInput),
     Bytes(ByteArrayDataInput<BytesRef>),
 }
@@ -1018,7 +1076,7 @@ impl DataInput for DocumentInput {
     }
 }
 
-pub struct SerializedDocument {
+pub(crate) struct SerializedDocument {
     pub length: usize,
     pub num_stored_fields: i32,
     pub decompressed: usize,

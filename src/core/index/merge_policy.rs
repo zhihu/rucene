@@ -17,7 +17,7 @@ use core::index::merge_rate_limiter::MergeRateLimiter;
 use core::index::merge_scheduler::MergeScheduler;
 use core::index::{SegmentCommitInfo, SegmentInfos, SegmentReader};
 use core::store::{Directory, MergeInfo};
-use core::util::{ptr_eq, Volatile};
+use core::util::Volatile;
 
 use error::{
     ErrorKind::{IllegalArgument, RuntimeError},
@@ -29,6 +29,7 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::f64;
 use std::hash::{Hash, Hasher};
+use std::ptr;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -217,7 +218,7 @@ pub trait MergePolicy: 'static {
     {
         let has_deletions = writer.num_deleted_docs(info) > 0;
         !has_deletions
-            && ptr_eq(info.info.directory.as_ref(), writer.directory().as_ref())
+            && ptr::eq(info.info.directory.as_ref(), writer.directory().as_ref())
             && self.use_compound_file(infos, info, writer) == info.info.is_compound_file()
     }
 }

@@ -79,7 +79,7 @@ pub trait BitSet: ImmutableBitSet {
 }
 
 /// BitSet of fixed length (numBits), backed by accessible `#getBits`
-/// long[], accessed with an int index, implementing {@link Bits} and
+/// Vec<i64>, accessed with an int index, implementing `Bits` and
 /// `DocIdSet`. If you need to manage more than 2.1B bits, use
 /// `LongBitSet`.
 pub struct FixedBitSet {
@@ -115,7 +115,7 @@ impl FixedBitSet {
         }
     }
 
-    /// Creates a new LongBitSet using the provided long[] array as backing store.
+    /// Creates a new LongBitSet using the provided Vec<i64> array as backing store.
     /// The storedBits array must be large enough to accommodate the numBits specified, but may be
     /// larger. In that case the 'extra' or 'ghost' bits must be clear (or they may provoke
     /// spurious side-effects) @param storedBits the array to use as backing store
@@ -142,7 +142,7 @@ impl FixedBitSet {
     /// returns the given bits, otherwise returns a new {@link FixedBitSet} which
     /// can hold the requested number of bits.
     ///
-    /// NOTE: the returned bitset reuses the underlying {@code long[]} of
+    /// NOTE: the returned bit set reuses the underlying Vec<i64> of
     /// the given `bits` if possible. Also, calling {@link #length()} on the
     /// returned bits may return a value greater than {@code numBits}.
     pub fn ensure_capacity(&mut self, num_bits: usize) {

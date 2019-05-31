@@ -27,12 +27,36 @@ use core::index::{segment_file_name, strip_segment_name, SegmentInfo};
 
 const DATA_EXTENSION: &str = "cfs";
 /// Extension of compound file entries */
-pub const ENTRIES_EXTENSION: &str = "cfe";
-pub const DATA_CODEC: &str = "Lucene50CompoundData";
-pub const ENTRY_CODEC: &str = "Lucene50CompoundEntries";
-pub const VERSION_START: i32 = 0;
-pub const VERSION_CURRENT: i32 = VERSION_START;
+pub(crate) const ENTRIES_EXTENSION: &str = "cfe";
+pub(crate) const DATA_CODEC: &str = "Lucene50CompoundData";
+pub(crate) const ENTRY_CODEC: &str = "Lucene50CompoundEntries";
+pub(crate) const VERSION_START: i32 = 0;
+pub(crate) const VERSION_CURRENT: i32 = VERSION_START;
 
+/// Lucene 5.0 compound file format
+///
+/// Files:
+///  * .cfs: An optional "virtual" file consisting of all the other index files for systems that
+///    frequently run out of file handles.
+///  * .cfe: The "virtual" compound file's entry table holding all entries in the corresponding .cfs
+///    file.
+///
+/// Description:
+///  * Compound (.cfs) --> Header, FileData <sup>FileCount</sup>, Footer
+///  * Compound Entry Table (.cfe) --> Header, FileCount, <FileName, DataOffset, DataLength>
+///    <sup>FileCount</sup>
+///  * Header --> {@link codec_util#write_index_header IndexHeader}
+///  * FileCount --> {@link DataOutput#writeVInt VInt}
+///  * DataOffset,DataLength,Checksum --> {@link DataOutput#writeLong UInt64}
+///  * FileName --> {@link DataOutput#writeString String}
+///  * FileData --> raw file data
+/// Footer --> {@link CodecUtil#writeFooter CodecFooter}
+///
+/// Notes:
+///  * FileCount indicates how many files are contained in this compound file. The entry table that
+///    follows has that many entries.
+///  * Each directory entry contains a long pointer to the start of this file's data section, the
+///    files length, and a String with that file's name.
 #[derive(Copy, Clone)]
 pub struct Lucene50CompoundFormat;
 
@@ -109,7 +133,7 @@ impl CompoundFormat for Lucene50CompoundFormat {
 
 /// Offset/Length for a slice inside of a compound file */
 #[derive(Debug)]
-pub struct FileEntry(i64, i64);
+struct FileEntry(i64, i64);
 
 /// Class for accessing a compound stream.
 /// This class implements a directory, but is limited to only read operations.
@@ -119,7 +143,7 @@ pub struct Lucene50CompoundReader<D: Directory> {
     name: String,
     entries: HashMap<String, FileEntry>,
     input: Box<dyn IndexInput>,
-    pub version: i32,
+    _version: i32,
 }
 
 impl<D: Directory> Lucene50CompoundReader<D> {
@@ -164,12 +188,12 @@ impl<D: Directory> Lucene50CompoundReader<D> {
             name: si.name.clone(),
             entries,
             input,
-            version,
+            _version: version,
         })
     }
 
     /// Helper method that reads CFS entries from an input stream
-    pub fn read_entries(
+    fn read_entries(
         segment_id: &[u8],
         directory: &D,
         entries_file_name: &str,

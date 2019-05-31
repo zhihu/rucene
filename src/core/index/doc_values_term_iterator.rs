@@ -21,22 +21,27 @@ use core::search::posting_iterator::EmptyPostingIterator;
 
 use error::Result;
 
+/// implements a `TermIterator` wrapping a provided `SortedDocValues`
 pub struct DocValuesTermIterator(DocValuesTermIteratorEnum);
 
 impl DocValuesTermIterator {
-    pub fn comp_bin(d: CompressedBinaryTermIterator) -> Self {
+    pub(crate) fn comp_bin(d: CompressedBinaryTermIterator) -> Self {
         DocValuesTermIterator(DocValuesTermIteratorEnum::CompBin(d))
     }
-    pub fn sorted(d: SortedDocValuesTermIterator<TailoredSortedDocValues>) -> Self {
+    pub(crate) fn sorted(d: SortedDocValuesTermIterator<TailoredSortedDocValues>) -> Self {
         DocValuesTermIterator(DocValuesTermIteratorEnum::Sorted(d))
     }
-    pub fn sorted_set_addr(d: SortedSetDocValuesTermIterator<AddressedRandomAccessOrds>) -> Self {
+    pub(crate) fn sorted_set_addr(
+        d: SortedSetDocValuesTermIterator<AddressedRandomAccessOrds>,
+    ) -> Self {
         DocValuesTermIterator(DocValuesTermIteratorEnum::SortedSetAddr(d))
     }
-    pub fn sorted_set_table(d: SortedSetDocValuesTermIterator<TabledRandomAccessOrds>) -> Self {
+    pub(crate) fn sorted_set_table(
+        d: SortedSetDocValuesTermIterator<TabledRandomAccessOrds>,
+    ) -> Self {
         DocValuesTermIterator(DocValuesTermIteratorEnum::SortedSetTable(d))
     }
-    pub fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         DocValuesTermIterator(DocValuesTermIteratorEnum::Empty(EmptyTermIterator {}))
     }
 }

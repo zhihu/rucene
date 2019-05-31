@@ -23,10 +23,9 @@ use std::sync::Arc;
 
 use core::codec::blocktree::term_iter_frame::SegmentTermsIterFrame;
 use core::codec::blocktree::MAX_LONGS_SIZE;
-use core::codec::lucene50::Lucene50PostingIterEnum;
 use core::codec::{
-    codec_util, BlockTermState, Codec, FieldsProducer, Lucene50PostingsReader,
-    Lucene50PostingsReaderRef,
+    codec_util, BlockTermState, Codec, FieldsProducer, Lucene50PostingIterator,
+    Lucene50PostingsReader, Lucene50PostingsReaderRef,
 };
 use core::index::segment_file_name;
 use core::index::{FieldInfo, FieldInfoRef, Fields};
@@ -45,38 +44,40 @@ use error::{
 
 const OUTPUT_FLAGS_NUM_BITS: usize = 2;
 // const OUTPUT_FLAGS_MASK: i32 = 0x3;
-pub const OUTPUT_FLAGS_IS_FLOOR: i64 = 0x1;
-pub const OUTPUT_FLAGS_HAS_TERMS: i64 = 0x2;
+pub(crate) const OUTPUT_FLAGS_IS_FLOOR: i64 = 0x1;
+pub(crate) const OUTPUT_FLAGS_HAS_TERMS: i64 = 0x2;
 
 /// Extension of terms file
-pub const TERMS_EXTENSION: &str = "tim";
-pub const TERMS_CODEC_NAME: &str = "BlockTreeTermsDict";
+pub(crate) const TERMS_EXTENSION: &str = "tim";
+pub(crate) const TERMS_CODEC_NAME: &str = "BlockTreeTermsDict";
 
 /// Initial terms format.
-pub const VERSION_START: i32 = 0;
+pub(crate) const VERSION_START: i32 = 0;
 
 /// Auto-prefix terms.
-pub const VERSION_AUTO_PREFIX_TERMS: i32 = 1;
+pub(crate) const VERSION_AUTO_PREFIX_TERMS: i32 = 1;
 
 /// Conditional auto-prefix terms: we record at write time whether
 /// this field did write any auto-prefix terms.
 /// const VERSION_AUTO_PREFIX_TERMS_COND: i32 = 2;
 
 /// Auto-prefix terms have been superseded by points.
-pub const VERSION_AUTO_PREFIX_TERMS_REMOVED: i32 = 3;
+pub(crate) const VERSION_AUTO_PREFIX_TERMS_REMOVED: i32 = 3;
 
 /// Current terms format.
-pub const VERSION_CURRENT: i32 = VERSION_AUTO_PREFIX_TERMS_REMOVED;
+pub(crate) const VERSION_CURRENT: i32 = VERSION_AUTO_PREFIX_TERMS_REMOVED;
 
 /// Extension of terms index file
-pub const TERMS_INDEX_EXTENSION: &str = "tip";
-pub const TERMS_INDEX_CODEC_NAME: &str = "BlockTreeTermsIndex";
+pub(crate) const TERMS_INDEX_EXTENSION: &str = "tip";
+pub(crate) const TERMS_INDEX_CODEC_NAME: &str = "BlockTreeTermsIndex";
 
 type IndexInputRef = Arc<dyn IndexInput>;
 
 /// A block-based terms index and dictionary that assigns
 /// terms to variable length blocks according to how they
-/// share prefixes.  The terms index is a prefix trie
+/// share prefixes.
+///
+/// The terms index is a prefix trie
 /// whose leaves are term blocks.  The advantage of this
 /// approach is that seekExact is often able to
 /// determine a term cannot exist without doing any IO, and
@@ -104,19 +105,14 @@ type IndexInputRef = Arc<dyn IndexInput>;
 /// terms sharing a given prefix into smaller ones.</p>
 ///
 /// <p>Use {@link org.apache.lucene.index.CheckIndex} with the <code>-verbose</code>
-/// option to see summary statistics on the blocks in the
-/// dictionary.
-///
-/// See {@link BlockTreeTermsWriter}.
-///
-/// @lucene.experimental
+/// option to see summary statistics on the blocks in the dictionary.
 pub struct BlockTreeTermsReader {
     // Open input to the main terms dict file (_X.tib)
     terms_in: IndexInputRef,
 
     // Reads the terms dict entries, to gather state to
     // produce DocsEnum on demand
-    pub postings_reader: Lucene50PostingsReaderRef,
+    postings_reader: Lucene50PostingsReaderRef,
 
     fields: BTreeMap<String, FieldReaderRef>,
 
@@ -336,6 +332,10 @@ impl BlockTreeTermsReader {
         input.seek(dir_offset)
     }
 
+    pub(crate) fn postings_reader(&self) -> &Lucene50PostingsReaderRef {
+        &self.postings_reader
+    }
+
     pub fn dir_offset(&self) -> i64 {
         self.dir_offset
     }
@@ -386,29 +386,30 @@ impl Fields for BlockTreeTermsReader {
 
 type FSTRef = Arc<FST<ByteSequenceOutputFactory>>;
 
+/// BlockTree's implementation of `Terms`
 pub struct FieldReader {
     num_terms: i64,
     field_info: FieldInfoRef,
     sum_total_term_freq: i64,
     sum_doc_freq: i64,
     doc_count: i32,
-    index_start_fp: i64,
-    root_block_fp: i64,
+    _index_start_fp: i64,
+    _root_block_fp: i64,
     root_code: Vec<u8>,
     min_term: Vec<u8>,
     max_term: Vec<u8>,
-    pub longs_size: usize,
+    longs_size: usize,
     index: Option<FSTRef>,
     terms_in: IndexInputRef,
     postings_reader: Lucene50PostingsReaderRef,
-    pub parent: BlockTreeTermsReader,
+    parent: BlockTreeTermsReader,
 }
 
 pub type FieldReaderRef = Arc<FieldReader>;
 
 impl FieldReader {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub(crate) fn new(
         parent: BlockTreeTermsReader,
         field_info: FieldInfoRef,
         num_terms: i64,
@@ -445,8 +446,8 @@ impl FieldReader {
             sum_total_term_freq,
             sum_doc_freq,
             doc_count,
-            index_start_fp,
-            root_block_fp,
+            _index_start_fp: index_start_fp,
+            _root_block_fp: root_block_fp,
             min_term,
             max_term,
             longs_size,
@@ -457,25 +458,27 @@ impl FieldReader {
         })
     }
 
-    pub fn index_start_fp(&self) -> i64 {
-        self.index_start_fp
-    }
-
-    pub fn root_block_fp(&self) -> i64 {
-        self.root_block_fp
-    }
-
-    pub fn root_code(&self) -> &[u8] {
+    pub(crate) fn root_code(&self) -> &[u8] {
         &self.root_code
     }
 
-    pub fn field_info(&self) -> &FieldInfo {
+    pub(crate) fn field_info(&self) -> &FieldInfo {
         self.field_info.as_ref()
     }
 
     #[inline]
     pub fn index(&self) -> &FSTRef {
         self.index.as_ref().unwrap()
+    }
+
+    #[inline]
+    pub(crate) fn longs_size(&self) -> usize {
+        self.longs_size
+    }
+
+    #[inline]
+    pub(crate) fn parent(&self) -> &BlockTreeTermsReader {
+        &self.parent
     }
 }
 
@@ -898,6 +901,9 @@ impl ToString for Stats {
     }
 }
 
+/// Iterates through terms in this field.
+///
+/// This implementation skips any auto-prefix terms it encounters.
 pub struct SegmentTermIterator {
     iter: Box<SegmentTermIteratorInner>,
 }
@@ -920,7 +926,7 @@ impl SegmentTermIterator {
 }
 
 impl TermIterator for SegmentTermIterator {
-    type Postings = Lucene50PostingIterEnum;
+    type Postings = Lucene50PostingIterator;
     type TermState = BlockTermState;
 
     #[inline]
@@ -1112,9 +1118,7 @@ impl SegmentTermIteratorInner {
         }
 
         'all_term: loop {
-            let next_ent = self.current_frame().next_ent;
-            let ent_count = self.current_frame().ent_count;
-            while next_ent == ent_count {
+            while self.current_frame().next_ent == self.current_frame().ent_count {
                 stats.end_block(self.current_frame())?;
                 if !self.current_frame().is_last_in_floor {
                     self.current_frame().load_next_floor_block()?;
@@ -1264,7 +1268,7 @@ impl SegmentTermIteratorInner {
 }
 
 impl TermIterator for SegmentTermIteratorInner {
-    type Postings = Lucene50PostingIterEnum;
+    type Postings = Lucene50PostingIterator;
     type TermState = BlockTermState;
     // Decodes only the term bytes of the next term.  If caller then asks for
     // metadata, ie docFreq, totalTermFreq or pulls a D/&PEnum, we then (lazily)

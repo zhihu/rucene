@@ -19,11 +19,11 @@ use std::vec::Vec;
 
 use core::codec::Codec;
 use core::index::Term;
-use core::search::boolean_query::BooleanQuery;
-use core::search::boost::BoostQuery;
-use core::search::phrase_query::PhraseQuery;
-use core::search::term_query::TermQuery;
+use core::search::BooleanQuery;
+use core::search::BoostQuery;
+use core::search::PhraseQuery;
 use core::search::Query;
+use core::search::TermQuery;
 
 pub struct QueryStringQueryBuilder {
     query_string: String,

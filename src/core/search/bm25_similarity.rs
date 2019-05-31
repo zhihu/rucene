@@ -21,7 +21,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use core::codec::Codec;
-use core::index::field_info::FieldInvertState;
+use core::index::FieldInvertState;
 use core::index::{NumericDocValues, SearchLeafReader};
 use core::search::explanation::Explanation;
 use core::search::statistics::{CollectionStatistics, TermStatistics};
@@ -80,7 +80,7 @@ impl BM25Similarity {
         }
     }
 
-    pub fn compute_norm(state: &FieldInvertState) -> i64 {
+    pub(crate) fn compute_norm(state: &FieldInvertState) -> i64 {
         let num_terms = state.length - state.num_overlap;
         BM25Similarity::encode_norm_value(state.boost, num_terms) as i64
     }
@@ -338,7 +338,7 @@ impl BM25SimWeight {
 
         let boost_explanation = Explanation::new(true, self.boost, "boost".to_string(), vec![]);
         let boost_value = boost_explanation.value();
-        if boost_value != 1.0f32 {
+        if (boost_value - 1.0).abs() < ::std::f32::EPSILON {
             subs.push(boost_explanation);
         }
 

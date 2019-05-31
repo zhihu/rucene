@@ -12,58 +12,44 @@
 // limitations under the License.
 
 mod per_field;
-
 pub use self::per_field::*;
 
 mod blocktree;
-
 pub use self::blocktree::*;
 
 pub mod codec_util;
 
-pub use self::codec_util::*;
-
 mod compressing;
-
 pub use self::compressing::*;
 
 mod format;
-
 pub use self::format::*;
 
 mod lucene50;
-
 pub use self::lucene50::*;
 
 mod lucene53;
-
 pub use self::lucene53::*;
 
 mod lucene54;
-
 pub use self::lucene54::*;
 
 mod lucene60;
-
 pub use self::lucene60::*;
 
 mod lucene62;
-
 pub use self::lucene62::*;
 
 mod reader;
-
 pub use self::reader::*;
 
 mod writer;
-
 pub use self::writer::*;
 
 mod consumer;
 pub use self::consumer::*;
 
 mod producer;
-
 pub use self::producer::*;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
@@ -76,10 +62,13 @@ use std::sync::Arc;
 
 const BLOCK_TERM_STATE_SERIALIZED_SIZE: usize = 76;
 
-pub const CHAR_BYTES: i32 = 2;
-pub const INT_BYTES: i32 = 4;
-pub const LONG_BYTES: i32 = 8;
+#[allow(dead_code)]
+pub(crate) const CHAR_BYTES: i32 = 2;
+pub(crate) const INT_BYTES: i32 = 4;
+pub(crate) const LONG_BYTES: i32 = 8;
 
+/// Holds all state required for `PostingsReaderBase` to produce a
+/// `PostingIterator` without re-seeking the term dict.
 #[derive(Clone, Debug)]
 pub struct BlockTermState {
     /// Term ordinal, i.e. its position in the full list of
@@ -255,18 +244,11 @@ impl TermState for BlockTermState {
     }
 }
 
-pub fn check_ascii_with_limit(s: &str, limit: usize) -> Result<()> {
-    if s.chars().count() != s.len() || s.len() > limit {
-        bail!(
-            "Non ASCII or longer than {} characters in length [got {}]",
-            limit,
-            s
-        )
-    } else {
-        Ok(())
-    }
-}
-
+/// Encodes/decodes an inverted index segment.
+///
+/// Note, when extending this class, the name `get_name` is
+/// written into the index. In order for the segment to be read, the
+/// name must resolve to your implementation via {@link TryFrom::try_from(String)}.
 pub trait Codec: TryFrom<String, Error = Error> + 'static {
     type FieldsProducer: FieldsProducer + Clone;
     type PostingFmt: PostingsFormat<FieldsProducer = Self::FieldsProducer>;
@@ -395,6 +377,7 @@ impl TryFrom<String> for CodecEnum {
     }
 }
 
+/// looks up a codec by name
 pub fn codec_for_name(name: &str) -> Result<CodecEnum> {
     match name {
         "Lucene62" => Ok(CodecEnum::Lucene62(lucene62::Lucene62Codec::try_from(

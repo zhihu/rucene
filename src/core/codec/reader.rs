@@ -11,7 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::index::field_info::Fields;
+use core::index::Fields;
 use core::index::PointValues;
 use core::index::StoredFieldVisitor;
 use core::util::DocId;
@@ -79,11 +79,15 @@ impl<T: TermVectorsReader + 'static> TermVectorsReader for Arc<T> {
     }
 }
 
+/// trait for visit point values.
 pub trait PointsReader: PointValues {
     fn check_integrity(&self) -> Result<()>;
     fn as_any(&self) -> &Any;
 }
 
+/// `PointsReader` whose order of points can be changed.
+///
+/// This trait is useful for codecs to optimize flush.
 pub trait MutablePointsReader: PointsReader {
     fn value(&self, i: i32, packed_value: &mut Vec<u8>);
     fn byte_at(&self, i: i32, k: i32) -> u8;

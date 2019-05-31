@@ -18,9 +18,13 @@ use core::util::Bits;
 use core::util::DocId;
 use error::Result;
 
-/// Abstraction over an array of longs.
 pub type LongValuesContext = NumericDocValuesContext;
 
+/// Abstraction over an array of longs.
+///
+/// This class extends `NumericDocValues` so that we don't need to add another
+/// level of abstraction every time we want eg. to use the `PackedInts`
+/// utility classes to represent a `NumericDocValues` instance.
 pub trait LongValues: NumericDocValues {
     fn get64(&self, index: i64) -> Result<i64> {
         self.get64_with_ctx(None, index).map(|x| x.0)

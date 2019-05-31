@@ -13,8 +13,7 @@
 
 use core::index::{LeafReaderContext, NumericDocValuesRef, SearchLeafReader};
 use core::search::sort_field::{SortFieldType, SortedWrapperDocValuesSource};
-use core::util::bits::BitsRef;
-use core::util::{DocId, VariantValue};
+use core::util::{BitsRef, DocId, VariantValue};
 use error::Result;
 
 use core::codec::Codec;

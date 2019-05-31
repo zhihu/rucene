@@ -18,6 +18,10 @@ use core::index::{
 use core::util::DocId;
 use error::Result;
 
+/// Exposes multi-valued view over a single-valued instance.
+///
+/// This can be used if you want to have one multi-valued implementation
+/// that works for single or multi-valued types.
 pub struct SingletonSortedSetDocValues<T: SortedDocValues> {
     dv_in: T,
 }

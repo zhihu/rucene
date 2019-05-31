@@ -15,7 +15,7 @@ use core::util::array::over_size;
 
 const BYTES_PER_POSTING: usize = 3 * 4; // 3 * sizeof(i32)
 
-pub trait PostingsArray: Default {
+pub(crate) trait PostingsArray: Default {
     fn parallel_array(&self) -> &ParallelPostingsArray;
 
     fn parallel_array_mut(&mut self) -> &mut ParallelPostingsArray;
@@ -27,7 +27,7 @@ pub trait PostingsArray: Default {
     fn clear(&mut self);
 }
 
-pub struct ParallelPostingsArray {
+pub(crate) struct ParallelPostingsArray {
     pub size: usize,
     pub text_starts: Vec<u32>,
     pub int_starts: Vec<u32>,

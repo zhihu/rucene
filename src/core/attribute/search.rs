@@ -11,6 +11,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+/// control the boost factor for each term in the TokenStream
+///
+/// Add this Attribute to a `TermIterator` returned by
+/// `MultiTermQuery#getTermsEnum(Terms,TokenStream)` and update the boost on each returned term.
+/// This enables to control the boost factor for each matching term in
+/// `MultiTermQuery#SCORING_BOOLEAN_REWRITE` or `TopTermsRewrite` mode.
+/// `FuzzyQuery` is using this to take the edit distance into account.
+/// *Please note:* This attribute is intended to be added only by the TermIterator
+/// to itself in its constructor and consumed by the `MultiTermQuery.RewriteMethod`.
 pub struct BoostAttribute {
     boost: f32,
 }
@@ -44,5 +53,3 @@ impl Default for BoostAttribute {
         BoostAttribute::from(1.0)
     }
 }
-
-pub struct MaxNonCompetitiveBoostAttribute {}
