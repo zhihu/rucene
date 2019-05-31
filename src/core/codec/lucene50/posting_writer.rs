@@ -239,12 +239,10 @@ impl<O: IndexOutput> Lucene50PostingsWriter<O> {
             } else {
                 PostingIteratorFlags::POSITIONS
             }
+        } else if self.write_payloads {
+            PostingIteratorFlags::ALL
         } else {
-            if self.write_payloads {
-                PostingIteratorFlags::ALL
-            } else {
-                PostingIteratorFlags::OFFSETS
-            }
+            PostingIteratorFlags::OFFSETS
         };
 
         // self.field_info = field_info;
@@ -657,10 +655,8 @@ impl<O: IndexOutput> PostingsWriterBase for Lucene50PostingsWriter<O> {
         if state.singleton_doc_id != -1 {
             out.write_vint(state.singleton_doc_id)?;
         }
-        if self.write_positions {
-            if state.last_pos_block_offset != -1 {
-                out.write_vlong(state.last_pos_block_offset)?;
-            }
+        if self.write_positions && state.last_pos_block_offset != -1 {
+            out.write_vlong(state.last_pos_block_offset)?;
         }
         if state.skip_offset != -1 {
             out.write_vlong(state.skip_offset)?;

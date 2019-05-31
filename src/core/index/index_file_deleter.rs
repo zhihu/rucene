@@ -272,7 +272,7 @@ impl<D: Directory, C: Codec> IndexFileDeleter<D, C> {
                 }
             } else {
                 let segment_name = parse_segment_name(filename);
-                debug_assert!(segment_name.starts_with("_"));
+                debug_assert!(segment_name.starts_with('_'));
 
                 if filename.to_lowercase().ends_with(".tmp") {
                     // A temp file: don't try to look at its gen
@@ -411,7 +411,7 @@ impl<D: Directory, C: Codec> IndexFileDeleter<D, C> {
     }
 
     pub fn dec_ref_by_segment(&self, segment_infos: &SegmentInfos<D, C>) -> Result<()> {
-        self.dec_ref_batch((&segment_infos.files(false)).into_iter())
+        self.dec_ref_batch((&segment_infos.files(false)).iter())
     }
 
     /// Decrefs all provided files, even on exception; throws first exception hit, if any.
@@ -430,7 +430,7 @@ impl<D: Directory, C: Codec> IndexFileDeleter<D, C> {
     }
 
     pub fn dec_ref_without_error(&self, files: &HashSet<String>) {
-        if let Err(e) = self.dec_ref_batch(files.into_iter()) {
+        if let Err(e) = self.dec_ref_batch(files.iter()) {
             warn!("dec_ref_without_error failed with '{:?}'", e);
         }
     }

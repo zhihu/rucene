@@ -207,7 +207,7 @@ impl<T: PostingIterator> Spans for TermSpans<T> {
     }
 
     fn collect(&mut self, collector: &mut impl SpanCollector) -> Result<()> {
-        collector.collect_leaf(&mut self.postings, self.position, &self.term)
+        collector.collect_leaf(&self.postings, self.position, &self.term)
     }
 
     fn positions_cost(&self) -> f32 {

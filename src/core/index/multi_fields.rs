@@ -764,6 +764,7 @@ impl<T: PostingIterator> MappingMultiPostingsIter<T> {
         self.doc_id_merger.reset()
     }
 
+    #[allow(clippy::mut_from_ref)]
     fn current(&self) -> &mut MappingPostingsSub<T> {
         unsafe { &mut *self.current }
     }

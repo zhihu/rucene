@@ -280,12 +280,8 @@ impl<T: PostingsWriterBase, O: IndexOutput> FieldsConsumer for BlockTreeTermsWri
                 let field_info = self.field_infos.field_info_by_name(&field).unwrap().clone();
                 let mut terms_writer = TermsWriter::new(field_info, self);
 
-                loop {
-                    if let Some(term) = terms_iter.next()? {
-                        terms_writer.write(&term, &mut terms_iter)?;
-                    } else {
-                        break;
-                    }
+                while let Some(term) = terms_iter.next()? {
+                    terms_writer.write(&term, &mut terms_iter)?;
                 }
                 terms_writer.finish()?;
             }
@@ -494,6 +490,7 @@ impl<'a, T: PostingsWriterBase, O: IndexOutput> TermsWriter<'a, T, O> {
     /// were too many (more than maxItemsInBlock) entries sharing the
     /// same prefix, and so we broke it into multiple floor blocks where
     /// we record the starting label of the suffix of each floor block.
+    #[allow(clippy::too_many_arguments)]
     fn write_block(
         &mut self,
         prefix_length: usize,
@@ -770,12 +767,12 @@ impl<'a, T: PostingsWriterBase, O: IndexOutput> TermsWriter<'a, T, O> {
     pub fn finish(&mut self) -> Result<()> {
         if self.num_terms > 0 {
             // Add empty term to force closing of all final blocks
-            self.push_term(&vec![])?;
+            self.push_term(&[])?;
 
             // TODO: if pending.len() is already 1 with a non-zero prefix length
             // we can save writing a "degenerate" root block, but we have to
             // fix all the places that assume the root block's prefix is the empty string:
-            self.push_term(&vec![])?;
+            self.push_term(&[])?;
             let length = self.pending.len();
             self.write_blocks(0, length)?;
 
@@ -937,7 +934,7 @@ impl PendingBlock {
         );
         index_builder.init();
         let mut bytes = vec![0u8; scratch_bytes.file_pointer() as usize];
-        debug_assert!(bytes.len() > 0);
+        debug_assert!(!bytes.is_empty());
         scratch_bytes.write_to_buf(&mut bytes)?;
         index_builder.add(
             to_ints_ref(self.prefix.as_ref(), scratch_ints_ref),
@@ -956,7 +953,7 @@ impl PendingBlock {
         // Copy over index for all other sub-blocks
         for block in blocks {
             if !block.sub_indices.is_empty() {
-                let mut sub_indices = mem::replace(&mut block.sub_indices, vec![]);
+                let sub_indices = mem::replace(&mut block.sub_indices, vec![]);
                 for sub_index in sub_indices {
                     self.append(&mut index_builder, sub_index, scratch_ints_ref)?;
                 }
@@ -980,13 +977,9 @@ impl PendingBlock {
     ) -> Result<()> {
         let mut fst_iterator = BytesRefFSTIterator::new(sub_index);
         fst_iterator.init();
-        loop {
-            if let Some((input, output)) = fst_iterator.next()? {
-                let ints_ref = to_ints_ref(input, scratch_ints_ref);
-                builder.add(ints_ref, output)?;
-            } else {
-                break;
-            }
+        while let Some((input, output)) = fst_iterator.next()? {
+            let ints_ref = to_ints_ref(input, scratch_ints_ref);
+            builder.add(ints_ref, output)?;
         }
         Ok(())
     }

@@ -204,7 +204,7 @@ impl FieldInfosFormat for Lucene60FieldInfosFormat {
         )?;
         output.write_vint(infos.len() as i32)?;
 
-        for (_, fi) in &infos.by_number {
+        for fi in infos.by_number.values() {
             fi.check_consistency()?;
 
             output.write_string(&fi.name)?;

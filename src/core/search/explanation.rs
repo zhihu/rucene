@@ -26,10 +26,11 @@ impl Explanation {
         description: String,
         details: Vec<Explanation>,
     ) -> Explanation {
-        let mut value = value;
-        if !is_match {
-            value = 0.0f32;
-        }
+        let value = if !is_match {
+            0.0f32
+        } else {
+            value
+        };
 
         Explanation {
             is_match,
@@ -73,10 +74,12 @@ impl Explanation {
             buffer.push_str(&detail.to_string(depth + 1))
         }
 
-        return buffer;
+        buffer
     }
+}
 
-    pub fn clone(&self) -> Explanation {
+impl Clone for Explanation {
+    fn clone(&self) -> Self {
         let mut details: Vec<Explanation> = vec![];
         for detail in &self.details {
             details.push(detail.clone());

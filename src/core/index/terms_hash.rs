@@ -77,7 +77,7 @@ impl TermsHashBase {
         MP: MergePolicy,
     {
         let bytes_used = if track_allocations {
-            Counter::borrow(&mut doc_writer.bytes_used)
+            Counter::borrow(&doc_writer.bytes_used)
         } else {
             Counter::new(false)
         };
@@ -190,47 +190,45 @@ fn apply_deletes<D: Directory, DW: Directory, C: Codec>(
     fields: &impl Fields,
 ) -> Result<()> {
     // process any pending Term deletes for this newly flushed segment:
-    if state.seg_updates.is_some() {
-        if !state.seg_updates().deleted_terms.is_empty() {
-            let mut deleted_terms = Vec::with_capacity(state.seg_updates().deleted_terms.len());
-            for k in state.seg_updates().deleted_terms.keys() {
-                deleted_terms.push(k.clone());
+    if state.seg_updates.is_some() && !state.seg_updates().deleted_terms.is_empty() {
+        let mut deleted_terms = Vec::with_capacity(state.seg_updates().deleted_terms.len());
+        for k in state.seg_updates().deleted_terms.keys() {
+            deleted_terms.push(k.clone());
+        }
+        deleted_terms.sort();
+
+        let mut last_field = "";
+        let mut terms_iter = None;
+        for delete_term in &deleted_terms {
+            if delete_term.field() != last_field {
+                last_field = delete_term.field();
+                terms_iter = if let Some(terms) = fields.terms(last_field)? {
+                    Some(terms.iterator()?)
+                } else {
+                    None
+                };
             }
-            deleted_terms.sort();
 
-            let mut last_field = "";
-            let mut terms_iter = None;
-            for delete_term in &deleted_terms {
-                if delete_term.field() != last_field {
-                    last_field = delete_term.field();
-                    terms_iter = if let Some(terms) = fields.terms(last_field)? {
-                        Some(terms.iterator()?)
-                    } else {
-                        None
-                    };
-                }
-
-                if let Some(ref mut iter) = terms_iter {
-                    if iter.seek_exact(&delete_term.bytes)? {
-                        let mut postings_iter = iter.postings_with_flags(0)?;
-                        let del_doc_limit = state.seg_updates().deleted_terms[delete_term];
-                        debug_assert!(del_doc_limit < NO_MORE_DOCS);
-                        loop {
-                            let mut doc = postings_iter.next()?;
-                            if doc < del_doc_limit {
-                                let size = state.segment_info.max_doc as usize;
-                                if state.live_docs.is_empty() {
-                                    state.live_docs = FixedBitSet::new(size);
-                                    state.live_docs.batch_set(0, size);
-                                }
-                                debug_assert!(state.live_docs.len() >= size);
-                                if state.live_docs.get(doc as usize)? {
-                                    state.del_count_on_flush += 1;
-                                    state.live_docs.clear(doc as usize);
-                                }
-                            } else {
-                                break;
+            if let Some(ref mut iter) = terms_iter {
+                if iter.seek_exact(&delete_term.bytes)? {
+                    let mut postings_iter = iter.postings_with_flags(0)?;
+                    let del_doc_limit = state.seg_updates().deleted_terms[delete_term];
+                    debug_assert!(del_doc_limit < NO_MORE_DOCS);
+                    loop {
+                        let doc = postings_iter.next()?;
+                        if doc < del_doc_limit {
+                            let size = state.segment_info.max_doc as usize;
+                            if state.live_docs.is_empty() {
+                                state.live_docs = FixedBitSet::new(size);
+                                state.live_docs.batch_set(0, size);
                             }
+                            debug_assert!(state.live_docs.len() >= size);
+                            if state.live_docs.get(doc as usize)? {
+                                state.del_count_on_flush += 1;
+                                state.live_docs.clear(doc as usize);
+                            }
+                        } else {
+                            break;
                         }
                     }
                 }
@@ -296,7 +294,7 @@ where
             }
         }
 
-        if all_fields.len() > 0 {
+        if !all_fields.is_empty() {
             // sort by field name
             all_fields.sort();
             let fields = FreqProxFields::new(all_fields);

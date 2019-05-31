@@ -578,7 +578,7 @@ impl<S: Spans> DocIterator for SpanScorer<S> {
     }
 }
 
-#[allow(implicit_hasher)]
+#[allow(clippy::implicit_hasher)]
 pub fn build_sim_weight<C: Codec, IS: SearchPlanBuilder<C> + ?Sized>(
     field: &str,
     searcher: &IS,
@@ -658,23 +658,20 @@ pub trait SpanWeight<C: Codec>: Weight<C> {
             let mut scorer = SpanScorer::new(spans, self.sim_scorer(reader.reader)?);
 
             if scorer.advance(doc)? == doc {
-                match self.sim_weight() {
-                    Some(ref w) => {
-                        scorer.ensure_freq()?;
-                        let freq = scorer.freq;
-                        let freq_expl =
-                            Explanation::new(true, freq, format!("phraseFreq={}", freq), vec![]);
-                        let score_expl = w.explain(reader.reader, doc, freq_expl)?;
-                        let score_expl_value = score_expl.value();
+                if let Some(ref w) = self.sim_weight() {
+                    scorer.ensure_freq()?;
+                    let freq = scorer.freq;
+                    let freq_expl =
+                        Explanation::new(true, freq, format!("phraseFreq={}", freq), vec![]);
+                    let score_expl = w.explain(reader.reader, doc, freq_expl)?;
+                    let score_expl_value = score_expl.value();
 
-                        return Ok(Explanation::new(
-                            true,
-                            score_expl_value,
-                            format!("weight({} in {}), result of:", self, doc),
-                            vec![score_expl],
-                        ));
-                    }
-                    None => {}
+                    return Ok(Explanation::new(
+                        true,
+                        score_expl_value,
+                        format!("weight({} in {}), result of:", self, doc),
+                        vec![score_expl],
+                    ));
                 };
             }
         }
@@ -905,6 +902,7 @@ pub(crate) struct SpansAsScorer<T: PostingIterator> {
 
 impl<T: PostingIterator> SpansAsScorer<T> {
     #[inline]
+    #[allow(clippy::mut_from_ref)]
     fn spans(&self) -> &mut SpansEnum<T> {
         unsafe { &mut *self.spans }
     }

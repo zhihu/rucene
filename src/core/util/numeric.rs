@@ -146,7 +146,7 @@ impl From<f64> for Numeric {
 }
 
 pub fn to_base36(val: u64) -> String {
-    let base36 = "0123456789abcdefghijklmnopqrstuvwxyz".as_bytes();
+    let base36 = b"0123456789abcdefghijklmnopqrstuvwxyz";
     let mut val = val;
     let mut result = Vec::with_capacity(14);
     loop {

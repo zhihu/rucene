@@ -385,20 +385,20 @@ impl Format {
         }
     }
 
-    pub fn get_id(&self) -> i32 {
-        match *self {
+    pub fn get_id(self) -> i32 {
+        match self {
             Format::Packed => 0,
             Format::PackedSingleBlock => 1,
         }
     }
 
     pub fn byte_count(
-        &self,
+        self,
         _packed_ints_version: i32,
         value_count: i32,
         bits_per_value: i32,
     ) -> i64 {
-        match *self {
+        match self {
             Format::Packed => i64::from(value_count * bits_per_value + 7) / 8,
             _ => {
                 let values_per_block = 64 / bits_per_value;
@@ -409,12 +409,12 @@ impl Format {
     /// Computes how many long blocks are needed to store <code>values</code>
     /// values of size <code>bits_per_value</code>.
     pub fn long_count(
-        &self,
+        self,
         packed_ints_version: i32,
         value_count: i32,
         bits_per_value: i32,
     ) -> i32 {
-        match *self {
+        match self {
             Format::Packed => {
                 let byte_count = self.byte_count(packed_ints_version, value_count, bits_per_value);
                 ((byte_count + 7) / 8) as i32
@@ -428,16 +428,16 @@ impl Format {
 
     /// Tests whether the provided number of bits per value is supported by the
     /// format.
-    pub fn is_supported(&self, bits_per_value: i32) -> bool {
-        match *self {
+    pub fn is_supported(self, bits_per_value: i32) -> bool {
+        match self {
             Format::Packed => bits_per_value >= 1 && bits_per_value <= 64,
             _ => Packed64SingleBlock::is_supported(bits_per_value as usize),
         }
     }
 
     /// Returns the overhead per value, in bits.
-    pub fn overhead_per_value(&self, bits_per_value: i32) -> f32 {
-        match *self {
+    pub fn overhead_per_value(self, bits_per_value: i32) -> f32 {
+        match self {
             Format::Packed => 0f32,
             _ => {
                 let values_per_block = 64 / bits_per_value;
@@ -448,7 +448,7 @@ impl Format {
     }
 
     /// Returns the overhead ratio (<code>overhead per value / bits per value</code>).
-    pub fn overhead_ratio(&self, bits_per_value: i32) -> f32 {
+    pub fn overhead_ratio(self, bits_per_value: i32) -> f32 {
         self.overhead_per_value(bits_per_value) / bits_per_value as f32
     }
 }
@@ -507,7 +507,7 @@ impl FormatAndBits {
         {
             actual_bits_per_value = 48;
         } else {
-            for bpv in bits_per_value..max_bits_per_value + 1 {
+            for bpv in bits_per_value..=max_bits_per_value {
                 if Format::PackedSingleBlock.is_supported(bpv) {
                     let overhead = Format::PackedSingleBlock.overhead_per_value(bpv);
                     let acceptable_overhead =
@@ -2315,7 +2315,7 @@ impl PackedWriter {
             self.format
                 .byte_count(VERSION_CURRENT, self.off as i32, self.bits_per_value)
                 as usize;
-        out.write_bytes(&mut self.next_blocks, 0, block_count)?;
+        out.write_bytes(&self.next_blocks, 0, block_count)?;
         for i in 0..self.next_values.len() {
             self.next_values[i] = 0i64;
         }
@@ -2807,7 +2807,7 @@ impl PackedIntDecoder for BulkOperationPackedSingleBlock {
     fn decode_byte_to_long(&self, blocks: &[u8], values: &mut [i64], iterations: usize) {
         let mut values_offset = 0;
         for i in 0..iterations {
-            let mut block = self.read_long(blocks, i * 8);
+            let block = self.read_long(blocks, i * 8);
             values_offset = self.decode_long_value_to_long(block, values, values_offset);
         }
     }

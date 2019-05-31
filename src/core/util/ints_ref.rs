@@ -122,6 +122,7 @@ impl Ord for IntsRef {
     }
 }
 
+#[derive(Default)]
 pub struct IntsRefBuilder {
     ints: Vec<i32>,
     pub offset: usize,
@@ -130,11 +131,7 @@ pub struct IntsRefBuilder {
 
 impl IntsRefBuilder {
     pub fn new() -> IntsRefBuilder {
-        IntsRefBuilder {
-            ints: Vec::new(),
-            offset: 0,
-            length: 0,
-        }
+        Default::default()
     }
 
     pub fn ints(&self) -> &[i32] {
@@ -213,6 +210,7 @@ impl LongsPtr {
         }
     }
 
+    #[allow(clippy::mut_from_ref)]
     pub fn longs(&self) -> &mut Vec<i64> {
         unsafe { &mut (*self.longs) }
     }
@@ -249,11 +247,11 @@ impl LongsPtr {
 
         // One is a prefix of the other, or, they are equal:
         if self.length < other.length {
-            return Ordering::Less;
+            Ordering::Less
         } else if self.length > other.length {
-            return Ordering::Greater;
+            Ordering::Greater
         } else {
-            return Ordering::Equal;
+            Ordering::Equal
         }
     }
 }

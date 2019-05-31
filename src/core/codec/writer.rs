@@ -233,7 +233,7 @@ impl<C: Codec> PointsReader for MergePointsReader<C> {
 
 impl<C: Codec> PointValues for MergePointsReader<C> {
     fn intersect(&self, field_name: &str, visitor: &mut impl IntersectVisitor) -> Result<()> {
-        if field_name != &self.field_info.name {
+        if field_name != self.field_info.name {
             bail!(IllegalArgument(
                 "field name must match the field being merged".into()
             ));
@@ -561,33 +561,29 @@ pub trait TermVectorsWriter {
                 )?;
                 let mut terms_iter = terms.iterator()?;
                 let mut term_count = 0;
-                loop {
-                    if let Some(term) = terms_iter.next()? {
-                        term_count += 1;
-                        let freq = terms_iter.total_term_freq()?;
-                        self.start_term(&BytesRef::new(&term), freq as i32)?;
+                while let Some(term) = terms_iter.next()? {
+                    term_count += 1;
+                    let freq = terms_iter.total_term_freq()?;
+                    self.start_term(&BytesRef::new(&term), freq as i32)?;
 
-                        if has_positions || has_offsets {
-                            let mut docs_and_positions_iter =
-                                terms_iter.postings_with_flags(PostingIteratorFlags::ALL)?;
-                            let doc_id = docs_and_positions_iter.next()?;
-                            debug_assert_ne!(doc_id, NO_MORE_DOCS);
-                            debug_assert_eq!(docs_and_positions_iter.freq()? as i64, freq);
+                    if has_positions || has_offsets {
+                        let mut docs_and_positions_iter =
+                            terms_iter.postings_with_flags(PostingIteratorFlags::ALL)?;
+                        let doc_id = docs_and_positions_iter.next()?;
+                        debug_assert_ne!(doc_id, NO_MORE_DOCS);
+                        debug_assert_eq!(docs_and_positions_iter.freq()? as i64, freq);
 
-                            for _ in 0..freq {
-                                let pos = docs_and_positions_iter.next_position()?;
-                                let start_offset = docs_and_positions_iter.start_offset()?;
-                                let end_offset = docs_and_positions_iter.end_offset()?;
-                                let payload = docs_and_positions_iter.payload()?;
+                        for _ in 0..freq {
+                            let pos = docs_and_positions_iter.next_position()?;
+                            let start_offset = docs_and_positions_iter.start_offset()?;
+                            let end_offset = docs_and_positions_iter.end_offset()?;
+                            let payload = docs_and_positions_iter.payload()?;
 
-                                debug_assert!(!has_positions || pos >= 0);
-                                self.add_position(pos, start_offset, end_offset, &payload)?;
-                            }
+                            debug_assert!(!has_positions || pos >= 0);
+                            self.add_position(pos, start_offset, end_offset, &payload)?;
                         }
-                        self.finish_term()?;
-                    } else {
-                        break;
                     }
+                    self.finish_term()?;
                 }
                 debug_assert_eq!(term_count, num_terms as i32);
                 self.finish_field()?;
@@ -618,20 +614,16 @@ pub fn merge_term_vectors<D: Directory, C: Codec, T: TermVectorsWriter>(
     }
     let mut doc_id_merger = doc_id_merger_of(subs, merge_state.needs_index_sort)?;
     let mut doc_count = 0i32;
-    loop {
-        if let Some(sub) = doc_id_merger.next()? {
-            // NOTE: it's very important to first assign to vectors then pass it to
-            // termVectorsWriter.addAllDocVectors; see LUCENE-1282
-            let vectors = if let Some(ref reader) = sub.reader {
-                reader.get(sub.doc_id)?
-            } else {
-                None
-            };
-            writer.add_all_doc_vectors(vectors.as_ref(), merge_state)?;
-            doc_count += 1;
+    while let Some(sub) = doc_id_merger.next()? {
+        // NOTE: it's very important to first assign to vectors then pass it to
+        // termVectorsWriter.addAllDocVectors; see LUCENE-1282
+        let vectors = if let Some(ref reader) = sub.reader {
+            reader.get(sub.doc_id)?
         } else {
-            break;
-        }
+            None
+        };
+        writer.add_all_doc_vectors(vectors.as_ref(), merge_state)?;
+        doc_count += 1;
     }
     writer.finish(
         merge_state.merge_field_infos.as_ref().unwrap().as_ref(),
@@ -875,17 +867,13 @@ pub fn merge_store_fields<D: Directory, C: Codec, S: StoredFieldsWriter + 'stati
     let mut doc_id_merger = doc_id_merger_of(subs, state.needs_index_sort)?;
 
     let mut doc_count = 0;
-    loop {
-        if let Some(sub) = doc_id_merger.next()? {
-            debug_assert_eq!(sub.base().mapped_doc_id, doc_count);
-            writer.start_document()?;
-            sub.reader
-                .visit_document_mut(sub.doc_id, &mut sub.visitor)?;
-            writer.finish_document()?;
-            doc_count += 1;
-        } else {
-            break;
-        }
+    while let Some(sub) = doc_id_merger.next()? {
+        debug_assert_eq!(sub.base().mapped_doc_id, doc_count);
+        writer.start_document()?;
+        sub.reader
+            .visit_document_mut(sub.doc_id, &mut sub.visitor)?;
+        writer.finish_document()?;
+        doc_count += 1;
     }
     writer.finish(
         state.merge_field_infos.as_ref().unwrap().as_ref(),

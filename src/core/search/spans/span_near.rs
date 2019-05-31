@@ -345,7 +345,7 @@ pub struct NearSpansUnordered<P: PostingIterator> {
 }
 
 impl<P: PostingIterator> NearSpansUnordered<P> {
-    #[allow(explicit_counter_loop)]
+    #[allow(clippy::explicit_counter_loop)]
     // TODO return Box<> to make sure the span_cell's pointer to parent won't change
     pub fn new(
         allowed_slop: i32,

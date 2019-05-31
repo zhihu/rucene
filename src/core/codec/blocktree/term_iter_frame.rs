@@ -131,6 +131,7 @@ impl SegmentTermsIterFrame {
         self.ord = ord;
     }
 
+    #[allow(clippy::mut_from_ref)]
     fn terms_iter(&self) -> &mut SegmentTermIteratorInner {
         unsafe { &mut *self.ste }
     }
@@ -446,7 +447,7 @@ impl SegmentTermsIterFrame {
 
     // Used only by assert
     fn prefix_matches(&self, target: &[u8]) -> bool {
-        &target[..self.prefix] == &self.terms_iter().term[..self.prefix]
+        target[..self.prefix] == self.terms_iter().term[..self.prefix]
     }
 
     // Scans to sub-block that has this target fp; only

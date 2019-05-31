@@ -505,7 +505,7 @@ impl<P: PostingIterator> SpansElement<P> {
         SpansElement { spans_ptr }
     }
 
-    #[allow(mut_from_ref)]
+    #[allow(clippy::mut_from_ref)]
     #[inline]
     fn spans(&self) -> &mut SpansEnum<P> {
         unsafe { &mut *self.spans_ptr }

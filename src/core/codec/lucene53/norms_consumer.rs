@@ -95,17 +95,13 @@ impl<O: IndexOutput> Lucene53NormsConsumer<O> {
         };
         self.meta.write_byte(len as u8)?;
         self.meta.write_long(self.data.file_pointer())?;
-        loop {
-            if let Some(Ok(nv)) = values.next() {
-                match len {
-                    1 => self.data.write_byte(nv.byte_value() as u8)?,
-                    2 => self.data.write_short(nv.short_value())?,
-                    4 => self.data.write_int(nv.int_value())?,
-                    8 => self.data.write_long(nv.long_value())?,
-                    _ => unreachable!(),
-                }
-            } else {
-                break;
+        while let Some(Ok(nv)) = values.next() {
+            match len {
+                1 => self.data.write_byte(nv.byte_value() as u8)?,
+                2 => self.data.write_short(nv.short_value())?,
+                4 => self.data.write_int(nv.int_value())?,
+                8 => self.data.write_long(nv.long_value())?,
+                _ => unreachable!(),
             }
         }
         values.reset();
@@ -123,15 +119,11 @@ impl<O: IndexOutput> NormsConsumer for Lucene53NormsConsumer<O> {
         let mut min_value = i64::max_value();
         let mut max_value = i64::min_value();
         let mut count = 0;
-        loop {
-            if let Some(nv) = values.next() {
-                let v = nv?.long_value();
-                min_value = v.min(min_value);
-                max_value = v.max(max_value);
-                count += 1;
-            } else {
-                break;
-            }
+        while let Some(nv) = values.next() {
+            let v = nv?.long_value();
+            min_value = v.min(min_value);
+            max_value = v.max(max_value);
+            count += 1;
         }
         values.reset();
         if count != self.max_doc as usize {

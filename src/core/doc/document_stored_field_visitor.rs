@@ -71,7 +71,7 @@ impl StoredFieldVisitor for DocumentStoredFieldVisitor {
                 ));
             }
             Err(e) => {
-                assert!(false, format!("string_field failed: {:?}", e));
+                panic!(format!("string_field failed: {:?}", e));
             }
         }
         Ok(())

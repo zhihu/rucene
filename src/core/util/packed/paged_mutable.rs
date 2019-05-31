@@ -261,7 +261,7 @@ impl PagedMutableHugeWriter {
             size,
             page_size,
             fastest_bits.bits_per_value,
-            &fastest_bits.format,
+            fastest_bits.format,
             true,
         )
     }
@@ -270,18 +270,18 @@ impl PagedMutableHugeWriter {
         size: usize,
         page_size: usize,
         bits_per_value: i32,
-        format: &Format,
+        format: Format,
         fill_pages: bool,
     ) -> PagedMutableHugeWriter {
         let base = PagedMutableBase::new(bits_per_value, size, page_size);
         let mut ret = PagedMutableHugeWriter {
             base,
-            format: format.clone(),
+            format,
         };
         if fill_pages {
             ret.fill_pages();
         }
-        return ret;
+        ret
     }
 
     pub fn size(&self) -> usize {
@@ -312,7 +312,7 @@ impl PagedMutableWriter for PagedMutableHugeWriter {
             new_size,
             self.paged_mutable_base().page_size() as usize,
             self.paged_mutable_base().bits_per_value,
-            &self.format,
+            self.format,
             false,
         )
     }
@@ -385,7 +385,7 @@ impl PagedGrowableWriter {
         if fill_pages {
             ret.fill_pages();
         }
-        return ret;
+        ret
     }
 
     pub fn size(&self) -> usize {

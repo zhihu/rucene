@@ -84,11 +84,15 @@ impl BytesStore {
     }
 
     pub fn len(&self) -> usize {
-        if self.blocks.len() >= 1 {
+        if !self.blocks.is_empty() {
             self.block_size * (self.blocks.len() - 1) + self.blocks[self.blocks.len() - 1].len()
         } else {
             0
         }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 

@@ -62,7 +62,7 @@ impl Lucene50StoredFieldsFormat {
         }
     }
 
-    pub fn format(&self, mode: &StoredFieldCompressMode) -> CompressingStoredFieldsFormat {
+    pub fn format(self, mode: StoredFieldCompressMode) -> CompressingStoredFieldsFormat {
         match mode {
             StoredFieldCompressMode::BestSpeed => CompressingStoredFieldsFormat::new(
                 "Lucene50StoredFieldsFast",
@@ -96,7 +96,7 @@ impl StoredFieldsFormat for Lucene50StoredFieldsFormat {
         if let Some(value) = si.attributes.get(MODE_KEY) {
             let mode = StoredFieldCompressMode::from_str(value)?;
 
-            self.format(&mode)
+            self.format(mode)
                 .fields_reader(directory, si, field_info, ioctx)
         } else {
             bail!(IllegalState(format!(
@@ -127,6 +127,6 @@ impl StoredFieldsFormat for Lucene50StoredFieldsFormat {
 
         si.attributes
             .insert(MODE_KEY.to_string(), "BEST_SPEED".to_string());
-        self.format(&self.mode).fields_writer(directory, si, ioctx)
+        self.format(self.mode).fields_writer(directory, si, ioctx)
     }
 }

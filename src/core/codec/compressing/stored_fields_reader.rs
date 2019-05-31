@@ -65,8 +65,8 @@ pub const TYPE_BITS: i32 = 3; // NUMERIC_DOUBLE.bits_required()
 pub const TYPE_MASK: i32 = 7; // 3 bits max value, PackedInts.maxValue(TYPE_BITS)
 
 // -0 isn't compressed
-pub const NEGATIVE_ZERO_FLOAT: i32 = -2147483648; // f32::to_bits(-0f32) as i32;
-pub const NEGATIVE_ZERO_DOUBLE: i64 = -9223372036854775808; // f64::to_bits(-0f64) as i64;
+pub const NEGATIVE_ZERO_FLOAT: i32 = -2_147_483_648; // f32::to_bits(-0f32) as i32;
+pub const NEGATIVE_ZERO_DOUBLE: i64 = -9_223_372_036_854_775_808; // f64::to_bits(-0f64) as i64;
                                                             // for compression of timestamps
 pub const SECOND: i64 = 1000;
 pub const HOUR: i64 = 60 * 60 * SECOND;
@@ -839,7 +839,7 @@ impl CompressingStoredFieldsReader {
             fields_stream: self.fields_stream.as_ref().clone()?,
             chunk_size: self.chunk_size,
             packed_ints_version: self.packed_ints_version,
-            compression_mode: self.compression_mode.clone(),
+            compression_mode: self.compression_mode,
             decompressor: self.decompressor.clone(),
             num_docs: self.num_docs,
             merging: false,
@@ -929,6 +929,7 @@ impl CompressingStoredFieldsInput {
         CompressingStoredFieldsInput { reader }
     }
 
+    #[allow(clippy::mut_from_ref)]
     fn reader(&self) -> &mut CompressingStoredFieldsReader {
         unsafe { &mut *self.reader }
     }

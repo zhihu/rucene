@@ -251,7 +251,7 @@ impl<C: Codec> FrozenBufferedUpdates<C> {
     }
 
     pub fn any(&self) -> bool {
-        self.terms.size > 0 || self.query_and_limits.len() > 0
+        self.terms.size > 0 || !self.query_and_limits.is_empty()
     }
 }
 
@@ -589,134 +589,130 @@ impl<C: Codec> BufferedUpdatesStream<C> {
         let mut iter = updates.term_iterator()?;
         let mut field = String::with_capacity(0);
 
-        loop {
-            if let Some(term) = iter.next()? {
-                if iter.field() != &field {
-                    field = iter.field().to_string();
-                    queue = BinaryHeap::with_capacity(num_readers);
-                    for i in 0..num_readers {
-                        let terms_option = {
-                            let guard = seg_states[i].rld.inner.lock()?;
-                            guard.reader().fields()?.terms(&field)?
-                        };
+        while let Some(term) = iter.next()? {
+            if iter.field() != field {
+                field = iter.field().to_string();
+                queue = BinaryHeap::with_capacity(num_readers);
+                for i in 0..num_readers {
+                    let terms_option = {
+                        let guard = seg_states[i].rld.inner.lock()?;
+                        guard.reader().fields()?.terms(&field)?
+                    };
 
-                        if let Some(terms) = terms_option {
-                            let mut terms_iterator = terms.iterator()?;
-                            seg_states[i].term = terms_iterator.next()?;
-                            seg_states[i].terms_iterator = Some(terms_iterator);
-                            if seg_states[i].term.is_some() {
-                                queue.push(SegmentStateRef::new(seg_states, i));
-                            }
+                    if let Some(terms) = terms_option {
+                        let mut terms_iterator = terms.iterator()?;
+                        seg_states[i].term = terms_iterator.next()?;
+                        seg_states[i].terms_iterator = Some(terms_iterator);
+                        if seg_states[i].term.is_some() {
+                            queue.push(SegmentStateRef::new(seg_states, i));
                         }
                     }
-
-                    self.last_delete_term.clear();
                 }
 
-                self.check_deleted_term(term.bytes());
-                self.last_delete_term = term.bytes().to_vec();
+                self.last_delete_term.clear();
+            }
 
-                del_term_visited_count += 1;
-                let del_gen = iter.del_gen();
+            self.check_deleted_term(term.bytes());
+            self.last_delete_term = term.bytes().to_vec();
 
-                while !queue.is_empty() {
-                    // Get next term merged across all segments
-                    let mut should_pop = false;
-                    {
-                        let top = queue.peek_mut().unwrap();
-                        let i = top.index;
+            del_term_visited_count += 1;
+            let del_gen = iter.del_gen();
 
-                        seg_term_visited_count += 1;
-                        match term.bytes().cmp(seg_states[i].term.as_ref().unwrap()) {
-                            CmpOrdering::Less => {
-                                break;
-                            }
-                            CmpOrdering::Equal => {
-                                // fall through
-                            }
-                            CmpOrdering::Greater => {
-                                debug_assert!(seg_states[i].terms_iterator.is_some());
-                                match seg_states[i]
-                                    .terms_iterator
-                                    .as_mut()
-                                    .unwrap()
-                                    .seek_ceil(term.bytes())?
-                                {
-                                    SeekStatus::Found => {
-                                        // fall through
-                                    }
-                                    SeekStatus::NotFound => {
-                                        seg_states[i].term = Some(
-                                            seg_states[i]
-                                                .terms_iterator
-                                                .as_ref()
-                                                .unwrap()
-                                                .term()?
-                                                .to_vec(),
-                                        );
-                                        continue;
-                                    }
-                                    SeekStatus::End => {
-                                        should_pop = true;
-                                        // pop current
-                                    }
-                                }
-                            }
+            while !queue.is_empty() {
+                // Get next term merged across all segments
+                let mut should_pop = false;
+                {
+                    let top = queue.peek_mut().unwrap();
+                    let i = top.index;
+
+                    seg_term_visited_count += 1;
+                    match term.bytes().cmp(seg_states[i].term.as_ref().unwrap()) {
+                        CmpOrdering::Less => {
+                            break;
                         }
-                    }
-
-                    if should_pop {
-                        queue.pop();
-                        continue;
-                    }
-
-                    let idx: usize;
-                    {
-                        let top = queue.peek_mut().unwrap();
-                        idx = top.index;
-                        debug_assert_ne!(seg_states[idx].del_gen, del_gen);
-                        debug_assert!(seg_states[idx].terms_iterator.is_some());
-
-                        if seg_states[idx].del_gen < del_gen {
-                            // we don't need term frequencies for this
-                            let mut postings = seg_states[idx]
+                        CmpOrdering::Equal => {
+                            // fall through
+                        }
+                        CmpOrdering::Greater => {
+                            debug_assert!(seg_states[i].terms_iterator.is_some());
+                            match seg_states[i]
                                 .terms_iterator
                                 .as_mut()
                                 .unwrap()
-                                .postings_with_flags(PostingIteratorFlags::NONE)?;
-
-                            loop {
-                                let doc_id = postings.next()?;
-                                if doc_id == NO_MORE_DOCS {
-                                    break;
+                                .seek_ceil(term.bytes())?
+                            {
+                                SeekStatus::Found => {
+                                    // fall through
                                 }
-                                if !seg_states[idx].rld.test_doc_id(doc_id as usize)? {
+                                SeekStatus::NotFound => {
+                                    seg_states[i].term = Some(
+                                        seg_states[i]
+                                            .terms_iterator
+                                            .as_ref()
+                                            .unwrap()
+                                            .term()?
+                                            .to_vec(),
+                                    );
                                     continue;
                                 }
-                                if !seg_states[idx].any {
-                                    seg_states[idx].rld.init_writable_live_docs()?;
-                                    seg_states[idx].any = true;
+                                SeekStatus::End => {
+                                    should_pop = true;
+                                    // pop current
                                 }
-                                // NOTE: there is no limit check on the docID
-                                // when deleting by Term (unlike by Query)
-                                // because on flush we apply all Term deletes to
-                                // each segment.  So all Term deleting here is
-                                // against prior segments:
-                                seg_states[idx].rld.delete(doc_id)?;
                             }
-                            seg_states[idx].postings = Some(postings);
                         }
-
-                        seg_states[idx].term =
-                            seg_states[idx].terms_iterator.as_mut().unwrap().next()?;
-                    }
-
-                    if seg_states[idx].term.is_none() {
-                        queue.pop();
                     }
                 }
-            } else {
-                break;
+
+                if should_pop {
+                    queue.pop();
+                    continue;
+                }
+
+                let idx: usize;
+                {
+                    let top = queue.peek_mut().unwrap();
+                    idx = top.index;
+                    debug_assert_ne!(seg_states[idx].del_gen, del_gen);
+                    debug_assert!(seg_states[idx].terms_iterator.is_some());
+
+                    if seg_states[idx].del_gen < del_gen {
+                        // we don't need term frequencies for this
+                        let mut postings = seg_states[idx]
+                            .terms_iterator
+                            .as_mut()
+                            .unwrap()
+                            .postings_with_flags(PostingIteratorFlags::NONE)?;
+
+                        loop {
+                            let doc_id = postings.next()?;
+                            if doc_id == NO_MORE_DOCS {
+                                break;
+                            }
+                            if !seg_states[idx].rld.test_doc_id(doc_id as usize)? {
+                                continue;
+                            }
+                            if !seg_states[idx].any {
+                                seg_states[idx].rld.init_writable_live_docs()?;
+                                seg_states[idx].any = true;
+                            }
+                            // NOTE: there is no limit check on the docID
+                            // when deleting by Term (unlike by Query)
+                            // because on flush we apply all Term deletes to
+                            // each segment.  So all Term deleting here is
+                            // against prior segments:
+                            seg_states[idx].rld.delete(doc_id)?;
+                        }
+                        seg_states[idx].postings = Some(postings);
+                    }
+
+                    seg_states[idx].term =
+                        seg_states[idx].terms_iterator.as_mut().unwrap().next()?;
+                }
+
+                if seg_states[idx].term.is_none() {
+                    queue.pop();
+                }
             }
         }
 
@@ -1072,6 +1068,6 @@ impl<C: Codec> CoalescedUpdates<C> {
     }
 
     pub fn any(&self) -> bool {
-        self.queries.len() > 0 || self.terms.len() > 0
+        !self.queries.is_empty() || !self.terms.is_empty()
     }
 }

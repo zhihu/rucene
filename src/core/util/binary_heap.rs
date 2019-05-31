@@ -167,7 +167,7 @@ impl<T: Ord> BinaryHeapPub<T> {
             while child < end {
                 let right = child + 1;
                 // compare with the greater of the two children
-                if right < end && !(hole.get(child) > hole.get(right)) {
+                if right < end && hole.get(child) <= hole.get(right) {
                     child = right;
                 }
                 // if we are already in order, stop.
@@ -194,7 +194,7 @@ impl<T: Ord> BinaryHeapPub<T> {
             while child < end {
                 let right = child + 1;
                 // compare with the greater of the two children
-                if right < end && !(hole.get(child) > hole.get(right)) {
+                if right < end && hole.get(child) <= hole.get(right) {
                     child = right;
                 }
                 hole.move_to(child);

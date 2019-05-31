@@ -87,6 +87,10 @@ impl BytesRefHash {
         self.count
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn get(&self, bytes_id: usize) -> BytesRef {
         assert!(bytes_id < self.bytes_start_array.bytes().len());
         let id = self.bytes_start_array.bytes()[bytes_id];

@@ -51,7 +51,7 @@ impl Default for FieldType {
 }
 
 impl FieldType {
-    #[allow(too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         stored: bool,
         tokenized: bool,

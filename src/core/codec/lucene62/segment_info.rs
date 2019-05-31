@@ -292,7 +292,7 @@ impl SegmentInfoFormat for Lucene62SegmentInfoFormat {
         output.write_byte(is_compound)?;
         output.write_map_of_strings(&info.diagnostics)?;
         for file in info.files() {
-            if parse_segment_name(file) != &info.name {
+            if parse_segment_name(file) != info.name {
                 bail!(IllegalArgument(format!(
                     "invalid files: expected segment={}, got={}",
                     &info.name, file

@@ -248,7 +248,7 @@ where
             }
             Err(e) => {
                 // something goes wrong, stop search and return error!
-                return Err(e);
+                Err(e)
             }
         }
     }
@@ -349,15 +349,11 @@ where
 
     fn count(&self, query: &dyn Query<C>) -> Result<i32> {
         let mut query = query;
-        loop {
-            if let Some(constant_query) = query.as_any().downcast_ref::<ConstantScoreQuery<C>>() {
-                query = constant_query.get_raw_query();
-            } else {
-                break;
-            }
+        while let Some(constant_query) = query.as_any().downcast_ref::<ConstantScoreQuery<C>>() {
+            query = constant_query.get_raw_query();
         }
 
-        if let Some(_) = query.as_any().downcast_ref::<MatchAllDocsQuery>() {
+        if query.as_any().downcast_ref::<MatchAllDocsQuery>().is_some() {
             return Ok(self.reader().num_docs());
         } else if let Some(term_query) = query.as_any().downcast_ref::<TermQuery>() {
             if !self.reader().has_deletions() {

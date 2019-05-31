@@ -376,7 +376,7 @@ impl<O: IndexOutput> Lucene54DocValuesConsumer<O> {
                 bits = 0;
             }
 
-            if v.len() > 0 {
+            if !v.is_empty() {
                 bits |= 1 << (count & 7);
             }
             count += 1;
@@ -877,7 +877,7 @@ impl<O: IndexOutput> DocValuesConsumer for Lucene54DocValuesConsumer<O> {
                 values.reset();
                 for v in values {
                     let v = v?;
-                    if v.len() > 0 {
+                    if !v.is_empty() {
                         addr += v.len() as i64;
                     }
                     writer.add(addr)?;
@@ -918,36 +918,34 @@ impl<O: IndexOutput> DocValuesConsumer for Lucene54DocValuesConsumer<O> {
                 field_info,
                 &mut singleton_view(doc_to_value_count, values, Numeric::Null),
             )?;
+        } else if let Some(ref unique_value_sets) =
+            Lucene54DocValuesConsumer::<O>::unique_value_sets(doc_to_value_count, values)?
+        {
+            self.meta
+                .write_vint(Lucene54DocValuesFormat::SORTED_SET_TABLE)?;
+            // write the set_id -> values mapping
+            self.write_dictionary(unique_value_sets)?;
+            // write the doc -> set_id as a numeric field
+            doc_to_value_count.reset();
+            values.reset();
+            self.add_numeric(
+                field_info,
+                &mut Lucene54DocValuesConsumer::<O>::doc_to_set_id(
+                    unique_value_sets,
+                    doc_to_value_count,
+                    values,
+                ),
+                NumberType::ORDINAL,
+            )?;
         } else {
-            if let Some(ref unique_value_sets) =
-                Lucene54DocValuesConsumer::<O>::unique_value_sets(doc_to_value_count, values)?
-            {
-                self.meta
-                    .write_vint(Lucene54DocValuesFormat::SORTED_SET_TABLE)?;
-                // write the set_id -> values mapping
-                self.write_dictionary(unique_value_sets)?;
-                // write the doc -> set_id as a numeric field
-                doc_to_value_count.reset();
-                values.reset();
-                self.add_numeric(
-                    field_info,
-                    &mut Lucene54DocValuesConsumer::<O>::doc_to_set_id(
-                        unique_value_sets,
-                        doc_to_value_count,
-                        values,
-                    ),
-                    NumberType::ORDINAL,
-                )?;
-            } else {
-                self.meta
-                    .write_vint(Lucene54DocValuesFormat::SORTED_WITH_ADDRESSES)?;
-                // write the stream of values as a numeric field
-                values.reset();
-                self.add_numeric(field_info, values, NumberType::VALUE)?;
-                // write the doc -> ord count as a absolute index to the stream
-                doc_to_value_count.reset();
-                self.add_ord_index(field_info, doc_to_value_count)?;
-            }
+            self.meta
+                .write_vint(Lucene54DocValuesFormat::SORTED_WITH_ADDRESSES)?;
+            // write the stream of values as a numeric field
+            values.reset();
+            self.add_numeric(field_info, values, NumberType::VALUE)?;
+            // write the doc -> ord count as a absolute index to the stream
+            doc_to_value_count.reset();
+            self.add_ord_index(field_info, doc_to_value_count)?;
         }
         Ok(())
     }
@@ -970,41 +968,39 @@ impl<O: IndexOutput> DocValuesConsumer for Lucene54DocValuesConsumer<O> {
                 values,
                 &mut singleton_view(doc_to_ord_count, ords, Numeric::Long(-1)),
             )?;
+        } else if let Some(ref unique_value_sets) =
+            Lucene54DocValuesConsumer::<O>::unique_value_sets(doc_to_ord_count, ords)?
+        {
+            self.meta
+                .write_vint(Lucene54DocValuesFormat::SORTED_SET_TABLE)?;
+            // write the set_id -> values mapping
+            self.write_dictionary(unique_value_sets)?;
+            // write the ord -> byte[] as a binary field
+            self.add_terms_dict(field_info, values)?;
+            // write the doc -> set_id as a numeric field
+            doc_to_ord_count.reset();
+            ords.reset();
+            self.add_numeric(
+                field_info,
+                &mut Lucene54DocValuesConsumer::<O>::doc_to_set_id(
+                    unique_value_sets,
+                    doc_to_ord_count,
+                    ords,
+                ),
+                NumberType::ORDINAL,
+            )?;
         } else {
-            if let Some(ref unique_value_sets) =
-                Lucene54DocValuesConsumer::<O>::unique_value_sets(doc_to_ord_count, ords)?
-            {
-                self.meta
-                    .write_vint(Lucene54DocValuesFormat::SORTED_SET_TABLE)?;
-                // write the set_id -> values mapping
-                self.write_dictionary(unique_value_sets)?;
-                // write the ord -> byte[] as a binary field
-                self.add_terms_dict(field_info, values)?;
-                // write the doc -> set_id as a numeric field
-                doc_to_ord_count.reset();
-                ords.reset();
-                self.add_numeric(
-                    field_info,
-                    &mut Lucene54DocValuesConsumer::<O>::doc_to_set_id(
-                        unique_value_sets,
-                        doc_to_ord_count,
-                        ords,
-                    ),
-                    NumberType::ORDINAL,
-                )?;
-            } else {
-                self.meta
-                    .write_vint(Lucene54DocValuesFormat::SORTED_WITH_ADDRESSES)?;
-                // write the ord -> byte[] as a binary field
-                self.add_terms_dict(field_info, values)?;
-                // write the stream of values as a numeric field
+            self.meta
+                .write_vint(Lucene54DocValuesFormat::SORTED_WITH_ADDRESSES)?;
+            // write the ord -> byte[] as a binary field
+            self.add_terms_dict(field_info, values)?;
+            // write the stream of values as a numeric field
 
-                ords.reset();
-                self.add_numeric(field_info, ords, NumberType::ORDINAL)?;
-                // write the doc -> ord count as a absolute index to the stream
-                doc_to_ord_count.reset();
-                self.add_ord_index(field_info, doc_to_ord_count)?;
-            }
+            ords.reset();
+            self.add_numeric(field_info, ords, NumberType::ORDINAL)?;
+            // write the doc -> ord count as a absolute index to the stream
+            doc_to_ord_count.reset();
+            self.add_ord_index(field_info, doc_to_ord_count)?;
         }
 
         Ok(())

@@ -178,7 +178,7 @@ impl<T: DocIterator> DisiPriorityQueue<T> {
     }
 
     /// Get the list of scorers which are on the current doc.
-    #[allow(mut_from_ref)]
+    #[allow(clippy::mut_from_ref)]
     pub fn top_list(&self) -> &mut DisiWrapper<T> {
         unsafe { &mut *self.do_top_list() }
     }
@@ -251,7 +251,7 @@ impl<T: DocIterator> DisiPriorityQueue<T> {
         result
     }
 
-    #[allow(mut_from_ref)]
+    #[allow(clippy::mut_from_ref)]
     pub fn peek(&self) -> &mut DisiWrapper<T> {
         unsafe {
             let result = self.heap[0];

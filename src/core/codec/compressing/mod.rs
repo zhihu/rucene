@@ -753,8 +753,8 @@ impl CompressionMode {
         }
     }
 
-    pub fn new_decompressor(&self) -> Decompressor {
-        match *self {
+    pub fn new_decompressor(self) -> Decompressor {
+        match self {
             CompressionMode::FAST => Decompressor::LZ4(LZ4Decompressor {}),
             CompressionMode::HighCompression => {
                 Decompressor::Deflate(DeflateDecompressor::default())

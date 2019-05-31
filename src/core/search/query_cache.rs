@@ -56,11 +56,12 @@ pub trait QueryCache<C: Codec>: Send + Sync {
 }
 
 /// cache nothing
+#[derive(Default)]
 pub struct NoCacheQueryCache;
 
 impl NoCacheQueryCache {
     pub fn new() -> Self {
-        NoCacheQueryCache {}
+        Default::default()
     }
 }
 

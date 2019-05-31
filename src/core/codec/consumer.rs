@@ -369,8 +369,7 @@ pub trait DocValuesConsumer {
         // step 1: iterate thru each sub and mark terms still in use
         let mut live_terms = Vec::with_capacity(num_readers);
         let mut weights = Vec::with_capacity(num_readers);
-        for i in 0..num_readers {
-            let dv = &to_merge[i];
+        for (i, dv) in to_merge.iter().enumerate().take(num_readers) {
             let max_doc = merge_state.max_docs[i];
             let live_docs = &merge_state.live_docs[i];
             if live_docs.len() == 0 {
@@ -881,10 +880,10 @@ impl<'a, D: Directory + 'static, C: Codec> SortedDocValuesMergeOrdIter<'a, D, C>
         map: &'a OrdinalMap,
     ) -> Result<Self> {
         let mut subs = Vec::with_capacity(to_merge.len());
-        for i in 0..to_merge.len() {
+        for (i, dv) in to_merge.iter().enumerate() {
             subs.push(SortedDocValuesSub::new(
                 Arc::clone(&merge_state.doc_maps[i]),
-                Arc::clone(&to_merge[i]),
+                Arc::clone(dv),
                 merge_state.max_docs[i],
                 map.get_global_ords(i),
             ));
@@ -1060,10 +1059,10 @@ impl<'a, D: Directory + 'static, C: Codec> SortedSetDocValuesOrdCountIter<'a, D,
         map: &'a OrdinalMap,
     ) -> Result<Self> {
         let mut subs = Vec::with_capacity(to_merge.len());
-        for i in 0..to_merge.len() {
+        for (i, dv) in to_merge.iter().enumerate() {
             subs.push(SortedSetDocValuesSub::new(
                 Arc::clone(&merge_state.doc_maps[i]),
-                Arc::clone(&to_merge[i]),
+                Arc::clone(dv),
                 merge_state.max_docs[i],
                 map.get_global_ords(i),
             ));
@@ -1153,10 +1152,10 @@ impl<'a, D: Directory + 'static, C: Codec> SortedSetDocValuesMergeOrdIter<'a, D,
         map: &'a OrdinalMap,
     ) -> Result<Self> {
         let mut subs = Vec::with_capacity(to_merge.len());
-        for i in 0..to_merge.len() {
+        for (i, dv) in to_merge.iter().enumerate() {
             subs.push(SortedSetDocValuesSub::new(
                 Arc::clone(&merge_state.doc_maps[i]),
-                Arc::clone(&to_merge[i]),
+                Arc::clone(dv),
                 merge_state.max_docs[i],
                 map.get_global_ords(i),
             ));
@@ -1304,10 +1303,10 @@ impl<'a, D: Directory + 'static, C: Codec> SortedNumericDocValuesCountIter<'a, D
         merge_state: &'a MergeState<D, C>,
     ) -> Result<Self> {
         let mut subs = Vec::with_capacity(to_merge.len());
-        for i in 0..to_merge.len() {
+        for (i, dv) in to_merge.iter().enumerate() {
             subs.push(SortedNumericDocValuesSub::new(
                 Arc::clone(&merge_state.doc_maps[i]),
-                Arc::clone(&to_merge[i]),
+                Arc::clone(dv),
                 merge_state.max_docs[i],
             ));
         }
@@ -1323,7 +1322,7 @@ impl<'a, D: Directory + 'static, C: Codec> SortedNumericDocValuesCountIter<'a, D
 
     fn set_next(&mut self) -> Result<bool> {
         if let Some(sub) = self.doc_id_merger.next()? {
-            let mut ctx = sub.ctx.take();
+            let ctx = sub.ctx.take();
             let new_ctx = sub.values.set_document(ctx, sub.doc_id)?;
             self.next_value = sub.values.count(&new_ctx) as u32;
             self.next_is_set = true;
@@ -1628,10 +1627,10 @@ impl<'a, D: Directory + 'static, C: Codec> NormsValuesMergeIter<'a, D, C> {
         to_merge: &'a [Arc<dyn NumericDocValues>],
     ) -> Result<Self> {
         let mut subs = Vec::with_capacity(to_merge.len());
-        for i in 0..to_merge.len() {
+        for (i, dv) in to_merge.iter().enumerate() {
             subs.push(NormsValuesSub::new(
                 Arc::clone(&merge_state.doc_maps[i]),
-                Arc::clone(&to_merge[i]),
+                Arc::clone(dv),
                 merge_state.max_docs[i],
             ));
         }

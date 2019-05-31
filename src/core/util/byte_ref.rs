@@ -92,6 +92,7 @@ impl PartialOrd for BytesRef {
 }
 
 // A builder for `BytesRef` instances
+#[derive(Default)]
 pub struct BytesRefBuilder {
     pub buffer: Vec<u8>,
     pub offset: usize,
@@ -100,11 +101,7 @@ pub struct BytesRefBuilder {
 
 impl BytesRefBuilder {
     pub fn new() -> Self {
-        BytesRefBuilder {
-            buffer: Vec::with_capacity(0),
-            offset: 0,
-            length: 0,
-        }
+        Default::default()
     }
 
     pub fn bytes_mut(&mut self) -> &mut [u8] {

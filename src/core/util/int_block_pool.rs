@@ -107,7 +107,7 @@ impl IntBlockPool {
                     offset,
                     1 + self.buffer_upto as usize,
                 );
-                for i in offset..1 + self.buffer_upto as usize {
+                for i in offset..=self.buffer_upto as usize {
                     self.buffers[i] = Vec::with_capacity(0);
                 }
             }

@@ -703,45 +703,41 @@ impl FieldTermStack {
                 let max_docs = reader.max_doc();
                 let mut term_list: Vec<TermInfo> = vec![];
 
-                loop {
-                    if let Some(text) = terms_iter.next()? {
-                        let term = String::from_utf8(text)?;
-                        if !term_set.contains(&term) {
-                            continue;
+                while let Some(text) = terms_iter.next()? {
+                    let term = String::from_utf8(text)?;
+                    if !term_set.contains(&term) {
+                        continue;
+                    }
+
+                    let mut postings =
+                        terms_iter.postings_with_flags(PostingIteratorFlags::POSITIONS)?;
+                    postings.next()?;
+
+                    // For weight look here: http://lucene.apache.org/core/3_6_0/api/core/org/apache/lucene/search/DefaultSimilarity.html
+                    let weight = (f64::from(max_docs)
+                        / (terms_iter.total_term_freq()? + 1) as f64
+                        + 1.0)
+                        .log(10.0f64) as f32;
+                    let freq = postings.freq()?;
+
+                    for _ in 0..freq {
+                        let pos = postings.next_position()?;
+
+                        if postings.start_offset()? < 0 {
+                            // no offsets, null snippet
+                            return Ok(FieldTermStack {
+                                field_name: field_name.to_string(),
+                                term_list: vec![],
+                            });
                         }
 
-                        let mut postings =
-                            terms_iter.postings_with_flags(PostingIteratorFlags::POSITIONS)?;
-                        postings.next()?;
-
-                        // For weight look here: http://lucene.apache.org/core/3_6_0/api/core/org/apache/lucene/search/DefaultSimilarity.html
-                        let weight = (f64::from(max_docs)
-                            / (terms_iter.total_term_freq()? + 1) as f64
-                            + 1.0)
-                            .log(10.0f64) as f32;
-                        let freq = postings.freq()?;
-
-                        for _ in 0..freq {
-                            let pos = postings.next_position()?;
-
-                            if postings.start_offset()? < 0 {
-                                // no offsets, null snippet
-                                return Ok(FieldTermStack {
-                                    field_name: field_name.to_string(),
-                                    term_list: vec![],
-                                });
-                            }
-
-                            term_list.push(TermInfo::new(
-                                term.clone(),
-                                postings.start_offset()?,
-                                postings.end_offset()?,
-                                pos,
-                                weight,
-                            ));
-                        }
-                    } else {
-                        break;
+                        term_list.push(TermInfo::new(
+                            term.clone(),
+                            postings.start_offset()?,
+                            postings.end_offset()?,
+                            pos,
+                            weight,
+                        ));
                     }
                 }
 
@@ -1157,7 +1153,7 @@ pub trait FragmentsBuilder {
     //         size of the array can be less than maxNumFragments
     // @throws IOException If there is a low-level I/O error
     ///
-    #[allow(too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn create_fragments<C: Codec>(
         &self,
         reader: &IndexReader<Codec = C>,

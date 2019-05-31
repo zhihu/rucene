@@ -388,7 +388,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(approx_constant)]
+    #[allow((clippy::approx_constant))]
     fn variant_float_test() {
         let fval = VariantValue::Float(3.141_593);
         let expr = format!("{}f", fval);
@@ -416,7 +416,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(approx_constant)]
+    #[allow((clippy::approx_constant))]
     fn variant_double_test() {
         let dval = VariantValue::Double(3.141_592_653_5);
         let expr = format!("{}", dval);

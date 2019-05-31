@@ -183,6 +183,6 @@ impl<'a, O: IndexOutput> DirectWriter<'a, O> {
             }
         }
 
-        return -(low + 1);
+        -(low + 1)
     }
 }

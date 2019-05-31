@@ -206,7 +206,7 @@ impl DocIdsWriter {
                 max |= doc_ids[start + i] as u32 as u64;
             }
 
-            if max <= 0xFFFFFF {
+            if max <= 0x00FF_FFFF {
                 out.write_byte(24 as u8)?;
                 for i in 0..count {
                     out.write_short((doc_ids[start + i].unsigned_shift(8)) as i16)?;

@@ -200,7 +200,7 @@ impl<T: TermIterator> MultiTermIterator<T> {
         let mut subs = Vec::with_capacity(len);
         let mut i = 0;
         for s in slices {
-            subs.push(TermIteratorWithSlice::new(i, s.clone()));
+            subs.push(TermIteratorWithSlice::new(i, s));
             // sub_docs.push(IterWithSlice::new(None, s));
             i += 1;
         }
@@ -428,24 +428,22 @@ impl<T: TermIterator> TermIterator for MultiTermIterator<T> {
                 self.queue
                     .queue
                     .push(TIWSRefWithIndex::new(&mut self.subs[cur_index], cur_index));
+            } else if status == SeekStatus::NotFound {
+                let term = self.subs[cur_index]
+                    .terms
+                    .as_mut()
+                    .unwrap()
+                    .term()?
+                    .to_vec();
+                debug_assert!(!term.is_empty());
+                self.subs[cur_index].current = term;
+                self.queue
+                    .queue
+                    .push(TIWSRefWithIndex::new(&mut self.subs[cur_index], cur_index));
             } else {
-                if status == SeekStatus::NotFound {
-                    let term = self.subs[cur_index]
-                        .terms
-                        .as_mut()
-                        .unwrap()
-                        .term()?
-                        .to_vec();
-                    debug_assert!(!term.is_empty());
-                    self.subs[cur_index].current = term;
-                    self.queue
-                        .queue
-                        .push(TIWSRefWithIndex::new(&mut self.subs[cur_index], cur_index));
-                } else {
-                    debug_assert_eq!(status, SeekStatus::End);
-                    // enum exhausted
-                    self.subs[cur_index].current.clear();
-                }
+                debug_assert_eq!(status, SeekStatus::End);
+                // enum exhausted
+                self.subs[cur_index].current.clear();
             }
         }
 
@@ -581,6 +579,7 @@ impl<T: TermIterator> TIWSRefWithIndex<T> {
         TIWSRefWithIndex { term_slice, index }
     }
 
+    #[allow(clippy::mut_from_ref)]
     fn slice(&self) -> &mut TermIteratorWithSlice<T> {
         unsafe { &mut *self.term_slice }
     }

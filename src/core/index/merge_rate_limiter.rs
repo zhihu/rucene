@@ -51,19 +51,7 @@ enum PauseResult {
 
 impl MergeRateLimiter {
     pub fn new() -> Self {
-        let limiter = MergeRateLimiter {
-            total_bytes_written: AtomicU64::new(0),
-            mb_per_sec: Volatile::new(0.0),
-            last_time: Volatile::new(SystemTime::now()),
-            min_pause_check_bytes: Volatile::new(0),
-            abort: AtomicBool::new(false),
-            total_paused_dur: Volatile::new(Duration::default()),
-            total_stopped_dur: Volatile::new(Duration::default()),
-            lock: Mutex::new(()),
-            cond: Condvar::new(),
-        };
-        limiter.set_mb_per_sec(f64::INFINITY);
-        limiter
+        Default::default()
     }
 
     fn maybe_pause(&self, bytes: u64, cur_ns: SystemTime) -> Result<PauseResult> {
@@ -78,7 +66,7 @@ impl MergeRateLimiter {
         // rate (just adds seconds onto the last time we had paused to);
         // maybe we should also offer decayed recent history one?
         let target_time = self.last_time.read()
-            + Duration::from_nanos((seconds_to_pause * 1000_000_000.0) as u64);
+            + Duration::from_nanos((seconds_to_pause * 1_000_000_000.0) as u64);
 
         if target_time < cur_ns {
             return Ok(PauseResult::No);
@@ -123,6 +111,24 @@ impl MergeRateLimiter {
 
     pub fn aborted(&self) -> bool {
         self.abort.load(Ordering::Acquire)
+    }
+}
+
+impl Default for MergeRateLimiter {
+    fn default() -> Self {
+        let limiter = MergeRateLimiter {
+            total_bytes_written: AtomicU64::new(0),
+            mb_per_sec: Volatile::new(0.0),
+            last_time: Volatile::new(SystemTime::now()),
+            min_pause_check_bytes: Volatile::new(0),
+            abort: AtomicBool::new(false),
+            total_paused_dur: Volatile::new(Duration::default()),
+            total_stopped_dur: Volatile::new(Duration::default()),
+            lock: Mutex::new(()),
+            cond: Condvar::new(),
+        };
+        limiter.set_mb_per_sec(f64::INFINITY);
+        limiter
     }
 }
 

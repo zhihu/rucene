@@ -46,8 +46,8 @@ impl IndexOptions {
         Ok(res)
     }
 
-    pub fn as_str(&self) -> &'static str {
-        match *self {
+    pub fn as_str(self) -> &'static str {
+        match self {
             IndexOptions::DocsAndFreqsAndPositionsAndOffsets => "offsets",
             IndexOptions::DocsAndFreqs => "freqs",
             IndexOptions::DocsAndFreqsAndPositions => "positions",
@@ -56,15 +56,15 @@ impl IndexOptions {
         }
     }
 
-    pub fn has_docs(&self) -> bool {
-        match *self {
+    pub fn has_docs(self) -> bool {
+        match self {
             IndexOptions::Null => false,
             _ => true,
         }
     }
 
-    pub fn has_freqs(&self) -> bool {
-        match *self {
+    pub fn has_freqs(self) -> bool {
+        match self {
             IndexOptions::DocsAndFreqs => true,
             IndexOptions::DocsAndFreqsAndPositions => true,
             IndexOptions::DocsAndFreqsAndPositionsAndOffsets => true,
@@ -72,23 +72,23 @@ impl IndexOptions {
         }
     }
 
-    pub fn has_positions(&self) -> bool {
-        match *self {
+    pub fn has_positions(self) -> bool {
+        match self {
             IndexOptions::DocsAndFreqsAndPositions => true,
             IndexOptions::DocsAndFreqsAndPositionsAndOffsets => true,
             _ => false,
         }
     }
 
-    pub fn has_offsets(&self) -> bool {
-        match *self {
+    pub fn has_offsets(self) -> bool {
+        match self {
             IndexOptions::DocsAndFreqsAndPositionsAndOffsets => true,
             _ => false,
         }
     }
 
-    pub fn value(&self) -> i32 {
-        match *self {
+    pub fn value(self) -> i32 {
+        match self {
             IndexOptions::Null => 0,
             IndexOptions::Docs => 1,
             IndexOptions::DocsAndFreqs => 2,

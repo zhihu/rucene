@@ -105,12 +105,10 @@ impl HeapPointWriter {
     ) -> HeapPointWriter {
         let (ords_long, ords) = if single_value_per_doc {
             (Vec::with_capacity(0), Vec::with_capacity(0))
+        } else if long_ords {
+            (Vec::with_capacity(init_size), Vec::with_capacity(0))
         } else {
-            if long_ords {
-                (Vec::with_capacity(init_size), Vec::with_capacity(0))
-            } else {
-                (Vec::with_capacity(0), Vec::with_capacity(init_size))
-            }
+            (Vec::with_capacity(0), Vec::with_capacity(init_size))
         };
 
         HeapPointWriter {
@@ -140,7 +138,7 @@ impl HeapPointWriter {
         self.doc_ids.resize(other.next_write, 0);
         self.doc_ids[0..other.next_write].copy_from_slice(&other.doc_ids[0..other.next_write]);
         if !self.single_value_per_doc {
-            if other.ords.len() > 0 {
+            if !other.ords.is_empty() {
                 debug_assert!(self.ords.capacity() > 0);
                 self.ords.resize(other.next_write, 0);
                 self.ords.copy_from_slice(&other.ords[0..other.next_write]);

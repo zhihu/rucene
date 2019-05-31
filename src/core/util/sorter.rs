@@ -479,12 +479,10 @@ impl Sorter for DefaultMSBIntroSorter {
 
         if self.k + self.pivot_len as i32 == self.max_length {
             Ordering::Equal
+        } else if self.byte_at(j, self.k + self.pivot_len as i32).is_some() {
+            Ordering::Less
         } else {
-            if self.byte_at(j, self.k + self.pivot_len as i32).is_some() {
-                Ordering::Less
-            } else {
-                Ordering::Equal
-            }
+            Ordering::Equal
         }
     }
 }

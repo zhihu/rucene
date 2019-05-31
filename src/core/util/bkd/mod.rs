@@ -399,6 +399,7 @@ impl<P: MutablePointsReader> UtilMSBIntroSorter<P> {
     }
 
     #[inline]
+    #[allow(clippy::mut_from_ref)]
     fn reader(&self) -> &mut P {
         unsafe { &mut *self.reader }
     }
@@ -555,6 +556,7 @@ impl MutablePointsReaderUtils {
         msb_sorter.sort(from, to);
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn sort_by_dim(
         sorted_dim: i32,
         bytes_per_dim: i32,
@@ -573,6 +575,7 @@ impl MutablePointsReaderUtils {
         intro_sorter.sort(from, to);
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn partition(
         max_doc: i32,
         split_dim: i32,

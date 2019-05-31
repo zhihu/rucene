@@ -159,6 +159,7 @@ where
         self.parent = parent;
     }
 
+    #[allow(clippy::mut_from_ref)]
     fn doc_writer(&self) -> &mut DocumentsWriterPerThread<D, C, MS, MP> {
         unsafe { &mut *self.parent }
     }
@@ -297,7 +298,7 @@ where
             for pf in &mut self.field_hash {
                 let name = pf.name.as_str();
                 if let Some(fi) = self.field_infos.by_name.get(name) {
-                    if fi.omit_norms == false && fi.index_options != IndexOptions::Null {
+                    if !fi.omit_norms && fi.index_options != IndexOptions::Null {
                         debug_assert!(pf.norms.is_some());
                         if pf.norms.is_some() {
                             pf.norms.as_mut().unwrap().finish(max_doc);
@@ -663,9 +664,7 @@ where
 
         self.finished_stored_fields()?;
 
-        let res = self.terms_hash.finish_document(&mut self.field_infos);
-
-        res
+        self.terms_hash.finish_document(&mut self.field_infos)
     }
 
     fn flush<DW: Directory>(&mut self, state: &mut SegmentWriteState<D, DW, C>) -> Result<()> {
@@ -782,6 +781,7 @@ impl<T: TermsHashPerField> PerField<T> {
         unsafe { &*self.field_info }
     }
 
+    #[allow(clippy::mut_from_ref)]
     fn field_info_mut(&self) -> &mut FieldInfo {
         unsafe { &mut *self.field_info }
     }
@@ -805,7 +805,7 @@ impl<T: TermsHashPerField> PerField<T> {
     }
 
     fn finish(&mut self, doc_state: &DocState) -> Result<()> {
-        if self.field_info().omit_norms == false && self.invert_state.length != 0 {
+        if !self.field_info().omit_norms && self.invert_state.length != 0 {
             debug_assert!(self.norms.is_some());
             let doc_id = doc_state.doc_id;
             self.norms
@@ -817,7 +817,7 @@ impl<T: TermsHashPerField> PerField<T> {
         self.term_hash_per_field
             .as_mut()
             .unwrap()
-            .finish(&mut self.invert_state)?;
+            .finish(&self.invert_state)?;
         if self
             .term_hash_per_field
             .as_ref()

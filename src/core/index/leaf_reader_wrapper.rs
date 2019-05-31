@@ -157,9 +157,9 @@ impl<D: Directory + 'static, C: Codec> LeafReader for MergeReaderWrapper<D, C> {
 
     fn get_binary_doc_values(&self, field: &str) -> Result<BinaryDocValuesRef> {
         if let Some(field_info) = self.field_info(field) {
-            Ok(Arc::from(
+            Ok(
                 self.doc_values.as_ref().unwrap().get_binary(field_info)?,
-            ))
+            )
         } else {
             bail!(IllegalArgument(format!("field '{}' not exist!", field)))
         }
@@ -167,9 +167,9 @@ impl<D: Directory + 'static, C: Codec> LeafReader for MergeReaderWrapper<D, C> {
 
     fn get_sorted_doc_values(&self, field: &str) -> Result<SortedDocValuesRef> {
         if let Some(field_info) = self.field_info(field) {
-            Ok(Arc::from(
+            Ok(
                 self.doc_values.as_ref().unwrap().get_sorted(field_info)?,
-            ))
+            )
         } else {
             bail!(IllegalArgument(format!("field '{}' not exist!", field)))
         }
@@ -177,12 +177,12 @@ impl<D: Directory + 'static, C: Codec> LeafReader for MergeReaderWrapper<D, C> {
 
     fn get_sorted_numeric_doc_values(&self, field: &str) -> Result<SortedNumericDocValuesRef> {
         if let Some(field_info) = self.field_info(field) {
-            Ok(Arc::from(
+            Ok(
                 self.doc_values
                     .as_ref()
                     .unwrap()
                     .get_sorted_numeric(field_info)?,
-            ))
+            )
         } else {
             bail!(IllegalArgument(format!("field '{}' not exist!", field)))
         }
@@ -190,12 +190,12 @@ impl<D: Directory + 'static, C: Codec> LeafReader for MergeReaderWrapper<D, C> {
 
     fn get_sorted_set_doc_values(&self, field: &str) -> Result<SortedSetDocValuesRef> {
         if let Some(field_info) = self.field_info(field) {
-            Ok(Arc::from(
+            Ok(
                 self.doc_values
                     .as_ref()
                     .unwrap()
                     .get_sorted_set(field_info)?,
-            ))
+            )
         } else {
             bail!(IllegalArgument(format!("field '{}' not exist!", field)))
         }

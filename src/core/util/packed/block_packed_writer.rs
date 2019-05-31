@@ -91,7 +91,7 @@ impl BaseBlockPackedWriter {
         encoder.encode_long_to_byte(&self.values, &mut self.blocks, iterations);
         let block_count =
             Format::Packed.byte_count(VERSION_CURRENT, self.off as i32, bits_required);
-        out.write_bytes(&mut self.blocks, 0, block_count as usize)
+        out.write_bytes(&self.blocks, 0, block_count as usize)
     }
 }
 

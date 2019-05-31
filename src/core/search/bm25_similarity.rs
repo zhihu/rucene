@@ -11,6 +11,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! BM25 Similarity. Introduced in Stephen E. Robertson, Steve Walker,
+//! Susan Jones, Micheline Hancock-Beaulieu, and Mike Gatford. Okapi at TREC-3.
+//! In Proceedings of the Third *T*ext *RE*trieval *C*onference (TREC 1994).
+//! Gaithersburg, USA, November 1994.
+
 use error::Result;
 use std::fmt;
 use std::sync::Arc;
@@ -24,10 +29,6 @@ use core::search::{SimScorer, SimWeight, Similarity};
 use core::util::small_float::SmallFloat;
 use core::util::{DocId, KeyedContext};
 
-/// BM25 Similarity. Introduced in Stephen E. Robertson, Steve Walker,
-/// Susan Jones, Micheline Hancock-Beaulieu, and Mike Gatford. Okapi at TREC-3.
-/// In Proceedings of the Third *T*ext *RE*trieval *C*onference (TREC 1994).
-/// Gaithersburg, USA, November 1994.
 lazy_static! {
     static ref NORM_TABLE: [f32; 256] = {
         let mut norm_table: [f32; 256] = [0f32; 256];
@@ -233,6 +234,7 @@ pub struct BM25SimWeight {
 }
 
 impl BM25SimWeight {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         k1: f32,
         b: f32,

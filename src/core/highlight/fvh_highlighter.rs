@@ -70,7 +70,7 @@ impl FastVectorHighlighter {
         }
     }
 
-    #[allow(too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn get_best_fragments<C: Codec>(
         &mut self,
         field_query: &mut FieldQuery,
@@ -118,7 +118,7 @@ impl FastVectorHighlighter {
         )
     }
 
-    #[allow(too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn get_best_fragments_with_tags_fields<C: Codec>(
         &mut self,
         field_query: &mut FieldQuery,

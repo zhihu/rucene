@@ -56,6 +56,7 @@ struct FieldData {
 }
 
 impl FieldData {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         field_num: usize,
         num_terms: usize,
@@ -275,6 +276,7 @@ pub struct CompressingTermVectorsWriter<O: IndexOutput> {
 }
 
 impl<O: IndexOutput> CompressingTermVectorsWriter<O> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new<D: Directory, DW: Directory<IndexOutput = O>, C: Codec>(
         directory: &DW,
         si: &SegmentInfo<D, C>,
@@ -411,7 +413,7 @@ impl<O: IndexOutput> CompressingTermVectorsWriter<O> {
         if chunk_docs == 1 {
             let num_fields = self.pending_docs[0].num_fields;
             self.vectors_stream.write_vint(num_fields as i32)?;
-            return Ok(num_fields);
+            Ok(num_fields)
         } else {
             self.writer.reset();
             let mut total_fields = 0usize;
@@ -423,7 +425,7 @@ impl<O: IndexOutput> CompressingTermVectorsWriter<O> {
 
             self.writer.finish(&mut self.vectors_stream)?;
 
-            return Ok(total_fields);
+            Ok(total_fields)
         }
     }
 

@@ -44,15 +44,14 @@ fn compute_iterations(decoder: &impl PackedIntDecoder) -> i32 {
 pub fn max_data_size() -> usize {
     START.call_once(|| {
         let mut max_data_size: usize = 0;
-        for version in VERSION_START..VERSION_CURRENT + 1 {
+        for version in VERSION_START..=VERSION_CURRENT {
             let format = Format::Packed;
             for bpv in 1..33 {
                 if let Ok(decoder) = get_decoder(format, version, bpv) {
                     let iterations = compute_iterations(&decoder) as usize;
                     max_data_size = max(max_data_size, iterations * decoder.byte_value_count());
                 } else {
-                    assert!(
-                        false,
+                    panic!(
                         format!("get_decoder({:?},{:?},{:?}) failed.", format, version, bpv)
                     );
                 }
@@ -63,8 +62,7 @@ pub fn max_data_size() -> usize {
                     let iterations = compute_iterations(&decoder) as usize;
                     max_data_size = max(max_data_size, iterations * decoder.byte_value_count());
                 } else {
-                    assert!(
-                        false,
+                    panic!(
                         format!("get_decoder({:?},{:?},{:?}) failed.", format, version, bpv)
                     );
                 }

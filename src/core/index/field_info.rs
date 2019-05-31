@@ -73,7 +73,7 @@ impl Serialize for FieldInfo {
 }
 
 impl FieldInfo {
-    #[allow(too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: String,
         number: u32,
@@ -283,7 +283,7 @@ impl FieldInfo {
     }
 
     pub fn attribute(&self, key: &str) -> Option<String> {
-        self.attributes.read().unwrap().get(key).map(|v| v.clone())
+        self.attributes.read().unwrap().get(key).cloned()
     }
 
     pub fn put_attribute(&self, key: String, value: String) -> Option<String> {
@@ -502,6 +502,10 @@ impl FieldInfos {
     pub fn len(&self) -> usize {
         self.by_name.len()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 pub struct FieldInfosBuilder<T: AsRef<FieldNumbers>> {
@@ -582,6 +586,7 @@ impl<T: AsRef<FieldNumbers>> FieldInfosBuilder<T> {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn add_or_update_internal(
         &mut self,
         name: &str,
@@ -658,7 +663,7 @@ impl<T: AsRef<FieldNumbers>> FieldInfosBuilder<T> {
     }
 
     pub fn finish(&self) -> Result<FieldInfos> {
-        let infos: Vec<FieldInfo> = self.by_name.values().map(|info| info.clone()).collect();
+        let infos: Vec<FieldInfo> = self.by_name.values().cloned().collect();
         FieldInfos::new(infos)
     }
 }
@@ -669,8 +674,7 @@ pub struct FieldNumbers {
 
 impl FieldNumbers {
     pub fn new() -> Self {
-        let inner = Mutex::new(FieldNumbersInner::new());
-        FieldNumbers { inner }
+        Default::default()
     }
 
     pub fn add_or_get(
@@ -721,6 +725,13 @@ impl FieldNumbers {
 
     fn verify_consistent(&self, number: u32, name: &str, dv_type: DocValuesType) -> Result<()> {
         self.inner.lock()?.verify_consistent(number, name, dv_type)
+    }
+}
+
+impl Default for FieldNumbers {
+    fn default() -> Self {
+        let inner = Mutex::new(FieldNumbersInner::new());
+        FieldNumbers { inner }
     }
 }
 

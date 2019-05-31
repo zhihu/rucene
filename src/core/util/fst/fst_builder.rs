@@ -93,6 +93,7 @@ impl<F: OutputFactory> FstBuilder<F> {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn build(
         input_type: InputType,
         min_suffix_count1: u32,
@@ -190,12 +191,12 @@ impl<F: OutputFactory> FstBuilder<F> {
         if self.last_input.length < down_to {
             return Ok(());
         }
-        for i in 0..self.last_input.length - down_to + 1 {
+        for i in 0..=self.last_input.length - down_to {
             let idx = self.last_input.length - i;
             let mut do_prune = false;
             let mut do_compile = false;
 
-            let mut tmp = UnCompiledNode::new(self, 0);
+            let tmp = UnCompiledNode::new(self, 0);
             let mut parent = mem::replace(&mut self.frontier[idx - 1], tmp);
 
             if self.frontier[idx].input_count < self.min_suffix_count1 as i64 {
@@ -346,7 +347,7 @@ impl<F: OutputFactory> FstBuilder<F> {
         self.freeze_tail(prefix_len_plus1)?;
 
         // init tail states for current input
-        for i in prefix_len_plus1..input.length + 1 {
+        for i in prefix_len_plus1..=input.length {
             let node = Node::UnCompiled(i);
             self.frontier[i - 1].add_arc(input.ints()[input.offset + i - 1], node);
             self.frontier[i].input_count += 1;
@@ -418,11 +419,9 @@ impl<F: OutputFactory> FstBuilder<F> {
                 // empty string got pruned
                 return Ok(None);
             }
-        } else {
-            if self.min_suffix_count2 != 0 {
-                let tail_len = self.last_input.length;
-                self.compile_all_targets(0, tail_len)?;
-            }
+        } else if self.min_suffix_count2 != 0 {
+            let tail_len = self.last_input.length;
+            self.compile_all_targets(0, tail_len)?;
         }
 
         let node = {
@@ -466,7 +465,7 @@ impl<F: OutputFactory> fmt::Debug for BuilderArc<F> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let target = match self.target {
             Node::Compiled(c) => format!("Compiled({})", c),
-            Node::UnCompiled(_) => format!("UnCompiled"),
+            Node::UnCompiled(_) => "UnCompiled".to_string(),
         };
         write!(
             f,
@@ -514,6 +513,7 @@ impl<F: OutputFactory> NodeHash<F> {
         }
     }
 
+    #[allow(clippy::mut_from_ref)]
     fn fst(&self) -> &mut FST<F> {
         unsafe { &mut (*self.fst) }
     }
@@ -521,10 +521,8 @@ impl<F: OutputFactory> NodeHash<F> {
     fn nodes_equal(&mut self, node: &UnCompiledNode<F>, address: CompiledAddress) -> Result<bool> {
         let reader = &mut self.input as *mut StoreBytesReader;
         let mut scratch_arc = unsafe { self.fst().read_first_real_arc(address, &mut *reader)? };
-        if scratch_arc.bytes_per_arc > 0 {
-            if node.num_arcs != scratch_arc.num_arcs {
-                return Ok(false);
-            }
+        if scratch_arc.bytes_per_arc > 0 && node.num_arcs != scratch_arc.num_arcs {
+            return Ok(false);
         }
 
         for idx in 0..node.num_arcs {
@@ -537,20 +535,16 @@ impl<F: OutputFactory> NodeHash<F> {
                 if output != &arc.output {
                     return Ok(false);
                 }
-            } else {
-                if !arc.output.is_empty() {
-                    return Ok(false);
-                }
+            } else if !arc.output.is_empty() {
+                return Ok(false);
             }
 
             if let Some(ref output) = scratch_arc.next_final_output {
                 if output != &arc.next_final_output {
                     return Ok(false);
                 }
-            } else {
-                if !arc.next_final_output.is_empty() {
-                    return Ok(false);
-                }
+            } else if !arc.next_final_output.is_empty() {
+                return Ok(false);
             }
 
             if let Node::Compiled(ref node) = arc.target {

@@ -60,7 +60,7 @@ pub fn bytes_difference(left: &[u8], right: &[u8]) -> i32 {
         }
     }
 
-    return len as i32;
+    len as i32
 }
 
 /// Returns the length of {@code currentTerm} needed for use as a sort key.

@@ -45,6 +45,7 @@ use core::util::Volatile;
 use error::ErrorKind::IllegalArgument;
 use error::Result;
 
+#[derive(Default)]
 pub struct DocState {
     // analyzer: Analyzer,  // TODO, current Analyzer is not implemented
     // pub similarity: Option<Box<Similarity>>,
@@ -54,10 +55,7 @@ pub struct DocState {
 
 impl DocState {
     pub fn new() -> Self {
-        DocState {
-            doc_id: 0,
-            // similarity: None,
-        }
+        Default::default()
     }
     pub fn clear(&mut self) {
         // self.doc = Vec::with_capacity(0);
@@ -119,7 +117,7 @@ where
         let directory = Arc::new(TrackingDirectoryWrapper::new(dir));
         let writer = index_writer.upgrade().unwrap();
         let segment_info = SegmentInfo::new(
-            VERSION_LATEST.clone(),
+            VERSION_LATEST,
             &segment_name,
             -1,
             Arc::clone(&directory_orig),
@@ -216,7 +214,7 @@ where
             .consumer
             .process_document(&mut self.doc_state, &mut doc);
         self.doc_state.clear();
-        if !res.is_ok() {
+        if res.is_err() {
             // mark document as deleted
             error!(" process document failed, res: {:?}", res);
             let doc = self.doc_state.doc_id;
@@ -799,6 +797,7 @@ where
         }
     }
 
+    #[allow(clippy::mut_from_ref)]
     pub fn thread_state_mut(
         &self,
         _lock: &MutexGuard<ThreadStateLock>,

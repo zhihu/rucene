@@ -223,6 +223,7 @@ pub struct CompressingStoredFieldsWriter<O: IndexOutput> {
 }
 
 impl<O: IndexOutput + 'static> CompressingStoredFieldsWriter<O> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new<D: Directory, DW: Directory<IndexOutput = O>, C: Codec>(
         directory: Arc<DW>,
         si: &SegmentInfo<D, C>,
@@ -590,12 +591,10 @@ impl<O: IndexOutput + 'static> StoredFieldsWriter for CompressingStoredFieldsWri
                 Numeric::Double(_) => NUMERIC_DOUBLE,
                 _ => unreachable!(),
             }
+        } else if field.binary_value().is_some() {
+            BYTE_ARR
         } else {
-            if field.binary_value().is_some() {
-                BYTE_ARR
-            } else {
-                STRING
-            }
+            STRING
         };
 
         let info_and_bits = ((field_info.number as i64) << TYPE_BITS) | bits as i64;
@@ -696,7 +695,7 @@ impl<O: IndexOutput + 'static> StoredFieldsWriter for CompressingStoredFieldsWri
                 } else if fields_reader.compression_mode == self.compress_mode &&
                     fields_reader.chunk_size == self.chunk_size as i32 &&
                     fields_reader.packed_ints_version == PACKED_VERSION_CURRENT &&
-                    live_docs.len() == 0 &&         // this indicate that live_docs is MatchAll, equal to live_docs == null in Java
+                    live_docs.is_empty() &&         // this indicate that live_docs is MatchAll, equal to live_docs == null in Java
                         !Self::too_dirty(fields_reader)
                 {
                     // optimized merge, raw byte copy

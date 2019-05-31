@@ -593,7 +593,7 @@ impl MergePolicy for TieredMergePolicy {
         while i < infos_sorted.len() {
             let seg_bytes = info_seg_bytes[i];
             if last_seg_bytes >= seg_bytes * self.segs_per_tier as i64 {
-                if last_level_infos.len() > 0 {
+                if !last_level_infos.is_empty() {
                     info_levels.push(last_level_infos);
                     last_level_infos = vec![];
                 }
@@ -746,19 +746,15 @@ impl MergePolicy for TieredMergePolicy {
                         if best_too_large { "[max merge]" } else { "" }
                     );
                     spec.add(merge);
-                } else {
-                    if spec.merges.is_empty() {
-                        return Ok(None);
-                    } else {
-                        return Ok(Some(spec));
-                    }
-                }
-            } else {
-                if spec.merges.is_empty() {
+                } else if spec.merges.is_empty() {
                     return Ok(None);
                 } else {
                     return Ok(Some(spec));
                 }
+            } else if spec.merges.is_empty() {
+                return Ok(None);
+            } else {
+                return Ok(Some(spec));
             }
         }
     }
@@ -837,9 +833,9 @@ impl MergePolicy for TieredMergePolicy {
         }
 
         if spec.merges.is_empty() {
-            return Ok(None);
+            Ok(None)
         } else {
-            return Ok(Some(spec));
+            Ok(Some(spec))
         }
     }
 
@@ -895,9 +891,9 @@ impl MergePolicy for TieredMergePolicy {
             start = end;
         }
         if spec.merges.is_empty() {
-            return Ok(None);
+            Ok(None)
         } else {
-            return Ok(Some(spec));
+            Ok(Some(spec))
         }
     }
 

@@ -28,42 +28,42 @@ pub enum ComparatorValue {
 }
 
 impl ComparatorValue {
-    fn is_doc(&self) -> bool {
+    fn is_doc(self) -> bool {
         match self {
             ComparatorValue::Doc(_) => true,
             _ => false,
         }
     }
 
-    fn is_score(&self) -> bool {
+    fn is_score(self) -> bool {
         match self {
             ComparatorValue::Score(_) => true,
             _ => false,
         }
     }
 
-    fn doc(&self) -> DocId {
+    fn doc(self) -> DocId {
         debug_assert!(self.is_doc());
         if let ComparatorValue::Doc(d) = self {
-            *d
+            d
         } else {
             unreachable!()
         }
     }
 
-    fn score(&self) -> f32 {
+    fn score(self) -> f32 {
         debug_assert!(self.is_score());
         if let ComparatorValue::Score(s) = self {
-            *s
+            s
         } else {
             unreachable!()
         }
     }
 
-    pub fn as_variant(&self) -> VariantValue {
+    pub fn as_variant(self) -> VariantValue {
         match self {
-            ComparatorValue::Doc(d) => VariantValue::Int(*d),
-            ComparatorValue::Score(s) => VariantValue::Float(*s),
+            ComparatorValue::Doc(d) => VariantValue::Int(d),
+            ComparatorValue::Score(s) => VariantValue::Float(s),
         }
     }
 }

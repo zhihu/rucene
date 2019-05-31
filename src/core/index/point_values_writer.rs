@@ -64,7 +64,7 @@ impl PointValuesWriter {
     }
 
     pub fn add_packed_value(&mut self, doc_id: DocId, value: &BytesRef) -> Result<()> {
-        if value.len() == 0 {
+        if value.is_empty() {
             bail!(
                 "field={}: point value must not be null",
                 self.field_info.name
@@ -126,7 +126,7 @@ impl PointValues for TempMutablePointsReader {
     fn intersect(&self, field_name: &str, visitor: &mut impl IntersectVisitor) -> Result<()> {
         let point_values_writer = self.point_values_writer();
 
-        if field_name != &point_values_writer.field_info.name {
+        if field_name != point_values_writer.field_info.name {
             bail!(
                 "fieldName must be the same, got: {}, expected: {}",
                 field_name,
@@ -160,7 +160,7 @@ impl PointValues for TempMutablePointsReader {
     }
 
     fn size(&self, field_name: &str) -> Result<i64> {
-        if field_name != &self.point_values_writer().field_info.name {
+        if field_name != self.point_values_writer().field_info.name {
             bail!(
                 "fieldName must be the same, got: {}, expected: {}",
                 field_name,
@@ -172,7 +172,7 @@ impl PointValues for TempMutablePointsReader {
     }
 
     fn doc_count(&self, field_name: &str) -> Result<i32> {
-        if field_name != &self.point_values_writer().field_info.name {
+        if field_name != self.point_values_writer().field_info.name {
             bail!(
                 "fieldName must be the same, got: {}, expected: {}",
                 field_name,

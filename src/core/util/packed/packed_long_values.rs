@@ -106,17 +106,14 @@ impl PackedLongValues {
             _ => {}
         }
 
-        match self.builder_type {
-            PackedLongValuesBuilderType::Monotonic => {
-                let average = self.averages[block];
-                k = 0;
-                while k < size {
-                    dest[k] = dest[k]
-                        .wrapping_add(MonotonicBlockPackedReader::expected(0, average, k as i32));
-                    k += 1;
-                }
+        if let PackedLongValuesBuilderType::Monotonic = self.builder_type {
+            let average = self.averages[block];
+            k = 0;
+            while k < size {
+                dest[k] = dest[k]
+                    .wrapping_add(MonotonicBlockPackedReader::expected(0, average, k as i32));
+                k += 1;
             }
-            _ => {}
         }
 
         size as i32
@@ -329,15 +326,12 @@ impl PackedLongValuesBuilder {
                 / (self.pending_off - 1) as f32
         };
 
-        match self.builder_type {
-            PackedLongValuesBuilderType::Monotonic => {
-                for i in 0..self.pending_off {
-                    self.pending[i] = self.pending[i].wrapping_sub(
-                        MonotonicBlockPackedReader::expected(0, average_ori, i as i32),
-                    );
-                }
+        if let PackedLongValuesBuilderType::Monotonic = self.builder_type {
+            for i in 0..self.pending_off {
+                self.pending[i] = self.pending[i].wrapping_sub(
+                    MonotonicBlockPackedReader::expected(0, average_ori, i as i32),
+                );
             }
-            _ => {}
         }
 
         let mut min_value_ori = self.pending[0];
@@ -398,11 +392,8 @@ impl PackedLongValuesBuilder {
             _ => {}
         }
 
-        match self.builder_type {
-            PackedLongValuesBuilderType::Monotonic => {
-                self.averages.push(average_ori);
-            }
-            _ => {}
+        if let PackedLongValuesBuilderType::Monotonic = self.builder_type {
+            self.averages.push(average_ori);
         }
 
         self.values_off += 1;

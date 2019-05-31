@@ -34,7 +34,7 @@ impl ComputeTime {
     }
 
     #[inline]
-    pub fn elapsed_ms_since(when: &time::Instant) -> u64 {
+    pub fn elapsed_ms_since(when: time::Instant) -> u64 {
         let elapsed = when.elapsed();
         elapsed.as_secs() * 1000 + u64::from(elapsed.subsec_nanos()) / 1_000_000
     }

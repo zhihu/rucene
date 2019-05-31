@@ -128,7 +128,7 @@ impl<T: Output> Arc<T> {
         self.label = other.label;
         self.output = other.output.clone();
         self.next_final_output = other.next_final_output.clone();
-        self.next_arc = other.next_arc.clone();
+        self.next_arc = other.next_arc;
         self.target = other.target;
         self.bytes_per_arc = other.bytes_per_arc;
         if self.bytes_per_arc > 0 {
@@ -212,12 +212,10 @@ impl<F: OutputFactory> FST<F> {
         let version =
             codec_util::check_header(data_in, FILE_FORMAT_NAME, VERSION_PACKED, VERSION_CURRENT)?;
 
-        if version < VERSION_PACKED_REMOVED {
-            if data_in.read_byte()? == 1 {
-                bail!(ErrorKind::CorruptIndex(
-                    "Cannot read packed FSTs anymore".into()
-                ));
-            }
+        if version < VERSION_PACKED_REMOVED && data_in.read_byte()? == 1 {
+            bail!(ErrorKind::CorruptIndex(
+                "Cannot read packed FSTs anymore".into()
+            ));
         }
 
         let empty_output = if data_in.read_byte()? == 1 {
@@ -448,7 +446,7 @@ impl<F: OutputFactory> FST<F> {
         }
 
         if use_root_arc_cache
-            && self.cached_root_arcs.len() > 0
+            && !self.cached_root_arcs.is_empty()
             && incoming_arc.target == self.start_node
             && label < self.cached_root_arcs.len() as i32
         {
@@ -525,7 +523,7 @@ impl<F: OutputFactory> FST<F> {
             if let Some(arc) = arc {
                 assert_eq!(res, arc);
             } else {
-                assert!(false);
+                panic!();
             }
         } else {
             debug_assert!(arc.is_none());
@@ -710,12 +708,10 @@ impl<F: OutputFactory> FST<F> {
         let start_address = self.bytes_store.get_position();
 
         let do_fixed_array = self.should_expand(builder, node_index);
-        if do_fixed_array {
-            if builder.reused_bytes_per_arc.len() < builder.frontier[node_index].num_arcs {
-                builder
-                    .reused_bytes_per_arc
-                    .resize(builder.frontier[node_index].num_arcs, 0);
-            }
+        if do_fixed_array && builder.reused_bytes_per_arc.len() < builder.frontier[node_index].num_arcs {
+            builder
+                .reused_bytes_per_arc
+                .resize(builder.frontier[node_index].num_arcs, 0);
         }
         builder.arc_count += builder.frontier[node_index].num_arcs as u64;
 

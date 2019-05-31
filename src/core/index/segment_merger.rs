@@ -93,7 +93,7 @@ where
                 .as_ref()
                 .clone(),
             None,
-            self.context.clone(),
+            self.context,
             "".into(),
         );
         self.merge_terms(&segment_write_state)?;
@@ -168,7 +168,7 @@ where
             .codec
             .points_format()
             .fields_writer(segment_write_state)?;
-        writer.merge(&mut self.merge_state)
+        writer.merge(&self.merge_state)
     }
 
     fn merge_norms(&mut self, segment_write_state: &SegmentWriteState<D, DW, C>) -> Result<()> {

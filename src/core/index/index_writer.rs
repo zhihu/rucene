@@ -635,10 +635,8 @@ where
                 if let Err(e) = IndexWriterInner::shutdown(self) {
                     error!("IndexWriter: shutdown on close failed by: {:?}", e);
                 }
-            } else {
-                if let Err(e) = self.rollback() {
-                    error!("IndexWriter: rollback on close failed by: {:?}", e);
-                }
+            } else if let Err(e) = self.rollback() {
+                error!("IndexWriter: rollback on close failed by: {:?}", e);
             }
         }
     }
@@ -941,6 +939,7 @@ where
         })
     }
 
+    #[allow(clippy::mut_from_ref)]
     unsafe fn writer_mut(&self, _l: &MutexGuard<()>) -> &mut IndexWriterInner<D, C, MS, MP> {
         let writer =
             self as *const IndexWriterInner<D, C, MS, MP> as *mut IndexWriterInner<D, C, MS, MP>;
@@ -1662,13 +1661,9 @@ where
     ) -> Result<bool> {
         let mut processed = false;
         if index_writer.writer.tragedy.is_none() {
-            loop {
-                if let Ok(event) = index_writer.writer.doc_writer.events.pop() {
-                    processed = true;
-                    event.process(index_writer, trigger_merge, force_purge)?;
-                } else {
-                    break;
-                }
+            while let Ok(event) = index_writer.writer.doc_writer.events.pop() {
+                processed = true;
+                event.process(index_writer, trigger_merge, force_purge)?;
             }
         }
 
@@ -2200,7 +2195,7 @@ where
             }
             index_writer.writer.doc_writer.finish_full_flush(true);
             if let Err(e) = Self::process_events(index_writer, false, true) {
-                if !res.is_err() {
+                if res.is_ok() {
                     return Err(e);
                 } else {
                     error!("process events failed after do_flush by: '{:?}'", e);
@@ -2786,7 +2781,7 @@ where
         // we keep deterministic segment names.
         let merge_segment_name = self.new_segment_name();
         let mut si = SegmentInfo::new(
-            VERSION_LATEST.clone(),
+            VERSION_LATEST,
             &merge_segment_name,
             -1,
             Arc::clone(&self.directory_orig),
@@ -3193,7 +3188,7 @@ where
             .segments
             .contains(merge.info.as_ref().unwrap()));
 
-        let all_deleted = merge.segments.len() == 0
+        let all_deleted = merge.segments.is_empty()
             || merge.info.as_ref().unwrap().info.max_doc == 0
             || (merge_updates.is_some()
                 && merge_updates.as_ref().unwrap().pending_delete_count()
@@ -3201,7 +3196,7 @@ where
         let drop_segment = all_deleted && !self.keep_fully_deleted_segments;
 
         // If we merged no segments then we better be dropping the new segment:
-        debug_assert!(merge.segments.len() > 0 || drop_segment);
+        debug_assert!(!merge.segments.is_empty() || drop_segment);
         debug_assert!(
             merge.info.as_ref().unwrap().info.max_doc > 0
                 || self.keep_fully_deleted_segments
@@ -3393,12 +3388,7 @@ where
     MP: MergePolicy,
 {
     pub fn new() -> Self {
-        ReaderPool {
-            lock: Mutex::new(()),
-            reader_map: Arc::new(Mutex::new(HashMap::new())),
-            index_writer: Weak::new(),
-            inited: false,
-        }
+        Default::default()
     }
 
     fn init(&mut self, index_writer: Weak<IndexWriterInner<D, C, MS, MP>>) {
@@ -3439,7 +3429,7 @@ where
         let l = self.lock.lock()?;
         let mut prior_err = Ok(());
 
-        let keys: Vec<String> = self.reader_map.lock()?.keys().map(|s| s.clone()).collect();
+        let keys: Vec<String> = self.reader_map.lock()?.keys().cloned().collect();
 
         let mut reader_map = self.reader_map.lock()?;
         for key in keys {
@@ -3458,7 +3448,7 @@ where
             // in the end, in case we hit an exception;
             // otherwise we could over-decref if close() is
             // called again:
-            let mut rld = reader_map.remove(&key).unwrap();
+            let rld = reader_map.remove(&key).unwrap();
 
             // NOTE: it is allowed that these decRefs do not
             // actually close the SRs; this happens when a
@@ -3628,6 +3618,19 @@ where
         let rld = Arc::clone(self.reader_map.lock()?.get_mut(&info.info.name).unwrap());
         rld.inc_ref();
         Ok(rld)
+    }
+}
+
+impl<D: Directory + Send + Sync + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy> Default
+    for ReaderPool<D, C, MS, MP>
+{
+    fn default() -> Self {
+        ReaderPool {
+            lock: Mutex::new(()),
+            reader_map: Arc::new(Mutex::new(HashMap::new())),
+            index_writer: Weak::new(),
+            inited: false,
+        }
     }
 }
 

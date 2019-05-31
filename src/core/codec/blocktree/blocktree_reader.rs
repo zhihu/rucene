@@ -282,7 +282,7 @@ impl BlockTreeTermsReader {
                     )));
                 }
                 let terms_in = Arc::from(terms_in.clone()?);
-                let mut reader = Arc::new(FieldReader::new(
+                let reader = Arc::new(FieldReader::new(
                     terms_reader.clone_without_fields(),
                     field_info.clone(),
                     num_terms,
@@ -407,7 +407,7 @@ pub struct FieldReader {
 pub type FieldReaderRef = Arc<FieldReader>;
 
 impl FieldReader {
-    #[allow(too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         parent: BlockTreeTermsReader,
         field_info: FieldInfoRef,
@@ -1227,7 +1227,7 @@ impl SegmentTermIteratorInner {
 
     fn get_frame(&mut self, ord: usize) -> usize {
         if ord >= self.stack.len() {
-            for cur in self.stack.len()..ord + 1 {
+            for cur in self.stack.len()..=ord {
                 let frame = SegmentTermsIterFrame::new(self, cur as isize);
                 self.stack.push(frame);
             }
@@ -1403,7 +1403,7 @@ impl TermIterator for SegmentTermIteratorInner {
                     output = outputs.add(&output, out);
                 }
                 if self.arcs[arc_idx].is_final() {
-                    last_frame_idx = 1 + last_frame_idx;
+                    last_frame_idx += 1;
                 }
                 target_upto += 1;
             }
@@ -1596,7 +1596,7 @@ impl TermIterator for SegmentTermIteratorInner {
                     output = outputs.add(&output, out);
                 }
                 if self.arcs[arc_idx].is_final() {
-                    last_frame_idx = 1 + last_frame_idx;
+                    last_frame_idx += 1;
                 }
                 target_upto += 1;
             }

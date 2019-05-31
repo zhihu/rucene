@@ -151,7 +151,7 @@ impl<T: PostingsArray + 'static> TermsHashPerFieldBase<T> {
                     .byte_pool_mut()
                     .new_slice(ByteBlockPool::FIRST_LEVEL_SIZE);
                 unsafe {
-                    (&mut *self.int_pool).buffers[self.int_upto_idx][self.int_upto_start + i] =
+                    (*self.int_pool).buffers[self.int_upto_idx][self.int_upto_start + i] =
                         (upto as isize + self.byte_block_pool().byte_offset) as i32;
                 }
             }
@@ -356,7 +356,7 @@ impl<T: PostingsArray + 'static> PostingsBytesStartArray<T> {
 impl<T: PostingsArray + 'static> BytesStartArray for PostingsBytesStartArray<T> {
     fn bytes_mut(&mut self) -> &mut [u32] {
         unsafe {
-            &mut (&mut *self.per_field)
+            &mut (*self.per_field)
                 .postings_array
                 .parallel_array_mut()
                 .text_starts
@@ -365,7 +365,7 @@ impl<T: PostingsArray + 'static> BytesStartArray for PostingsBytesStartArray<T> 
 
     fn bytes(&self) -> &[u32] {
         unsafe {
-            &(&mut *self.per_field)
+            &(*self.per_field)
                 .postings_array
                 .parallel_array()
                 .text_starts
@@ -476,7 +476,7 @@ where
     ) -> Result<()> {
         if let Some(payload_attr) = token_stream.payload_attribute() {
             let payload = payload_attr.get_payload();
-            if payload.len() > 0 {
+            if !payload.is_empty() {
                 self.base.write_vint(1, (prox_code << 1 | 1) as i32);
                 self.base.write_vint(1, payload.len() as i32);
                 self.base.write_bytes(1, payload);

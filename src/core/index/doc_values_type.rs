@@ -36,23 +36,23 @@ pub enum DocValuesType {
 }
 
 impl DocValuesType {
-    pub fn null(&self) -> bool {
-        match *self {
+    pub fn null(self) -> bool {
+        match self {
             DocValuesType::Null => true,
             _ => false,
         }
     }
 
-    pub fn is_numeric(&self) -> bool {
-        match *self {
+    pub fn is_numeric(self) -> bool {
+        match self {
             DocValuesType::Numeric | DocValuesType::SortedNumeric => true,
             _ => false,
         }
     }
 
     // whether the doc values type can store string
-    pub fn support_string(&self) -> bool {
-        match *self {
+    pub fn support_string(self) -> bool {
+        match self {
             DocValuesType::Binary | DocValuesType::Sorted | DocValuesType::SortedSet => true,
             _ => false,
         }

@@ -318,6 +318,7 @@ where
         }
     }
 
+    #[allow(clippy::mut_from_ref)]
     fn term_vectors_writer(&self) -> &mut TermVectorsConsumer<D, C, MS, MP> {
         unsafe { &mut *self.parent }
     }

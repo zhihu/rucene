@@ -118,7 +118,7 @@ impl DocValuesFieldsReader {
                             HashMapEntry::Occupied(occupied) => {
                                 fields.insert(name.to_string(), Arc::clone(occupied.get()));
                             }
-                            HashMapEntry::Vacant(mut vacant) => {
+                            HashMapEntry::Vacant(vacant) => {
                                 let segment_read_state =
                                     SegmentReadState::with_suffix(state, &segment_suffix);
                                 let dv_producer = dv_format.fields_producer(&segment_read_state)?;
@@ -283,7 +283,7 @@ impl<D: Directory, DW: Directory, C: Codec> DocValuesFieldsWriter<D, DW, C> {
 
             if suffix.is_none() {
                 // bump the suffix
-                suffix = self.suffixes.get(&format_name).map(|s| *s);
+                suffix = self.suffixes.get(&format_name).copied();
                 if suffix.is_none() {
                     suffix = Some(0);
                 } else {

@@ -100,8 +100,9 @@ impl<D: Directory, C: Codec> Default for SegmentInfos<D, C> {
     }
 }
 
+#[allow(clippy::len_without_is_empty)]
 impl<D: Directory, C: Codec> SegmentInfos<D, C> {
-    #[allow(too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         counter: i32,
         version: i64,
@@ -152,7 +153,7 @@ impl<D: Directory, C: Codec> SegmentInfos<D, C> {
         }
     }
 
-    /// Returns a copy of this instance, also copying each SegmentInfo
+    /// Returns number of segments
     pub fn len(&self) -> usize {
         self.segments.len()
     }
@@ -580,8 +581,8 @@ impl<D: Directory, C: Codec> Clone for SegmentInfos<D, C> {
             last_generation: self.last_generation,
             segments,
             id,
-            lucene_version: self.lucene_version.clone(),
-            min_seg_version: self.min_seg_version.clone(),
+            lucene_version: self.lucene_version,
+            min_seg_version: self.min_seg_version,
             pending_commit: self.pending_commit,
         }
     }
@@ -890,7 +891,7 @@ impl<D: Directory, C: Codec> Drop for SegmentCoreReaders<D, C> {
     fn drop(&mut self) {
         let mut listeners_guard = self.core_dropped_listeners.lock().unwrap();
         let listeners = mem::replace(&mut *listeners_guard, Vec::with_capacity(0));
-        for mut listener in listeners {
+        for listener in listeners {
             listener.call();
         }
     }

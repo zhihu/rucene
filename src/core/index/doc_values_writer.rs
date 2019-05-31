@@ -141,7 +141,7 @@ impl BinaryDocValuesWriter {
                 self.field_info.name
             )));
         }
-        if value.len() == 0 {
+        if value.is_empty() {
             bail!(IllegalArgument(format!(
                 "field={}: null value not allowed",
                 self.field_info.name
@@ -188,7 +188,7 @@ impl DocValuesWriter for BinaryDocValuesWriter {
         let mut iter =
             BinaryBytesIterator::new(max_doc, lengths, size, &self.bytes, &self.docs_with_field);
 
-        consumer.add_binary_field(&mut self.field_info, &mut iter)
+        consumer.add_binary_field(&self.field_info, &mut iter)
     }
 }
 
@@ -290,7 +290,7 @@ impl<'a> Iterator for NumericDocValuesIter<'a> {
                 match self.docs_with_field.get(self.upto) {
                     Err(e) => {
                         self.upto += 1;
-                        return Some(Err(e));
+                        Some(Err(e))
                     }
                     Ok(b) => {
                         let current = if b { Numeric::Long(v) } else { Numeric::Null };
@@ -387,7 +387,7 @@ impl DocValuesWriter for SortedNumericDocValuesWriter {
         self.finish_current_doc();
 
         for _ in self.current_doc..num_doc {
-            let _ = self.pending_counts.add(0);
+            self.pending_counts.add(0);
         }
     }
 
@@ -512,7 +512,7 @@ impl SortedDocValuesWriter {
                 self.field_info.name
             );
         }
-        if value.len() == 0 {
+        if value.is_empty() {
             bail!(IllegalArgument(format!(
                 "DocValuesField {}: null value not allowed",
                 self.field_info.name
@@ -552,7 +552,7 @@ impl SortedDocValuesWriter {
 impl DocValuesWriter for SortedDocValuesWriter {
     fn finish(&mut self, num_doc: i32) {
         while self.pending.size() < num_doc as i64 {
-            let _ = self.pending.add(EMPTY_ORD);
+            self.pending.add(EMPTY_ORD);
         }
     }
 
@@ -577,7 +577,7 @@ impl DocValuesWriter for SortedDocValuesWriter {
         let mut values_iter = SortedValuesIterator::new(&self.hash.ids, value_count, &self.hash);
         let mut ords_iter = SortedOrdsIterator::new(&ord_map, max_doc, pending.iterator());
 
-        consumer.add_sorted_field(&mut self.field_info, &mut values_iter, &mut ords_iter)
+        consumer.add_sorted_field(&self.field_info, &mut values_iter, &mut ords_iter)
     }
 }
 
@@ -715,7 +715,7 @@ impl SortedSetDocValuesWriter {
     }
 
     pub fn add_value(&mut self, doc_id: DocId, value: &BytesRef) -> Result<()> {
-        if value.len() == 0 {
+        if value.is_empty() {
             bail!(IllegalArgument(format!(
                 "DocValuesField {}: null value not allowed",
                 self.field_info.name
@@ -821,7 +821,7 @@ impl DocValuesWriter for SortedSetDocValuesWriter {
             SortedSetOrdCountIterator::new(max_doc as i32, pending_counts.iterator());
 
         consumer.add_sorted_set_field(
-            &mut self.field_info,
+            &self.field_info,
             &mut value_iter,
             &mut ord_count_iter,
             &mut ord_iter,
@@ -1084,6 +1084,7 @@ pub fn estimate_capacity(size: usize) -> usize {
     (size / PAGE_SIZE + extra as usize) * PAGE_SIZE
 }
 
+#[derive(Default)]
 pub struct Container {
     numeric_dv_updates: HashMap<String, NumericDocValuesFieldUpdates>,
     binary_dv_updates: HashMap<String, BinaryDocValuesFieldUpdates>,
@@ -1091,10 +1092,7 @@ pub struct Container {
 
 impl Container {
     pub fn new() -> Container {
-        Container {
-            numeric_dv_updates: HashMap::new(),
-            binary_dv_updates: HashMap::new(),
-        }
+        Default::default()
     }
 
     pub fn any(&self) -> bool {
@@ -1120,7 +1118,7 @@ impl Container {
     pub fn get_updates(
         &self,
         field: &str,
-        doc_values_type: &DocValuesType,
+        doc_values_type: DocValuesType,
     ) -> Result<&DocValuesFieldUpdates> {
         match doc_values_type {
             DocValuesType::Numeric => Ok(self
@@ -1145,7 +1143,7 @@ impl Container {
     pub fn new_updates(
         &mut self,
         field: &str,
-        doc_values_type: &DocValuesType,
+        doc_values_type: DocValuesType,
         max_doc: i32,
     ) -> Result<&DocValuesFieldUpdates> {
         match doc_values_type {
@@ -1256,7 +1254,7 @@ impl DocValuesFieldUpdatesIterator for NumericDocValuesFieldUpdatesIterator {
     fn value(&self) -> DocValuesFieldUpdatesValue {
         DocValuesFieldUpdatesValue {
             doc_values_type: DocValuesType::Numeric,
-            numeric_value: self.value.clone(),
+            numeric_value: self.value,
             binary_value: None,
         }
     }
@@ -1447,7 +1445,7 @@ impl BinaryDocValuesFieldUpdatesIterator {
             doc: -1,
             offset: -1,
             length: 0,
-            value: BytesRef::new(&mut updates.values),
+            value: BytesRef::new(&updates.values),
         }
     }
 }
@@ -1725,11 +1723,8 @@ impl<'a> Iterator for BinaryBytesIterator<'a> {
         if self.upto < self.size {
             let length = self.lengths_iter.next().unwrap() as usize;
             self.value.resize(length, 0u8);
-            match self.input.read_bytes(&mut self.value, 0, length) {
-                Err(e) => {
-                    return Some(Err(e));
-                }
-                Ok(_) => {}
+            if let Err(e) = self.input.read_bytes(&mut self.value, 0, length) {
+                return Some(Err(e));
             }
             match self.docs_with_field.get(self.upto) {
                 Err(e) => {

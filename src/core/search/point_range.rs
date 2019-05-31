@@ -39,8 +39,8 @@ pub enum PointValueType {
 }
 
 impl PointValueType {
-    pub fn format_single_value(&self, bytes: &[u8]) -> String {
-        match *self {
+    pub fn format_single_value(self, bytes: &[u8]) -> String {
+        match self {
             PointValueType::Float => FloatPoint::decode_dimension(bytes).to_string(),
             PointValueType::Double => DoublePoint::decode_dimension(bytes).to_string(),
             PointValueType::Integer => IntPoint::decode_dimension(bytes).to_string(),
@@ -48,7 +48,7 @@ impl PointValueType {
         }
     }
 
-    pub fn format_bytes(&self, bytes: &[u8], bytes_per_dim: usize) -> String {
+    pub fn format_bytes(self, bytes: &[u8], bytes_per_dim: usize) -> String {
         assert_eq!(bytes.len() % bytes_per_dim, 0);
         let num = bytes.len() / bytes_per_dim;
         let mut values = Vec::with_capacity(num);
@@ -254,15 +254,13 @@ impl<C: Codec> Weight<C> for PointRangeWeight {
 
                 let iterator = if all_docs_match {
                     PointDocIterEnum::All(AllDocsIterator::new(leaf_reader.max_doc()))
+                } else if let Some(iter) = self
+                    .build_matching_doc_set(leaf_reader, values)?
+                    .iterator()?
+                {
+                    PointDocIterEnum::DocSet(iter)
                 } else {
-                    if let Some(iter) = self
-                        .build_matching_doc_set(leaf_reader, values)?
-                        .iterator()?
-                    {
-                        PointDocIterEnum::DocSet(iter)
-                    } else {
-                        PointDocIterEnum::None(EmptyDocIterator::default())
-                    }
+                    PointDocIterEnum::None(EmptyDocIterator::default())
                 };
                 let cost = iterator.cost();
                 return Ok(Some(Box::new(ConstantScoreScorer::new(

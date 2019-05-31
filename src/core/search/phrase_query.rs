@@ -225,7 +225,7 @@ pub struct PhraseWeight<C: Codec> {
 }
 
 impl<C: Codec> PhraseWeight<C> {
-    #[allow(too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         field: String,
         terms: Vec<Term>,
@@ -557,7 +557,7 @@ impl<T: PostingIterator + 'static> ExactPhraseScorer<T> {
             Vec::with_capacity(postings.len());
 
         for (i, posing) in postings.into_iter().enumerate() {
-            let mut iterator = posing.postings;
+            let iterator = posing.postings;
             iterators.push(PostingsIterAsScorer { iterator });
             postings_and_positions.push(PostingsAndPosition::new(
                 &mut iterators[i].iterator,
@@ -897,7 +897,7 @@ impl<T: PostingIterator + 'static> SloppyPhraseScorer<T> {
         let mut doc_iterators = Vec::with_capacity(num_postings);
         let mut phrase_positions = Vec::with_capacity(num_postings);
         for (idx, posting) in postings.into_iter().enumerate() {
-            let mut iterator = posting.postings;
+            let iterator = posting.postings;
             doc_iterators.push(PostingsIterAsScorer { iterator });
             phrase_positions.push(PhrasePositions::new(
                 &mut doc_iterators[idx].iterator,

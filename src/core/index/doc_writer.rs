@@ -179,6 +179,7 @@ where
         self.writer.upgrade().unwrap()
     }
 
+    #[allow(clippy::mut_from_ref)]
     unsafe fn doc_writer_mut(&self, _l: &MutexGuard<()>) -> &mut DocumentsWriter<D, C, MS, MP> {
         let w = self as *const DocumentsWriter<D, C, MS, MP> as *mut DocumentsWriter<D, C, MS, MP>;
         &mut *w
@@ -361,13 +362,9 @@ where
             // Help out flushing any queued DWPTs so we can un-stall:
             loop {
                 // Try pick up pending threads here if possible
-                loop {
-                    if let Some(dwpt) = self.flush_control.next_pending_flush() {
-                        // Don't push the delete here since the update could fail!
-                        has_events |= self.do_flush(dwpt)?;
-                    } else {
-                        break;
-                    }
+                while let Some(dwpt) = self.flush_control.next_pending_flush() {
+                    // Don't push the delete here since the update could fail!
+                    has_events |= self.do_flush(dwpt)?;
                 }
                 self.flush_control.wait_if_stalled()?; // block is stalled
                 if self.flush_control.num_queued_flushes() == 0 {
@@ -386,10 +383,8 @@ where
         has_events |= self.apply_all_deletes_local()?;
         if let Some(dwpt) = flushing_dwpt {
             has_events |= self.do_flush(dwpt)?;
-        } else {
-            if let Some(mut next_pending_flush) = self.flush_control.next_pending_flush() {
-                has_events |= self.do_flush(next_pending_flush)?;
-            }
+        } else if let Some(next_pending_flush) = self.flush_control.next_pending_flush() {
+            has_events |= self.do_flush(next_pending_flush)?;
         }
 
         Ok(has_events)
@@ -683,13 +678,9 @@ where
         };
 
         let mut anything_flushed = false;
-        loop {
+        while let Some(flushing_dwpt) = self.flush_control.next_pending_flush() {
             // Help out with flushing:
-            if let Some(flushing_dwpt) = self.flush_control.next_pending_flush() {
-                anything_flushed |= self.do_flush(flushing_dwpt)?;
-            } else {
-                break;
-            }
+            anything_flushed |= self.do_flush(flushing_dwpt)?;
         }
         // If a concurrent flush is still in flight wait for it
         self.flush_control.wait_for_flush()?;

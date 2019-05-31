@@ -125,7 +125,7 @@ impl OfflinePointReader {
         let i2p4 = bytes[pos] as i32 & 0xFF;
         let i2 = i2p1 << 24 | i2p2 << 16 | i2p3 << 8 | i2p4;
 
-        ((i1 as i64) << 32) | ((i2 as i64) & 0xFFFFFFFFi64)
+        ((i1 as i64) << 32) | ((i2 as i64) & 0xFFFF_FFFFi64)
     }
 
     fn read_int(bytes: &[u8], pos: usize) -> i32 {

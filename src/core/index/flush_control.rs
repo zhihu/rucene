@@ -158,6 +158,7 @@ impl<D: Directory + Send + Sync + 'static, C: Codec, MS: MergeScheduler, MP: Mer
         unsafe { &*self.per_thread_pool }
     }
 
+    #[allow(clippy::mut_from_ref)]
     unsafe fn flush_control_mut(
         &self,
         _l: &MutexGuard<FlushControlLock>,
@@ -833,6 +834,7 @@ impl DocumentsWriterStallControl {
     }
 
     // hold mutex to make sure this operation is safe as mush as possible
+    #[allow(clippy::mut_from_ref)]
     unsafe fn stall_control_mut(&self, _l: &MutexGuard<()>) -> &mut DocumentsWriterStallControl {
         let sc = self as *const DocumentsWriterStallControl as *mut DocumentsWriterStallControl;
         &mut *sc
@@ -898,9 +900,9 @@ impl DocumentsWriterStallControl {
     }
 
     #[allow(dead_code)]
-    fn is_thread_queued(&self, t: &ThreadId) -> bool {
+    fn is_thread_queued(&self, t: ThreadId) -> bool {
         let _l = self.lock.lock().unwrap();
-        self.waiting.contains_key(t)
+        self.waiting.contains_key(&t)
     }
 
     #[allow(dead_code)]

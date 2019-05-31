@@ -110,14 +110,14 @@ impl BaseFragmentsBuilder {
                     continue;
                 }
 
-                let mut frag_start =
+                let frag_start =
                     if frag_info.start_offset > field_start && frag_info.start_offset < field_end {
                         frag_info.start_offset
                     } else {
                         field_start
                     };
 
-                let mut frag_end =
+                let frag_end =
                     if frag_info.end_offset > field_start && frag_info.end_offset < field_end {
                         frag_info.end_offset
                     } else {
@@ -218,7 +218,7 @@ impl BaseFragmentsBuilder {
         frag_infos.sort_by(WeightedFragInfo::order_by_boost_and_offset);
     }
 
-    #[allow(too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn make_fragment(
         &self,
         buffer: &mut String,

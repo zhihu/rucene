@@ -320,8 +320,7 @@ impl OrdinalMap {
 
     pub fn first_segment_number(&self, global_ord: i64) -> i32 {
         let new = self.first_segments.get64(global_ord).unwrap() as i32;
-        let res = self.segment_map.new_to_old(new);
-        res
+        self.segment_map.new_to_old(new)
     }
 
     pub fn first_segment_ord(&self, global_ord: i64) -> i64 {

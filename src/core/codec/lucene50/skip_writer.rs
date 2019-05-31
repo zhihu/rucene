@@ -184,6 +184,7 @@ impl Lucene50SkipWriter {
     }
 
     /// Sets the values for the current skip data.
+    #[allow(clippy::too_many_arguments)]
     pub fn buffer_skip(
         &mut self,
         doc: DocId,

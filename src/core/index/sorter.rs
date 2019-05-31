@@ -107,8 +107,8 @@ impl Sorter {
             COMPACT,
             PackedLongValuesBuilderType::Monotonic,
         );
-        for i in 0..max_doc as usize {
-            new_to_old_builder.add(docs[i] as i64);
+        for doc in docs.iter().take(max_doc as usize) {
+            new_to_old_builder.add(*doc as i64);
         }
         // NOTE: the #build method contain reference, but the builder will move after return,
         // so we won't use the build result
@@ -124,8 +124,8 @@ impl Sorter {
             COMPACT,
             PackedLongValuesBuilderType::Monotonic,
         );
-        for i in 0..max_doc as usize {
-            old_to_new_builder.add(docs[i] as i64);
+        for doc in docs.iter().take(max_doc as usize) {
+            old_to_new_builder.add(*doc as i64);
         }
         // NOTE: the #build method contain reference, but the builder will move after return,
         // so we won't use the build result
@@ -155,9 +155,9 @@ impl Sorter {
         let fields = self.sort.get_sort();
         let mut reverses = Vec::with_capacity(fields.len());
         let mut comparators = Vec::with_capacity(fields.len());
-        for i in 0..fields.len() {
-            reverses.push(fields[i].is_reverse());
-            let mut comparator = fields[i].get_comparator(1, None);
+        for field in fields {
+            reverses.push(field.is_reverse());
+            let mut comparator = field.get_comparator(1, None);
             comparator.get_information_from_reader(reader)?;
             comparators.push(comparator);
         }
@@ -272,11 +272,11 @@ impl MultiSorter {
         let mut queue = BinaryHeap::with_capacity(leaf_count);
         let mut builders = Vec::with_capacity(leaf_count);
 
-        for i in 0..leaf_count {
+        for (i, reader) in readers.iter().enumerate().take(leaf_count) {
             queue.push(LeafAndDocId::new(
                 i,
-                readers[i].live_docs(),
-                readers[i].max_doc(),
+                reader.live_docs(),
+                reader.max_doc(),
                 &comparators,
             ));
             builders.push(PackedLongValuesBuilder::new(

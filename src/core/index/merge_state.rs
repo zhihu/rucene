@@ -156,6 +156,7 @@ impl<D: Directory + 'static, C: Codec> MergeState<D, C> {
         })
     }
 
+    #[allow(clippy::mut_from_ref)]
     pub fn segment_info(&self) -> &mut SegmentInfo<D, C> {
         unsafe { &mut *self.segment_info }
     }
@@ -420,9 +421,9 @@ impl<D: Directory + 'static, C: Codec> LeafReader for ReaderWrapperEnum<D, C> {
     /// spatial searches, or None if there are no point fields.
     fn point_values(&self) -> Option<Self::PointsReader> {
         match self {
-            ReaderWrapperEnum::Segment(s) => s.point_values().map(|p| MergePointValuesEnum::Raw(p)),
+            ReaderWrapperEnum::Segment(s) => s.point_values().map(MergePointValuesEnum::Raw),
             ReaderWrapperEnum::SortedSegment(s) => {
-                s.point_values().map(|p| MergePointValuesEnum::Sorting(p))
+                s.point_values().map(MergePointValuesEnum::Sorting)
             }
         }
     }

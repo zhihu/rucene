@@ -68,8 +68,8 @@ impl SortInfo {
         let mut top_doc = None;
         let mut max_score = 0f64;
         for info in &self.wilson_infos {
-            match info.wilson_score {
-                Some(ref w) => match w {
+            if let Some(ref w) = info.wilson_score {
+                match w {
                     VariantValue::Double(s) => {
                         if *s > max_score {
                             max_score = *s;
@@ -84,8 +84,7 @@ impl SortInfo {
                         }
                     }
                     _ => {}
-                },
-                _ => {}
+                }
             }
         }
 

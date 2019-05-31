@@ -120,7 +120,7 @@ impl TermVectorsFormat for CompressingTermVectorsFormat {
             field_info,
             ioctx,
             &self.format_name,
-            self.compression_mode.clone(),
+            self.compression_mode,
         )
     }
 
@@ -288,7 +288,7 @@ impl CompressingTermVectorsReader {
         position_index
     }
 
-    #[allow(too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn read_positions(
         &mut self,
         vectors_stream: &mut dyn IndexInput,
@@ -654,8 +654,8 @@ impl CompressingTermVectorsReader {
             )?;
 
             for i in 0..num_fields {
-                let mut f_start_offsets = &mut start_offsets[i];
-                let mut f_positions = &mut positions[i];
+                let f_start_offsets = &mut start_offsets[i];
+                let f_positions = &mut positions[i];
                 if !f_start_offsets.is_empty() && !f_positions.is_empty() {
                     let field_chars_per_term: f32 = chars_per_term[field_num_offs[i] as usize];
                     for j in 0..f_start_offsets.len() {
@@ -665,7 +665,7 @@ impl CompressingTermVectorsReader {
                 if !f_start_offsets.is_empty() {
                     let f_prefix_lengths = &prefix_lengths[i];
                     let f_suffix_lengths = &suffix_lengths[i];
-                    let mut f_lengths = &mut lengths[i];
+                    let f_lengths = &mut lengths[i];
                     let end = num_terms.get(skip + i) as usize;
                     for j in 0..end {
                         let term_length = f_prefix_lengths[j] + f_suffix_lengths[j];
@@ -686,7 +686,7 @@ impl CompressingTermVectorsReader {
         if total_positions > 0 {
             // delta-decode positions
             for i in 0..num_fields {
-                let mut f_positions = &mut positions[i];
+                let f_positions = &mut positions[i];
                 let f_position_index = &position_index[i];
                 if !f_positions.is_empty() {
                     let end = num_terms.get(skip + i) as usize;
@@ -861,7 +861,7 @@ pub struct TVFields {
 }
 
 impl TVFields {
-    #[allow(too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         field_infos: Arc<FieldInfos>,
         field_nums: Vec<i32>,
@@ -1265,8 +1265,10 @@ impl TVPostingsIterator {
         }
         Ok(())
     }
+}
 
-    pub fn clone(&self) -> Self {
+impl Clone for TVPostingsIterator {
+    fn clone(&self) -> Self {
         TVPostingsIterator::new(
             self.term_freq,
             self.position_index,

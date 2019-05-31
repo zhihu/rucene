@@ -191,7 +191,7 @@ impl SimpleSortField {
                     num_hits,
                     self.field.clone(),
                     self.field_type,
-                    missing_value.map(|v| v.clone()),
+                    missing_value.cloned(),
                     DefaultDocValuesSource::default(),
                 ))
             }
@@ -261,7 +261,7 @@ impl SortedNumericSortField {
             num_hits,
             self.raw_field.field.clone(),
             self.real_type,
-            missing_value.map(|v| v.clone()),
+            missing_value.cloned(),
             SortedWrapperDocValuesSource::new(self.selector, self.real_type),
         ))
     }

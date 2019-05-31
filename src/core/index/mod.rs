@@ -272,8 +272,8 @@ pub fn file_name_from_generation(base: &str, ext: &str, gen: u64) -> String {
 /// Returns the generation from this file name,
 /// or 0 if there is no generation
 pub fn parse_generation(filename: &str) -> Result<i64> {
-    debug_assert!(filename.starts_with("_"));
-    let parts: Vec<&str> = strip_extension(filename)[1..].split("_").collect();
+    debug_assert!(filename.starts_with('_'));
+    let parts: Vec<&str> = strip_extension(filename)[1..].split('_').collect();
     // 4 cases:
     // segment.ext
     // segment_gen.ext
@@ -366,7 +366,7 @@ pub struct SegmentInfo<D: Directory, C: Codec> {
 }
 
 impl<D: Directory, C: Codec> SegmentInfo<D, C> {
-    #[allow(too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         version: Version,
         name: &str,
@@ -492,11 +492,11 @@ impl<D: Directory, C: Codec> Clone for SegmentInfo<D, C> {
             max_doc: self.max_doc,
             is_compound_file: AtomicBool::new(self.is_compound_file()),
             directory: Arc::clone(&self.directory),
-            id: self.id.clone(),
+            id: self.id,
             codec: self.codec.as_ref().map(|c| Arc::clone(c)),
             diagnostics: self.diagnostics.clone(),
             attributes: self.attributes.clone(),
-            version: self.version.clone(),
+            version: self.version,
             set_files: self.set_files.clone(),
             index_sort: self.index_sort.clone(),
         }
@@ -776,7 +776,7 @@ impl<D: Directory, C: Codec> SegmentCommitInfo<D, C> {
         self.info.codec().live_docs_format().files(self, &mut files);
 
         // must separately add any field updates files
-        for (_, fs) in &self.dv_updates_files {
+        for fs in self.dv_updates_files.values() {
             for f in fs {
                 files.insert(f.clone());
             }
@@ -1066,7 +1066,7 @@ impl<D: Directory, DW: Directory, C: Codec> SegmentWriteState<D, DW, C> {
     // this mechanism, maybe add 'generation' explicitly to ctor create the 'actual suffix' here?
     fn assert_segment_suffix(segment_suffix: &str) -> bool {
         if !segment_suffix.is_empty() {
-            let parts: Vec<&str> = segment_suffix.split("_").collect();
+            let parts: Vec<&str> = segment_suffix.split('_').collect();
             if parts.len() == 2 {
                 true
             } else if parts.len() == 1 {

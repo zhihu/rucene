@@ -240,7 +240,7 @@ impl<'a, D: Directory, O: IndexOutput> OneDimensionBKDWriter<'a, D, O> {
         );
 
         self.value_count += self.leaf_count as i64;
-        if self.leaf_block_fps.len() > 0 {
+        if !self.leaf_block_fps.is_empty() {
             // Save the first (minimum) value in each leaf block except the first, to build the
             // split value index in the end:
             let to_copy = bkd_writer.packed_bytes_length.min(self.leaf_values.len());
@@ -305,7 +305,7 @@ impl<'a, D: Directory, O: IndexOutput> OneDimensionBKDWriter<'a, D, O> {
         )?;
         let length = bkd_writer.scratch_out.position();
         self.out
-            .write_bytes(&mut bkd_writer.scratch_out.bytes, 0, length)?;
+            .write_bytes(&bkd_writer.scratch_out.bytes, 0, length)?;
         bkd_writer.scratch_out.reset();
 
         Ok(())
@@ -352,6 +352,7 @@ pub struct BKDWriter<D: Directory> {
 }
 
 impl<D: Directory> BKDWriter<D> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         max_doc: i32,
         temp_dir: Arc<D>,
@@ -379,7 +380,7 @@ impl<D: Directory> BKDWriter<D> {
         // dimensional values (numDims * bytesPerDim) + ord (int or long) + docID (int)
         let bytes_per_doc = if single_value_per_doc {
             // Lucene only supports up to 2.1 docs, so we better not need longOrds in this case:
-            debug_assert!(long_ords == false);
+            debug_assert!(!long_ords);
             packed_bytes_length + INT_BYTES as usize
         } else if long_ords {
             packed_bytes_length + (LONG_BYTES + INT_BYTES) as usize
@@ -925,6 +926,7 @@ impl<D: Directory> BKDWriter<D> {
         Ok(index)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn recurse_pack_index(
         &self,
         write_buffer: &mut RAMOutputStream,
@@ -945,14 +947,14 @@ impl<D: Directory> BKDWriter<D> {
                 let delta = leaf_block_fps[leaf_id] - min_block_fp;
                 if is_left {
                     debug_assert!(delta == 0);
-                    return Ok(0);
+                    Ok(0)
                 } else {
                     debug_assert!(node_id == 1 || delta > 0);
                     write_buffer.write_vlong(delta)?;
-                    return self.append_block(write_buffer, blocks);
+                    self.append_block(write_buffer, blocks)
                 }
             } else {
-                return Ok(0);
+                Ok(0)
             }
         } else {
             let left_block_fp: i64;
@@ -1069,7 +1071,7 @@ impl<D: Directory> BKDWriter<D> {
             last_split_values[dest_offset..dest_offset + suffix].copy_from_slice(&sav_split_value);
             debug_assert!(last_split_values == cmp.as_slice());
 
-            return Ok(num_bytes + num_bytes2 as i32 + left_num_bytes + right_num_bytes);
+            Ok(num_bytes + num_bytes2 as i32 + left_num_bytes + right_num_bytes)
         }
     }
 
@@ -1342,7 +1344,7 @@ impl<D: Directory> BKDWriter<D> {
         max_packed_value: &[u8],
     ) -> bool {
         for dim in 0..self.num_dims {
-            let mut dim_offset = self.bytes_per_dim * dim;
+            let dim_offset = self.bytes_per_dim * dim;
 
             if values[dim_offset..dim_offset + self.bytes_per_dim]
                 < min_packed_value[dim_offset..dim_offset + self.bytes_per_dim]
@@ -1359,6 +1361,7 @@ impl<D: Directory> BKDWriter<D> {
         true
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build(
         &mut self,
         node_id: i32,
@@ -1827,7 +1830,7 @@ impl<D: Directory> BKDWriter<D> {
             self.sort_heap_point_writer(&mut sorted, dim);
             sorted.close()?;
 
-            return Ok(PointWriterEnum::Heap(sorted));
+            Ok(PointWriterEnum::Heap(sorted))
         } else {
             // Offline sort:
             unimplemented!()
@@ -1959,7 +1962,7 @@ impl<D: Directory> Sorter for BKDWriterMSBIntroSorter<D> {
             }
         }
 
-        return Ordering::Equal;
+        Ordering::Equal
     }
 
     fn swap(&mut self, i: i32, j: i32) {
@@ -1997,12 +2000,10 @@ impl<D: Directory> Sorter for BKDWriterMSBIntroSorter<D> {
 
         if self.k + self.pivot_len as i32 == self.max_length {
             Ordering::Equal
+        } else if self.byte_at(j, self.k + self.pivot_len as i32).is_some() {
+            Ordering::Less
         } else {
-            if self.byte_at(j, self.k + self.pivot_len as i32).is_some() {
-                Ordering::Less
-            } else {
-                Ordering::Equal
-            }
+            Ordering::Equal
         }
     }
 }

@@ -77,12 +77,12 @@ impl<F: OutputFactory> FSTIterBase<F> {
 
     fn grow(&mut self) {
         if self.arcs.len() <= self.upto {
-            for _ in self.arcs.len()..self.upto + 1 {
+            for _ in self.arcs.len()..=self.upto {
                 self.arcs.push(Arc::empty());
             }
         }
         if self.output.len() <= self.upto {
-            for _ in self.output.len()..self.upto + 1 {
+            for _ in self.output.len()..=self.upto {
                 let o = self.fst.outputs().empty();
                 self.output.push(o);
             }

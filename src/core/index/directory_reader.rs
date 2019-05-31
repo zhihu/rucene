@@ -120,7 +120,7 @@ where
             // segmentInfos here, so that we are passing the
             // actual instance of SegmentInfoPerCommit in
             // IndexWriter's segmentInfos:
-            let mut rld = writer.reader_pool().get_or_create(&infos.segments[i])?;
+            let rld = writer.reader_pool().get_or_create(&infos.segments[i])?;
             let reader = rld.get_readonly_clone(&IOContext::READ)?;
             if reader.num_docs() > 0 || writer.keep_fully_deleted_segments() {
                 // Steal the ref:
@@ -290,14 +290,12 @@ where
     fn do_open_no_writer(&self, commit: Option<&IndexCommit<D>>) -> Result<Option<Self>> {
         if let Some(commit) = commit {
             if let Some(name) = self.segment_infos.segment_file_name() {
-                if commit.segments_file_name() == &name {
+                if commit.segments_file_name() == name {
                     return Ok(None);
                 }
             }
-        } else {
-            if self.is_current()? {
-                return Ok(None);
-            }
+        } else if self.is_current()? {
+            return Ok(None);
         }
         Ok(Some(self.open_from_commit(commit)?))
     }

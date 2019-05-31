@@ -167,8 +167,7 @@ impl BKDReader {
                             // match. We do this here, after loading at
                             // read-time, so that we can still
                             // delta code them on disk at write:
-                            let mut new_leaf_block_fps = Vec::with_capacity(num_leaves);
-                            new_leaf_block_fps.resize(num_leaves, 0i64);
+                            let mut new_leaf_block_fps = vec![0;num_leaves];
                             let length = leaf_block_fps.len() - last_level;
                             new_leaf_block_fps[0..length]
                                 .copy_from_slice(&leaf_block_fps[last_level..leaf_block_fps.len()]);
@@ -539,7 +538,7 @@ impl BKDReader {
         Ok(())
     }
 
-    #[allow(too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn visit_compressed_doc_values(
         &self,
         common_prefix_lengths: &mut [i32],
@@ -770,7 +769,7 @@ pub struct LegacyIndexTree {
 }
 
 impl LegacyIndexTree {
-    #[allow(too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         bytes_per_dim: usize,
         bytes_per_index_entry: i32,
@@ -1201,7 +1200,7 @@ impl<'a, IV: IntersectVisitor + 'a> MergeReader<'a, IV> {
                     &mut self.state.common_prefix_lengths,
                     &mut self.state.scratch_packed_value,
                     self.state.input.as_mut(),
-                    &mut self.state.scratch_doc_ids,
+                    &self.state.scratch_doc_ids,
                     self.docs_in_block,
                     &mut visitor,
                 )?;

@@ -67,12 +67,8 @@ impl MergeScheduler for SerialMergeScheduler {
         C: Codec,
         MP: MergePolicy,
     {
-        loop {
-            if let Some(ref mut merge) = writer.next_merge() {
-                writer.merge(merge)?;
-            } else {
-                break;
-            }
+        while let Some(ref mut merge) = writer.next_merge() {
+            writer.merge(merge)?;
         }
         Ok(())
     }
@@ -200,6 +196,7 @@ impl ConcurrentMergeSchedulerInner {
         }
     }
 
+    #[allow(clippy::mut_from_ref)]
     unsafe fn scheduler_mut(&self, _guard: &MutexGuard<()>) -> &mut ConcurrentMergeSchedulerInner {
         let scheduler =
             self as *const ConcurrentMergeSchedulerInner as *mut ConcurrentMergeSchedulerInner;

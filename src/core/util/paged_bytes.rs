@@ -230,7 +230,7 @@ impl DataInput for PagedBytesDataInput {
 
 impl Read for PagedBytesDataInput {
     fn read(&mut self, buf: &mut [u8]) -> ::std::io::Result<usize> {
-        if buf.len() < 1 {
+        if buf.is_empty() {
             return Ok(0);
         }
 
@@ -310,7 +310,7 @@ impl DataOutput for PagedBytesDataOutput {
 
 impl Write for PagedBytesDataOutput {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if buf.len() < 1 {
+        if buf.is_empty() {
             return Ok(0);
         }
 

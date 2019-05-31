@@ -260,7 +260,7 @@ impl Lucene54DocValuesProducer {
         })
     }
 
-    #[allow(too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn read_fields<D: Directory, C: Codec>(
         meta: &mut dyn IndexInput,
         infos: &FieldInfos,

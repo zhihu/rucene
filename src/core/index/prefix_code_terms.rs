@@ -97,7 +97,7 @@ impl PrefixCodedTermsBuilder {
         let prefix = self.shared_prefix_len(&self.last_term.bytes, term);
         let suffix = term.len() - prefix;
 
-        if &field == &self.last_term.field {
+        if field == self.last_term.field {
             self.output.write_vint((prefix << 1) as i32)?;
         } else {
             self.output.write_vint((prefix << 1 | 1) as i32)?;

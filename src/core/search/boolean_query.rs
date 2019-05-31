@@ -212,12 +212,10 @@ impl<C: Codec> Weight<C> for BooleanWeight<C> {
             } else {
                 Ok(Some(must))
             }
+        } else if let Some(should) = should_scorer {
+            Ok(Some(should))
         } else {
-            if let Some(should) = should_scorer {
-                Ok(Some(should))
-            } else {
-                Ok(None)
-            }
+            Ok(None)
         }
     }
 

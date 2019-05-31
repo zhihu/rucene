@@ -20,9 +20,15 @@ pub struct TermFrequencyAttribute {
     term_freq: u32,
 }
 
+impl Default for TermFrequencyAttribute {
+    fn default() -> Self {
+        TermFrequencyAttribute { term_freq: 1 }
+    }
+}
+
 impl TermFrequencyAttribute {
     pub fn new() -> Self {
-        TermFrequencyAttribute { term_freq: 1 }
+        Default::default()
     }
 
     pub fn set_term_frequency(&mut self, freq: u32) {
@@ -122,7 +128,7 @@ impl PositionIncrementAttribute {
         self.position_increment = position_increment;
     }
 
-    pub fn get_position_increment(&self) -> u32 {
+    pub fn get_position_increment(self) -> u32 {
         self.position_increment
     }
 
@@ -203,13 +209,19 @@ pub struct CharTermAttribute {
                              * builder: BytesRefBuilder, */
 }
 
-impl CharTermAttribute {
-    pub fn new() -> Self {
+impl Default for CharTermAttribute {
+    fn default() -> Self {
         CharTermAttribute {
             term_buffer: Vec::with_capacity(MIN_BUFFER_SIZE),
             term_length: 0,
             char_cnt: 0,
         }
+    }
+}
+
+impl CharTermAttribute {
+    pub fn new() -> Self {
+        Default::default()
     }
 
     pub fn push_char(&mut self, c: char) {
@@ -272,15 +284,14 @@ impl TermToBytesRefAttribute for CharTermAttribute {
     }
 }
 
+#[derive(Default)]
 pub struct BytesTermAttribute {
     bytes: BytesRef,
 }
 
 impl BytesTermAttribute {
     pub fn new() -> Self {
-        BytesTermAttribute {
-            bytes: BytesRef::default(),
-        }
+        Default::default()
     }
 
     pub fn set_bytes(&mut self, bytes_ref: &[u8]) {

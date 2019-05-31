@@ -276,6 +276,7 @@ impl<T: DocIdMergerSub> DocIdMergerSubRef<T> {
         DocIdMergerSubRef { sub }
     }
 
+    #[allow(clippy::mut_from_ref)]
     fn sub(&self) -> &mut T {
         unsafe { &mut *self.sub }
     }
