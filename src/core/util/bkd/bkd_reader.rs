@@ -167,7 +167,7 @@ impl BKDReader {
                             // match. We do this here, after loading at
                             // read-time, so that we can still
                             // delta code them on disk at write:
-                            let mut new_leaf_block_fps = vec![0;num_leaves];
+                            let mut new_leaf_block_fps = vec![0; num_leaves];
                             let length = leaf_block_fps.len() - last_level;
                             new_leaf_block_fps[0..length]
                                 .copy_from_slice(&leaf_block_fps[last_level..leaf_block_fps.len()]);

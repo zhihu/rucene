@@ -274,10 +274,7 @@ impl PagedMutableHugeWriter {
         fill_pages: bool,
     ) -> PagedMutableHugeWriter {
         let base = PagedMutableBase::new(bits_per_value, size, page_size);
-        let mut ret = PagedMutableHugeWriter {
-            base,
-            format,
-        };
+        let mut ret = PagedMutableHugeWriter { base, format };
         if fill_pages {
             ret.fill_pages();
         }

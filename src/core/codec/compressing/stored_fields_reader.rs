@@ -67,7 +67,7 @@ pub const TYPE_MASK: i32 = 7; // 3 bits max value, PackedInts.maxValue(TYPE_BITS
 // -0 isn't compressed
 pub const NEGATIVE_ZERO_FLOAT: i32 = -2_147_483_648; // f32::to_bits(-0f32) as i32;
 pub const NEGATIVE_ZERO_DOUBLE: i64 = -9_223_372_036_854_775_808; // f64::to_bits(-0f64) as i64;
-                                                            // for compression of timestamps
+                                                                  // for compression of timestamps
 pub const SECOND: i64 = 1000;
 pub const HOUR: i64 = 60 * 60 * SECOND;
 pub const DAY: i64 = HOUR * 24;

@@ -26,11 +26,7 @@ impl Explanation {
         description: String,
         details: Vec<Explanation>,
     ) -> Explanation {
-        let value = if !is_match {
-            0.0f32
-        } else {
-            value
-        };
+        let value = if !is_match { 0.0f32 } else { value };
 
         Explanation {
             is_match,

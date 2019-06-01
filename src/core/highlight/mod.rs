@@ -714,8 +714,7 @@ impl FieldTermStack {
                     postings.next()?;
 
                     // For weight look here: http://lucene.apache.org/core/3_6_0/api/core/org/apache/lucene/search/DefaultSimilarity.html
-                    let weight = (f64::from(max_docs)
-                        / (terms_iter.total_term_freq()? + 1) as f64
+                    let weight = (f64::from(max_docs) / (terms_iter.total_term_freq()? + 1) as f64
                         + 1.0)
                         .log(10.0f64) as f32;
                     let freq = postings.freq()?;

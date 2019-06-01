@@ -708,7 +708,9 @@ impl<F: OutputFactory> FST<F> {
         let start_address = self.bytes_store.get_position();
 
         let do_fixed_array = self.should_expand(builder, node_index);
-        if do_fixed_array && builder.reused_bytes_per_arc.len() < builder.frontier[node_index].num_arcs {
+        if do_fixed_array
+            && builder.reused_bytes_per_arc.len() < builder.frontier[node_index].num_arcs
+        {
             builder
                 .reused_bytes_per_arc
                 .resize(builder.frontier[node_index].num_arcs, 0);

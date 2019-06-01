@@ -33,10 +33,7 @@ impl<T: ImmutableBitSet> BitDocIdSet<T> {
 
     pub fn with_bits(set: Arc<T>) -> BitDocIdSet<T> {
         let cost = set.approximate_cardinality();
-        BitDocIdSet {
-            cost,
-            set,
-        }
+        BitDocIdSet { cost, set }
     }
 }
 
@@ -188,18 +185,10 @@ impl DocIdSet for DocIdSetEnum {
     type Iter = DocIdSetDocIterEnum;
     fn iterator(&self) -> Result<Option<Self::Iter>> {
         match self {
-            DocIdSetEnum::ShortArray(s) => {
-                Ok(s.iterator()?.map(DocIdSetDocIterEnum::ShortArray))
-            }
-            DocIdSetEnum::IntArray(s) => {
-                Ok(s.iterator()?.map(DocIdSetDocIterEnum::IntArray))
-            }
-            DocIdSetEnum::NotDocId(s) => {
-                Ok(s.iterator()?.map(DocIdSetDocIterEnum::NotDocId))
-            }
-            DocIdSetEnum::BitDocId(s) => {
-                Ok(s.iterator()?.map(DocIdSetDocIterEnum::BitDocId))
-            }
+            DocIdSetEnum::ShortArray(s) => Ok(s.iterator()?.map(DocIdSetDocIterEnum::ShortArray)),
+            DocIdSetEnum::IntArray(s) => Ok(s.iterator()?.map(DocIdSetDocIterEnum::IntArray)),
+            DocIdSetEnum::NotDocId(s) => Ok(s.iterator()?.map(DocIdSetDocIterEnum::NotDocId)),
+            DocIdSetEnum::BitDocId(s) => Ok(s.iterator()?.map(DocIdSetDocIterEnum::BitDocId)),
         }
     }
 }
