@@ -327,7 +327,7 @@ where
         let mut field_count = field_count;
         if field.field_type().index_options != IndexOptions::Null {
             // if the field omits norms, the boost cannot be indexed.
-            if field.field_type().omit_norms && (field.boost() - 1.0).abs() < ::std::f32::EPSILON {
+            if field.field_type().omit_norms && (field.boost() - 1.0).abs() > ::std::f32::EPSILON {
                 bail!(UnsupportedOperation(Cow::Borrowed(
                     "You cannot set an index-time boost: norms are omitted"
                 )));

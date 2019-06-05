@@ -175,14 +175,18 @@ pub struct DefaultIndexSearcher<
     cache_policy: Arc<dyn QueryCachingPolicy<C>>,
     collection_statistics: RwLock<HashMap<String, CollectionStatistics>>,
     term_contexts: RwLock<HashMap<String, Arc<TermContext<CodecTermState<C>>>>>,
+    term_contexts_limit: usize,
     thread_pool: Option<Arc<ThreadPool<DefaultContext>>>,
 }
 
 impl<C: Codec, R: IndexReader<Codec = C> + ?Sized, IR: Deref<Target = R>>
     DefaultIndexSearcher<C, R, IR, DefaultSimilarityProducer>
 {
-    pub fn new(reader: IR) -> DefaultIndexSearcher<C, R, IR, DefaultSimilarityProducer> {
-        Self::with_similarity(reader, DefaultSimilarityProducer {})
+    pub fn new(
+        reader: IR,
+        term_contexts_limit: Option<usize>,
+    ) -> DefaultIndexSearcher<C, R, IR, DefaultSimilarityProducer> {
+        Self::with_similarity(reader, DefaultSimilarityProducer {}, term_contexts_limit)
     }
 }
 
@@ -193,14 +197,25 @@ where
     IR: Deref<Target = R>,
     SP: SimilarityProducer<C>,
 {
-    pub fn with_similarity(reader: IR, sim_producer: SP) -> DefaultIndexSearcher<C, R, IR, SP> {
+    pub fn with_similarity(
+        reader: IR,
+        sim_producer: SP,
+        term_contexts_limit: Option<usize>,
+    ) -> DefaultIndexSearcher<C, R, IR, SP> {
+        let term_contexts_limit = if term_contexts_limit.is_some() {
+            term_contexts_limit.unwrap()
+        } else {
+            1_000_000
+        };
+
         DefaultIndexSearcher {
             reader,
             sim_producer,
             query_cache: Arc::new(LRUQueryCache::new(1000)),
             cache_policy: Arc::new(UsageTrackingQueryCachingPolicy::default()),
             collection_statistics: RwLock::new(HashMap::new()),
-            term_contexts: RwLock::new(HashMap::new()),
+            term_contexts: RwLock::new(HashMap::with_capacity(term_contexts_limit * 2)),
+            term_contexts_limit,
             thread_pool: None,
         }
     }
@@ -458,10 +473,12 @@ where
             let mut context = TermContext::new(&*self.reader);
             context.build(&*self.reader, &term)?;
             term_context = Arc::new(context);
-            self.term_contexts
-                .write()
-                .unwrap()
-                .insert(term_key.clone(), Arc::clone(&term_context));
+            if self.term_contexts.read().unwrap().len() < self.term_contexts_limit {
+                self.term_contexts
+                    .write()
+                    .unwrap()
+                    .insert(term_key.clone(), Arc::clone(&term_context));
+            }
         };
 
         Ok(term_context)
@@ -677,7 +694,7 @@ mod tests {
                     ChainedCollector::new(&mut early_terminating_collector, &mut top_collector);
                 let query = MockQuery::new(vec![1, 5, 3, 4, 2]);
                 {
-                    let searcher = DefaultIndexSearcher::new(index_reader);
+                    let searcher = DefaultIndexSearcher::new(index_reader, None);
                     searcher.search(&query, &mut chained_collector).unwrap();
                 }
             }

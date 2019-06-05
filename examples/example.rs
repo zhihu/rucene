@@ -105,7 +105,7 @@ fn main() -> Result<()> {
 
     // new index search
     let reader = writer.get_reader(true, false)?;
-    let index_searcher = DefaultIndexSearcher::new(Arc::new(reader));
+    let index_searcher = DefaultIndexSearcher::new(Arc::new(reader), None);
 
     // search
     let query: TermQuery = TermQuery::new(

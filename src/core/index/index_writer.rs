@@ -2432,7 +2432,7 @@ where
             .doc_writer
             .update_documents(docs, term)?;
         if changed {
-            Self::process_events(index_writer, false, false)?;
+            Self::process_events(index_writer, true, false)?;
         }
 
         Ok(seq_no)
@@ -2489,7 +2489,7 @@ where
         index_writer.writer.ensure_open(true)?;
         let (seq_no, changed) = index_writer.writer.doc_writer.update_document(doc, term)?;
         if changed {
-            Self::process_events(index_writer, false, false)?;
+            Self::process_events(index_writer, true, false)?;
         }
 
         Ok(seq_no)
