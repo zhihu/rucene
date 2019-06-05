@@ -69,17 +69,10 @@ impl TermPosition {
     }
 }
 
-const FLAG_OFFSETS: i32 = 2;
-const FLAG_PAYLOADS: i32 = 4;
-const FLAG_FREQUENCIES: i32 = 8;
-const FLAG_POSITIONS: i32 = 16;
-#[allow(dead_code)]
-const FLAG_CACHE: i32 = 32;
-
 /// Holds all information on a particular term in a field.
 pub struct LeafIndexFieldTerm<T: PostingIterator> {
     postings: Option<T>,
-    flags: i32,
+    flags: u16,
     iterator: LeafPositionIterator,
     #[allow(dead_code)]
     identifier: Term,
@@ -90,7 +83,7 @@ impl<T: PostingIterator> LeafIndexFieldTerm<T> {
     pub fn new<TI: TermIterator<Postings = T>, Tm: Terms<Iterator = TI>, F: Fields<Terms = Tm>>(
         term: &str,
         field_name: &str,
-        flags: i32,
+        flags: u16,
         doc_id: DocId,
         fields: &F,
     ) -> Result<Self> {
@@ -98,10 +91,9 @@ impl<T: PostingIterator> LeafIndexFieldTerm<T> {
 
         if let Some(terms) = fields.terms(identifier.field())? {
             let mut terms_iterator = terms.iterator()?;
-            let lucene_flags = convert_to_lucene_flags(flags);
 
             let (postings, freq) = if terms_iterator.seek_exact(identifier.bytes.as_slice())? {
-                let mut posting = terms_iterator.postings_with_flags(lucene_flags)?;
+                let mut posting = terms_iterator.postings_with_flags(flags)?;
                 let mut current_doc_pos = posting.doc_id();
                 if current_doc_pos < doc_id {
                     current_doc_pos = posting.advance(doc_id)?;
@@ -162,7 +154,7 @@ impl<T: PostingIterator> LeafIndexFieldTerm<T> {
         Ok(())
     }
 
-    pub fn validate_flags(&self, flags2: i32) -> Result<()> {
+    pub fn validate_flags(&self, flags2: u16) -> Result<()> {
         if (self.flags & flags2) < flags2 {
             panic!(
                 "You must call get with all required flags! Instead of {} call {} once",
@@ -219,24 +211,6 @@ impl<T: PostingIterator> LeafIndexFieldTerm<T> {
     }
 }
 
-fn convert_to_lucene_flags(flags: i32) -> u16 {
-    let mut lucene_pos_flags = PostingIteratorFlags::NONE;
-    if (flags & FLAG_FREQUENCIES) > 0 {
-        lucene_pos_flags |= PostingIteratorFlags::FREQS;
-    }
-    if (flags & FLAG_POSITIONS) > 0 {
-        lucene_pos_flags |= PostingIteratorFlags::POSITIONS;
-    }
-    if (flags & FLAG_PAYLOADS) > 0 {
-        lucene_pos_flags |= PostingIteratorFlags::PAYLOADS;
-    }
-    if (flags & FLAG_OFFSETS) > 0 {
-        lucene_pos_flags |= PostingIteratorFlags::OFFSETS;
-    }
-
-    lucene_pos_flags
-}
-
 pub struct LeafPositionIterator {
     resetted: bool,
     freq: i32,
@@ -286,7 +260,7 @@ impl<T: Fields + Clone> LeafIndexField<T> {
         key: &str,
     ) -> Result<&mut LeafIndexFieldTerm<<<T::Terms as Terms>::Iterator as TermIterator>::Postings>>
     {
-        self.get_with_flags(key, FLAG_FREQUENCIES)
+        self.get_with_flags(key, PostingIteratorFlags::FREQS)
     }
 
     // TODO: might be good to get the field lengths here somewhere?
@@ -300,7 +274,7 @@ impl<T: Fields + Clone> LeafIndexField<T> {
     pub fn get_with_flags(
         &mut self,
         key: &str,
-        flags: i32,
+        flags: u16,
     ) -> Result<&mut LeafIndexFieldTerm<<<T::Terms as Terms>::Iterator as TermIterator>::Postings>>
     {
         if !self.terms.contains_key(key) {
