@@ -25,11 +25,14 @@ pub struct CharacterBuffer {
 }
 
 impl CharacterBuffer {
-    pub fn new(buffer: Vec<char>, offset: usize, length: usize) -> Self {
+    pub fn new(buffer_size: usize) -> Self {
+        if buffer_size < 2 {
+            panic!("buffer size must be >= 2");
+        }
         CharacterBuffer {
-            buffer,
-            offset,
-            length,
+            buffer: vec!['\0'; buffer_size],
+            offset: 0,
+            length: 0,
         }
     }
 

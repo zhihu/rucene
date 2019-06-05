@@ -19,9 +19,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::RwLock;
 
 use core::index::segment_file_name;
-use core::store::LockFactory;
 use core::store::{Directory, IOContext};
 use core::store::{FSIndexOutput, IndexInput, MmapIndexInput};
+use core::store::{LockFactory, NativeFSLockFactory};
 use core::util::numeric::to_base36;
 use error::ErrorKind::IllegalState;
 use error::Result;
@@ -32,6 +32,12 @@ pub struct FSDirectory<LF: LockFactory> {
     pub ops_since_last_delete: AtomicUsize,
     pub next_temp_file_counter: AtomicUsize,
     lock_factory: LF,
+}
+
+impl FSDirectory<NativeFSLockFactory> {
+    pub fn with_path<T: AsRef<Path> + ?Sized>(direcoty: &T) -> Result<Self> {
+        Self::new(direcoty, NativeFSLockFactory::default())
+    }
 }
 
 impl<LF: LockFactory> FSDirectory<LF> {
@@ -237,10 +243,6 @@ impl<LF: LockFactory> Directory for FSDirectory<LF> {
         self.directory.join(name)
     }
 }
-
-// unsafe impl<LF: LockFactory + Send> Send for FSDirectory<LF> {}
-
-// unsafe impl<LF: LockFactory + Send> Sync for FSDirectory<LF> {}
 
 impl<LF: LockFactory> fmt::Display for FSDirectory<LF> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {

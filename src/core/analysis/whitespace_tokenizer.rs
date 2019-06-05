@@ -24,7 +24,7 @@ use std::io::Read;
 
 // NOTE: this length is length by byte, so it's different from Lucene's word length
 const MAX_WORD_LEN: usize = 511;
-#[allow(dead_code)]
+
 const IO_BUFFER_SIZE: usize = 4096;
 
 /// A tokenizer that divides text at whitespace characters.
@@ -38,6 +38,7 @@ pub struct WhitespaceTokenizer<R: Read> {
     final_offset: usize,
     term_attr: CharTermAttribute,
     offset_attr: OffsetAttribute,
+    position_attr: PositionIncrementAttribute,
     io_buffer: CharacterBuffer,
     reader: R,
 }
@@ -65,7 +66,8 @@ impl<R: Read> WhitespaceTokenizer<R> {
             final_offset: 0,
             term_attr: CharTermAttribute::new(),
             offset_attr: OffsetAttribute::new(),
-            io_buffer: CharacterBuffer::new(vec![], 0, 0),
+            position_attr: PositionIncrementAttribute::new(),
+            io_buffer: CharacterBuffer::new(IO_BUFFER_SIZE),
             reader,
         }
     }
@@ -116,10 +118,11 @@ impl<R: Read> TokenStream for WhitespaceTokenizer<R> {
             }
 
             let cur_char = self.io_buffer.char_at(self.buffer_index);
+            self.buffer_index += 1;
             if self.is_token_char(cur_char) {
                 if length == 0 {
                     debug_assert_eq!(start, -1);
-                    start = (self.offset + self.buffer_index) as isize;
+                    start = (self.offset + self.buffer_index - 1) as isize;
                     end = start;
                 }
                 end += 1;
@@ -165,7 +168,7 @@ impl<R: Read> TokenStream for WhitespaceTokenizer<R> {
     }
 
     fn position_attribute_mut(&mut self) -> &mut PositionIncrementAttribute {
-        unimplemented!()
+        &mut self.position_attr
     }
 
     fn term_bytes_attribute_mut(&mut self) -> &mut TermToBytesRefAttribute {
@@ -174,5 +177,43 @@ impl<R: Read> TokenStream for WhitespaceTokenizer<R> {
 
     fn term_bytes_attribute(&self) -> &TermToBytesRefAttribute {
         &self.term_attr
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::BufReader;
+
+    #[test]
+    fn test_whitespace_tokenizer() {
+        let source = "The quick brown fox jumps over a lazy dog";
+        let offsets = [
+            (0usize, 3usize),
+            (4, 9),
+            (10, 15),
+            (16, 19),
+            (20, 25),
+            (26, 30),
+            (31, 32),
+            (33, 37),
+            (38, 41),
+        ];
+        let words: Vec<&str> = source.split(" ").collect();
+        let reader = BufReader::new(source.as_bytes());
+
+        let mut tokenizer = WhitespaceTokenizer::new(reader);
+
+        for i in 0..9 {
+            let res = tokenizer.increment_token(); // Ok(true)
+            assert!(res.is_ok());
+            assert!(res.unwrap());
+            assert_eq!(tokenizer.offset_attribute().start_offset(), offsets[i].0);
+            assert_eq!(tokenizer.offset_attribute().end_offset(), offsets[i].1);
+            assert_eq!(
+                tokenizer.term_bytes_attribute().get_bytes_ref().bytes(),
+                words[i].as_bytes()
+            );
+        }
     }
 }

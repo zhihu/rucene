@@ -38,6 +38,12 @@ pub struct FastVectorHighlighter {
     pub phrase_limit: i32,
 }
 
+impl Default for FastVectorHighlighter {
+    fn default() -> Self {
+        Self::new(None, None, None, None, None)
+    }
+}
+
 impl FastVectorHighlighter {
     pub fn new(
         phrase_highlight: Option<bool>,
@@ -77,6 +83,7 @@ impl FastVectorHighlighter {
         reader: &LeafReaderContext<'_, C>,
         doc_id: DocId,
         field_name: &str,
+        stored_field: &str,
         frag_char_size: i32,
         max_num_fragments: Option<i32>,
         frag_list_builder: Option<&FragListBuilder>,
@@ -108,7 +115,7 @@ impl FastVectorHighlighter {
         fragments_builder.create_fragments(
             reader.parent,
             doc_id,
-            field_name,
+            stored_field,
             field_frag_list.as_mut(),
             pre_tags,
             post_tags,
