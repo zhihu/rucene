@@ -246,7 +246,7 @@ impl DocValuesWriter for NumericDocValuesWriter {
             values.size() as usize,
         );
 
-        consumer.add_numeric_field(&mut self.field_info, &mut iter)
+        consumer.add_numeric_field(&self.field_info, &mut iter)
     }
 }
 

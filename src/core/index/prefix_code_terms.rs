@@ -238,7 +238,13 @@ impl TermsIteratorByTerm {
 impl Ord for TermsIteratorByTerm {
     fn cmp(&self, other: &Self) -> Ordering {
         // reversed ordering for BinaryHeap
-        other.iter.bytes().cmp(&self.iter.bytes())
+        let cmp = other.iter.bytes().cmp(&self.iter.bytes());
+        if cmp != Ordering::Equal {
+            cmp
+        } else {
+            // iter with higher del gen first process
+            self.iter.del_gen.cmp(&other.iter.del_gen)
+        }
     }
 }
 

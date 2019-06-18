@@ -90,10 +90,10 @@ impl ByteSliceReader {
         // skip to next slice
         let next_index = {
             let buffer = &pool.buffers[self.buffer_upto];
-            ((buffer[self.limit] as usize & 0xff) << 24)
-                + ((buffer[self.limit + 1] as usize & 0xff) << 16)
-                + ((buffer[self.limit + 2] as usize & 0xff) << 8)
-                + (buffer[self.limit + 3] as usize & 0xff)
+            ((buffer[self.limit] as usize) << 24)
+                + ((buffer[self.limit + 1] as usize) << 16)
+                + ((buffer[self.limit + 2] as usize) << 8)
+                + (buffer[self.limit + 3] as usize)
         };
         self.level = ByteBlockPool::NEXT_LEVEL_ARRAY[self.level];
         let new_size = ByteBlockPool::LEVEL_SIZE_ARRAY[self.level];

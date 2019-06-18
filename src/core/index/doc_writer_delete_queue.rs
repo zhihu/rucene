@@ -17,10 +17,7 @@ use core::index::Term;
 use core::search::{Query, NO_MORE_DOCS};
 use core::util::DocId;
 
-use error::Result;
-
 use std::cell::Cell;
-use std::ptr;
 use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -60,7 +57,7 @@ use std::sync::{Arc, Mutex};
 /// will also not be added to its private deletes neither to the global deletes.
 pub struct DocumentsWriterDeleteQueue<C: Codec> {
     // current end(latest delete operation) in the delete queue:
-    tail: Mutex<Arc<DeleteListNode<C>>>,
+    tail: AtomicPtr<Arc<DeleteListNode<C>>>,
     // Used to record deletes against all prior (already written to disk) segments.
     // Whenever any segment flushes, we bundle up this set of deletes and insert
     // into the buffered updates stream before the newly flushed segment(s).
@@ -111,7 +108,7 @@ impl<C: Codec> DocumentsWriterDeleteQueue<C> {
             global_slice,
         };
         Self {
-            tail: Mutex::new(tail),
+            tail: AtomicPtr::new(Box::into_raw(Box::new(tail))),
             global_data: Mutex::new(global_data),
             generation,
             next_seq_no: AtomicU64::new(start_seq_no),
@@ -119,24 +116,29 @@ impl<C: Codec> DocumentsWriterDeleteQueue<C> {
         }
     }
 
-    pub fn add_delete_queries(&self, queries: Vec<Arc<dyn Query<C>>>) -> Result<u64> {
-        let node = Arc::new(DeleteListNode::new(DeleteNode::QueryArray(queries)));
-        let seq_no = self.add_node(node)?;
-        self.try_apply_global_slice()?;
-        Ok(seq_no)
+    #[inline]
+    fn tail(&self) -> &Arc<DeleteListNode<C>> {
+        unsafe { &*self.tail.load(Ordering::SeqCst) }
     }
 
-    pub fn add_delete_terms(&self, terms: Vec<Term>) -> Result<u64> {
+    pub fn add_delete_queries(&self, queries: Vec<Arc<dyn Query<C>>>) -> u64 {
+        let node = Arc::new(DeleteListNode::new(DeleteNode::QueryArray(queries)));
+        let seq_no = self.add_node(node);
+        self.try_apply_global_slice();
+        seq_no
+    }
+
+    pub fn add_delete_terms(&self, terms: Vec<Term>) -> u64 {
         let node = Arc::new(DeleteListNode::new(DeleteNode::TermArray(terms)));
-        let seq_no = self.add_node(node)?;
-        self.try_apply_global_slice()?;
-        Ok(seq_no)
+        let seq_no = self.add_node(node);
+        self.try_apply_global_slice();
+        seq_no
     }
 
     /// invariant for document update
-    pub fn add_term_to_slice(&self, term: Term, slice: &mut DeleteSlice<C>) -> Result<u64> {
+    pub fn add_term_to_slice(&self, term: Term, slice: &mut DeleteSlice<C>) -> u64 {
         let del_node = Arc::new(DeleteListNode::new(DeleteNode::Term(term)));
-        let seq_no = self.add_node(Arc::clone(&del_node))?;
+        let seq_no = self.add_node(Arc::clone(&del_node));
         // this is an update request where the term is the updated documents
         // delTerm. in that case we need to guarantee that this insert is atomic
         // with regards to the given delete slice. This means if two threads try to
@@ -147,27 +149,46 @@ impl<C: Codec> DocumentsWriterDeleteQueue<C> {
         // competing updates wins!
         slice.slice_tail = del_node;
         debug_assert!(!same_node(&slice.slice_head, &slice.slice_tail));
-        self.try_apply_global_slice()?; // TODO doing this each time is not necessary maybe
-                                        // we can do it just every n times or so?
-        Ok(seq_no)
+        self.try_apply_global_slice(); // TODO doing this each time is not necessary maybe
+                                       // we can do it just every n times or so?
+        seq_no
     }
 
-    fn add_node(&self, node: Arc<DeleteListNode<C>>) -> Result<u64> {
-        let mut tail = self.tail.lock()?;
-        debug_assert!(tail.next.load(Ordering::Acquire).is_null());
-        tail.next
-            .store(Box::into_raw(Box::new(node.clone())), Ordering::Release);
-        *tail = node;
-        Ok(self.next_sequence_number())
+    fn add_node(&self, node: Arc<DeleteListNode<C>>) -> u64 {
+        let node_ptr = Box::into_raw(Box::new(node));
+
+        unsafe {
+            let mut cur_tail;
+            loop {
+                cur_tail = self.tail.load(Ordering::Acquire);
+                let mut cur_next = (*cur_tail).next.load(Ordering::Acquire);
+                if cur_next.is_null() {
+                    if (*cur_tail)
+                        .next
+                        .compare_exchange(cur_next, node_ptr, Ordering::SeqCst, Ordering::Relaxed)
+                        .is_ok()
+                    {
+                        break;
+                    }
+                } else {
+                    self.tail
+                        .compare_and_swap(cur_tail, cur_next, Ordering::AcqRel);
+                }
+            }
+            self.tail
+                .compare_and_swap(cur_tail, node_ptr, Ordering::AcqRel);
+        }
+        self.next_sequence_number()
     }
 
     pub fn any_changes(&self) -> bool {
         let guard = self.global_data.lock().unwrap();
-        let tail_guard = self.tail.lock().unwrap();
+        let tail_node = self.tail();
+        let next_node = tail_node.next.load(Ordering::Acquire);
         guard.global_buffered_updates.any()
             || !guard.global_slice.is_empty()
-            || !same_node(&guard.global_slice.slice_tail, &*tail_guard)
-            || !tail_guard.next.load(Ordering::Acquire).is_null()
+            || !same_node(&guard.global_slice.slice_tail, tail_node)
+            || !next_node.is_null()
     }
 
     pub fn ram_bytes_used(&self) -> usize {
@@ -184,43 +205,41 @@ impl<C: Codec> DocumentsWriterDeleteQueue<C> {
         no
     }
 
-    fn try_apply_global_slice(&self) -> Result<()> {
+    fn try_apply_global_slice(&self) {
         if let Ok(mut guard) = self.global_data.try_lock() {
             // The global buffer must be locked but we don't need to update them if
             // there is an update going on right now. It is sufficient to apply the
             // deletes that have been added after the current in-flight global slices
             // tail the next time we can get the lock!
-            if self.update_slice_without_seq_no(&mut guard.global_slice)? {
+            if self.update_slice_without_seq_no(&mut guard.global_slice) {
                 guard.apply_global_updates(NO_MORE_DOCS);
             }
         }
-        Ok(())
     }
 
-    fn update_slice_without_seq_no(&self, slice: &mut DeleteSlice<C>) -> Result<bool> {
-        let tail = self.tail.lock()?;
-        if !same_node(&slice.slice_tail, &*tail) {
-            slice.slice_tail = Arc::clone(&*tail);
-            Ok(true)
+    fn update_slice_without_seq_no(&self, slice: &mut DeleteSlice<C>) -> bool {
+        let tail = self.tail();
+        if !same_node(&slice.slice_tail, tail) {
+            slice.slice_tail = Arc::clone(tail);
+            true
         } else {
-            Ok(false)
+            false
         }
     }
 
     pub fn freeze_global_buffer(
         &self,
         caller_slice: Option<&mut DeleteSlice<C>>,
-    ) -> Result<FrozenBufferedUpdates<C>> {
-        let mut global_guard = self.global_data.lock()?;
+    ) -> FrozenBufferedUpdates<C> {
+        let mut global_guard = self.global_data.lock().unwrap();
         // Here we freeze the global buffer so we need to lock it, apply all deletes in the
         // queue and reset the global slice to let the GC prune the queue
-        let current_tail = {
-            let tail: &Arc<DeleteListNode<C>> = &*self.tail.lock()?;
-            Arc::clone(tail)
-        };
+        let current_tail = Arc::clone(self.tail());
 
         if let Some(slice) = caller_slice {
-            slice.slice_tail = Arc::clone(&current_tail);
+            if !same_node(&current_tail, &slice.slice_tail) {
+                slice.slice_tail = Arc::clone(&current_tail);
+            }
         }
 
         if !same_node(&global_guard.global_slice.slice_tail, &current_tail) {
@@ -229,20 +248,19 @@ impl<C: Codec> DocumentsWriterDeleteQueue<C> {
         }
         let packet = FrozenBufferedUpdates::new(&mut global_guard.global_buffered_updates, false);
         global_guard.global_buffered_updates.clear();
-        Ok(packet)
+        packet
     }
 
     pub fn new_slice(&self) -> DeleteSlice<C> {
-        let tail = self.tail.lock().unwrap();
-        DeleteSlice::new(&tail)
+        DeleteSlice::new(self.tail())
     }
 
     pub fn update_slice(&self, slice: &mut DeleteSlice<C>) -> (u64, bool) {
         let seq_no = self.next_sequence_number();
-        let guard = self.tail.lock().unwrap();
-        if !same_node(&guard, &slice.slice_tail) {
+        let tail = self.tail();
+        if !same_node(tail, &slice.slice_tail) {
             // new deletes arrived since we last checked
-            slice.slice_tail = Arc::clone(&guard);
+            slice.slice_tail = Arc::clone(tail);
             (seq_no, true)
         } else {
             (seq_no, false)
@@ -258,13 +276,11 @@ impl<C: Codec> DocumentsWriterDeleteQueue<C> {
             .load(Ordering::Acquire)
     }
 
-    pub fn clear(&self) -> Result<()> {
-        let mut guard = self.global_data.lock()?;
-        let tail_guard = self.tail.lock()?;
-        let current_tail = Arc::clone(&tail_guard);
+    pub fn clear(&self) {
+        let mut guard = self.global_data.lock().unwrap();
+        let current_tail = Arc::clone(self.tail());
         guard.global_slice.slice_head = Arc::clone(&current_tail);
         guard.global_slice.slice_tail = current_tail;
-        Ok(())
     }
 
     pub fn last_sequence_number(&self) -> u64 {
@@ -276,12 +292,18 @@ impl<C: Codec> DocumentsWriterDeleteQueue<C> {
     }
 }
 
+impl<C: Codec> Drop for DocumentsWriterDeleteQueue<C> {
+    fn drop(&mut self) {
+        let _ = unsafe { Box::from_raw(self.tail.load(Ordering::Relaxed)) };
+    }
+}
+
 enum DeleteNode<C: Codec> {
     Term(Term),
     TermArray(Vec<Term>),
     QueryArray(Vec<Arc<dyn Query<C>>>),
-    None,
     // used for sentinel head
+    None,
 }
 
 impl<C: Codec> DeleteNode<C> {
@@ -327,8 +349,9 @@ impl<C: Codec> DeleteListNode<C> {
     }
 }
 
+#[inline]
 fn same_node<C: Codec>(n1: &Arc<DeleteListNode<C>>, n2: &Arc<DeleteListNode<C>>) -> bool {
-    ptr::eq(n1.as_ref(), n2.as_ref())
+    Arc::ptr_eq(n1, n2)
 }
 
 impl<C: Codec> DeleteListNode<C> {
@@ -344,9 +367,8 @@ impl<C: Codec> Drop for DeleteListNode<C> {
             while !next.is_null() {
                 let next2 = (*next).next.load(Ordering::Acquire);
 
-                if Arc::strong_count(&(*next)) <= 1 {
-                    Arc::get_mut(&mut *next).unwrap().next = AtomicPtr::default();
-
+                if let Some(node) = Arc::get_mut(&mut *next) {
+                    node.next = AtomicPtr::default();
                     Box::from_raw(next);
                     next = next2;
                 } else {
@@ -389,7 +411,7 @@ impl<C: Codec> DeleteSlice<C> {
             let mut current = &self.slice_head;
             loop {
                 current = current.get_next();
-                current.as_ref().data.apply(buffered_deletes, doc_id_upto);
+                current.data.apply(buffered_deletes, doc_id_upto);
                 if same_node(current, &self.slice_tail) {
                     break;
                 }

@@ -44,23 +44,15 @@ impl<D: Directory + Send + Sync + 'static, C: Codec> DocumentsWriterFlushQueue<D
         }
     }
 
-    pub fn add_deletes(&self, delete_queue: &DocumentsWriterDeleteQueue<C>) -> Result<()> {
-        let mut queue = self.queue.lock()?;
+    pub fn add_deletes(&self, delete_queue: &DocumentsWriterDeleteQueue<C>) {
+        let mut queue = self.queue.lock().unwrap();
         // first inc the ticket count - freeze opens a window for any_change() to fail
         self.inc_tickets();
 
-        match delete_queue.freeze_global_buffer(None) {
-            Ok(frozen_updates) => {
-                queue.push_back(FlushTicket::Global(GlobalDeletesTicket::new(
-                    frozen_updates,
-                )));
-                Ok(())
-            }
-            Err(e) => {
-                self.dec_tickets();
-                Err(e)
-            }
-        }
+        let frozen_updates = delete_queue.freeze_global_buffer(None);
+        queue.push_back(FlushTicket::Global(GlobalDeletesTicket::new(
+            frozen_updates,
+        )));
     }
 
     pub fn has_tickets(&self) -> bool {

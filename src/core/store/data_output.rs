@@ -19,6 +19,7 @@ use error::Result;
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 
+/// Trait for performing write operations of Lucene's low-level data types.
 pub trait DataOutput: Write {
     fn write_byte(&mut self, b: u8) -> Result<()> {
         let buf = [b; 1];

@@ -874,8 +874,7 @@ impl<D: Directory, C: Codec> SegmentCommitInfo<D, C> {
             self.next_write_del_gen.load(AtomicOrdering::Acquire),
             AtomicOrdering::Release,
         );
-        self.next_write_del_gen
-            .store(self.del_gen() + 1, AtomicOrdering::Release);
+        self.next_write_del_gen.fetch_add(1, AtomicOrdering::AcqRel);
         self.size_in_bytes.store(-1, AtomicOrdering::Release);
     }
 

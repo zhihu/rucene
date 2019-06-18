@@ -16,6 +16,8 @@ use error::Result;
 
 use core::util::bit_util::UnsignedShift;
 
+use std::mem;
+
 pub fn log(mut x: i64, base: i32) -> i32 {
     debug_assert!(base > 1);
 
@@ -59,9 +61,7 @@ pub fn gcd(a: i64, b: i64) -> i64 {
             break;
         } else if a > b || a == i64::min_value() {
             // MIN_VALUE is treated as 2^64
-            let tmp = a;
-            a = b;
-            b = tmp;
+            mem::swap(&mut a, &mut b);
         }
 
         if a == 1 {

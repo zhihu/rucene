@@ -28,6 +28,10 @@ use core::util::{DocId, KeyedContext};
 
 pub const TERM: &str = "term";
 
+/// A Query that matches documents containing a term.
+///
+/// This may be combined with other terms with a
+/// [`BooleanQuery`](../search/struct.BooleanQuery.html)
 #[derive(Clone, Debug, PartialEq)]
 pub struct TermQuery {
     pub term: Term,
@@ -39,6 +43,11 @@ impl TermQuery {
     pub fn new<T: Into<Option<KeyedContext>>>(term: Term, boost: f32, ctx: T) -> TermQuery {
         let ctx = ctx.into();
         TermQuery { term, boost, ctx }
+    }
+
+    #[inline]
+    pub fn term(&self) -> &Term {
+        &self.term
     }
 }
 
@@ -52,7 +61,7 @@ impl<C: Codec> Query<C> for TermQuery {
         let max_doc = i64::from(searcher.max_doc());
         let (term_stats, collection_stats) = if needs_scores {
             (
-                vec![searcher.term_statistics(self.term.clone(), term_context.as_ref())],
+                vec![searcher.term_statistics(&self.term, term_context.as_ref())],
                 searcher.collections_statistics(&self.term.field)?,
             )
         } else {
@@ -82,10 +91,6 @@ impl<C: Codec> Query<C> for TermQuery {
         vec![self.clone()]
     }
 
-    fn query_type(&self) -> &'static str {
-        TERM
-    }
-
     fn as_any(&self) -> &::std::any::Any {
         self
     }
@@ -103,7 +108,7 @@ impl fmt::Display for TermQuery {
     }
 }
 
-pub struct TermWeight<C: Codec> {
+struct TermWeight<C: Codec> {
     term: Term,
     boost: f32,
     similarity: Box<dyn Similarity<C>>,
@@ -159,9 +164,7 @@ impl<C: Codec> Weight<C> for TermWeight<C> {
         };
 
         if let Some(postings) = self.create_postings_iterator(reader_context, i32::from(flags))? {
-            Ok(Some(Box::new(TermScorer::new(
-                sim_scorer, postings, self.boost,
-            ))))
+            Ok(Some(Box::new(TermScorer::new(sim_scorer, postings))))
         } else {
             Ok(None)
         }
@@ -172,7 +175,7 @@ impl<C: Codec> Weight<C> for TermWeight<C> {
     }
 
     fn normalize(&mut self, norm: f32, boost: f32) {
-        self.sim_weight.normalize(norm, boost)
+        self.sim_weight.normalize(norm, boost * self.boost)
     }
 
     fn value_for_normalization(&self) -> f32 {

@@ -111,10 +111,6 @@ impl<C: Codec> Query<C> for SpanOrQuery {
             .collect()
     }
 
-    fn query_type(&self) -> &'static str {
-        SPAN_OR_QUERY
-    }
-
     fn as_any(&self) -> &::std::any::Any {
         self
     }

@@ -129,7 +129,7 @@ impl<C: Codec> BufferedUpdates<C> {
 
     pub fn add_term(&mut self, term: Term, doc_id_upto: DocId) {
         if let Some(current) = self.deleted_terms.get(&term) {
-            if doc_id_upto < *current {
+            if doc_id_upto <= *current {
                 // Only record the new number if it's greater than the
                 // current one.  This is important because if multiple
                 // threads are replacing the same doc at nearly the

@@ -21,15 +21,13 @@ use error::Result;
 pub struct TermScorer<T: PostingIterator> {
     sim_scorer: Box<dyn SimScorer>,
     postings_iterator: T,
-    boost: f32,
 }
 
 impl<T: PostingIterator> TermScorer<T> {
-    pub fn new(sim_scorer: Box<dyn SimScorer>, postings_iterator: T, boost: f32) -> Self {
+    pub fn new(sim_scorer: Box<dyn SimScorer>, postings_iterator: T) -> Self {
         TermScorer {
             sim_scorer,
             postings_iterator,
-            boost,
         }
     }
 
@@ -46,7 +44,6 @@ impl<T: PostingIterator> Scorer for TermScorer<T> {
     fn score(&mut self) -> Result<f32> {
         let doc_id = self.doc_id();
         let freq = self.freq();
-        self.boost;
         Ok(self.sim_scorer.score(doc_id, freq as f32)?)
     }
 }

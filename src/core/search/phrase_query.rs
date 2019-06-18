@@ -36,6 +36,19 @@ use core::util::{Bits, DocId, KeyedContext};
 
 pub const PHRASE: &str = "phrase";
 
+/// A Query that matches documents containing a particular sequence of terms.
+///
+/// A PhraseQuery is built by QueryParser for input like `"new york"`.
+///
+/// This query may be combined with other terms or queries with a {@link BooleanQuery}.
+///
+/// *NOTE*:
+/// All terms in the phrase must match, even those at the same position. If you
+/// have terms at the same position, perhaps synonyms, you probably want `MultiPhraseQuery`
+/// instead which only requires one term at a position to match.
+///
+/// Also, Leading holes don't have any particular meaning for this query
+/// and will be ignored.
 #[derive(Clone, Debug)]
 pub struct PhraseQuery {
     field: String,
@@ -148,7 +161,7 @@ impl<C: Codec> Query<C> for PhraseQuery {
         for i in 0..self.terms.len() {
             let term_context = searcher.term_state(&self.terms[i])?;
 
-            term_stats.push(searcher.term_statistics(self.terms[i].clone(), term_context.as_ref()));
+            term_stats.push(searcher.term_statistics(&self.terms[i], term_context.as_ref()));
             term_states.push(term_context.term_states());
         }
 
@@ -190,10 +203,6 @@ impl<C: Codec> Query<C> for PhraseQuery {
         term_query_list
     }
 
-    fn query_type(&self) -> &'static str {
-        PHRASE
-    }
-
     fn as_any(&self) -> &::std::any::Any {
         self
     }
@@ -212,7 +221,7 @@ impl fmt::Display for PhraseQuery {
 pub static TERM_POSNS_SEEK_OPS_PER_DOC: i32 = 128;
 pub static TERM_OPS_PER_POS: i32 = 7;
 
-pub struct PhraseWeight<C: Codec> {
+struct PhraseWeight<C: Codec> {
     field: String,
     terms: Vec<Term>,
     positions: Vec<i32>,

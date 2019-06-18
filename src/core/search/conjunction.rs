@@ -15,6 +15,7 @@ use core::search::{two_phase_next, DocIterator, Scorer, NO_MORE_DOCS};
 use core::util::DocId;
 use error::Result;
 
+/// Scorer for conjunctions, sets of queries, all of which are required.
 pub struct ConjunctionScorer<T: Scorer> {
     lead1: T,
     lead2: T,

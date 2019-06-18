@@ -72,6 +72,10 @@ impl fmt::Display for PointValueType {
     }
 }
 
+/// range queries against single or multidimensional points such as `IntPoint`.
+///
+/// For a single-dimensional field this query is a simple range query;
+/// in a multi-dimensional field it's a box shape.
 pub struct PointRangeQuery {
     field: String,
     num_dims: usize,
@@ -136,10 +140,6 @@ impl<C: Codec> Query<C> for PointRangeQuery {
 
     fn extract_terms(&self) -> Vec<TermQuery> {
         unimplemented!()
-    }
-
-    fn query_type(&self) -> &'static str {
-        POINT_RANGE
     }
 
     fn as_any(&self) -> &::std::any::Any {

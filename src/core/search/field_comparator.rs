@@ -97,6 +97,29 @@ impl PartialOrd for ComparatorValue {
     }
 }
 
+/// Expert: a FieldComparator compares hits so as to determine their
+/// sort order when collecting the top results with `TopFieldCollector`.
+/// The concrete public FieldComparator
+/// classes here correspond to the SortField types.
+///
+/// This API is designed to achieve high performance
+/// sorting, by exposing a tight interaction with {@link
+/// FieldValueHitQueue} as it visits hits.  Whenever a hit is
+/// competitive, it's enrolled into a virtual slot, which is
+/// an int ranging from 0 to numHits-1. Segment transitions are
+/// handled by creating a dedicated per-segment
+/// {@link LeafFieldComparator} which also needs to interact
+/// with the {@link FieldValueHitQueue} but can optimize based
+/// on the segment to collect.
+///
+/// The following functions need to be implemented:
+/// * `compare()` Compare a hit at 'slot a' with hit 'slot b'.
+/// * `set_top_value()` This method is called by `TopFieldCollector` to notify the FieldComparator
+///   of the top most value, which is used by future calls to `LeafFieldComparator::compare_top`
+/// * `leaf_comparator()` Invoked when the search is switching to the next segment. You may need to
+///   update internal state of the comparator, for example retrieving new values from DocValues.
+/// * `value()` Return the sort value stored in the specified slot.  This is only called at the end
+///   of the search, in order to populate `FieldDoc::fields` when returning the top results.
 pub trait FieldComparator: fmt::Display {
     fn compare(&self, slot1: usize, slot2: usize) -> Ordering;
 
@@ -202,6 +225,11 @@ impl fmt::Display for FieldComparatorEnum {
     }
 }
 
+/// Sorts by descending relevance.
+///
+/// NOTE: if you are sorting only gy descending relevance and then
+/// secondarily by ascending doc_id, performance is faster using
+/// `TopScoreDocCollector` directly.
 pub struct RelevanceComparator {
     scores: Vec<f32>,
     bottom: f32,
@@ -265,6 +293,7 @@ impl fmt::Display for RelevanceComparator {
     }
 }
 
+/// Sorts by ascending docID
 pub struct DocComparator {
     doc_ids: Vec<i32>,
     bottom: i32,
@@ -333,6 +362,7 @@ impl fmt::Display for DocComparator {
     }
 }
 
+/// compare doc hit by numeric doc values field
 pub struct NumericDocValuesComparator<T: DocValuesSource> {
     missing_value: Option<VariantValue>,
     field: String,

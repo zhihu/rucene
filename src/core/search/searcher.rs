@@ -67,6 +67,8 @@ impl<C: Codec> SimilarityProducer<C> for DefaultSimilarityProducer {
     }
 }
 
+/// A search-time `Similarity` that does not make use of scoring factors
+/// and may be used when scores are not needed.
 pub struct NonScoringSimilarity;
 
 impl<C: Codec> Similarity<C> for NonScoringSimilarity {
@@ -87,7 +89,7 @@ impl fmt::Display for NonScoringSimilarity {
     }
 }
 
-pub struct NonScoringSimWeight;
+struct NonScoringSimWeight;
 
 impl<C: Codec> SimWeight<C> for NonScoringSimWeight {
     fn get_value_for_normalization(&self) -> f32 {
@@ -101,7 +103,7 @@ impl<C: Codec> SimWeight<C> for NonScoringSimWeight {
     }
 }
 
-pub struct NonScoringSimScorer;
+struct NonScoringSimScorer;
 
 impl SimScorer for NonScoringSimScorer {
     fn score(&mut self, _doc: i32, _freq: f32) -> Result<f32> {
@@ -130,12 +132,15 @@ pub trait IndexSearcher<C: Codec>: SearchPlanBuilder<C> {
     fn explain(&self, query: &dyn Query<C>, doc: DocId) -> Result<Explanation>;
 }
 
+/// trait that used for build `Weight` and `Similarity` for `Query`.
 pub trait SearchPlanBuilder<C: Codec> {
+    /// num docs of the reader in searcher, same as IndexSearcher::reader()::num_docs()
     fn num_docs(&self) -> i32;
 
+    /// max doc of the reader in searcher, same as IndexSearcher::reader()::max_doc()
     fn max_doc(&self) -> i32;
 
-    /// Creates a {@link Weight} for the given query, potentially adding caching
+    /// Creates a `Weight` for the given query, potentially adding caching
     /// if possible and configured.
     fn create_weight(&self, query: &dyn Query<C>, needs_scores: bool)
         -> Result<Box<dyn Weight<C>>>;
@@ -156,13 +161,28 @@ pub trait SearchPlanBuilder<C: Codec> {
 
     fn term_statistics(
         &self,
-        term: Term,
+        term: &Term,
         context: &TermContext<CodecTermState<C>>,
     ) -> TermStatistics;
 
     fn collections_statistics(&self, field: &str) -> Result<CollectionStatistics>;
 }
 
+///  Implements search over a single IndexReader.
+///
+/// Applications usually need only call the inherited
+/// `search(Query,Collector)` method. For
+/// performance reasons, if your index is unchanging, you
+/// should share a single IndexSearcher instance across
+/// multiple searches instead of creating a new one
+/// per-search.  If your index has changed and you wish to
+/// see the changes reflected in searching, you should
+/// use `StandardDirectoryReader#openIfChanged()`
+/// to obtain a new reader and then create a new IndexSearcher from that.
+/// Also, for low-latency turnaround it's best to use a near-real-time
+/// reader ({@link DirectoryReader#open(IndexWriter)}).
+/// Once you have a new `IndexReader`, it's relatively
+/// cheap to create a new IndexSearcher from it.
 pub struct DefaultIndexSearcher<
     C: Codec,
     R: IndexReader<Codec = C> + ?Sized,
@@ -486,11 +506,11 @@ where
 
     fn term_statistics(
         &self,
-        term: Term,
+        term: &Term,
         context: &TermContext<CodecTermState<C>>,
     ) -> TermStatistics {
         TermStatistics::new(
-            term.bytes,
+            term.bytes.clone(),
             i64::from(context.doc_freq),
             context.total_term_freq,
         )
@@ -634,8 +654,6 @@ mod tests {
     use core::util::DocId;
     use std::sync::atomic::Ordering;
 
-    pub const MOCK_QUERY: &str = "mock";
-
     struct MockQuery {
         docs: Vec<DocId>,
     }
@@ -657,10 +675,6 @@ mod tests {
 
         fn extract_terms(&self) -> Vec<TermQuery> {
             unimplemented!()
-        }
-
-        fn query_type(&self) -> &'static str {
-            MOCK_QUERY
         }
 
         fn as_any(&self) -> &::std::any::Any {

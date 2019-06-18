@@ -25,6 +25,10 @@ use core::search::PhraseQuery;
 use core::search::Query;
 use core::search::TermQuery;
 
+/// A query that parses a query string and runs it.
+///
+/// See: [`Query String Syntax`](https://www.elastic.co/guide/en/elasticsearch/reference/6.3/query-dsl-query-string-query.html#query-string-syntax) for more detail.
+/// NOTE: currently this builder only support some of the syntax than elastic search do.
 pub struct QueryStringQueryBuilder {
     query_string: String,
     fields: Vec<(String, f32)>,

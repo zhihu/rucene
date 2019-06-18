@@ -17,13 +17,22 @@ use core::util::Bits;
 use core::util::DocId;
 use error::Result;
 
+/// used to score a range of documents at once.
+/// Only queries that have a more optimized means of scoring
+/// across a range of documents need to override this.
+/// Otherwise, a default implementation is wrapped around
+/// the `Scorer` returned by `Weight#create_scorer`.
 pub struct BulkScorer<'a, S: Scorer + ?Sized + 'a> {
-    pub scorer: &'a mut S,
+    scorer: &'a mut S,
 }
 
 impl<'a, S: Scorer + ?Sized + 'a> BulkScorer<'a, S> {
     pub fn new(scorer: &'a mut S) -> BulkScorer<'a, S> {
         BulkScorer { scorer }
+    }
+
+    pub fn scorer(&self) -> &S {
+        self.scorer
     }
 
     /// Collects matching documents in a range and return an estimation of the

@@ -17,6 +17,7 @@ use error::Result;
 
 pub struct PostingIteratorFlags;
 
+/// flags constants and helper function defined for `TermIterator::postings_with_flag()`.
 impl PostingIteratorFlags {
     /// Flag to pass to {@link TermIterator#postings_with_flags(u16)} if you don't
     /// require per-document postings in the returned iterator.
@@ -47,19 +48,20 @@ impl PostingIteratorFlags {
     }
 }
 
+/// Iterates through the postings.
+///
+/// NOTE: you must first call `next()` before using any of the per-doc methods.
 pub trait PostingIterator: DocIterator {
     /// Returns term frequency in the current document, or 1 if the field was
-    /// indexed with {@link IndexOptions::Docs}. Do not call this before
-    /// {@link #nextDoc} is first called, nor after {@link #next_doc} returns
-    /// {@link NO_MORE_DOCS}.
+    /// indexed with `IndexOptions::Docs`. Do not call this before
+    /// `next_doc()` is first called, nor after `#next()` returns `NO_MORE_DOCS`.
     ///
-    /// <p>
-    /// <b>NOTE:</b> if the {@link PostingsEnum} was obtain with {@link #NONE},
+    /// *NOTE:* if the [`PostingIterator`] was obtain with `PostingIteratorFlags::NONE`,
     /// the result of this method is undefined.
     fn freq(&self) -> Result<i32>;
 
     /// Returns the next position, or -1 if positions were not indexed.
-    /// Calling this more than {@link #freq()} times is undefined.
+    /// Calling this more than `freq()` times is undefined.
     fn next_position(&mut self) -> Result<i32>;
 
     /// Returns start offset for the current position, or -1
@@ -77,6 +79,7 @@ pub trait PostingIterator: DocIterator {
     fn payload(&self) -> Result<Payload>;
 }
 
+/// a `PostingIterator` that no matching docs are available.
 #[derive(Clone)]
 pub struct EmptyPostingIterator {
     doc_id: DocId,

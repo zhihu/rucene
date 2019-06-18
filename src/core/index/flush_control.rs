@@ -259,7 +259,7 @@ impl<D: Directory + Send + Sync + 'static, C: Codec, MS: MergeScheduler, MP: Mer
     ) -> Option<DocumentsWriterPerThread<D, C, MS, MP>> {
         let l = self.lock.lock().unwrap();
         let flush_control_mut = unsafe { self.flush_control_mut(&l) };
-        if state.flush_pending.load(Ordering::Acquire) {
+        if state.flush_pending() {
             flush_control_mut.flush_bytes -= state.bytes_used;
         } else {
             flush_control_mut.active_bytes -= state.bytes_used;
@@ -692,6 +692,7 @@ impl<D: Directory + Send + Sync + 'static, C: Codec, MS: MergeScheduler, MP: Mer
         per_thread: &ThreadState<D, C, MS, MP>,
         guard: &MutexGuard<FlushControlLock>,
     ) {
+        assert!(!per_thread.flush_pending());
         if per_thread.dwpt().num_docs_in_ram > 0 {
             // write access synced
             per_thread.flush_pending.store(true, Ordering::Release);
@@ -733,13 +734,15 @@ impl<D: Directory + Send + Sync + 'static, C: Codec, MS: MergeScheduler, MP: Mer
         &mut self,
         per_thread: &ThreadState<D, C, MS, MP>,
     ) -> Option<DocumentsWriterPerThread<D, C, MS, MP>> {
-        if let Ok(lg) = per_thread.lock.try_lock() {
+        let res = if let Ok(lg) = per_thread.lock.try_lock() {
             let thread_state_mut = per_thread.thread_state_mut(&lg);
             self.internal_try_checkout_for_flush_no_lock(thread_state_mut)
         } else {
-            self.update_stall_state();
             None
-        }
+        };
+        self.update_stall_state();
+
+        res
     }
 
     fn internal_try_checkout_for_flush_no_lock(
@@ -748,7 +751,7 @@ impl<D: Directory + Send + Sync + 'static, C: Codec, MS: MergeScheduler, MP: Mer
     ) -> Option<DocumentsWriterPerThread<D, C, MS, MP>> {
         debug_assert!(per_thread.flush_pending());
         // We are pending so all memory is already moved to flushBytes
-        let res = if per_thread.inited() {
+        if per_thread.inited() {
             let bytes = per_thread.bytes_used;
 
             let dwpt = self.per_thread_pool().reset(per_thread).unwrap();
@@ -760,10 +763,7 @@ impl<D: Directory + Send + Sync + 'static, C: Codec, MS: MergeScheduler, MP: Mer
             Some(dwpt)
         } else {
             None
-        };
-        self.update_stall_state();
-
-        res
+        }
     }
 
     /// This method will block if too many DWPT are currently flushing and no

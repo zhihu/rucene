@@ -20,7 +20,7 @@ use error::Result;
 
 use std::sync::Arc;
 
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use byteorder::{NativeEndian, ReadBytesExt, WriteBytesExt};
 
 #[derive(Clone)]
 struct SparseBitsContext {
@@ -55,9 +55,9 @@ impl SparseBitsContext {
         let mut data = [0u8; 64];
         {
             let mut buffer = &mut data as &mut [u8];
-            buffer.write_i64::<LittleEndian>(self.index).unwrap();
-            buffer.write_i64::<LittleEndian>(self.doc_id).unwrap();
-            buffer.write_i64::<LittleEndian>(self.next_doc_id).unwrap();
+            buffer.write_i64::<NativeEndian>(self.index).unwrap();
+            buffer.write_i64::<NativeEndian>(self.doc_id).unwrap();
+            buffer.write_i64::<NativeEndian>(self.next_doc_id).unwrap();
         }
         Some(data)
     }
@@ -68,9 +68,9 @@ impl SparseBitsContext {
                 "Serialized bytes is not for SparseBitsContext".into()
             ))
         }
-        let index = from.read_i64::<LittleEndian>()?;
-        let doc_id = from.read_i64::<LittleEndian>()?;
-        let next_doc_id = from.read_i64::<LittleEndian>()?;
+        let index = from.read_i64::<NativeEndian>()?;
+        let doc_id = from.read_i64::<NativeEndian>()?;
+        let next_doc_id = from.read_i64::<NativeEndian>()?;
         Ok(SparseBitsContext {
             index,
             doc_id,

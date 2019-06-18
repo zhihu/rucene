@@ -26,6 +26,10 @@ use core::util::numeric::to_base36;
 use error::ErrorKind::IllegalState;
 use error::Result;
 
+/// a straightforward `Directory` implementations use std::fs::File.
+///
+/// However, it has poor concurrent performance (multiple threads will bottleneck)
+/// as it synchronizes when multiple threads read from the same file.
 pub struct FSDirectory<LF: LockFactory> {
     pub directory: PathBuf,
     pending_deletes: RwLock<BTreeSet<String>>,

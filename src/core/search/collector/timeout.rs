@@ -22,6 +22,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+/// the `TimeoutCollector` collector is used to timeout search requests that
+/// take longer than the maximum allowed search time limit.
+///
+/// After this time is exceeded, the search thread is stopped by return a
+/// `CollectionTerminated` error.
+///
+/// this collector is useful if your search must be complete at some specific time.
+/// you can use the `ChainedCollector` to compose this collector with eg.
+/// `TopDocsCollector`.
 pub struct TimeoutCollector {
     timeout_duration: Duration,
     start_time: SystemTime,

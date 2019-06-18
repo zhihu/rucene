@@ -190,7 +190,7 @@ impl IntsRefBuilder {
 pub fn to_ints_ref(input: &[u8], scratch: &mut IntsRefBuilder) -> IntsRef {
     scratch.clear();
     for b in input {
-        scratch.append((*b as i32) & 0xff);
+        scratch.append(*b as u32 as i32);
     }
     scratch.get()
 }

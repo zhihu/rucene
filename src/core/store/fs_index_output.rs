@@ -24,6 +24,7 @@ use flate2::CrcWriter;
 
 const CHUNK_SIZE: usize = 8192;
 
+/// `IndexOutput` implement for `FsDirectory`
 pub struct FSIndexOutput {
     name: PathBuf,
     writer: CrcWriter<BufWriter<File>>,

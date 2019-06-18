@@ -380,7 +380,7 @@ where
         flushing_dwpt: Option<DocumentsWriterPerThread<D, C, MS, MP>>,
         mut has_events: bool,
     ) -> Result<bool> {
-        has_events |= self.apply_all_deletes_local()?;
+        has_events |= self.apply_all_deletes_local();
         if let Some(dwpt) = flushing_dwpt {
             has_events |= self.do_flush(dwpt)?;
         } else if let Some(next_pending_flush) = self.flush_control.next_pending_flush() {
@@ -416,45 +416,45 @@ where
         Ok(())
     }
 
-    pub fn delete_queries(&self, queries: Vec<Arc<dyn Query<C>>>) -> Result<(u64, bool)> {
+    pub fn delete_queries(&self, queries: Vec<Arc<dyn Query<C>>>) -> (u64, bool) {
         debug_assert!(self.inited);
         // TODO why is this synchronized?
-        let l = self.lock.lock()?;
+        let l = self.lock.lock().unwrap();
         let doc_writer_mut = unsafe { self.doc_writer_mut(&l) };
-        let seq_no = self.delete_queue.add_delete_queries(queries)?;
+        let seq_no = self.delete_queue.add_delete_queries(queries);
         doc_writer_mut.flush_control.do_on_delete();
 
-        let applyed = self.apply_all_deletes_local()?;
+        let applied = self.apply_all_deletes_local();
         doc_writer_mut.last_seq_no = max(self.last_seq_no, seq_no);
-        Ok((seq_no, applyed))
+        (seq_no, applied)
     }
 
-    pub fn delete_terms(&self, terms: Vec<Term>) -> Result<(u64, bool)> {
+    pub fn delete_terms(&self, terms: Vec<Term>) -> (u64, bool) {
         debug_assert!(self.inited);
         // TODO why is this synchronized?
-        let l = self.lock.lock()?;
+        let l = self.lock.lock().unwrap();
         let doc_writer_mut = unsafe { self.doc_writer_mut(&l) };
-        let seq_no = self.delete_queue.add_delete_terms(terms)?;
+        let seq_no = self.delete_queue.add_delete_terms(terms);
         doc_writer_mut.flush_control.do_on_delete();
 
-        let applyed = self.apply_all_deletes_local()?;
+        let applied = self.apply_all_deletes_local();
         doc_writer_mut.last_seq_no = max(self.last_seq_no, seq_no);
-        Ok((seq_no, applyed))
+        (seq_no, applied)
     }
 
     pub fn num_docs(&self) -> u32 {
         self.num_docs_in_ram.load(Ordering::Acquire)
     }
 
-    fn apply_all_deletes_local(&self) -> Result<bool> {
+    fn apply_all_deletes_local(&self) -> bool {
         if self.flush_control.get_and_reset_apply_all_deletes() {
             if !self.flush_control.is_full_flush() {
-                self.ticket_queue.add_deletes(&self.delete_queue)?;
+                self.ticket_queue.add_deletes(&self.delete_queue);
             }
             self.put_event(WriterEvent::ApplyDeletes);
-            Ok(true)
+            true
         } else {
-            Ok(false)
+            false
         }
     }
 
@@ -483,13 +483,13 @@ where
     /// discarding any docs added since last flush.
     pub fn abort(&mut self) -> Result<()> {
         let lock = Arc::clone(&self.lock);
-        let _l = lock.lock()?;
-        self.delete_queue.clear()?;
+        let _l = lock.lock().unwrap();
+        self.delete_queue.clear();
         debug!("DW: start to abort");
 
         for i in 0..self.per_thread_pool.active_thread_state_count() {
             let per_thread = Arc::clone(&self.per_thread_pool.get_thread_state(i));
-            let lock_guard = per_thread.lock.lock()?;
+            let lock_guard = per_thread.lock.lock().unwrap();
             let per_thread_mut = per_thread.thread_state_mut(&lock_guard);
             self.abort_thread_state(per_thread_mut);
         }
@@ -505,7 +505,7 @@ where
         debug!("DW - lock_and_abort_all");
 
         let mut aborted_doc_count = 0;
-        self.delete_queue.clear()?;
+        self.delete_queue.clear();
         self.per_thread_pool.set_abort();
         for i in 0..self.per_thread_pool.active_thread_state_count() {
             let per_thread = Arc::clone(&self.per_thread_pool.get_thread_state(i));
@@ -513,7 +513,7 @@ where
             let per_thread_mut = per_thread.thread_state_mut(&guard);
             aborted_doc_count += self.abort_thread_state(per_thread_mut);
         }
-        self.delete_queue.clear()?;
+        self.delete_queue.clear();
 
         // jump over any possible in flight ops:
         let jump = self.per_thread_pool.active_thread_state_count() + 1;
@@ -581,7 +581,7 @@ where
             && self.flush_control.delete_bytes_used() > self.config.ram_buffer_size() / 2
         {
             has_events = true;
-            if !self.apply_all_deletes_local()? {
+            if !self.apply_all_deletes_local() {
                 debug!("DW: force apply deletes");
                 self.put_event(WriterEvent::ApplyDeletes);
             }
@@ -691,7 +691,7 @@ where
                 thread::current().name()
             );
 
-            self.ticket_queue.add_deletes(flushing_queue.as_ref())?;
+            self.ticket_queue.add_deletes(flushing_queue.as_ref());
         }
         let index_writer = IndexWriter::with_inner(self.writer());
         self.ticket_queue.force_purge(&index_writer)?;

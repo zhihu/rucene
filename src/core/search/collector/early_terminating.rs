@@ -87,8 +87,22 @@ impl Collector for EarlyTerminatingSortingCollector {
     }
 }
 
+/// A `Collector` that early terminates collection of documents on a
+/// per-segment basis, if the segment was sorted according to the given
+/// `Sort`.
+///
+/// *NOTE:* the `Collector` detects segments sorted according to a
+/// an `IndexWriterConfig#setIndexSort`. Also, it collects up to a specified
+/// `num_docs_to_collect_per_reader` from each segment, and therefore is mostly suitable
+/// for use in conjunction with collectors such as `TopDocsCollector`, and
+/// not e.g. `TotalHitCountCollector`.
+///
+/// *NOTE*: If you wrap a `TopDocsCollector` that sorts in the same
+/// order as the index order, the returned top docs will be correct.
+/// However the total of hit count will be vastly underestimated since not all matching documents
+/// will have been collected.
 pub struct EarlyTerminatingLeafCollector {
-    pub early_terminated: Arc<AtomicBool>,
+    early_terminated: Arc<AtomicBool>,
     num_docs_to_collect: usize,
     num_docs_collected: usize,
 }
@@ -103,6 +117,10 @@ impl EarlyTerminatingLeafCollector {
             num_docs_to_collect,
             num_docs_collected: 0,
         }
+    }
+
+    pub fn early_terminated(&self) -> bool {
+        self.early_terminated.load(Ordering::Relaxed)
     }
 }
 

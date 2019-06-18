@@ -71,10 +71,6 @@ impl<C: Codec> Query<C> for FilterQuery<C> {
         self.query.extract_terms()
     }
 
-    fn query_type(&self) -> &'static str {
-        FILTER_QUERY
-    }
-
     fn as_any(&self) -> &::std::any::Any {
         self
     }

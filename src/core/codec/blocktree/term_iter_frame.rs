@@ -25,7 +25,7 @@ use std::cmp::Ordering;
 use std::ptr;
 
 pub(crate) struct SegmentTermsIterFrame {
-    pub ord: isize,
+    pub ord: usize,
     pub has_terms: bool,
     pub has_terms_orig: bool,
     pub is_floor: bool,
@@ -76,7 +76,7 @@ pub(crate) struct SegmentTermsIterFrame {
 impl Default for SegmentTermsIterFrame {
     fn default() -> Self {
         SegmentTermsIterFrame {
-            ord: -1,
+            ord: 0,
             has_terms: false,
             has_terms_orig: false,
             is_floor: false,
@@ -113,13 +113,13 @@ impl Default for SegmentTermsIterFrame {
 }
 
 impl SegmentTermsIterFrame {
-    pub(crate) fn new(ste: &mut SegmentTermIteratorInner, ord: isize) -> Self {
+    pub(crate) fn new(ste: &mut SegmentTermIteratorInner, ord: usize) -> Self {
         let mut frame = Self::default();
         frame.init(ste, ord);
         frame
     }
 
-    pub(crate) fn init(&mut self, ste: &mut SegmentTermIteratorInner, ord: isize) {
+    pub(crate) fn init(&mut self, ste: &mut SegmentTermIteratorInner, ord: usize) {
         {
             let fr = ste.field_reader();
             let mut state = fr.parent().postings_reader().new_term_state();
@@ -149,7 +149,7 @@ impl SegmentTermsIterFrame {
         self.floor_data_reader
             .reset(BytesRef::new(&self.floor_data));
         self.num_follow_floor_blocks = self.floor_data_reader.read_vint()?;
-        self.next_floor_label = self.floor_data_reader.read_byte()? as i32 & 0xff;
+        self.next_floor_label = self.floor_data_reader.read_byte()? as u32 as i32;
         Ok(())
     }
 
@@ -259,7 +259,7 @@ impl SegmentTermsIterFrame {
             self.floor_data_reader.rewind();
             self.num_follow_floor_blocks = self.floor_data_reader.read_vint().unwrap();
             debug_assert!(self.num_follow_floor_blocks > 0);
-            self.next_floor_label = self.floor_data_reader.read_byte().unwrap() as i32 & 0xff;
+            self.next_floor_label = self.floor_data_reader.read_byte().unwrap() as u32 as i32;
         }
     }
 
@@ -370,7 +370,7 @@ impl SegmentTermsIterFrame {
             return Ok(());
         }
 
-        let target_label = target[self.prefix] as i32 & 0xff;
+        let target_label = target[self.prefix] as u32 as i32;
 
         if target_label < self.next_floor_label {
             return Ok(());
@@ -388,7 +388,7 @@ impl SegmentTermsIterFrame {
                 self.next_floor_label = 256;
                 break;
             } else {
-                self.next_floor_label = self.floor_data_reader.read_byte()? as i32 & 0xff;
+                self.next_floor_label = self.floor_data_reader.read_byte()? as u32 as i32;
                 if target_label < self.next_floor_label {
                     break;
                 }
@@ -693,15 +693,15 @@ impl SegmentTermsIterFrame {
                         let terms_iter = self.terms_iter();
                         let last_sub_fp = terms_iter.current_frame().last_sub_fp;
                         terms_iter.current_frame_ord =
-                            terms_iter.push_frame_by_fp(None, last_sub_fp, term_len)? as isize;
-                        debug_assert!(terms_iter.current_frame_ord >= 0);
+                            terms_iter.push_frame_by_fp(None, last_sub_fp, term_len)?;
+                        debug_assert!(terms_iter.current_frame_ord > 0);
                         let mut current_idx = terms_iter.current_frame_ord as usize;
                         terms_iter.stack[current_idx].load_block()?;
                         while terms_iter.stack[current_idx].next()? {
                             let last_sub_fp = terms_iter.stack[current_idx].last_sub_fp;
                             let len = terms_iter.term_len;
                             terms_iter.current_frame_ord =
-                                terms_iter.push_frame_by_fp(None, last_sub_fp, len)? as isize;
+                                terms_iter.push_frame_by_fp(None, last_sub_fp, len)?;
                             current_idx = terms_iter.current_frame_ord as usize;
                             terms_iter.stack[current_idx].load_block()?;
                         }

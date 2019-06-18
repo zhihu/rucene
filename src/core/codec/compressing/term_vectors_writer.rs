@@ -1002,7 +1002,7 @@ impl<O: IndexOutput> TermVectorsWriter for CompressingTermVectorsWriter<O> {
                         && vectors_reader.chunk_size() == self.chunk_size as i32
                         && vectors_reader.version() == VERSION_CURRENT
                         && vectors_reader.packed_ints_version() == PACKED_VERSION_CURRENT
-                        && live_docs.len() == 0
+                        && live_docs.is_empty()
                         && !Self::too_dirty(vectors_reader) =>
                 {
                     // optimized merge, raw byte copy

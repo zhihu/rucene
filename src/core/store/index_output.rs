@@ -16,13 +16,16 @@ use error::Result;
 use std::io;
 use std::sync::Arc;
 
+/// Trait for output to a file in a Directory.
+///
+/// A random-access output stream.  Used for all Lucene index output operations.
 pub trait IndexOutput: DataOutput {
     fn name(&self) -> &str;
     fn file_pointer(&self) -> i64;
     fn checksum(&self) -> Result<i64>;
 }
 
-pub struct IndexOutputRef<T: IndexOutput> {
+pub(crate) struct IndexOutputRef<T: IndexOutput> {
     // TODO: we need GAT for the lifetime declaration
     // so, currently directly use raw pointer instead
     output: *mut T,
@@ -60,7 +63,7 @@ impl<T: IndexOutput> io::Write for IndexOutputRef<T> {
     }
 }
 
-pub struct InvalidIndexOutput {}
+pub(crate) struct InvalidIndexOutput {}
 
 impl io::Write for InvalidIndexOutput {
     fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
@@ -88,6 +91,7 @@ impl IndexOutput for InvalidIndexOutput {
     }
 }
 
+/// a rate limiting `IndexOutput`
 pub struct RateLimitIndexOutput<O: IndexOutput, RL: RateLimiter + ?Sized> {
     delegate: O,
     rate_limiter: Arc<RL>,

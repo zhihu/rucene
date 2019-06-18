@@ -264,57 +264,48 @@ impl<D: Directory, DW: Directory, C: Codec> DocValuesFieldsWriter<D, DW, C> {
             )));
         }
 
-        let mut suffix: Option<i32> = None;
-        if self.formats.contains_key(&format_name) {
+        let suffix = if self.formats.contains_key(&format_name) {
             // we've already seen this format, so just grab its suffix
             debug_assert!(self.suffixes.contains_key(&format_name));
-            suffix = Some(self.formats[&format_name].suffix);
+            self.formats[&format_name].suffix
         } else {
             // First time we are seeing this format; create a new instance
-            if field.dv_gen != -1 {
+            let suffix = if field.dv_gen != -1 {
                 // even when dvGen is != -1, it can still be a new field, that never
                 // existed in the segment, and therefore doesn't have the recorded
                 // attributes yet.
                 if let Some(suffix_att) = field.attribute(PER_FIELD_VALUE_SUFFIX_KEY) {
-                    suffix = Some(suffix_att.parse()?);
-                }
-            }
-
-            if suffix.is_none() {
-                // bump the suffix
-                suffix = self.suffixes.get(&format_name).copied();
-                if suffix.is_none() {
-                    suffix = Some(0);
+                    suffix_att.parse()?
                 } else {
-                    suffix = Some(suffix.unwrap() + 1);
+                    self.suffixes.get(&format_name).map_or(0, |s| *s + 1)
                 }
-            }
-            self.suffixes.insert(format_name.clone(), suffix.unwrap());
+            } else {
+                self.suffixes.get(&format_name).map_or(0, |s| *s + 1)
+            };
+
+            self.suffixes.insert(format_name.clone(), suffix);
 
             let segment_suffix = get_full_segment_suffix(
                 &self.segment_write_state.segment_suffix,
-                get_suffix(&format_name, &format!("{}", suffix.unwrap())),
+                get_suffix(&format_name, &format!("{}", suffix)),
             );
             let old_suffix =
                 mem::replace(&mut self.segment_write_state.segment_suffix, segment_suffix);
             let consumer = ConsumerAndSuffix {
                 consumer: format.fields_consumer(&self.segment_write_state)?,
-                suffix: suffix.unwrap(),
+                suffix,
             };
             self.formats.insert(format_name.clone(), consumer);
             self.segment_write_state.segment_suffix = old_suffix;
-        }
+            suffix
+        };
 
-        if let Some(p) = field.put_attribute(
-            PER_FIELD_VALUE_SUFFIX_KEY.to_string(),
-            format!("{}", suffix.unwrap()),
-        ) {
+        if let Some(p) =
+            field.put_attribute(PER_FIELD_VALUE_SUFFIX_KEY.to_string(), suffix.to_string())
+        {
             bail!(IllegalState(format!(
                 "found existing value for {}, field={}, old={}, new={}",
-                PER_FIELD_VALUE_SUFFIX_KEY,
-                field.name,
-                p,
-                suffix.unwrap()
+                PER_FIELD_VALUE_SUFFIX_KEY, field.name, p, suffix
             )));
         }
 

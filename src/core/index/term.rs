@@ -16,30 +16,14 @@ use core::search::posting_iterator::{EmptyPostingIterator, PostingIterator, Post
 use error::ErrorKind::{IllegalArgument, UnsupportedOperation};
 use error::Result;
 
-use std::mem;
 use std::sync::Arc;
 
 /// Encapsulates all required internal state to position the associated
 /// `TermIterator` without re-seeking
-pub trait TermState: Send + Sync + Clone {
-    fn ord(&self) -> i64;
+pub trait TermState: Send + Sync + Clone {}
 
-    fn serialize(&self) -> Vec<u8>;
-}
-
-// use for stub impl for TermIterator that does not support TermState
-#[derive(Clone)]
-pub struct UnreachableTermState;
-
-impl TermState for UnreachableTermState {
-    fn ord(&self) -> i64 {
-        unreachable!()
-    }
-
-    fn serialize(&self) -> Vec<u8> {
-        unreachable!()
-    }
-}
+/// for `TermIterator`s that aren't support `TermState`.
+impl TermState for () {}
 
 /// An ordinal based `TermState`
 #[derive(Clone)]
@@ -48,16 +32,13 @@ pub struct OrdTermState {
     pub ord: i64,
 }
 
-impl TermState for OrdTermState {
-    fn ord(&self) -> i64 {
+impl OrdTermState {
+    pub fn ord(&self) -> i64 {
         self.ord
     }
-
-    fn serialize(&self) -> Vec<u8> {
-        let r: [u8; 8] = unsafe { mem::transmute(self.ord.to_be()) };
-        r.to_vec()
-    }
 }
+
+impl TermState for OrdTermState {}
 
 /// Access to the terms in a specific field.  See `Fields`.
 pub trait Terms {
@@ -422,7 +403,7 @@ pub struct EmptyTermIterator;
 
 impl TermIterator for EmptyTermIterator {
     type Postings = EmptyPostingIterator;
-    type TermState = UnreachableTermState;
+    type TermState = ();
     fn next(&mut self) -> Result<Option<Vec<u8>>> {
         Ok(None)
     }

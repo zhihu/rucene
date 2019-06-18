@@ -130,7 +130,7 @@ impl StoredFieldsFormat for CompressingStoredFieldsFormat {
             field_info,
             io_ctx,
             &self.format_name,
-            self.compression_mode.clone(),
+            self.compression_mode,
         )
     }
 

@@ -128,6 +128,10 @@ impl<'a, T: Collector + 'a> Collector for &'a mut T {
     }
 }
 
+/// `Collector` that collect parallel for a single segment.
+///
+/// once finished, the `finish_leaf` method must be
+/// called to notify to main thread.
 pub trait ParallelLeafCollector: Collector + Send + 'static {
     fn finish_leaf(&mut self) -> Result<()>;
 }

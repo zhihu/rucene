@@ -136,11 +136,12 @@ pub(crate) trait FlushPolicy {
                             next_ram,
                             state.dwpt().num_docs_in_ram
                         );
-                    }
-                    count += 1;
-                    if next_ram > max_ram_so_far {
-                        max_ram_so_far = next_ram;
-                        max_thread_state_idx = idx;
+
+                        count += 1;
+                        if next_ram > max_ram_so_far {
+                            max_ram_so_far = next_ram;
+                            max_thread_state_idx = idx;
+                        }
                     }
                 }
             }

@@ -291,9 +291,10 @@ impl BytesStore {
         let limit = (dest_pos - src_pos + 1) / 2;
 
         for _ in 0..limit {
-            let b = self.blocks[src_block_index][src];
+            let tmp = self.blocks[src_block_index][src];
             self.blocks[src_block_index][src] = self.blocks[dest_block_index][dest];
-            self.blocks[dest_block_index][dest] = b;
+            self.blocks[dest_block_index][dest] = tmp;
+
             src += 1;
             if src == self.block_size {
                 src_block_index += 1;

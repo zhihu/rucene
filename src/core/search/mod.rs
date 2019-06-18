@@ -37,9 +37,9 @@ pub mod posting_iterator;
 pub mod spans;
 
 pub mod bulk_scorer;
-pub mod disi;
+mod disi;
 pub mod field_comparator;
-pub mod req_opt;
+mod req_opt;
 pub mod rescorer;
 pub mod search_group;
 pub mod sort;
@@ -54,23 +54,24 @@ pub use self::boolean_query::*;
 mod boost;
 pub use self::boost::*;
 
-pub mod filter_query;
+mod filter_query;
 pub use self::filter_query::*;
 
 mod phrase_query;
-pub use self::phrase_query::{PhraseQuery, PhraseWeight, PHRASE};
+pub use self::phrase_query::{PhraseQuery, PHRASE};
 
 mod query_string;
 pub use self::query_string::QueryStringQueryBuilder;
 
 mod term_query;
-pub use self::term_query::{TermQuery, TermWeight, TERM};
+pub use self::term_query::{TermQuery, TERM};
 
 // Scorers
-pub mod conjunction;
+mod conjunction;
 mod term_scorer;
-pub use self::conjunction::ConjunctionScorer;
-pub mod disjunction;
+use self::conjunction::ConjunctionScorer;
+mod disjunction;
+pub use self::disjunction::{DisjunctionMaxQuery, DISJUNCTION_MAX};
 
 // Similarities
 mod bm25_similarity;
@@ -186,12 +187,14 @@ pub trait DocIterator: Send {
         0f32
     }
 
-    /// advance to the next approximate match doc
+    /// advance to the next approximate match doc, this works the same as Lucene's
+    /// `TwoPhaseIterator#next`
     fn approximate_next(&mut self) -> Result<DocId> {
         self.next()
     }
 
-    /// Advances to the first approximate doc beyond the current doc
+    /// Advances to the first approximate doc beyond the current doc, this works the
+    /// same as Lucene's `TwoPhaseIterator#advance`
     fn approximate_advance(&mut self, target: DocId) -> Result<DocId> {
         self.advance(target)
     }
@@ -237,11 +240,20 @@ impl DocIterator for EmptyDocIterator {
     }
 }
 
-/// Common scoring functionality for different types of queries.
+/// Expert: Common scoring functionality for different types of queries.
+///
+/// A `Scorer` exposes an `iterator()` over documents matching a query in increasing order of doc
+/// Id.
+///
+/// Document scores are computed using a given `Similarity` implementation.
+///
+/// **NOTE**: The values `f32::NAN`, `f32::NEGATIVE_INFINITY` and `f32::POSITIVE_INFINITY` are
+/// not valid scores.  Certain collectors (eg `TopDocCollector`) will not properly collect hits
+/// with these scores.
 pub trait Scorer: DocIterator {
     /// Returns the score of the current document matching the query.
     /// Initially invalid, until `DocIterator::next()` or
-    /// `DocIterator::advance(DocId)` is called on the `iterator()`
+    /// `DocIterator::advance()` is called on the `iterator()`
     /// the first time, or when called from within `LeafCollector::collect`.
     fn score(&mut self) -> Result<f32>;
 
@@ -315,7 +327,7 @@ impl DocIterator for Box<dyn Scorer> {
     }
 }
 
-// helper function for doc iterator support two phase
+/// helper function for doc iterator support two phase
 pub fn two_phase_next(scorer: &mut dyn Scorer) -> Result<DocId> {
     let mut doc = scorer.doc_id();
     loop {
@@ -337,6 +349,34 @@ impl PartialEq for Scorer {
 }
 
 /// The abstract base class for queries.
+///
+/// *NOTE:* the generic `C: Codec` here is used for `create_weight` methods. Actually
+/// it should be placed as a method generic parameter, but this will restrict the `Query`
+/// type be put into trait object. It's common for use to define custom `Query` type and
+/// put it into composite `Query`s like [`BooleanQuery`], so we must ensure that `Query` could
+/// be boxed. So for almost every case you just impl it like this:
+/// ```rust,ignore
+/// use rucene::core::search::Query;
+/// use rucene::core::codec::Codec;
+///
+/// struct MyQuery;
+///
+/// impl<C: Codec> Query<C> for MyQuery {
+///     ...
+/// }
+/// ```
+///
+/// here is the list of [`Query`]s that we already implemented:
+/// * [`TermQuery`]
+/// * [`BooleanQuery`]
+/// * [`BoostQuery`]
+/// * [`PhraseQuery`]
+/// * [`PointRangeQuery`](point_range/struct.PointRangeQuery.html)
+/// * [`ConstantScoreQuery`](match_all/struct.ConstantScoreQuery.html)
+/// * [`DisjunctionMaxQuery`](disjunction/struct.DisjunctionMaxQuery.html)
+/// * [`MatchAllDocsQuery`](match_all/struct.MatchAllDocsQuery.html)
+///
+/// See also the family of [`Span Queries`](spans/index.html)
 pub trait Query<C: Codec>: Display {
     /// Create new `Scorer` based on query.
     fn create_weight(
@@ -348,11 +388,30 @@ pub trait Query<C: Codec>: Display {
     /// For highlight use.
     fn extract_terms(&self) -> Vec<TermQuery>;
 
-    fn query_type(&self) -> &'static str;
-
     fn as_any(&self) -> &Any;
 }
 
+/// Expert: Calculate query weights and build query scorers.
+///
+/// The purpose of [`Weight`] is to ensure searching does not modify a
+/// [`Query`], so that a [`Query`] instance can be reused.
+/// [`IndexSearcher`] dependent state of the query should reside in the [`Weight`]
+///
+/// `LeafReader` dependent state should reside in the [`Scorer`].
+///
+/// Since [`Weight`] creates [`Scorer`] instances for a given `LeafReaderContext`
+/// callers must maintain the relationship between the searcher's `IndexReader`
+/// and the context used to create a [`Scorer`].
+///
+/// A `Weight` is used in the following way:
+/// - A `Weight` is constructed by a top-level query, given a `IndexSearcher`
+/// `Query#crate_weight()`.
+/// - The `get_value_for_normalization()` method is called on the `Weight`
+/// to compute the query normalization factor `Similarity#query_norm()` of the
+/// query clauses contained in the query.
+/// - The query normalization factor is passed to `normalize()`. At this point the weighting is
+///   complete.
+/// - A `Scorer` is constructed by `create_scorer()`
 pub trait Weight<C: Codec>: Display {
     fn create_scorer(&self, reader: &LeafReaderContext<'_, C>) -> Result<Option<Box<dyn Scorer>>>;
 
@@ -484,6 +543,10 @@ pub trait Similarity<C: Codec>: Display {
     }
 }
 
+/// API for scoring "sloppy" queries such as `TermQuery`, `SpanQuery`, `PhraseQuery`.
+///
+/// Frequencies are floating-point values: an approximate within-document
+/// frequency adjusted for "sloppiness" by `SimScorer::compute_slop_factor`
 pub trait SimScorer: Send {
     /// Score a single document
     /// @param doc document id within the inverted index segment
@@ -498,6 +561,7 @@ pub trait SimScorer: Send {
     // fn compute_payload_factor(&self, doc: DocId, start: i32, end: i32, payload: &Payload);
 }
 
+/// Stores the weight for a query across the indexed collection.
 pub trait SimWeight<C: Codec> {
     ///  The value for normalization of contained query clauses (e.g. sum of squared weights).
     ///
@@ -526,6 +590,7 @@ pub trait SimWeight<C: Codec> {
     }
 }
 
+/// Per-field similarity provider.
 pub trait SimilarityProducer<C> {
     fn create(&self, field: &str) -> Box<dyn Similarity<C>>;
 }

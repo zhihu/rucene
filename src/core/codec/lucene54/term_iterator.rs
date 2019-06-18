@@ -12,7 +12,7 @@
 // limitations under the License.
 
 use core::codec::{Lucene54DocValuesFormat, ReverseTermsIndex};
-use core::index::{SeekStatus, TermIterator, UnreachableTermState};
+use core::index::{SeekStatus, TermIterator};
 use core::search::posting_iterator::EmptyPostingIterator;
 use core::store::IndexInput;
 use core::util::bit_util::UnsignedShift;
@@ -134,7 +134,7 @@ impl CompressedBinaryTermIterator {
 
     // read term at offset, delta encoded from first term
     fn read_term(&mut self, offset: i32) -> Result<()> {
-        let start = (self.input.read_byte()? as usize) & 0xFF;
+        let start = self.input.read_byte()? as usize;
         // FIXME: first_term.offset
         self.term[0..start]
             .as_mut()
@@ -184,7 +184,7 @@ impl CompressedBinaryTermIterator {
 
 impl TermIterator for CompressedBinaryTermIterator {
     type Postings = EmptyPostingIterator; // stub type
-    type TermState = UnreachableTermState;
+    type TermState = ();
     fn next(&mut self) -> Result<Option<Vec<u8>>> {
         self.current_ord += 1;
         if self.current_ord >= self.num_values {

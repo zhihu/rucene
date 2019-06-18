@@ -22,7 +22,7 @@ use std::path::Path;
 use std::slice;
 use std::sync::Arc;
 
-pub struct ReadOnlySource {
+pub(super) struct ReadOnlySource {
     map: Arc<Mmap>,
     offset: u64,
     len: u64,

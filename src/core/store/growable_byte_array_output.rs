@@ -16,6 +16,7 @@ use std::io::Write;
 
 const MIN_UTF8_SIZE_TO_ENABLE_DOUBLE_PASS_ENCODING: usize = 65536;
 
+/// a `IndexOutput` that can be used to build a bytes array.
 pub struct GrowableByteArrayDataOutput {
     pub bytes: Vec<u8>,
     length: usize,

@@ -252,13 +252,13 @@ impl<D: Directory, C: Codec> SegmentInfos<D, C> {
         output.write_int(self.len() as i32)?;
 
         if self.len() > 0 {
-            let mut min_version = &VERSION_LATEST;
+            let mut min_version = VERSION_LATEST;
 
             // We do a separate loop up front so we can write the minSegmentVersion before
             // any SegmentInfo; this makes it cleaner to throw IndexFormatTooOldExc at read time:
             for commit in &self.segments {
-                if min_version > &commit.info.version {
-                    min_version = &commit.info.version;
+                if min_version > commit.info.version {
+                    min_version = commit.info.version;
                 }
             }
 

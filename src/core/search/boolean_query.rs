@@ -27,6 +27,7 @@ use core::search::{Query, Scorer, Weight};
 use core::util::DocId;
 use error::{ErrorKind::IllegalArgument, Result};
 
+/// A Query that matches documents matching boolean combinations of other queries.
 pub struct BooleanQuery<C: Codec> {
     must_queries: Vec<Box<dyn Query<C>>>,
     should_queries: Vec<Box<dyn Query<C>>>,
@@ -119,10 +120,6 @@ impl<C: Codec> Query<C> for BooleanQuery<C> {
         term_query_list
     }
 
-    fn query_type(&self) -> &'static str {
-        BOOLEAN
-    }
-
     fn as_any(&self) -> &Any {
         self
     }
@@ -141,7 +138,7 @@ impl<C: Codec> fmt::Display for BooleanQuery<C> {
     }
 }
 
-pub struct BooleanWeight<C: Codec> {
+struct BooleanWeight<C: Codec> {
     must_weights: Vec<Box<dyn Weight<C>>>,
     should_weights: Vec<Box<dyn Weight<C>>>,
     #[allow(dead_code)]

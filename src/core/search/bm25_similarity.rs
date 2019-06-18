@@ -44,6 +44,7 @@ lazy_static! {
 pub const DEFAULT_BM25_K1: f32 = 1.2;
 pub const DEFAULT_BM25_B: f32 = 0.75;
 
+/// BM25 Similarity.
 pub struct BM25Similarity {
     k1: f32,
     b: f32,
@@ -181,7 +182,7 @@ impl fmt::Display for BM25Similarity {
     }
 }
 
-pub struct BM25SimScorer {
+struct BM25SimScorer {
     k1: f32,
     weight: f32,
     cache: Arc<[f32; 256]>,
@@ -220,7 +221,7 @@ impl SimScorer for BM25SimScorer {
     }
 }
 
-pub struct BM25SimWeight {
+struct BM25SimWeight {
     k1: f32,
     #[allow(dead_code)]
     b: f32,

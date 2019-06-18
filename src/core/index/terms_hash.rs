@@ -15,7 +15,7 @@ use core::codec::{Codec, FieldsConsumer, PostingsFormat};
 use core::index::byte_slice_reader::ByteSliceReader;
 use core::index::merge_policy::MergePolicy;
 use core::index::merge_scheduler::MergeScheduler;
-use core::index::term::{SeekStatus, TermIterator, Terms, UnreachableTermState};
+use core::index::term::{SeekStatus, TermIterator, Terms};
 use core::index::term_vector::TermVectorsConsumer;
 use core::index::terms_hash_per_field::{FreqProxTermsWriterPerField, TermsHashPerField};
 use core::index::thread_doc_writer::DocumentsWriterPerThread;
@@ -502,7 +502,7 @@ where
     MP: MergePolicy,
 {
     type Postings = FreqProxPostingIterEnum<D, C, MS, MP>;
-    type TermState = UnreachableTermState;
+    type TermState = ();
 
     fn next(&mut self) -> Result<Option<Vec<u8>>> {
         self.ord += 1;

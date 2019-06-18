@@ -398,13 +398,13 @@ impl<'a, T: PostingsWriterBase, O: IndexOutput> TermsWriter<'a, T, O> {
                         debug_assert_eq!(last_suffix_lead_label, -1);
                         -1
                     } else {
-                        term.term_bytes[prefix_length] as i32 & 0xff
+                        term.term_bytes[prefix_length] as u32 as i32
                     }
                 }
                 PendingEntry::Block(ref block) => {
                     is_term_entry = false;
                     debug_assert!(block.prefix.len() > prefix_length);
-                    block.prefix[prefix_length] as i32 & 0xff
+                    block.prefix[prefix_length] as u32 as i32
                 }
             };
 
@@ -540,7 +540,7 @@ impl<'a, T: PostingsWriterBase, O: IndexOutput> TermsWriter<'a, T, O> {
                         .write_bytes(&term.term_bytes, prefix_length, suffix)?;
                     debug_assert!(
                         floor_lead_label == -1
-                            || (term.term_bytes[prefix_length] as i32 & 0xff) >= floor_lead_label
+                            || (term.term_bytes[prefix_length] as u32 as i32) >= floor_lead_label
                     );
 
                     // Write term stats, to separate bytes blob:
@@ -641,7 +641,7 @@ impl<'a, T: PostingsWriterBase, O: IndexOutput> TermsWriter<'a, T, O> {
 
                         debug_assert!(
                             floor_lead_label == -1
-                                || (block.prefix[prefix_length] as i32 & 0xff) >= floor_lead_label
+                                || (block.prefix[prefix_length] as u32 as i32) >= floor_lead_label
                         );
                         debug_assert!(block.fp < start_fp);
 

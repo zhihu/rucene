@@ -32,8 +32,6 @@ use std::sync::Arc;
 /// To add documents, you first need to call {@link #grow} in order to reserve
 /// space, and then call `BulkAdder#add(int)` on the returned
 /// `BulkAdder`.
-///
-/// @lucene.internal
 pub struct DocIdSetBuilder {
     max_doc: DocId,
     threshold: usize,

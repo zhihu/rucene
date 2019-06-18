@@ -999,17 +999,16 @@ pub(crate) struct SegmentTermIteratorInner {
     field_info: Arc<FieldInfo>,
     postings_reader: Lucene50PostingsReaderRef,
     pub input: Option<Box<dyn IndexInput>>,
-    static_frame: SegmentTermsIterFrame,
     frame_inited: bool,
     pub stack: Vec<SegmentTermsIterFrame>,
-    pub current_frame_ord: isize,
+    pub current_frame_ord: usize,
     // index in stack, -1 for static_frame
     terms_in: IndexInputRef,
     fr: *const FieldReader,
     // Lazy init:
     pub term_exists: bool,
 
-    target_before_current_length: isize,
+    target_before_current_length: usize,
     valid_index_prefix: usize,
 
     // assert only:
@@ -1045,15 +1044,17 @@ impl SegmentTermIteratorInner {
             FSTBytesReader::Directional(DirectionalBytesReader::new(&EMPTY_BYTES, false))
         };
 
+        // the first item is the static_frame, thus the ord is always plus 1
+        let stack = vec![SegmentTermsIterFrame::default()];
+
         SegmentTermIteratorInner {
             field_info,
             terms_in,
             postings_reader,
             input: None,
-            static_frame: SegmentTermsIterFrame::default(),
             frame_inited: false,
-            stack: vec![],
-            current_frame_ord: -1,
+            stack,
+            current_frame_ord: 0,
             term: Vec::new(),
             term_len: 0,
             fr: field_reader,
@@ -1068,7 +1069,7 @@ impl SegmentTermIteratorInner {
 
     fn init(&mut self) {
         let iter = self as *mut SegmentTermIteratorInner;
-        self.static_frame.init(unsafe { &mut *iter }, -1);
+        self.stack[0].init(unsafe { &mut *iter }, 0);
         self.frame_inited = true;
     }
 
@@ -1097,7 +1098,7 @@ impl SegmentTermIteratorInner {
         if self.field_reader().index.is_some() {
             // stats.index_num_bytes = self.fr.index.unwrap().
         }
-        self.current_frame_ord = -1;
+        self.current_frame_ord = 0;
 
         let arc = {
             if let Some(ref fst_reader) = self.field_reader().index {
@@ -1107,41 +1108,42 @@ impl SegmentTermIteratorInner {
             }
         };
         let root_code = self.field_reader().root_code().to_vec();
-        self.current_frame_ord = self.push_frame_by_data(arc, &root_code, 0)? as isize;
-        self.current_frame().fp_orig = self.current_frame().fp;
-        self.current_frame().load_block()?;
+        self.current_frame_ord = self.push_frame_by_data(arc, &root_code, 0)?;
+        self.stack[self.current_frame_ord].fp_orig = self.stack[self.current_frame_ord].fp;
+        self.stack[self.current_frame_ord].load_block()?;
         self.valid_index_prefix = 0;
 
         {
-            let frame = self.current_frame();
+            let frame = &mut self.stack[self.current_frame_ord];
             stats.start_block(frame, !frame.is_last_in_floor);
         }
 
         'all_term: loop {
-            while self.current_frame().next_ent == self.current_frame().ent_count {
-                stats.end_block(self.current_frame())?;
-                if !self.current_frame().is_last_in_floor {
-                    self.current_frame().load_next_floor_block()?;
-                    stats.start_block(self.current_frame(), true);
+            while self.stack[self.current_frame_ord].next_ent
+                == self.stack[self.current_frame_ord].ent_count
+            {
+                stats.end_block(&mut self.stack[self.current_frame_ord])?;
+                if !self.stack[self.current_frame_ord].is_last_in_floor {
+                    self.stack[self.current_frame_ord].load_next_floor_block()?;
+                    stats.start_block(&mut self.stack[self.current_frame_ord], true);
                     break;
                 } else {
-                    let ord = self.current_frame().ord;
-                    if ord == 0 {
+                    let ord = self.stack[self.current_frame_ord].ord;
+                    if ord == 1 {
                         break 'all_term;
                     }
-                    let last_fp = self.current_frame().fp_orig;
+                    let last_fp = self.stack[self.current_frame_ord].fp_orig;
                     self.current_frame_ord = ord - 1;
-                    debug_assert!(last_fp == self.current_frame().last_sub_fp);
+                    debug_assert!(last_fp == self.stack[self.current_frame_ord].last_sub_fp);
                 }
             }
             loop {
-                if self.current_frame().next()? {
-                    let last_sub_fp = self.current_frame().last_sub_fp;
+                if self.stack[self.current_frame_ord].next()? {
+                    let last_sub_fp = self.stack[self.current_frame_ord].last_sub_fp;
                     let term_len = self.term_len;
-                    self.current_frame_ord =
-                        self.push_frame_by_fp(None, last_sub_fp, term_len)? as isize;
-                    self.current_frame().load_block()?;
-                    let frame = self.current_frame();
+                    self.current_frame_ord = self.push_frame_by_fp(None, last_sub_fp, term_len)?;
+                    self.stack[self.current_frame_ord].load_block()?;
+                    let frame = &mut self.stack[self.current_frame_ord];
                     stats.start_block(frame, !frame.is_last_in_floor);
                 } else {
                     stats.term(self.term());
@@ -1151,7 +1153,7 @@ impl SegmentTermIteratorInner {
         }
         stats.finish();
 
-        self.current_frame_ord = -1;
+        self.current_frame_ord = 0;
 
         let arc = {
             if let Some(ref fst_reader) = self.field_reader().index {
@@ -1161,9 +1163,9 @@ impl SegmentTermIteratorInner {
             }
         };
         let root_code = self.field_reader().root_code().to_vec();
-        self.current_frame_ord = self.push_frame_by_data(arc, &root_code, 0)? as isize;
-        self.current_frame().rewind();
-        self.current_frame().load_block()?;
+        self.current_frame_ord = self.push_frame_by_data(arc, &root_code, 0)?;
+        self.stack[self.current_frame_ord].rewind();
+        self.stack[self.current_frame_ord].load_block()?;
         self.valid_index_prefix = 0;
         self.term.clear();
         self.term_len = 0;
@@ -1208,11 +1210,11 @@ impl SegmentTermIteratorInner {
         fp: i64,
         length: usize,
     ) -> Result<usize> {
-        let idx = (1 + self.current_frame_ord) as usize;
+        let idx = 1 + self.current_frame_ord;
         let ord = self.get_frame(idx);
         self.stack[ord].arc = arc;
         if self.stack[ord].fp_orig == fp && self.stack[ord].next_ent != -1 {
-            if self.stack[ord].ord > self.target_before_current_length as isize {
+            if self.stack[ord].ord > self.target_before_current_length {
                 self.stack[ord].rewind();
             }
             debug_assert_eq!(length, self.stack[ord].prefix);
@@ -1232,20 +1234,17 @@ impl SegmentTermIteratorInner {
     fn get_frame(&mut self, ord: usize) -> usize {
         if ord >= self.stack.len() {
             for cur in self.stack.len()..=ord {
-                let frame = SegmentTermsIterFrame::new(self, cur as isize);
+                let frame = SegmentTermsIterFrame::new(self, cur);
                 self.stack.push(frame);
             }
         }
-        debug_assert_eq!(self.stack[ord].ord, ord as isize);
-        ord as usize
+        debug_assert_eq!(self.stack[ord].ord, ord);
+        ord
     }
 
-    pub fn current_frame(&mut self) -> &mut SegmentTermsIterFrame {
-        if self.current_frame_ord >= 0 {
-            &mut self.stack[self.current_frame_ord as usize]
-        } else {
-            &mut self.static_frame
-        }
+    #[inline]
+    pub fn current_frame(&self) -> &SegmentTermsIterFrame {
+        &self.stack[self.current_frame_ord]
     }
 
     fn add_arc(&mut self, arc: FSTArc<ByteSequenceOutput>, index: usize) {
@@ -1287,14 +1286,14 @@ impl TermIterator for SegmentTermIteratorInner {
                 }
             };
             let root_code = self.field_reader().root_code().to_vec();
-            self.current_frame_ord = self.push_frame_by_data(arc, &root_code, 0)? as isize;
-            self.current_frame().load_block()?;
+            self.current_frame_ord = self.push_frame_by_data(arc, &root_code, 0)?;
+            self.stack[self.current_frame_ord].load_block()?;
         }
 
-        self.target_before_current_length = self.current_frame_ord as isize;
+        self.target_before_current_length = self.current_frame_ord;
         assert!(!self.eof);
 
-        if self.current_frame_ord == self.static_frame.ord {
+        if self.current_frame_ord == self.stack[0].ord {
             // If seek was previously called and the term was
             // cached, or seek(TermState) was called, usually
             // caller is just going to pull a D/&PEnum or get
@@ -1307,20 +1306,20 @@ impl TermIterator for SegmentTermIteratorInner {
         }
 
         // Pop finished blocks:
-        debug_assert!(self.current_frame_ord >= 0);
-        let mut current_idx = self.current_frame_ord as usize;
+        debug_assert!(self.current_frame_ord > 0);
+        let mut current_idx = self.current_frame_ord;
         while self.stack[current_idx].next_ent == self.stack[current_idx].ent_count {
             if !self.stack[current_idx].is_last_in_floor {
                 // Advance to next floor block
                 self.stack[current_idx].load_next_floor_block()?;
                 break;
             } else {
-                if current_idx == 0 {
+                if current_idx == 1 {
                     self.eof = true;
                     self.term.clear();
                     self.term_len = 0;
                     self.valid_index_prefix = 0;
-                    self.stack[0].rewind();
+                    self.stack[1].rewind();
                     self.term_exists = false;
                     return Ok(None);
                 }
@@ -1347,15 +1346,15 @@ impl TermIterator for SegmentTermIteratorInner {
         }
 
         loop {
-            if self.stack[self.current_frame_ord as usize].next()? {
+            if self.stack[self.current_frame_ord].next()? {
                 // Push to new block:
                 let fp = self.stack[self.current_frame_ord as usize].last_sub_fp;
                 let term_len = self.term_len;
-                self.current_frame_ord = self.push_frame_by_fp(None, fp, term_len)? as isize;
+                self.current_frame_ord = self.push_frame_by_fp(None, fp, term_len)?;
                 // This is a "next" frame -- even if it's
                 // floor'd we must pretend it isn't so we don't
                 // try to scan to the right floor frame:
-                self.stack[self.current_frame_ord as usize].load_block()?;
+                self.stack[self.current_frame_ord].load_block()?;
             } else {
                 return Ok(Some(self.term().to_vec()));
             }
@@ -1375,7 +1374,7 @@ impl TermIterator for SegmentTermIteratorInner {
         let mut output;
         let mut target_upto;
         self.target_before_current_length = self.current_frame_ord;
-        if self.current_frame_ord != self.static_frame.ord {
+        if self.current_frame_ord != self.stack[0].ord {
             // We are already seek'd; find the common
             // prefix of new seek term vs current term and
             // re-use the corresponding seek state.  For
@@ -1387,7 +1386,7 @@ impl TermIterator for SegmentTermIteratorInner {
                 .clone()
                 .unwrap_or_else(|| outputs.empty());
             target_upto = 0;
-            let mut last_frame_idx = 0;
+            let mut last_frame_idx = 1;
             debug_assert!(self.valid_index_prefix <= self.term_len);
             let target_limit = target.len().min(self.valid_index_prefix);
 
@@ -1448,7 +1447,7 @@ impl TermIterator for SegmentTermIteratorInner {
                     // (so we scan from the start)
                     self.target_before_current_length = last_frame_idx;
                     self.current_frame_ord = last_frame_idx;
-                    self.current_frame().rewind();
+                    self.stack[self.current_frame_ord].rewind();
                 }
                 Ordering::Equal => {
                     // Target is exactly the same as current term
@@ -1459,7 +1458,7 @@ impl TermIterator for SegmentTermIteratorInner {
                 }
             }
         } else {
-            self.target_before_current_length = -1;
+            self.target_before_current_length = 0;
             let arc = self.field_reader().index.as_ref().unwrap().root_arc();
             self.arcs[0] = arc;
             arc_idx = 0;
@@ -1469,7 +1468,7 @@ impl TermIterator for SegmentTermIteratorInner {
             debug_assert!(self.arcs[0].output.is_some());
 
             output = self.arcs[0].output.clone().unwrap();
-            self.current_frame_ord = self.static_frame.ord;
+            self.current_frame_ord = self.stack[0].ord;
             target_upto = 0;
             let cur_output = if let Some(ref out) = self.arcs[0].next_final_output {
                 outputs.add(&output, out)
@@ -1478,7 +1477,7 @@ impl TermIterator for SegmentTermIteratorInner {
             };
             let arc = Some(self.arcs[0].clone());
             let idx = self.push_frame_by_data(arc, cur_output.inner(), 0)?;
-            self.current_frame_ord = idx as isize;
+            self.current_frame_ord = idx;
         }
 
         // We are done sharing the common prefix with the incoming target and where we are
@@ -1510,44 +1509,43 @@ impl TermIterator for SegmentTermIteratorInner {
                         cur_output.inner(),
                         target_upto,
                     )?;
-                    self.current_frame_ord = idx as isize;
+                    self.current_frame_ord = idx;
                 }
                 self.add_arc(next_arc, target_upto);
                 arc_idx = target_upto;
             } else {
                 // Index is exhausted
-                debug_assert!(self.current_frame_ord >= 0);
+                debug_assert!(self.current_frame_ord > 0);
                 self.valid_index_prefix = self.stack[self.current_frame_ord as usize].prefix;
-                self.stack[self.current_frame_ord as usize].scan_to_floor_frame(target)?;
-                if !self.stack[self.current_frame_ord as usize].has_terms {
+                self.stack[self.current_frame_ord].scan_to_floor_frame(target)?;
+                if !self.stack[self.current_frame_ord].has_terms {
                     self.term_exists = false;
                     self.term[target_upto] = target_label as u8;
                     self.term.truncate(target_upto + 1);
                     self.term_len = target_upto + 1;
                     return Ok(false);
                 }
-                self.stack[self.current_frame_ord as usize].load_block()?;
+                self.stack[self.current_frame_ord].load_block()?;
 
-                let result =
-                    self.stack[self.current_frame_ord as usize].scan_to_term(target, true)?;
+                let result = self.stack[self.current_frame_ord].scan_to_term(target, true)?;
                 return Ok(result == SeekStatus::Found);
             }
         }
 
-        self.valid_index_prefix = self.current_frame().prefix;
+        self.valid_index_prefix = self.stack[self.current_frame_ord].prefix;
 
-        self.current_frame().scan_to_floor_frame(target)?;
+        self.stack[self.current_frame_ord].scan_to_floor_frame(target)?;
 
         // Target term is entirely contained in the index:
-        if !self.current_frame().has_terms {
+        if !self.stack[self.current_frame_ord].has_terms {
             self.term_exists = false;
             self.term.truncate(target_upto);
             self.term_len = target_upto;
             return Ok(false);
         }
 
-        self.current_frame().load_block()?;
-        let result = self.current_frame().scan_to_term(target, true)?;
+        self.stack[self.current_frame_ord].load_block()?;
+        let result = self.stack[self.current_frame_ord].scan_to_term(target, true)?;
         Ok(result == SeekStatus::Found)
     }
 
@@ -1568,7 +1566,7 @@ impl TermIterator for SegmentTermIteratorInner {
         let mut output;
         let mut target_upto;
         self.target_before_current_length = self.current_frame_ord;
-        if self.current_frame_ord != self.static_frame.ord {
+        if self.current_frame_ord != self.stack[0].ord {
             // We are already seek'd; find the common
             // prefix of new seek term vs current term and
             // re-use the corresponding seek state.  For
@@ -1637,9 +1635,9 @@ impl TermIterator for SegmentTermIteratorInner {
                     // is before current term; this means we can
                     // keep the currentFrame but we must rewind it
                     // (so we scan from the start)
-                    self.target_before_current_length = 0;
+                    self.target_before_current_length = 1;
                     self.current_frame_ord = last_frame_idx;
-                    self.current_frame().rewind();
+                    self.stack[self.current_frame_ord].rewind();
                 }
                 Ordering::Equal => {
                     // Target is exactly the same as current term
@@ -1650,7 +1648,7 @@ impl TermIterator for SegmentTermIteratorInner {
                 }
             }
         } else {
-            self.target_before_current_length = -1;
+            self.target_before_current_length = 0;
             let arc = self.field_reader().index.as_ref().unwrap().root_arc();
             self.arcs[0] = arc;
             arc_idx = 0;
@@ -1660,7 +1658,7 @@ impl TermIterator for SegmentTermIteratorInner {
             debug_assert!(self.arcs[0].output.is_some());
 
             output = self.arcs[0].output.clone().unwrap();
-            self.current_frame_ord = self.static_frame.ord;
+            self.current_frame_ord = self.stack[0].ord;
             target_upto = 0;
             let cur_output = if let Some(ref out) = self.arcs[0].next_final_output {
                 outputs.add(&output, out)
@@ -1669,7 +1667,7 @@ impl TermIterator for SegmentTermIteratorInner {
             };
             let arc = Some(self.arcs[0].clone());
             let idx = self.push_frame_by_data(arc, cur_output.inner(), 0)?;
-            self.current_frame_ord = idx as isize;
+            self.current_frame_ord = idx;
         }
 
         // We are done sharing the common prefix with the incoming target and where we are
@@ -1701,13 +1699,13 @@ impl TermIterator for SegmentTermIteratorInner {
                         cur_output.inner(),
                         target_upto,
                     )?;
-                    self.current_frame_ord = idx as isize;
+                    self.current_frame_ord = idx;
                 }
                 self.add_arc(next_arc, target_upto);
                 arc_idx = target_upto;
             } else {
                 // Index is exhausted
-                debug_assert!(self.current_frame_ord >= 0);
+                debug_assert!(self.current_frame_ord > 0);
                 self.valid_index_prefix = self.stack[self.current_frame_ord as usize].prefix;
                 self.stack[self.current_frame_ord as usize].scan_to_floor_frame(target)?;
                 self.stack[self.current_frame_ord as usize].load_block()?;
@@ -1729,12 +1727,12 @@ impl TermIterator for SegmentTermIteratorInner {
             }
         }
 
-        self.valid_index_prefix = self.current_frame().prefix;
+        self.valid_index_prefix = self.stack[self.current_frame_ord].prefix;
 
-        self.current_frame().scan_to_floor_frame(target)?;
+        self.stack[self.current_frame_ord].scan_to_floor_frame(target)?;
 
-        self.current_frame().load_block()?;
-        let result = self.current_frame().scan_to_term(target, false)?;
+        self.stack[self.current_frame_ord].load_block()?;
+        let result = self.stack[self.current_frame_ord].scan_to_term(target, false)?;
 
         if result == SeekStatus::End {
             self.term.resize(target.len(), 0);
@@ -1758,12 +1756,12 @@ impl TermIterator for SegmentTermIteratorInner {
     fn seek_exact_state(&mut self, text: &[u8], state: &Self::TermState) -> Result<()> {
         self.clear_eof();
         if text != self.term() || !self.term_exists {
-            self.current_frame_ord = self.static_frame.ord;
-            self.static_frame.state.copy_from(state);
+            self.current_frame_ord = self.stack[0].ord;
+            self.stack[0].state.copy_from(state);
             self.resize_term(text.len());
             self.term.copy_from_slice(text);
-            self.static_frame.metadata_upto = self.static_frame.get_term_block_ord();
-            debug_assert!(self.static_frame.metadata_upto > 0);
+            self.stack[0].metadata_upto = self.stack[0].get_term_block_ord();
+            debug_assert!(self.stack[0].metadata_upto > 0);
             self.valid_index_prefix = 0;
         }
 
@@ -1780,14 +1778,14 @@ impl TermIterator for SegmentTermIteratorInner {
 
     fn doc_freq(&mut self) -> Result<i32> {
         debug_assert!(!self.eof);
-        self.current_frame().decode_metadata()?;
-        Ok(self.current_frame().state.doc_freq)
+        self.stack[self.current_frame_ord].decode_metadata()?;
+        Ok(self.stack[self.current_frame_ord].state.doc_freq)
     }
 
     fn total_term_freq(&mut self) -> Result<i64> {
         debug_assert!(!self.eof);
-        self.current_frame().decode_metadata()?;
-        Ok(self.current_frame().state.total_term_freq)
+        self.stack[self.current_frame_ord].decode_metadata()?;
+        Ok(self.stack[self.current_frame_ord].state.total_term_freq)
     }
 
     fn postings(&mut self) -> Result<Self::Postings> {
@@ -1796,21 +1794,16 @@ impl TermIterator for SegmentTermIteratorInner {
 
     fn postings_with_flags(&mut self, flags: u16) -> Result<Self::Postings> {
         debug_assert!(!self.eof);
-        self.current_frame().decode_metadata()?;
-        if self.current_frame_ord < 0 {
-            self.postings_reader
-                .postings(self.field_info.as_ref(), &self.static_frame.state, flags)
-        } else {
-            self.postings_reader.postings(
-                self.field_info.as_ref(),
-                &self.stack[self.current_frame_ord as usize].state,
-                flags,
-            )
-        }
+        self.stack[self.current_frame_ord].decode_metadata()?;
+        self.postings_reader.postings(
+            self.field_info.as_ref(),
+            &self.stack[self.current_frame_ord].state,
+            flags,
+        )
     }
 
     fn term_state(&mut self) -> Result<Self::TermState> {
-        self.current_frame().decode_metadata()?;
-        Ok(self.current_frame().state.clone())
+        self.stack[self.current_frame_ord].decode_metadata()?;
+        Ok(self.stack[self.current_frame_ord].state.clone())
     }
 }

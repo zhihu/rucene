@@ -1308,14 +1308,13 @@ impl DocValuesProducer for Lucene54DocValuesProducer {
             .get(&field.name)
             .ok_or_else(|| IllegalArgument(format!("No binary field named {}", &field.name)))?
             .count as usize;
-        let ordinals;
-        {
+        let ordinals = {
             let entry = self
                 .ords
                 .get(&field.name)
                 .ok_or_else(|| IllegalArgument(format!("No ords field named {}", &field.name)))?;
-            ordinals = self.get_numeric_by_entry(entry)?;
-        }
+            self.get_numeric_by_entry(entry)?
+        };
 
         let bytes = self
             .binaries

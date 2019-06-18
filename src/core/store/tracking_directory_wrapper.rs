@@ -20,6 +20,7 @@ use std::fmt;
 use std::ops::Deref;
 use std::sync::Mutex;
 
+/// A delegating Directory that records which files were written to and deleted.
 pub struct TrackingDirectoryWrapper<D: Directory, T: Deref<Target = D>> {
     create_file_names: Mutex<HashSet<String>>,
     pub directory: T,

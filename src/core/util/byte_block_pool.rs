@@ -214,7 +214,7 @@ impl ByteBlockPool {
             offset = pos + 1;
         } else {
             // length is 2 bytes
-            length = (bytes[pos] as usize & 0x7f) + ((bytes[pos + 1] as usize & 0xff) << 7);
+            length = (bytes[pos] as usize & 0x7f) + ((bytes[pos + 1] as usize) << 7);
             offset = pos + 2;
         }
 

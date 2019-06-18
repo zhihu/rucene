@@ -34,7 +34,7 @@ pub fn bytes_subtract(bytes_per_dim: usize, dim: usize, a: &[u8], b: &[u8], resu
     let mut borrow = 0;
     let mut i = end - 1;
     while i >= start {
-        let mut diff: i32 = (a[i] as i32 & 0xFF) - (b[i] as i32 & 0xFF) - borrow;
+        let mut diff: i32 = (a[i] as u32 as i32) - (b[i] as u32 as i32) - borrow;
         if diff < 0 {
             diff += 256;
             borrow = 1;

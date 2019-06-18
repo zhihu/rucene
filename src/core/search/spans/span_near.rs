@@ -191,10 +191,6 @@ impl<C: Codec> Query<C> for SpanNearQuery {
             .collect()
     }
 
-    fn query_type(&self) -> &'static str {
-        SPAN_NEAR_QUERY
-    }
-
     fn as_any(&self) -> &::std::any::Any {
         self
     }
@@ -858,10 +854,6 @@ impl<C: Codec> Query<C> for SpanGapQuery {
 
     fn extract_terms(&self) -> Vec<TermQuery> {
         vec![]
-    }
-
-    fn query_type(&self) -> &'static str {
-        SPAN_GAP_QUERY
     }
 
     fn as_any(&self) -> &::std::any::Any {

@@ -106,10 +106,6 @@ impl<C: Codec> Query<C> for SpanBoostQuery {
         Query::<C>::extract_terms(&self.query)
     }
 
-    fn query_type(&self) -> &'static str {
-        SPAN_BOOST_QUERY
-    }
-
     fn as_any(&self) -> &::std::any::Any {
         self
     }
@@ -208,10 +204,6 @@ impl<C: Codec> Query<C> for SpanBoostQueryEnum {
             SpanBoostQueryEnum::Or(q) => Query::<C>::extract_terms(q),
             SpanBoostQueryEnum::Near(q) => Query::<C>::extract_terms(q),
         }
-    }
-
-    fn query_type(&self) -> &'static str {
-        "SpanBoostQueryEnum"
     }
 
     fn as_any(&self) -> &Any {

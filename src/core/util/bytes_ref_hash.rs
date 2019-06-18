@@ -328,8 +328,7 @@ impl BytesRefHash {
                     } else {
                         (
                             (self.byte_pool().buffers[bytes_idx][start] & 0x7f) as usize
-                                + ((self.byte_pool().buffers[bytes_idx][start + 1] & 0xff) << 7)
-                                    as usize,
+                                | ((self.byte_pool().buffers[bytes_idx][start + 1] as usize) << 7),
                             start + 2,
                         )
                     };

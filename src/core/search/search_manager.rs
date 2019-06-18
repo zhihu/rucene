@@ -27,24 +27,10 @@ use error::Result;
 use std::ops::Deref;
 use std::sync::Arc;
 
-/// Utility class to safely share {@link IndexSearcher} instances across multiple
+/// Utility class to safely share `IndexSearcher` instances across multiple
 /// threads, while periodically reopening. This class ensures each searcher is
 /// closed only once all threads have finished using it.
 ///
-/// <p>
-/// Use {@link #acquire} to obtain the current searcher, and {@link #release} to
-/// release it, like this:
-///
-/// <pre class="prettyprint">
-/// IndexSearcher s = manager.acquire();
-/// try {
-///   // Do searching, doc retrieval, etc. with s
-/// } finally {
-///   manager.release(s);
-/// }
-/// // Do not use s after this!
-/// s = null;
-/// </pre>
 ///
 /// In addition you should periodically call {@link #maybeRefresh}. While it's
 /// possible to call this just before running each query, this is discouraged
@@ -118,21 +104,6 @@ where
         &self,
         reference_to_refresh: &Arc<SF::Searcher>,
     ) -> Result<Option<Arc<SF::Searcher>>> {
-        //        if let Some(r) = reference_to_refresh
-        //            .reader()
-        //            .as_any()
-        //            .downcast_ref::<StandardDirectoryReader<D, MS, MP>>()
-        //        {
-        //            if let Some(new_reader) = r.open_if_changed(None)? {
-        //                self.searcher_factory
-        //                    .new_searcher(Arc::new(new_reader))
-        //                    .map(|s| Some(Arc::new(s)))
-        //            } else {
-        //                Ok(None)
-        //            }
-        //        } else {
-        //            unreachable!()
-        //        }
         if let Some(reader) = reference_to_refresh.reader().refresh()? {
             self.searcher_factory
                 .new_searcher(Arc::from(reader))
@@ -153,7 +124,9 @@ where
     }
 }
 
+/// Factory used by `SearcherManager` to create new `IndexSearcher` impls.
 pub trait SearcherFactory<C: Codec> {
     type Searcher: IndexSearcher<C>;
+    /// Returns a new IndexSearcher over the given reader.
     fn new_searcher(&self, reader: Arc<IndexReader<Codec = C>>) -> Result<Self::Searcher>;
 }

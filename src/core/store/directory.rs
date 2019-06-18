@@ -20,6 +20,8 @@ use core::store::{BufferedChecksumIndexInput, DataOutput, IndexInput, IndexOutpu
 use core::store::{FlushInfo, Lock, MergeInfo};
 use error::Result;
 
+/// IOContext holds additional details on the merge/search context and
+/// specifies the context in which the Directory is being used for.
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum IOContext {
     Read(bool),
@@ -39,6 +41,10 @@ impl IOContext {
     }
 }
 
+/// A Directory is a flat list of files.
+///
+/// Files may be written once, when they are created.  Once a file is created it may only
+/// be opened for read, or deleted.  Random access is permitted both when reading and writing.
 pub trait Directory: fmt::Display {
     type LK: Lock;
     type IndexOutput: IndexOutput;

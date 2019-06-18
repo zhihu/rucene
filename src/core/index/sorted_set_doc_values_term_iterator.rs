@@ -11,7 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::index::term::{OrdTermState, SeekStatus, TermIterator, TermState};
+use core::index::term::{OrdTermState, SeekStatus, TermIterator};
 use core::index::SortedSetDocValues;
 use core::search::posting_iterator::EmptyPostingIterator;
 use error::ErrorKind::*;

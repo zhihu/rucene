@@ -35,18 +35,13 @@ use core::util::{Bits, DocId};
 use core::codec::Codec;
 use error::Result;
 
-///
 // A cache for queries.
-//
-// @see LRUQueryCache
-// @lucene.experimental
-//
 pub trait QueryCache<C: Codec>: Send + Sync {
     ///
-    // Return a wrapper around the provided <code>weight</code> that will cache
-    // matching docs per-segment accordingly to the given <code>policy</code>.
+    // Return a wrapper around the provided `weight` that will cache
+    // matching docs per-segment accordingly to the given `policy`.
     // NOTE: The returned weight will only be equivalent if scores are not needed.
-    // @see Collector#needsScores()
+    // see Collector#needs_scores()
     //
     fn do_cache(
         &self,
@@ -74,47 +69,6 @@ impl<C: Codec> QueryCache<C> for NoCacheQueryCache {
         weight
     }
 }
-
-///
-// A {@link QueryCache} that evicts queries using a LRU (least-recently-used)
-// eviction policy in order to remain under a given maximum size and number of
-// bytes used.
-//
-// This class is thread-safe.
-//
-// Note that query eviction runs in linear time with the total number of
-// segments that have cache entries so this cache works best withCa
-// {@link QueryCachingPolicy caching policies} that only cache on "large"
-// segments, and it is advised to not share this cache across too many indices.
-//
-// A default query cache and policy instance is used in IndexSearcher. If you want to replace those
-// defaults it is typically done like this:
-// <pre class="prettyprint">
-//   final int maxNumberOfCachedQueries = 256;
-//   final long maxRamBytesUsed = 50 * 1024L * 1024L; // 50MB
-//   // these cache and policy instances can be shared across several queries and readers
-//   // it is fine to eg. store them into static variables
-//   final QueryCache queryCache = new LRUQueryCache(maxNumberOfCachedQueries, maxRamBytesUsed);
-//   final QueryCachingPolicy defaultCachingPolicy = new UsageTrackingQueryCachingPolicy();
-//   indexSearcher.setQueryCache(queryCache);
-//   indexSearcher.setQueryCachingPolicy(defaultCachingPolicy);
-// </pre>
-//
-// This cache exposes some global statistics ({@link #getHitCount() hit count},
-// {@link #getMissCount() miss count}, {@link #getCacheSize() number of cache
-// entries}, {@link #getCacheCount() total number of DocIdSets that have ever
-// been cached}, {@link #getEvictionCount() number of evicted entries}). In
-// case you would like to have more fine-grained statistics, such as per-index
-// or per-query-class statistics, it is possible to override various callbacks:
-// {@link #onHit}, {@link #onMiss},
-// {@link #onQueryCache}, {@link #onQueryEviction},
-// {@link #onDocIdSetCache}, {@link #onDocIdSetEviction} and {@link #onClear}.
-// It is better to not perform heavy computations in these methods though since
-// they are called synchronously and under a lock.
-//
-// @see QueryCachingPolicy
-// @lucene.experimental
-//
 
 struct LeafCache {
     _key: String,
@@ -259,6 +213,16 @@ impl CacheData {
     }
 }
 
+/// A [`QueryCache`] that evicts queries using a LRU (least-recently-used)
+/// eviction policy in order to remain under a given maximum size and number of
+/// bytes used.
+///
+/// This class is thread-safe.
+///
+/// Note that query eviction runs in linear time with the total number of
+/// segments that have cache entries so this cache works best with a
+/// `QueryCachingPolicy` caching policies that only cache on "large"
+/// segments, and it is advised to not share this cache across too many indices.
 pub struct LRUQueryCache {
     cache_data: Arc<RwLock<CacheData>>,
 }
@@ -298,7 +262,7 @@ impl<C: Codec> QueryCache<C> for LRUQueryCache {
     }
 }
 
-pub struct CachingWrapperWeight<C: Codec> {
+struct CachingWrapperWeight<C: Codec> {
     cache_data: Arc<RwLock<CacheData>>,
     weight: Box<dyn Weight<C>>,
     policy: Arc<QueryCachingPolicy<C>>,
@@ -341,7 +305,7 @@ impl<C: Codec> CachingWrapperWeight<C> {
     {
         // FixedBitSet is faster for dense sets and will enable the random-access
         // optimization in ConjunctionDISI
-        if scorer.scorer.cost() * 100 > max_doc as usize {
+        if scorer.scorer().cost() * 100 > max_doc as usize {
             Ok(CacheDocIdSetEnum::Bit(
                 self.cache_into_bitset(scorer, max_doc)?,
             ))
@@ -538,7 +502,7 @@ impl<C: Codec> fmt::Display for CachingWrapperWeight<C> {
     }
 }
 
-pub struct BitSetLeafCollector {
+struct BitSetLeafCollector {
     bit_set: FixedBitSet,
     cost: i64,
 }
@@ -556,7 +520,7 @@ impl Collector for BitSetLeafCollector {
     }
 }
 
-pub struct DocIdSetLeafCollector {
+struct DocIdSetLeafCollector {
     doc_id_set: RoaringDocIdSetBuilder,
 }
 

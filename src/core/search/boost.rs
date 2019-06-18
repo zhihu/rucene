@@ -27,6 +27,11 @@ use error::Result;
 
 const BOOST_QUERY: &str = "boost";
 
+/// A `Query` wrapper that allows to give a boost to the wrapped query.
+///
+/// Boost values that are less than one will give less importance to this
+/// query compared to other ones while values that are greater than one will
+/// give more importance to the scores returned by this query.
 pub struct BoostQuery<C: Codec> {
     query: Box<dyn Query<C>>,
     boost: f32,
@@ -58,10 +63,6 @@ impl<C: Codec> Query<C> for BoostQuery<C> {
         self.query.extract_terms()
     }
 
-    fn query_type(&self) -> &'static str {
-        BOOST_QUERY
-    }
-
     fn as_any(&self) -> &Any {
         self
     }
@@ -77,7 +78,7 @@ impl<C: Codec> fmt::Display for BoostQuery<C> {
     }
 }
 
-pub struct BoostWeight<C: Codec> {
+struct BoostWeight<C: Codec> {
     weight: Box<dyn Weight<C>>,
     boost: f32,
 }

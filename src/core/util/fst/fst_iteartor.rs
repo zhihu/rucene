@@ -220,7 +220,7 @@ impl<F: OutputFactory> FSTIterator<F> for BytesRefFSTIterator<F> {
     }
 
     fn get_current_label(&self) -> i32 {
-        self.current[self.base.upto] as i32 & 0xff
+        self.current[self.base.upto] as u32 as i32
     }
 
     fn set_current_label(&mut self, label: i32) {

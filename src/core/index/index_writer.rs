@@ -29,7 +29,7 @@ use core::index::{
     FieldNumbersRef, Fieldable, LeafReader, SegmentCommitInfo, SegmentInfo, SegmentInfos,
     SegmentReader, StandardDirectoryReader, Term, INDEX_FILE_PENDING_SEGMENTS,
 };
-use core::search::match_all::MATCH_ALL;
+use core::search::match_all::MatchAllDocsQuery;
 use core::search::Query;
 use core::store::{
     Directory, FlushInfo, IOContext, IndexInput, Lock, LockValidatingDirectoryWrapper,
@@ -1700,7 +1700,6 @@ where
             }
             merge.register_done = false;
         }
-        debug_assert!(self.running_merges.contains_key(&merge.id));
         self.running_merges.remove(&merge.id);
     }
 
@@ -2444,7 +2443,7 @@ where
     ) -> Result<u64> {
         index_writer.writer.ensure_open(true)?;
 
-        let (seq_no, changed) = index_writer.writer.doc_writer.delete_terms(terms)?;
+        let (seq_no, changed) = index_writer.writer.doc_writer.delete_terms(terms);
         if changed {
             Self::process_events(index_writer, true, false)?;
         }
@@ -2469,12 +2468,12 @@ where
 
         // LUCENE-6379: Specialize MatchAllDocsQuery
         for q in &queries {
-            if q.query_type() == MATCH_ALL {
+            if q.as_any().is::<MatchAllDocsQuery>() {
                 return Self::delete_all(index_writer);
             }
         }
 
-        let (seq_no, changed) = index_writer.writer.doc_writer.delete_queries(queries)?;
+        let (seq_no, changed) = index_writer.writer.doc_writer.delete_queries(queries);
         if changed {
             Self::process_events(index_writer, true, false)?;
         }

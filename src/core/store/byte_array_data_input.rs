@@ -17,7 +17,7 @@ use std::cmp::min;
 use std::io::{self, Read, Write};
 use std::sync::Arc;
 
-pub struct ByteArrayRef(Arc<Vec<u8>>);
+pub(crate) struct ByteArrayRef(Arc<Vec<u8>>);
 
 impl ByteArrayRef {
     pub fn new(v: Arc<Vec<u8>>) -> ByteArrayRef {
@@ -31,6 +31,9 @@ impl AsRef<[u8]> for ByteArrayRef {
     }
 }
 
+/// DataInput backed by a byte array.
+///
+/// *WARNING:* This class omits all low-level checks.
 pub struct ByteArrayDataInput<T: AsRef<[u8]>> {
     bytes: T,
     pos: usize,
@@ -109,6 +112,7 @@ impl<T: AsRef<[u8]>> Read for ByteArrayDataInput<T> {
     }
 }
 
+/// DataOutput backed by a byte array.
 pub struct ByteArrayDataOutput<T> {
     bytes: T,
     pub pos: usize,

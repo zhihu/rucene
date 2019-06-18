@@ -16,9 +16,10 @@ use error::Result;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-/// Abstract base class to rate limit IO.  Typically implementations are
-/// shared across multiple IndexInputs or IndexOutputs (for example
-/// those involved all merging).  Those IndexInputs and
+/// Trait base class to rate limit IO.
+///
+/// Typically implementations are shared across multiple IndexInputs
+/// or IndexOutputs (for example those involved all merging).  Those IndexInputs and
 /// IndexOutputs would call {@link #pause} whenever the have read
 /// or written more than {@link #getMinPauseCheckBytes} bytes.
 

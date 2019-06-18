@@ -222,7 +222,7 @@ where
             self.num_docs_in_ram += 1;
             res?;
         }
-        self.finish_document(del_term)
+        Ok(self.finish_document(del_term))
     }
 
     pub fn update_documents<F: Fieldable>(
@@ -289,7 +289,7 @@ where
         let seq_no = if let Some(del_term) = del_term {
             let seq = self
                 .delete_queue
-                .add_term_to_slice(del_term, &mut self.delete_slice)?;
+                .add_term_to_slice(del_term, &mut self.delete_slice);
             self.delete_slice.apply(
                 &mut self.pending_updates,
                 self.num_docs_in_ram as i32 - *doc_count,
@@ -325,7 +325,7 @@ where
         // confounding exception).
     }
 
-    fn finish_document(&mut self, del_term: Option<Term>) -> Result<u64> {
+    fn finish_document(&mut self, del_term: Option<Term>) -> u64 {
         // here we actually finish the document in two steps:
         // 1. push the delete into the queue and update our slice
         // 2. increment the DWPT private document id.
@@ -337,9 +337,7 @@ where
         if let Some(del_term) = del_term {
             seq_no = self
                 .delete_queue
-                .add_term_to_slice(del_term, &mut self.delete_slice)?
-
-        // debug_assert!(self.delete_slice.is_tail_item(del_term));
+                .add_term_to_slice(del_term, &mut self.delete_slice);
         } else {
             let (seq, apply) = self.delete_queue.update_slice(&mut self.delete_slice);
             seq_no = seq;
@@ -352,7 +350,7 @@ where
             self.delete_slice.reset();
         }
         self.num_docs_in_ram += 1;
-        Ok(seq_no)
+        seq_no
     }
 
     // Prepares this DWPT for flushing. This method will freeze and return the
@@ -364,7 +362,7 @@ where
 
         let frozen_updates = self
             .delete_queue
-            .freeze_global_buffer(Some(&mut self.delete_slice))?;
+            .freeze_global_buffer(Some(&mut self.delete_slice));
         // apply all deletes before we flush and release the delete slice
         self.delete_slice
             .apply(&mut self.pending_updates, self.num_docs_in_ram as i32);

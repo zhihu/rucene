@@ -135,10 +135,6 @@ impl<C: Codec> Query<C> for SpanQueryEnum {
         }
     }
 
-    fn query_type(&self) -> &'static str {
-        "WrappedSpanQuery"
-    }
-
     fn as_any(&self) -> &::std::any::Any {
         match self {
             SpanQueryEnum::Term(q) => Query::<C>::as_any(q),
@@ -463,6 +459,7 @@ impl PostingsFlag {
     }
 }
 
+/// a basic `Scorer` over `Spans`
 pub struct SpanScorer<S: Spans> {
     spans: S,
     doc_scorer: Option<Box<dyn SimScorer>>,
@@ -592,7 +589,7 @@ pub fn build_sim_weight<C: Codec, IS: SearchPlanBuilder<C> + ?Sized>(
     let similarity = searcher.similarity(field, !term_contexts.is_empty());
     let mut term_stats = Vec::with_capacity(term_contexts.len());
     for (term, ctx) in term_contexts {
-        term_stats.push(searcher.term_statistics(term, ctx.as_ref()));
+        term_stats.push(searcher.term_statistics(&term, ctx.as_ref()));
     }
     let collection_stats = searcher.collections_statistics(field)?;
     Ok(Some(similarity.compute_weight(
@@ -603,6 +600,7 @@ pub fn build_sim_weight<C: Codec, IS: SearchPlanBuilder<C> + ?Sized>(
     )))
 }
 
+/// Expert-only.  Public for use by other weight implementations
 pub trait SpanWeight<C: Codec>: Weight<C> {
     fn sim_weight(&self) -> Option<&SimWeight<C>>;
 

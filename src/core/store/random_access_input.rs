@@ -13,6 +13,10 @@
 
 use error::Result;
 
+/// Random Access Index API.
+///
+/// Unlike `IndexInput`, this has no concept of file position, all reads
+/// are absolute. However, like IndexInput, it is only intended for use by a single thread.
 pub trait RandomAccessInput: Send + Sync {
     fn read_byte(&self, pos: i64) -> Result<u8>;
     fn read_short(&self, pos: i64) -> Result<i16>;

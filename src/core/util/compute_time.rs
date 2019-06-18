@@ -15,8 +15,16 @@ use std::ops::Drop;
 use std::time;
 
 /// Tool to measure time of code block (usually a func) to execute.
+///
 /// Typical use:
-/// let _a = ComputeTime::new(file!(), "search_req");
+/// ```rust,ignore
+/// use rucene::core::util::ComputeTime;
+/// {
+///     let _a = ComputeTime::new(file!(), "search_req");
+///     ...
+/// }
+/// ```
+/// this will automatically add a info log for the time cost of code execute.
 #[derive(Debug)]
 pub struct ComputeTime {
     file: &'static str,

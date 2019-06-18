@@ -443,7 +443,7 @@ impl QueryPhraseMap {
         term_or_phrase_number: i32,
     ) -> Result<()> {
         let boost = 1f32;
-        self.add_term(&query.term.clone(), boost, term_or_phrase_number)?;
+        self.add_term(&query.term(), boost, term_or_phrase_number)?;
         Ok(())
     }
 
@@ -572,7 +572,7 @@ impl FieldQuery {
         flat_queries: &[TermQuery],
     ) -> Result<()> {
         for query in flat_queries {
-            self.add_term_set_by_query(query, query.term.text()?);
+            self.add_term_set_by_query(query, query.term().text()?);
         }
 
         Ok(())
@@ -586,7 +586,7 @@ impl FieldQuery {
             return String::from("");
         }
 
-        String::from(query.term.field())
+        String::from(query.term().field())
     }
 
     fn add_term_set_by_query(&mut self, query: &TermQuery, value: String) {

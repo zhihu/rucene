@@ -20,7 +20,7 @@ use core::util::DocId;
 
 use std::cell::RefCell;
 
-pub struct HeapPointReader {
+pub(crate) struct HeapPointReader {
     point_writer: *const HeapPointWriter,
     curr_read: isize,
     end: usize,
@@ -81,7 +81,7 @@ impl PointReader for HeapPointReader {
     }
 }
 
-pub struct HeapPointWriter {
+pub(crate) struct HeapPointWriter {
     pub doc_ids: Vec<DocId>,
     pub ords_long: Vec<i64>,
     pub ords: Vec<i32>,
@@ -92,7 +92,7 @@ pub struct HeapPointWriter {
     pub single_value_per_doc: bool,
     pub blocks: Vec<Vec<u8>>,
     pub closed: bool,
-    pub shared_reader: Option<PointReaderEnum>,
+    shared_reader: Option<PointReaderEnum>,
 }
 
 impl HeapPointWriter {
@@ -200,6 +200,7 @@ impl HeapPointWriter {
 
 impl PointWriter for HeapPointWriter {
     type IndexOutput = IndexOutputRef<InvalidIndexOutput>;
+    type PointReader = PointReaderEnum;
 
     fn append(&mut self, packed_value: &[u8], ord: i64, doc_id: DocId) -> Result<()> {
         debug_assert!(!self.closed);
@@ -226,7 +227,7 @@ impl PointWriter for HeapPointWriter {
         Ok(())
     }
 
-    fn point_reader(&self, start: usize, length: usize) -> Result<PointReaderEnum> {
+    fn point_reader(&self, start: usize, length: usize) -> Result<Self::PointReader> {
         debug_assert!(start + length <= self.doc_ids.len());
         debug_assert!(start + length <= self.next_write);
 
@@ -241,13 +242,8 @@ impl PointWriter for HeapPointWriter {
         &mut self,
         start: usize,
         _length: usize,
-        _to_close_heroically: &mut Vec<PointReaderEnum>,
-    ) -> Result<&mut PointReaderEnum> {
-        self.shared_reader = Some(PointReaderEnum::Heap(HeapPointReader::new(
-            self,
-            start,
-            self.next_write,
-        )));
+    ) -> Result<&mut Self::PointReader> {
+        self.shared_reader = Some(self.point_reader(start, self.next_write - start).unwrap());
 
         Ok(self.shared_reader.as_mut().unwrap())
     }

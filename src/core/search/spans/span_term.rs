@@ -69,10 +69,6 @@ impl<C: Codec> Query<C> for SpanTermQuery {
         )]
     }
 
-    fn query_type(&self) -> &'static str {
-        SPAN_TERM_QUERY
-    }
-
     fn as_any(&self) -> &::std::any::Any {
         self
     }

@@ -18,10 +18,10 @@ use core::codec::compressing::{CompressionMode, Decompress, Decompressor};
 use core::codec::format::TermVectorsFormat;
 use core::codec::reader::TermVectorsReader;
 use core::codec::Codec;
+use core::index::segment_file_name;
 use core::index::FieldInfos;
 use core::index::Fields;
 use core::index::SegmentInfo;
-use core::index::{segment_file_name, UnreachableTermState};
 use core::index::{SeekStatus, TermIterator, Terms};
 use core::search::posting_iterator::PostingIterator;
 use core::search::{DocIterator, Payload, NO_MORE_DOCS};
@@ -405,7 +405,7 @@ impl CompressingTermVectorsReader {
             vectors_stream: Arc::from(IndexInput::clone(self.vectors_stream.as_ref())?),
             version: self.version,
             packed_ints_version: self.packed_ints_version,
-            compression_mode: self.compression_mode.clone(),
+            compression_mode: self.compression_mode,
             decompressor: self.decompressor.clone(),
             chunk_size: self.chunk_size,
             num_docs: self.num_docs,
@@ -1199,7 +1199,7 @@ impl TVTermsIterator {
 
 impl TermIterator for TVTermsIterator {
     type Postings = TVPostingsIterator;
-    type TermState = UnreachableTermState;
+    type TermState = ();
     fn next(&mut self) -> Result<Option<Vec<u8>>> {
         Ok(self.next_local()?.map(|s| s.to_vec()))
     }

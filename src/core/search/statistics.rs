@@ -11,6 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+/// Contains statistics for a collection (field)
 #[derive(Clone)]
 pub struct CollectionStatistics {
     pub field: String,
@@ -42,6 +43,7 @@ impl CollectionStatistics {
     }
 }
 
+/// Contains statistics for a specific term
 pub struct TermStatistics {
     pub term: Vec<u8>,
     pub doc_freq: i64,

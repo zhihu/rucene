@@ -24,6 +24,7 @@ use std::fmt;
 
 pub const MATCH_ALL: &str = "match_all";
 
+/// A query that matches all documents.
 pub struct MatchAllDocsQuery;
 
 impl<C: Codec> Query<C> for MatchAllDocsQuery {
@@ -37,10 +38,6 @@ impl<C: Codec> Query<C> for MatchAllDocsQuery {
 
     fn extract_terms(&self) -> Vec<TermQuery> {
         unimplemented!()
-    }
-
-    fn query_type(&self) -> &'static str {
-        MATCH_ALL
     }
 
     fn as_any(&self) -> &::std::any::Any {
@@ -117,6 +114,7 @@ impl fmt::Display for MatchAllDocsWeight {
     }
 }
 
+/// A constant-scoring `Scorer`
 pub struct ConstantScoreScorer<T: DocIterator> {
     score: f32,
     iterator: T,
@@ -169,6 +167,7 @@ impl<T: DocIterator> DocIterator for ConstantScoreScorer<T> {
     }
 }
 
+/// a `DocIterator` for all docs
 pub struct AllDocsIterator {
     doc: DocId,
     max_doc: DocId,
@@ -213,6 +212,10 @@ impl DocIterator for AllDocsIterator {
 
 pub const CONSTANT: &str = "constant";
 
+/// A query that wraps another query and simply returns a constant score equal to
+/// 1 for every document that matches the query.
+///
+/// It therefore simply strips of all scores and always returns 1.
 pub struct ConstantScoreQuery<C: Codec> {
     pub query: Box<dyn Query<C>>,
     boost: f32,
@@ -260,16 +263,12 @@ impl<C: Codec> Query<C> for ConstantScoreQuery<C> {
         vec![]
     }
 
-    fn query_type(&self) -> &'static str {
-        CONSTANT
-    }
-
     fn as_any(&self) -> &::std::any::Any {
         self
     }
 }
 
-pub struct ConstantScoreWeight<C: Codec> {
+struct ConstantScoreWeight<C: Codec> {
     sub_weight: Box<dyn Weight<C>>,
     query_norm: f32,
     query_weight: f32,

@@ -23,6 +23,8 @@ use error::Result;
 use crc::{crc32, Hasher32};
 use std::io::Read;
 
+/// Simple implementation of `ChecksumIndexInput` that wraps
+/// another input and delegates calls.
 pub struct BufferedChecksumIndexInput {
     index_input: Box<dyn IndexInput>,
     digest: crc32::Digest,

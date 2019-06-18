@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 pub type BitsContext = Option<[u8; 64]>;
 
+/// Interface for Bitset-like structures.
 pub trait Bits: Send + Sync {
     fn get_with_ctx(&self, ctx: BitsContext, index: usize) -> Result<(bool, BitsContext)>;
     fn get(&self, index: usize) -> Result<bool> {
@@ -94,6 +95,10 @@ impl Bits for MatchNoBits {
 
     fn len(&self) -> usize {
         self.len
+    }
+
+    fn is_empty(&self) -> bool {
+        true
     }
 }
 

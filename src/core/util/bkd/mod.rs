@@ -12,24 +12,19 @@
 // limitations under the License.
 
 mod doc_ids_writer;
-
 pub use self::doc_ids_writer::*;
 
 mod bkd_reader;
-
 pub use self::bkd_reader::*;
 
 mod bkd_writer;
-
 pub use self::bkd_writer::*;
 
 mod heap_point;
-
-pub use self::heap_point::*;
+use self::heap_point::*;
 
 mod offline_point;
-
-pub use self::offline_point::*;
+use self::offline_point::*;
 
 use error::{ErrorKind::IllegalState, Result};
 
@@ -61,7 +56,7 @@ pub enum PointType {
     Other,
 }
 
-pub trait PointReader {
+pub(crate) trait PointReader {
     fn next(&mut self) -> Result<bool>;
     fn packed_value(&self) -> &[u8];
     fn ord(&self) -> i64;
@@ -111,7 +106,7 @@ pub trait PointReader {
     }
 }
 
-pub enum PointReaderEnum {
+pub(crate) enum PointReaderEnum {
     Heap(HeapPointReader),
     Offline(OfflinePointReader),
 }
@@ -162,18 +157,18 @@ impl PointReader for PointReaderEnum {
     }
 }
 
-pub trait PointWriter {
+pub(crate) trait PointWriter {
     // add lifetime here, this is a reference type
     type IndexOutput: IndexOutput;
+    type PointReader: PointReader;
     fn append(&mut self, packed_value: &[u8], ord: i64, doc_id: DocId) -> Result<()>;
     fn destory(&mut self) -> Result<()>;
-    fn point_reader(&self, start_point: usize, length: usize) -> Result<PointReaderEnum>;
+    fn point_reader(&self, start_point: usize, length: usize) -> Result<Self::PointReader>;
     fn shared_point_reader(
         &mut self,
         start_point: usize,
         length: usize,
-        to_close_heroically: &mut Vec<PointReaderEnum>,
-    ) -> Result<&mut PointReaderEnum>;
+    ) -> Result<&mut Self::PointReader>;
     fn point_type(&self) -> PointType;
     fn index_output(&mut self) -> Self::IndexOutput;
     fn set_count(&mut self, count: i64);
@@ -185,13 +180,14 @@ pub trait PointWriter {
     fn clone(&self) -> Self;
 }
 
-pub enum PointWriterEnum<D: Directory> {
+enum PointWriterEnum<D: Directory> {
     Heap(HeapPointWriter),
     Offline(OfflinePointWriter<D>),
 }
 
 impl<D: Directory> PointWriter for PointWriterEnum<D> {
     type IndexOutput = PointWriterOutput<D>;
+    type PointReader = PointReaderEnum;
 
     fn append(&mut self, packed_value: &[u8], ord: i64, doc_id: DocId) -> Result<()> {
         match self {
@@ -205,7 +201,7 @@ impl<D: Directory> PointWriter for PointWriterEnum<D> {
             PointWriterEnum::Offline(o) => o.destory(),
         }
     }
-    fn point_reader(&self, start_point: usize, length: usize) -> Result<PointReaderEnum> {
+    fn point_reader(&self, start_point: usize, length: usize) -> Result<Self::PointReader> {
         match self {
             PointWriterEnum::Heap(h) => h.point_reader(start_point, length),
             PointWriterEnum::Offline(o) => o.point_reader(start_point, length),
@@ -215,15 +211,10 @@ impl<D: Directory> PointWriter for PointWriterEnum<D> {
         &mut self,
         start_point: usize,
         length: usize,
-        to_close_heroically: &mut Vec<PointReaderEnum>,
-    ) -> Result<&mut PointReaderEnum> {
+    ) -> Result<&mut Self::PointReader> {
         match self {
-            PointWriterEnum::Heap(h) => {
-                h.shared_point_reader(start_point, length, to_close_heroically)
-            }
-            PointWriterEnum::Offline(o) => {
-                o.shared_point_reader(start_point, length, to_close_heroically)
-            }
+            PointWriterEnum::Heap(h) => h.shared_point_reader(start_point, length),
+            PointWriterEnum::Offline(o) => o.shared_point_reader(start_point, length),
         }
     }
     fn point_type(&self) -> PointType {
@@ -265,7 +256,7 @@ impl<D: Directory> PointWriter for PointWriterEnum<D> {
     }
 }
 
-pub enum PointWriterOutput<D: Directory> {
+pub(super) enum PointWriterOutput<D: Directory> {
     Heap(IndexOutputRef<InvalidIndexOutput>),
     Offline(IndexOutputRef<D::TempOutput>),
 }
