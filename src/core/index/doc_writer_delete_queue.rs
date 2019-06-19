@@ -17,6 +17,7 @@ use core::index::Term;
 use core::search::{Query, NO_MORE_DOCS};
 use core::util::DocId;
 
+use crossbeam::utils::Backoff;
 use std::cell::Cell;
 use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -154,30 +155,17 @@ impl<C: Codec> DocumentsWriterDeleteQueue<C> {
         seq_no
     }
 
+    // the same logic as std::sync::mpsc::mpsc_queue::Queue#push()
+    //
+    // NOTE: the add does not always guarantee that head and tail are in the same list,
+    // so DeleteListNode::get_next() method must need retry when next is null.
     fn add_node(&self, node: Arc<DeleteListNode<C>>) -> u64 {
         let node_ptr = Box::into_raw(Box::new(node));
-
+        let prev = self.tail.swap(node_ptr, Ordering::SeqCst);
         unsafe {
-            let mut cur_tail;
-            loop {
-                cur_tail = self.tail.load(Ordering::Acquire);
-                let mut cur_next = (*cur_tail).next.load(Ordering::Acquire);
-                if cur_next.is_null() {
-                    if (*cur_tail)
-                        .next
-                        .compare_exchange(cur_next, node_ptr, Ordering::SeqCst, Ordering::Relaxed)
-                        .is_ok()
-                    {
-                        break;
-                    }
-                } else {
-                    self.tail
-                        .compare_and_swap(cur_tail, cur_next, Ordering::AcqRel);
-                }
-            }
-            self.tail
-                .compare_and_swap(cur_tail, node_ptr, Ordering::AcqRel);
+            (*prev).next.store(node_ptr, Ordering::Release);
         }
+
         self.next_sequence_number()
     }
 
@@ -355,8 +343,18 @@ fn same_node<C: Codec>(n1: &Arc<DeleteListNode<C>>, n2: &Arc<DeleteListNode<C>>)
 }
 
 impl<C: Codec> DeleteListNode<C> {
+    // because the DWDQ#add_node method need 2 atomic operation to complete,
+    // so when logically we need to get a node but the operation is not finished,
+    // we will wait for it.
     fn get_next(&self) -> &Arc<DeleteListNode<C>> {
-        unsafe { &*self.next.load(Ordering::Acquire) }
+        let backoff = Backoff::new();
+        loop {
+            let ptr = self.next.load(Ordering::Acquire);
+            if !ptr.is_null() {
+                return unsafe { &*ptr };
+            }
+            backoff.snooze();
+        }
     }
 }
 
