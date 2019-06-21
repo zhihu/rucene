@@ -19,16 +19,16 @@ use core::search::Scorer;
 use core::util::DocId;
 
 pub mod top_docs;
-pub use self::top_docs::TopDocsCollector;
+pub use self::top_docs::*;
 
 mod early_terminating;
-pub use self::early_terminating::EarlyTerminatingSortingCollector;
+pub use self::early_terminating::*;
 
 mod timeout;
-pub use self::timeout::TimeoutCollector;
+pub use self::timeout::*;
 
 mod chain;
-pub use self::chain::ChainedCollector;
+pub use self::chain::*;
 
 error_chain! {
     types {
@@ -41,6 +41,10 @@ error_chain! {
         CollectionTerminated {
             description("Collection terminated")
         }
+        CollectionTimeout {
+            description("Collection timeout")
+        }
+
         CollectionFailed {
             description("Collection failed")
         }

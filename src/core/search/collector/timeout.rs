@@ -84,7 +84,7 @@ impl Collector for TimeoutCollector {
         if self.start_time < now && now.duration_since(self.start_time)? >= self.timeout_duration {
             self.timeout.store(true, Ordering::Release);
             bail!(ErrorKind::Collector(
-                collector::ErrorKind::CollectionTerminated,
+                collector::ErrorKind::CollectionTimeout,
             ))
         }
         Ok(())

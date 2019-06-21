@@ -53,7 +53,7 @@ impl<'a, S: Scorer + ?Sized + 'a> BulkScorer<'a, S> {
     /// Although `max` would be a legal return value for this method, higher
     /// values might help callers skip more efficiently over non-matching portions
     /// of the docID space.
-    pub fn score<T: Collector + ?Sized, B: Bits + ?Sized>(
+    pub fn score<T: Collector, B: Bits + ?Sized>(
         &mut self,
         collector: &mut T,
         accept_docs: Option<&B>,
@@ -69,7 +69,7 @@ impl<'a, S: Scorer + ?Sized + 'a> BulkScorer<'a, S> {
         self.score_range(collector, accept_docs, current_doc, max)
     }
 
-    fn score_range<T: Collector + ?Sized, B: Bits + ?Sized>(
+    fn score_range<T: Collector, B: Bits + ?Sized>(
         &mut self,
         collector: &mut T,
         accept_docs: Option<&B>,
@@ -83,7 +83,7 @@ impl<'a, S: Scorer + ?Sized + 'a> BulkScorer<'a, S> {
         }
     }
 
-    fn score_range_in_docs_set<T: Collector + ?Sized, B: Bits + ?Sized>(
+    fn score_range_in_docs_set<T: Collector, B: Bits + ?Sized>(
         &mut self,
         collector: &mut T,
         accept_docs: &B,
@@ -109,7 +109,7 @@ impl<'a, S: Scorer + ?Sized + 'a> BulkScorer<'a, S> {
         Ok(current_doc)
     }
 
-    fn score_range_all<T: Collector + ?Sized>(
+    fn score_range_all<T: Collector>(
         &mut self,
         collector: &mut T,
         min: DocId,

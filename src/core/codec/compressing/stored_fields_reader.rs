@@ -335,6 +335,9 @@ pub struct CompressingStoredFieldsReader {
     // current decompressed byte length for filed `bytes`
 }
 
+unsafe impl Send for CompressingStoredFieldsReader {}
+unsafe impl Sync for CompressingStoredFieldsReader {}
+
 impl CompressingStoredFieldsReader {
     pub fn new<D: Directory, DW: Directory, C: Codec>(
         dir: &DW,

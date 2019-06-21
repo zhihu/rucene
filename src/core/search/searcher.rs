@@ -19,8 +19,7 @@ use std::sync::{Arc, RwLock};
 use crossbeam::channel::{unbounded, Receiver, Sender};
 
 use core::codec::{Codec, CodecTermState};
-use core::index::LeafReaderContext;
-use core::index::{get_terms, IndexReader, SearchLeafReader};
+use core::index::{get_terms, IndexReader, LeafReaderContext, SearchLeafReader};
 use core::index::{Term, TermContext, Terms};
 use core::search::bulk_scorer::BulkScorer;
 use core::search::cache_policy::{QueryCachingPolicy, UsageTrackingQueryCachingPolicy};
@@ -121,11 +120,11 @@ pub trait IndexSearcher<C: Codec>: SearchPlanBuilder<C> {
 
     fn search<S>(&self, query: &dyn Query<C>, collector: &mut S) -> Result<()>
     where
-        S: SearchCollector + ?Sized;
+        S: SearchCollector;
 
     fn search_parallel<S>(&self, query: &dyn Query<C>, collector: &mut S) -> Result<()>
     where
-        S: SearchCollector + ?Sized;
+        S: SearchCollector;
 
     fn count(&self, query: &dyn Query<C>) -> Result<i32>;
 
@@ -197,6 +196,23 @@ pub struct DefaultIndexSearcher<
     term_contexts: RwLock<HashMap<String, Arc<TermContext<CodecTermState<C>>>>>,
     term_contexts_limit: usize,
     thread_pool: Option<Arc<ThreadPool<DefaultContext>>>,
+    // used for concurrent search - each slice holds a set of LeafReader's ord that
+    // executed within one thread.
+    leaf_ord_slices: Vec<LeafOrdSlice>,
+}
+
+const MAX_DOCS_PER_SLICE: i32 = 250_000;
+const MAX_SEGMENTS_PER_SLICE: usize = 5;
+
+struct LeafOrdSlice(Vec<usize>);
+
+impl<'a> IntoIterator for &'a LeafOrdSlice {
+    type Item = &'a usize;
+    type IntoIter = ::std::slice::Iter<'a, usize>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        (&self.0).into_iter()
+    }
 }
 
 impl<C: Codec, R: IndexReader<Codec = C> + ?Sized, IR: Deref<Target = R>>
@@ -237,6 +253,7 @@ where
             term_contexts: RwLock::new(HashMap::with_capacity(term_contexts_limit * 2)),
             term_contexts_limit,
             thread_pool: None,
+            leaf_ord_slices: vec![],
         }
     }
 
@@ -246,12 +263,17 @@ where
             let thread_pool = ThreadPoolBuilder::with_default_factory("search".into())
                 .thread_count(num_threads)
                 .build();
-            self.thread_pool = Some(Arc::new(thread_pool));
+            self.set_thread_pool(Arc::new(thread_pool));
         }
     }
 
     pub fn set_thread_pool(&mut self, pool: Arc<ThreadPool<DefaultContext>>) {
         self.thread_pool = Some(pool);
+        self.leaf_ord_slices = Self::slice(
+            self.reader.leaves(),
+            MAX_DOCS_PER_SLICE,
+            MAX_SEGMENTS_PER_SLICE,
+        );
     }
 
     pub fn set_query_cache(&mut self, cache: Arc<dyn QueryCache<C>>) {
@@ -262,7 +284,7 @@ where
         self.cache_policy = cache_policy;
     }
 
-    fn do_search<S: Scorer + ?Sized, T: Collector + ?Sized, B: Bits + ?Sized>(
+    fn do_search<S: Scorer + ?Sized, T: Collector, B: Bits + ?Sized>(
         scorer: &mut S,
         collector: &mut T,
         live_docs: &B,
@@ -285,6 +307,45 @@ where
             }
         }
     }
+
+    // segregate leaf readers amongst multiple slices
+    fn slice(
+        mut leaves: Vec<LeafReaderContext<'_, C>>,
+        max_docs_per_slice: i32,
+        max_segments_per_slice: usize,
+    ) -> Vec<LeafOrdSlice> {
+        if leaves.is_empty() {
+            return vec![];
+        }
+
+        // reverse order by leaf reader max doc
+        leaves.sort_by(|l1, l2| l2.reader.max_doc().cmp(&l1.reader.max_doc()));
+
+        let mut slices = vec![];
+        let mut doc_sum = 0;
+        let mut ords = vec![];
+        for ctx in &leaves {
+            let max_doc = ctx.reader.max_doc();
+            if max_doc >= max_docs_per_slice {
+                debug_assert!(ords.is_empty());
+                slices.push(LeafOrdSlice(vec![ctx.ord]));
+            } else {
+                if doc_sum + max_doc > max_docs_per_slice || ords.len() >= max_segments_per_slice {
+                    debug_assert!(!ords.is_empty());
+                    ords.sort();
+                    slices.push(LeafOrdSlice(ords));
+                    ords = vec![];
+                }
+                ords.push(ctx.ord);
+                doc_sum += ctx.reader.max_doc();
+            }
+        }
+        if !ords.is_empty() {
+            ords.sort();
+            slices.push(LeafOrdSlice(ords));
+        }
+        slices
+    }
 }
 
 impl<C, R, IR, SP> IndexSearcher<C> for DefaultIndexSearcher<C, R, IR, SP>
@@ -303,7 +364,7 @@ where
     /// Lower-level search API.
     fn search<S>(&self, query: &dyn Query<C>, collector: &mut S) -> Result<()>
     where
-        S: SearchCollector + ?Sized,
+        S: SearchCollector,
     {
         let weight = self.create_weight(query, collector.needs_scores())?;
 
@@ -321,7 +382,19 @@ where
                 }
                 let live_docs = reader.reader.live_docs();
 
-                Self::do_search(&mut *scorer, collector, live_docs.as_ref())?;
+                match Self::do_search(&mut *scorer, collector, live_docs.as_ref()) {
+                    Ok(()) => {}
+                    Err(Error(
+                        ErrorKind::Collector(collector::ErrorKind::CollectionTimeout),
+                        _,
+                    )) => {
+                        // Collection timeout, we must terminate the search
+                        break;
+                    }
+                    Err(e) => {
+                        return Err(e);
+                    }
+                }
             }
         }
 
@@ -330,52 +403,76 @@ where
 
     fn search_parallel<S>(&self, query: &dyn Query<C>, collector: &mut S) -> Result<()>
     where
-        S: SearchCollector + ?Sized,
+        S: SearchCollector,
     {
-        if collector.support_parallel() && self.reader.leaves().len() > 1 {
-            if let Some(ref thread_pool) = self.thread_pool {
-                let weight = self.create_weight(query, collector.needs_scores())?;
-
-                for (_ord, reader) in self.reader.leaves().iter().enumerate() {
-                    if let Some(scorer) = weight.create_scorer(reader)? {
-                        match collector.leaf_collector(reader) {
+        if collector.support_parallel()
+            && self.reader.max_doc() > MAX_DOCS_PER_SLICE
+            && self.leaf_ord_slices.len() > 1
+        {
+            debug_assert!(self.thread_pool.is_some());
+            let thread_pool = self.thread_pool.as_ref().unwrap();
+            let weight = self.create_weight(query, collector.needs_scores())?;
+            let leaf_readers = self.reader.leaves();
+            for leaf_slice in &self.leaf_ord_slices {
+                let mut scorer_and_collectors = vec![];
+                for ord in leaf_slice.into_iter() {
+                    let leaf_ctx = &leaf_readers[*ord];
+                    if let Some(scorer) = weight.create_scorer(leaf_ctx)? {
+                        match collector.leaf_collector(leaf_ctx) {
                             Ok(leaf_collector) => {
-                                let live_docs = reader.reader.live_docs();
-                                thread_pool.execute(move |_ctx| {
-                                    let mut collector = leaf_collector;
-                                    let mut scorer = scorer;
-                                    if let Err(e) = Self::do_search(
-                                        scorer.as_mut(),
-                                        &mut collector,
-                                        live_docs.as_ref(),
-                                    ) {
-                                        error!(
-                                            "do search parallel failed by '{:?}', may return \
-                                             partial result",
-                                            e
-                                        );
-                                    }
-                                    if let Err(e) = collector.finish_leaf() {
-                                        error!(
-                                            "finish search parallel failed by '{:?}', may return \
-                                             partial result",
-                                            e
-                                        );
-                                    }
-                                })
+                                let live_docs = leaf_ctx.reader.live_docs();
+                                scorer_and_collectors.push((scorer, leaf_collector, live_docs));
                             }
                             Err(e) => {
                                 error!(
                                     "create leaf collector for leaf {} failed with '{:?}'",
-                                    reader.reader.name(),
+                                    leaf_ctx.reader.name(),
                                     e
                                 );
                             }
                         }
                     }
                 }
-                return collector.finish_parallel();
+                if !scorer_and_collectors.is_empty() {
+                    thread_pool.execute(move |_ctx| {
+                        for (mut scorer, mut collector, live_docs) in scorer_and_collectors {
+                            let should_terminate = match Self::do_search(
+                                scorer.as_mut(),
+                                &mut collector,
+                                live_docs.as_ref(),
+                            ) {
+                                Ok(()) => false,
+                                Err(Error(
+                                    ErrorKind::Collector(collector::ErrorKind::CollectionTimeout),
+                                    _,
+                                )) => {
+                                    // Collection timeout, we must terminate the search
+                                    true
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "do search parallel failed by '{:?}', may return partial \
+                                         result",
+                                        e
+                                    );
+                                    true
+                                }
+                            };
+                            if let Err(e) = collector.finish_leaf() {
+                                error!(
+                                    "finish search parallel failed by '{:?}', may return partial \
+                                     result",
+                                    e
+                                );
+                            }
+                            if should_terminate {
+                                break;
+                            }
+                        }
+                    })
+                }
             }
+            return collector.finish_parallel();
         }
         self.search(query, collector)
     }
