@@ -455,11 +455,9 @@ impl BytesReader for StoreBytesReader {
 impl DataInput for StoreBytesReader {
     fn read_byte(&mut self) -> Result<u8> {
         let b = unsafe {
-            *(*((*self.blocks.as_ref())
+            *(*((*self.blocks.as_ref()).as_ptr().add(self.block_index)))
                 .as_ptr()
-                .offset(self.block_index as isize)))
-            .as_ptr()
-            .offset(self.next_read as isize)
+                .add(self.next_read)
         };
 
         if self.reversed {
@@ -485,9 +483,9 @@ impl DataInput for StoreBytesReader {
 
     fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
         unsafe {
-            let ptr = b.as_mut_ptr().offset(offset as isize);
+            let ptr = b.as_mut_ptr().add(offset);
             for i in 0..len {
-                *ptr.offset(i as isize) = self.read_byte()?;
+                *ptr.add(i) = self.read_byte()?;
             }
         }
 

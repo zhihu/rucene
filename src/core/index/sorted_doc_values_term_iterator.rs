@@ -19,20 +19,25 @@ use error::ErrorKind::UnsupportedOperation;
 use error::Result;
 
 /// Implements a `TermIterator` wrapping a provided `SortedDocValues`
-pub struct SortedDocValuesTermIterator<T: SortedDocValues + 'static> {
-    values: T,
+pub(crate) struct SortedDocValuesTermIterator<T: SortedDocValues + 'static> {
+    values: *mut T,
     current_ord: i32,
     scratch: Vec<u8>,
 }
 
 impl<T: SortedDocValues + 'static> SortedDocValuesTermIterator<T> {
     /// Creates a new TermIterator over the provided values
-    pub fn new(values: T) -> SortedDocValuesTermIterator<T> {
+    pub fn new(values: &T) -> SortedDocValuesTermIterator<T> {
         SortedDocValuesTermIterator {
-            values,
+            values: values as *const _ as *mut _,
             current_ord: -1,
             scratch: vec![],
         }
+    }
+
+    #[inline]
+    fn values(&mut self) -> &mut T {
+        unsafe { &mut *self.values }
     }
 }
 
@@ -41,18 +46,19 @@ impl<T: SortedDocValues + 'static> TermIterator for SortedDocValuesTermIterator<
     type TermState = OrdTermState;
     fn next(&mut self) -> Result<Option<Vec<u8>>> {
         self.current_ord += 1;
-        if self.current_ord >= self.values.get_value_count() as i32 {
+        if self.current_ord >= self.values().value_count() as i32 {
             // FIXME: return Option<&[u8]> instead
             Ok(None)
         } else {
-            let bytes = self.values.lookup_ord(self.current_ord)?;
+            let ord = self.current_ord;
+            let bytes = self.values().lookup_ord(ord)?;
             self.scratch = bytes.to_vec();
             Ok(Some(self.scratch.clone()))
         }
     }
 
     fn seek_exact(&mut self, text: &[u8]) -> Result<bool> {
-        let ord = self.values.lookup_term(text)?;
+        let ord = self.values().lookup_term(text)?;
         if ord >= 0 {
             self.current_ord = ord;
             self.scratch = text.to_vec();
@@ -63,18 +69,19 @@ impl<T: SortedDocValues + 'static> TermIterator for SortedDocValuesTermIterator<
     }
 
     fn seek_ceil(&mut self, text: &[u8]) -> Result<SeekStatus> {
-        let ord = self.values.lookup_term(text)?;
+        let ord = self.values().lookup_term(text)?;
         if ord >= 0 {
             self.current_ord = ord;
             self.scratch = text.to_vec();
             Ok(SeekStatus::Found)
         } else {
             self.current_ord = -ord - 1;
-            if self.current_ord == self.values.get_value_count() as i32 {
+            if self.current_ord == self.values().value_count() as i32 {
                 Ok(SeekStatus::End)
             } else {
                 // TODO: hmm can we avoid this "extra" lookup?
-                let bytes = self.values.lookup_ord(self.current_ord)?;
+                let ord = self.current_ord;
+                let bytes = self.values().lookup_ord(ord)?;
                 self.scratch = bytes.to_vec();
                 Ok(SeekStatus::NotFound)
             }
@@ -82,9 +89,9 @@ impl<T: SortedDocValues + 'static> TermIterator for SortedDocValuesTermIterator<
     }
 
     fn seek_exact_ord(&mut self, ord: i64) -> Result<()> {
-        assert!(ord >= 0 && ord < self.values.get_value_count() as i64);
+        assert!(ord >= 0 && ord < self.values().value_count() as i64);
         self.current_ord = ord as i32;
-        let bytes = self.values.lookup_ord(self.current_ord)?;
+        let bytes = self.values().lookup_ord(ord as i32)?;
         self.scratch = bytes.to_vec();
         Ok(())
     }

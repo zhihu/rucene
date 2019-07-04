@@ -873,6 +873,10 @@ impl<T: PostingIterator> DocIdMergerSub for MappingPostingsSub<T> {
     fn base_mut(&mut self) -> &mut DocIdMergerSubBase {
         &mut self.base
     }
+
+    fn reset(&mut self) {
+        self.base.reset();
+    }
 }
 
 pub(crate) enum MappedMultiPostingIterEnum<T: PostingIterator> {

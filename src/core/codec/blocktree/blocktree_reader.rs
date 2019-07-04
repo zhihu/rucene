@@ -1122,10 +1122,10 @@ impl SegmentTermIteratorInner {
             while self.stack[self.current_frame_ord].next_ent
                 == self.stack[self.current_frame_ord].ent_count
             {
-                stats.end_block(&mut self.stack[self.current_frame_ord])?;
+                stats.end_block(&self.stack[self.current_frame_ord])?;
                 if !self.stack[self.current_frame_ord].is_last_in_floor {
                     self.stack[self.current_frame_ord].load_next_floor_block()?;
-                    stats.start_block(&mut self.stack[self.current_frame_ord], true);
+                    stats.start_block(&self.stack[self.current_frame_ord], true);
                     break;
                 } else {
                     let ord = self.stack[self.current_frame_ord].ord;
@@ -1578,7 +1578,7 @@ impl TermIterator for SegmentTermIteratorInner {
                 .clone()
                 .unwrap_or_else(|| outputs.empty());
             target_upto = 0;
-            let mut last_frame_idx = 0;
+            let mut last_frame_idx = 1;
             debug_assert!(self.valid_index_prefix <= self.term_len);
             let target_limit = target.len().min(self.valid_index_prefix);
 

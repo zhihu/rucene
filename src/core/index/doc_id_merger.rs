@@ -69,6 +69,10 @@ impl DocIdMergerSubBase {
             doc_map,
         }
     }
+
+    pub fn reset(&mut self) {
+        self.mapped_doc_id = 0;
+    }
 }
 
 /// Represents one sub-reader being merged
@@ -78,6 +82,8 @@ pub(crate) trait DocIdMergerSub {
     fn base(&self) -> &DocIdMergerSubBase;
 
     fn base_mut(&mut self) -> &mut DocIdMergerSubBase;
+
+    fn reset(&mut self);
 }
 
 pub(crate) enum DocIdMergerEnum<T: DocIdMergerSub> {
@@ -97,6 +103,13 @@ impl<T: DocIdMergerSub> DocIdMergerEnum<T> {
         match self {
             DocIdMergerEnum::Sequential(s) => &s.subs,
             DocIdMergerEnum::Sorted(s) => &s.subs,
+        }
+    }
+
+    pub fn reset(&mut self) -> Result<()> {
+        match self {
+            DocIdMergerEnum::Sequential(s) => s.reset(),
+            DocIdMergerEnum::Sorted(s) => s.reset(),
         }
     }
 }
@@ -143,6 +156,9 @@ impl<T: DocIdMergerSub> DocIdMerger for SequentialDocIdMerger<T> {
     type Sub = T;
 
     fn reset(&mut self) -> Result<()> {
+        for s in &mut self.subs {
+            s.reset();
+        }
         self.current_index = 0;
         if self.subs.is_empty() {
             self.next_index = 0;
@@ -198,6 +214,9 @@ impl<T: DocIdMergerSub> DocIdMerger for SortedDocIdMerger<T> {
     type Sub = T;
 
     fn reset(&mut self) -> Result<()> {
+        for s in &mut self.subs {
+            s.reset();
+        }
         // caller may not have fully consumed the queue:
         self.queue.clear();
         let mut first = true;

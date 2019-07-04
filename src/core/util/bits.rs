@@ -21,10 +21,7 @@ pub type BitsContext = Option<[u8; 64]>;
 
 /// Interface for Bitset-like structures.
 pub trait Bits: Send + Sync {
-    fn get_with_ctx(&self, ctx: BitsContext, index: usize) -> Result<(bool, BitsContext)>;
-    fn get(&self, index: usize) -> Result<bool> {
-        self.get_with_ctx(None, index).map(|x| x.0)
-    }
+    fn get(&self, index: usize) -> Result<bool>;
     fn id(&self) -> i32 {
         0
     }
@@ -35,15 +32,25 @@ pub trait Bits: Send + Sync {
 
     // these two method are currently only implemented for FixedBitSet used
     // in live docs
-    fn as_bit_set(&self) -> &BitSet {
+    fn as_bit_set(&self) -> &dyn BitSet {
         unreachable!()
     }
-    fn as_bit_set_mut(&mut self) -> &mut BitSet {
+    fn as_bit_set_mut(&mut self) -> &mut dyn BitSet {
         unreachable!()
     }
-    fn clone(&self) -> BitsRef {
+    fn clone_box(&self) -> BitsRef {
         unreachable!()
     }
+}
+
+pub trait BitsMut: Send + Sync {
+    fn get(&mut self, index: usize) -> Result<bool>;
+
+    fn id(&self) -> i32 {
+        0
+    }
+
+    fn len(&self) -> usize;
 }
 
 pub type BitsRef = Arc<dyn Bits>;
@@ -60,8 +67,8 @@ impl MatchAllBits {
 }
 
 impl Bits for MatchAllBits {
-    fn get_with_ctx(&self, ctx: BitsContext, _index: usize) -> Result<(bool, BitsContext)> {
-        Ok((true, ctx))
+    fn get(&self, _index: usize) -> Result<bool> {
+        Ok(true)
     }
 
     fn id(&self) -> i32 {
@@ -77,6 +84,20 @@ impl Bits for MatchAllBits {
     }
 }
 
+impl BitsMut for MatchAllBits {
+    fn get(&mut self, _index: usize) -> Result<bool> {
+        Ok(true)
+    }
+
+    fn id(&self) -> i32 {
+        1
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+}
+
 #[derive(Clone)]
 pub struct MatchNoBits {
     len: usize,
@@ -89,8 +110,8 @@ impl MatchNoBits {
 }
 
 impl Bits for MatchNoBits {
-    fn get_with_ctx(&self, ctx: BitsContext, _index: usize) -> Result<(bool, BitsContext)> {
-        Ok((false, ctx))
+    fn get(&self, _index: usize) -> Result<bool> {
+        Ok(false)
     }
 
     fn len(&self) -> usize {
@@ -102,8 +123,19 @@ impl Bits for MatchNoBits {
     }
 }
 
+impl BitsMut for MatchNoBits {
+    fn get(&mut self, _index: usize) -> Result<bool> {
+        Ok(false)
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+}
+
+#[derive(Clone)]
 pub struct LiveBits {
-    input: Box<dyn RandomAccessInput>,
+    input: Arc<dyn RandomAccessInput>,
     count: usize,
 }
 
@@ -111,14 +143,28 @@ impl LiveBits {
     pub fn new(data: &dyn IndexInput, offset: i64, count: usize) -> Result<LiveBits> {
         let length = (count + 7) >> 3;
         let input = data.random_access_slice(offset, length as i64)?;
-        Ok(LiveBits { input, count })
+        Ok(LiveBits {
+            input: Arc::from(input),
+            count,
+        })
     }
 }
 
 impl Bits for LiveBits {
-    fn get_with_ctx(&self, ctx: BitsContext, index: usize) -> Result<(bool, BitsContext)> {
+    fn get(&self, index: usize) -> Result<bool> {
         let bitset = self.input.read_byte((index >> 3) as i64)?;
-        Ok(((bitset & (1u8 << (index & 0x7))) != 0, ctx))
+        Ok((bitset & (1u8 << (index & 0x7))) != 0)
+    }
+
+    fn len(&self) -> usize {
+        self.count
+    }
+}
+
+impl BitsMut for LiveBits {
+    fn get(&mut self, index: usize) -> Result<bool> {
+        let bitset = self.input.read_byte((index >> 3) as i64)?;
+        Ok((bitset & (1u8 << (index & 0x7))) != 0)
     }
 
     fn len(&self) -> usize {
@@ -165,12 +211,12 @@ impl FixedBits {
 }
 
 impl Bits for FixedBits {
-    fn get_with_ctx(&self, ctx: BitsContext, index: usize) -> Result<(bool, BitsContext)> {
+    fn get(&self, index: usize) -> Result<bool> {
         assert!(index < self.num_bits);
         let i = index >> 6;
 
         let bit_mask = 1i64 << (index % 64) as i64;
-        Ok((self.bits[i] & bit_mask != 0, ctx))
+        Ok(self.bits[i] & bit_mask != 0)
     }
 
     fn len(&self) -> usize {

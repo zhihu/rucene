@@ -33,10 +33,7 @@ mod sorted_numeric_doc_values;
 pub use self::sorted_numeric_doc_values::*;
 
 mod sorted_doc_values_term_iterator;
-pub use self::sorted_doc_values_term_iterator::*;
-
 mod sorted_set_doc_values_term_iterator;
-pub use self::sorted_set_doc_values_term_iterator::*;
 
 mod doc_values;
 pub use self::doc_values::*;
@@ -1189,21 +1186,27 @@ pub mod tests {
     }
 
     impl NumericDocValues for MockNumericValues {
-        fn get_with_ctx(
-            &self,
-            ctx: NumericDocValuesContext,
-            doc_id: DocId,
-        ) -> Result<(i64, NumericDocValuesContext)> {
-            Ok((i64::from(self.num[&doc_id]), ctx))
+        fn get(&self, doc_id: DocId) -> Result<i64> {
+            Ok(i64::from(self.num[&doc_id]))
         }
     }
 
     #[derive(Default)]
-    pub struct MockBits {}
+    pub struct MockBits;
 
     impl Bits for MockBits {
-        fn get_with_ctx(&self, ctx: BitsContext, _index: usize) -> Result<(bool, BitsContext)> {
-            Ok((true, ctx))
+        fn get(&self, _index: usize) -> Result<bool> {
+            Ok(true)
+        }
+
+        fn len(&self) -> usize {
+            unimplemented!()
+        }
+    }
+
+    impl BitsMut for MockBits {
+        fn get(&mut self, _index: usize) -> Result<bool> {
+            Ok(true)
         }
 
         fn len(&self) -> usize {
@@ -1294,7 +1297,7 @@ pub mod tests {
             unimplemented!()
         }
 
-        fn document(&self, _doc_id: DocId, _visitor: &mut StoredFieldVisitor) -> Result<()> {
+        fn document(&self, _doc_id: DocId, _visitor: &mut dyn StoredFieldVisitor) -> Result<()> {
             unimplemented!()
         }
 
@@ -1318,23 +1321,26 @@ pub mod tests {
             self.max_doc
         }
 
-        fn get_docs_with_field(&self, _field: &str) -> Result<BitsRef> {
-            Ok(Arc::new(MockBits::default()))
+        fn get_docs_with_field(&self, _field: &str) -> Result<Box<dyn BitsMut>> {
+            Ok(Box::new(MockBits::default()))
         }
 
-        fn get_numeric_doc_values(&self, _field: &str) -> Result<NumericDocValuesRef> {
-            Ok(Arc::new(MockNumericValues::default()))
+        fn get_numeric_doc_values(&self, _field: &str) -> Result<Box<dyn NumericDocValues>> {
+            Ok(Box::new(MockNumericValues::default()))
         }
 
-        fn get_binary_doc_values(&self, _field: &str) -> Result<BinaryDocValuesRef> {
+        fn get_binary_doc_values(&self, _field: &str) -> Result<Box<dyn BinaryDocValues>> {
             unimplemented!()
         }
 
-        fn get_sorted_doc_values(&self, _field: &str) -> Result<SortedDocValuesRef> {
+        fn get_sorted_doc_values(&self, _field: &str) -> Result<Box<dyn SortedDocValues>> {
             unimplemented!()
         }
 
-        fn get_sorted_numeric_doc_values(&self, _field: &str) -> Result<SortedNumericDocValuesRef> {
+        fn get_sorted_numeric_doc_values(
+            &self,
+            _field: &str,
+        ) -> Result<Box<dyn SortedNumericDocValues>> {
             // TODO fix this
             // let boxed = Box::new(MockSortedNumericDocValues::new());
             // Ok(Arc::new(Mutex::new(boxed)))
@@ -1342,7 +1348,7 @@ pub mod tests {
             unimplemented!()
         }
 
-        fn get_sorted_set_doc_values(&self, _field: &str) -> Result<SortedSetDocValuesRef> {
+        fn get_sorted_set_doc_values(&self, _field: &str) -> Result<Box<dyn SortedSetDocValues>> {
             unimplemented!()
         }
 

@@ -52,7 +52,7 @@ impl BaseFragmentsBuilder {
 
     fn fields<C: Codec>(
         &self,
-        reader: &IndexReader<Codec = C>,
+        reader: &dyn IndexReader<Codec = C>,
         doc_id: DocId,
         field_name: &str,
     ) -> Result<Vec<StoredField>> {
@@ -227,7 +227,7 @@ impl BaseFragmentsBuilder {
         frag_info: &WeightedFragInfo,
         pre_tags: &[String],
         post_tags: &[String],
-        encoder: &Encoder,
+        encoder: &dyn Encoder,
     ) -> Result<String> {
         let mut fragment = String::from("");
         let s = frag_info.start_offset;
@@ -351,14 +351,14 @@ impl BaseFragmentsBuilder {
 impl FragmentsBuilder for BaseFragmentsBuilder {
     fn create_fragments<C: Codec>(
         &self,
-        reader: &IndexReader<Codec = C>,
+        reader: &dyn IndexReader<Codec = C>,
         doc_id: DocId,
         field_name: &str,
-        field_frag_list: &mut FieldFragList,
+        field_frag_list: &mut dyn FieldFragList,
         pre_tags: Option<&[String]>,
         post_tags: Option<&[String]>,
         max_num_fragments: Option<i32>,
-        encoder: Option<&Encoder>,
+        encoder: Option<&dyn Encoder>,
         score_ordered: Option<bool>,
     ) -> Result<Vec<String>> {
         let pre_tags = match pre_tags {

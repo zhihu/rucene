@@ -44,7 +44,7 @@ impl LiveDocsFormat for Lucene50LiveDocsFormat {
 
     fn new_live_docs_from_existing(&self, existing: &Bits) -> Result<BitsRef> {
         // existing is type of FixedBitSet
-        Ok(existing.clone())
+        Ok(existing.clone_box())
     }
 
     fn read_live_docs<D: Directory, C: Codec>(
@@ -89,7 +89,7 @@ impl LiveDocsFormat for Lucene50LiveDocsFormat {
 
     fn write_live_docs<D: Directory, D1: Directory, C: Codec>(
         &self,
-        bits: &Bits,
+        bits: &dyn Bits,
         dir: &D1,
         info: &SegmentCommitInfo<D, C>,
         new_del_count: i32,

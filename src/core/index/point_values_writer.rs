@@ -183,7 +183,7 @@ impl PointValues for TempMutablePointsReader {
         Ok(self.point_values_writer().num_docs as i32)
     }
 
-    fn as_any(&self) -> &Any {
+    fn as_any(&self) -> &dyn Any {
         self
     }
 }
@@ -193,7 +193,7 @@ impl PointsReader for TempMutablePointsReader {
         unimplemented!()
     }
 
-    fn as_any(&self) -> &Any {
+    fn as_any(&self) -> &dyn Any {
         self
     }
 }

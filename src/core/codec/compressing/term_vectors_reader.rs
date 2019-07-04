@@ -879,7 +879,7 @@ impl TermVectorsReader for CompressingTermVectorsReader {
         self.clone()?.get_mut(doc)
     }
 
-    fn as_any(&self) -> &Any {
+    fn as_any(&self) -> &dyn Any {
         self
     }
 }

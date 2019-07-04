@@ -23,9 +23,9 @@ use core::index::leaf_reader_wrapper::{
 };
 use core::index::sorter::{MultiSorter, PackedLongDocMap, Sorter, SorterDocMap};
 use core::index::{
-    BinaryDocValuesRef, FieldInfo, FieldInfos, Fields, LeafReader, NumericDocValues,
-    NumericDocValuesRef, PointValues, SeekStatus, SegmentInfo, SegmentReader, SortedDocValuesRef,
-    SortedNumericDocValuesRef, SortedSetDocValuesRef, StoredFieldVisitor, TermIterator, Terms,
+    BinaryDocValues, FieldInfo, FieldInfos, Fields, LeafReader, NumericDocValues, PointValues,
+    SeekStatus, SegmentInfo, SegmentReader, SortedDocValues, SortedNumericDocValues,
+    SortedSetDocValues, StoredFieldVisitor, TermIterator, Terms,
 };
 use core::search::sort::Sort;
 use core::util::external::deferred::Deferred;
@@ -33,7 +33,7 @@ use core::util::packed::{
     PackedLongValues, PackedLongValuesBuilder, PackedLongValuesBuilderType, DEFAULT_PAGE_SIZE,
 };
 use core::util::packed_misc::COMPACT;
-use core::util::{Bits, BitsRef, DocId};
+use core::util::{Bits, BitsMut, BitsRef, DocId};
 
 use error::ErrorKind::IllegalArgument;
 use error::Result;
@@ -251,7 +251,7 @@ impl<D: Directory + 'static, C: Codec> MergeState<D, C> {
         Ok(doc_maps)
     }
 
-    fn remove_deletes(max_doc: i32, live_docs: &Bits) -> Result<PackedLongValues> {
+    fn remove_deletes(max_doc: i32, live_docs: &dyn Bits) -> Result<PackedLongValues> {
         debug_assert!(max_doc >= 0);
         let mut doc_map_builder = PackedLongValuesBuilder::new(
             DEFAULT_PAGE_SIZE,
@@ -320,7 +320,7 @@ impl<D: Directory + 'static, C: Codec> LeafReader for ReaderWrapperEnum<D, C> {
         }
     }
 
-    fn document(&self, doc_id: DocId, visitor: &mut StoredFieldVisitor) -> Result<()> {
+    fn document(&self, doc_id: DocId, visitor: &mut dyn StoredFieldVisitor) -> Result<()> {
         match self {
             ReaderWrapperEnum::Segment(s) => LeafReader::document(s.as_ref(), doc_id, visitor),
             ReaderWrapperEnum::SortedSegment(s) => s.document(doc_id, visitor),
@@ -369,35 +369,38 @@ impl<D: Directory + 'static, C: Codec> LeafReader for ReaderWrapperEnum<D, C> {
         }
     }
 
-    fn get_numeric_doc_values(&self, field: &str) -> Result<NumericDocValuesRef> {
+    fn get_numeric_doc_values(&self, field: &str) -> Result<Box<dyn NumericDocValues>> {
         match self {
             ReaderWrapperEnum::Segment(s) => s.get_numeric_doc_values(field),
             ReaderWrapperEnum::SortedSegment(s) => s.get_numeric_doc_values(field),
         }
     }
 
-    fn get_binary_doc_values(&self, field: &str) -> Result<BinaryDocValuesRef> {
+    fn get_binary_doc_values(&self, field: &str) -> Result<Box<dyn BinaryDocValues>> {
         match self {
             ReaderWrapperEnum::Segment(s) => s.get_binary_doc_values(field),
             ReaderWrapperEnum::SortedSegment(s) => s.get_binary_doc_values(field),
         }
     }
 
-    fn get_sorted_doc_values(&self, field: &str) -> Result<SortedDocValuesRef> {
+    fn get_sorted_doc_values(&self, field: &str) -> Result<Box<dyn SortedDocValues>> {
         match self {
             ReaderWrapperEnum::Segment(s) => s.get_sorted_doc_values(field),
             ReaderWrapperEnum::SortedSegment(s) => s.get_sorted_doc_values(field),
         }
     }
 
-    fn get_sorted_numeric_doc_values(&self, field: &str) -> Result<SortedNumericDocValuesRef> {
+    fn get_sorted_numeric_doc_values(
+        &self,
+        field: &str,
+    ) -> Result<Box<dyn SortedNumericDocValues>> {
         match self {
             ReaderWrapperEnum::Segment(s) => s.get_sorted_numeric_doc_values(field),
             ReaderWrapperEnum::SortedSegment(s) => s.get_sorted_numeric_doc_values(field),
         }
     }
 
-    fn get_sorted_set_doc_values(&self, field: &str) -> Result<SortedSetDocValuesRef> {
+    fn get_sorted_set_doc_values(&self, field: &str) -> Result<Box<dyn SortedSetDocValues>> {
         match self {
             ReaderWrapperEnum::Segment(s) => s.get_sorted_set_doc_values(field),
             ReaderWrapperEnum::SortedSegment(s) => s.get_sorted_set_doc_values(field),
@@ -411,7 +414,7 @@ impl<D: Directory + 'static, C: Codec> LeafReader for ReaderWrapperEnum<D, C> {
         }
     }
 
-    fn get_docs_with_field(&self, field: &str) -> Result<BitsRef> {
+    fn get_docs_with_field(&self, field: &str) -> Result<Box<dyn BitsMut>> {
         match self {
             ReaderWrapperEnum::Segment(s) => s.get_docs_with_field(field),
             ReaderWrapperEnum::SortedSegment(s) => s.get_docs_with_field(field),
@@ -551,7 +554,7 @@ impl<R: StoredFieldsReader + 'static, L: LeafReader + 'static> StoredFieldsReade
     fn visit_document_mut(
         &mut self,
         doc_id: DocId,
-        visitor: &mut StoredFieldVisitor,
+        visitor: &mut dyn StoredFieldVisitor,
     ) -> Result<()> {
         match self {
             MergeStoredReaderEnum::Raw(s) => s.visit_document_mut(doc_id, visitor),

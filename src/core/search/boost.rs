@@ -63,7 +63,7 @@ impl<C: Codec> Query<C> for BoostQuery<C> {
         self.query.extract_terms()
     }
 
-    fn as_any(&self) -> &Any {
+    fn as_any(&self) -> &dyn Any {
         self
     }
 }

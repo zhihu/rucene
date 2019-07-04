@@ -171,11 +171,11 @@ impl<R: Read> TokenStream for WhitespaceTokenizer<R> {
         &mut self.position_attr
     }
 
-    fn term_bytes_attribute_mut(&mut self) -> &mut TermToBytesRefAttribute {
+    fn term_bytes_attribute_mut(&mut self) -> &mut dyn TermToBytesRefAttribute {
         &mut self.term_attr
     }
 
-    fn term_bytes_attribute(&self) -> &TermToBytesRefAttribute {
+    fn term_bytes_attribute(&self) -> &dyn TermToBytesRefAttribute {
         &self.term_attr
     }
 }

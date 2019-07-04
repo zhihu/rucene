@@ -11,9 +11,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::index::{LeafReaderContext, NumericDocValuesRef, SearchLeafReader};
+use core::index::{LeafReaderContext, NumericDocValues, SearchLeafReader};
 use core::search::sort_field::{SortFieldType, SortedWrapperDocValuesSource};
-use core::util::{BitsRef, DocId, VariantValue};
+use core::util::{BitsMut, DocId, VariantValue};
 use error::Result;
 
 use core::codec::Codec;
@@ -127,7 +127,7 @@ pub trait FieldComparator: fmt::Display {
 
     fn set_bottom(&mut self, slot: usize);
 
-    fn compare_bottom(&self, value: ComparatorValue) -> Result<Ordering>;
+    fn compare_bottom(&mut self, value: ComparatorValue) -> Result<Ordering>;
 
     fn copy(&mut self, slot: usize, value: ComparatorValue) -> Result<()>;
 
@@ -174,7 +174,7 @@ impl FieldComparator for FieldComparatorEnum {
         }
     }
 
-    fn compare_bottom(&self, value: ComparatorValue) -> Result<Ordering> {
+    fn compare_bottom(&mut self, value: ComparatorValue) -> Result<Ordering> {
         match self {
             FieldComparatorEnum::Score(c) => c.compare_bottom(value),
             FieldComparatorEnum::Doc(c) => c.compare_bottom(value),
@@ -261,7 +261,7 @@ impl FieldComparator for RelevanceComparator {
         self.bottom = self.scores[slot];
     }
 
-    fn compare_bottom(&self, value: ComparatorValue) -> Result<Ordering> {
+    fn compare_bottom(&mut self, value: ComparatorValue) -> Result<Ordering> {
         debug_assert!(value.is_score());
         Ok(value
             .score()
@@ -328,7 +328,7 @@ impl FieldComparator for DocComparator {
         self.bottom = self.doc_ids[slot];
     }
 
-    fn compare_bottom(&self, value: ComparatorValue) -> Result<Ordering> {
+    fn compare_bottom(&mut self, value: ComparatorValue) -> Result<Ordering> {
         debug_assert!(value.is_doc());
         Ok(self.bottom.cmp(&value.doc()))
     }
@@ -367,8 +367,8 @@ pub struct NumericDocValuesComparator<T: DocValuesSource> {
     missing_value: Option<VariantValue>,
     field: String,
     field_type: SortFieldType,
-    docs_with_fields: Option<BitsRef>,
-    current_read_values: Option<NumericDocValuesRef>,
+    docs_with_fields: Option<Box<dyn BitsMut>>,
+    current_read_values: Option<Box<dyn NumericDocValues>>,
     values: Vec<VariantValue>,
     bottom: VariantValue,
     top_value: VariantValue,
@@ -398,8 +398,8 @@ impl<T: DocValuesSource> NumericDocValuesComparator<T> {
         }
     }
 
-    fn get_doc_value(&self, doc_id: DocId) -> Result<VariantValue> {
-        let raw_value = self.current_read_values.as_ref().unwrap().get(doc_id)?;
+    fn get_doc_value(&mut self, doc_id: DocId) -> Result<VariantValue> {
+        let raw_value = self.current_read_values.as_mut().unwrap().get_mut(doc_id)?;
         let value = match self.field_type {
             SortFieldType::Int => VariantValue::Int(raw_value as i32),
             SortFieldType::Long => VariantValue::Long(raw_value),
@@ -426,11 +426,11 @@ impl<T: DocValuesSource> FieldComparator for NumericDocValuesComparator<T> {
         self.bottom = self.values[slot].clone();
     }
 
-    fn compare_bottom(&self, value: ComparatorValue) -> Result<Ordering> {
+    fn compare_bottom(&mut self, value: ComparatorValue) -> Result<Ordering> {
         debug_assert!(value.is_doc());
         let doc_id = value.doc();
         let value = self.get_doc_value(doc_id)?;
-        if let Some(ref bits) = self.docs_with_fields {
+        if let Some(ref mut bits) = self.docs_with_fields {
             if value.is_zero() && bits.get(doc_id as usize)? {
                 return Ok(self.bottom.cmp(self.missing_value.as_ref().unwrap()));
             }
@@ -442,7 +442,7 @@ impl<T: DocValuesSource> FieldComparator for NumericDocValuesComparator<T> {
         debug_assert!(value.is_doc());
         let doc_id = value.doc();
         let mut value = self.get_doc_value(doc_id)?;
-        if let Some(ref bits) = self.docs_with_fields {
+        if let Some(ref mut bits) = self.docs_with_fields {
             if value.is_zero() && bits.get(doc_id as usize)? {
                 value = self.missing_value.as_ref().unwrap().clone();
             }
@@ -489,13 +489,13 @@ pub trait DocValuesSource {
         &self,
         reader: &SearchLeafReader<C>,
         field: &str,
-    ) -> Result<NumericDocValuesRef>;
+    ) -> Result<Box<dyn NumericDocValues>>;
 
     fn docs_with_fields<C: Codec>(
         &self,
         reader: &SearchLeafReader<C>,
         field: &str,
-    ) -> Result<BitsRef>;
+    ) -> Result<Box<dyn BitsMut>>;
 }
 
 #[derive(Default)]
@@ -506,14 +506,14 @@ impl DocValuesSource for DefaultDocValuesSource {
         &self,
         reader: &SearchLeafReader<C>,
         field: &str,
-    ) -> Result<NumericDocValuesRef> {
+    ) -> Result<Box<dyn NumericDocValues>> {
         reader.get_numeric_doc_values(field)
     }
     fn docs_with_fields<C: Codec>(
         &self,
         reader: &SearchLeafReader<C>,
         field: &str,
-    ) -> Result<BitsRef> {
+    ) -> Result<Box<dyn BitsMut>> {
         reader.get_docs_with_field(field)
     }
 }

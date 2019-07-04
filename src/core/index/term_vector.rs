@@ -382,7 +382,7 @@ where
         &mut self,
         term_id: usize,
         field_state: &FieldInvertState,
-        token_stream: &TokenStream,
+        token_stream: &dyn TokenStream,
     ) {
         if self.do_vector_offsets {
             let start_offset = field_state.offset + token_stream.offset_attribute().start_offset();
@@ -545,7 +545,7 @@ where
         &mut self,
         term_id: usize,
         field_state: &mut FieldInvertState,
-        token_stream: &TokenStream,
+        token_stream: &dyn TokenStream,
         _doc_id: i32,
     ) -> Result<()> {
         self.base.postings_array.freqs[term_id] = 1;
@@ -560,7 +560,7 @@ where
         &mut self,
         term_id: usize,
         field_state: &mut FieldInvertState,
-        token_stream: &TokenStream,
+        token_stream: &dyn TokenStream,
         _doc_id: i32,
     ) -> Result<()> {
         self.base.postings_array.freqs[term_id] += 1;

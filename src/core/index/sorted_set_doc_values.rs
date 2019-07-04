@@ -11,71 +11,90 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::codec::{BoxedBinaryDocValuesEnum, CompressedBinaryDocValues};
+use core::codec::{NumericLongValuesEnum, TailoredBoxedBinaryDocValuesEnum};
 use core::index::{
-    DocValuesTermIterator, LongBinaryDocValues, NumericDocValues, SortedSetDocValuesTermIterator,
+    sorted_set_doc_values_term_iterator::SortedSetDocValuesTermIterator, DocValuesTermIterator,
+    LongBinaryDocValues, NumericDocValues,
 };
+use core::util::{packed::MixinMonotonicLongValues, DocId, LongValues};
 
-use core::util::bit_util;
-use core::util::DocId;
-use core::util::LongValues;
 use error::Result;
 
-use core::util::packed::MixinMonotonicLongValues;
+use std::cmp::Ordering;
 use std::sync::Arc;
 
 /// When returned by next_ord() it means there are no more ordinals for the document.
 pub const NO_MORE_ORDS: i64 = -1;
 
-pub type SortedSetDocValuesContext = (i64, i64, i64);
+pub trait SortedSetDocValuesProvider: Send + Sync {
+    fn get(&self) -> Result<Box<dyn SortedSetDocValues>>;
+}
+
+pub struct EmptySortedSetDocValuesProvider;
+
+impl SortedSetDocValuesProvider for EmptySortedSetDocValuesProvider {
+    fn get(&self) -> Result<Box<dyn SortedSetDocValues>> {
+        Ok(Box::new(EmptySortedSetDocValues))
+    }
+}
 
 pub trait SortedSetDocValues: Send + Sync {
     /// positions to the specified document
-    fn set_document(&self, doc: DocId) -> Result<SortedSetDocValuesContext>;
-    fn next_ord(&self, ctx: &mut SortedSetDocValuesContext) -> Result<i64>;
-    fn lookup_ord(&self, ord: i64) -> Result<Vec<u8>>;
+    fn set_document(&mut self, doc: DocId) -> Result<()>;
+
+    /// Returns the next ordinal for the current document (previously
+    /// set by `Self::set_document()`)
+    fn next_ord(&mut self) -> Result<i64>;
+
+    /// Retrieves the value for the specified ordinal.
+    fn lookup_ord(&mut self, ord: i64) -> Result<Vec<u8>>;
+
+    /// Returns the number of unique values.
     fn get_value_count(&self) -> usize;
 
-    fn lookup_term(&self, key: &[u8]) -> Result<i64> {
+    /// if `key` exists, returns its ordinal, else return `-insertion_point - 1`
+    fn lookup_term(&mut self, key: &[u8]) -> Result<i64> {
         let mut low = 0_i64;
         let mut high = self.get_value_count() as i64 - 1;
         while low <= high {
             let mid = low + (high - low) / 2;
             let term = self.lookup_ord(mid)?;
-            let cmp = bit_util::bcompare(&term, key);
-            if cmp < 0 {
-                low = mid + 1;
-            } else if cmp > 0 {
-                high = mid - 1;
-            } else {
-                return Ok(mid); // key found
+            match term.as_slice().cmp(key) {
+                Ordering::Less => {
+                    low = mid + 1;
+                }
+                Ordering::Greater => {
+                    high = mid - 1;
+                }
+                Ordering::Equal => {
+                    return Ok(mid);
+                }
             }
         }
         Ok(-(low + 1)) // key not found
     }
 
+    /// return a `TermIterator` over the values
     fn term_iterator(&self) -> Result<DocValuesTermIterator>;
 }
-
-pub type SortedSetDocValuesRef = Arc<dyn SortedSetDocValues>;
 
 pub struct EmptySortedSetDocValues;
 
 impl SortedSetDocValues for EmptySortedSetDocValues {
-    fn set_document(&self, _doc: DocId) -> Result<SortedSetDocValuesContext> {
-        Ok((0, 0, 0))
+    fn set_document(&mut self, _doc: DocId) -> Result<()> {
+        Ok(())
     }
-    fn next_ord(&self, _ctx: &mut SortedSetDocValuesContext) -> Result<i64> {
+    fn next_ord(&mut self) -> Result<i64> {
         Ok(NO_MORE_ORDS)
     }
-    fn lookup_ord(&self, _ord: i64) -> Result<Vec<u8>> {
+    fn lookup_ord(&mut self, _ord: i64) -> Result<Vec<u8>> {
         Ok(Vec::with_capacity(0))
     }
     fn get_value_count(&self) -> usize {
         0
     }
 
-    fn lookup_term(&self, _key: &[u8]) -> Result<i64> {
+    fn lookup_term(&mut self, _key: &[u8]) -> Result<i64> {
         Ok(-1)
     }
 
@@ -92,157 +111,69 @@ impl SortedSetDocValues for EmptySortedSetDocValues {
 /// Codecs can optionally extend this API if they support constant-time access
 /// to ordinals for the document.
 pub trait RandomAccessOrds: SortedSetDocValues {
-    fn ord_at(&self, ctx: &SortedSetDocValuesContext, index: i32) -> Result<i64>;
-    fn cardinality(&self, ctx: &SortedSetDocValuesContext) -> i32;
+    fn ord_at(&mut self, index: i32) -> Result<i64>;
+    fn cardinality(&self) -> i32;
 }
 
-#[derive(Clone)]
 pub(crate) struct AddressedRandomAccessOrds {
-    inner: Arc<AddressedRandomAccessOrdsInner>,
+    binary: TailoredBoxedBinaryDocValuesEnum,
+    ordinals: NumericLongValuesEnum,
+    ord_index: MixinMonotonicLongValues,
+    value_count: usize,
+
+    start_offset: i64,
+    current_offset: i64,
+    end_offset: i64,
 }
 
 impl AddressedRandomAccessOrds {
     pub fn new(
-        binary: Box<dyn LongBinaryDocValues>,
-        ordinals: Box<dyn LongValues>,
+        binary: TailoredBoxedBinaryDocValuesEnum,
+        ordinals: NumericLongValuesEnum,
         ord_index: MixinMonotonicLongValues,
         value_count: usize,
     ) -> Self {
-        let inner = AddressedRandomAccessOrdsInner::new(binary, ordinals, ord_index, value_count);
-        AddressedRandomAccessOrds {
-            inner: Arc::new(inner),
-        }
-    }
-
-    pub fn with_compression(
-        binary: CompressedBinaryDocValues,
-        ordinals: Box<dyn LongValues>,
-        ord_index: MixinMonotonicLongValues,
-        value_count: usize,
-    ) -> Self {
-        let inner = AddressedRandomAccessOrdsInner::with_compression(
+        Self {
             binary,
             ordinals,
             ord_index,
             value_count,
-        );
-        AddressedRandomAccessOrds {
-            inner: Arc::new(inner),
+            start_offset: 0,
+            current_offset: 0,
+            end_offset: 0,
         }
     }
 }
 
 impl SortedSetDocValues for AddressedRandomAccessOrds {
-    fn set_document(&self, doc: DocId) -> Result<SortedSetDocValuesContext> {
-        self.inner.set_document(doc)
+    fn set_document(&mut self, doc: DocId) -> Result<()> {
+        self.start_offset = self.ord_index.get_mut(doc)?;
+        self.current_offset = self.start_offset;
+        self.end_offset = self.ord_index.get_mut(doc + 1)?;
+        Ok(())
     }
 
-    fn next_ord(&self, ctx: &mut SortedSetDocValuesContext) -> Result<i64> {
-        self.inner.next_ord(ctx)
+    fn next_ord(&mut self) -> Result<i64> {
+        if self.current_offset == self.end_offset {
+            Ok(NO_MORE_ORDS)
+        } else {
+            let ord = self.ordinals.get64_mut(self.current_offset)?;
+            self.current_offset += 1;
+            Ok(ord)
+        }
     }
 
-    fn lookup_ord(&self, ord: i64) -> Result<Vec<u8>> {
-        self.inner.lookup_ord(ord)
+    fn lookup_ord(&mut self, ord: i64) -> Result<Vec<u8>> {
+        self.binary.get64(ord)
     }
 
     fn get_value_count(&self) -> usize {
-        self.inner.value_count
+        self.value_count
     }
 
-    fn lookup_term(&self, key: &[u8]) -> Result<i64> {
-        self.inner.lookup_term(key)
-    }
-
-    fn term_iterator(&self) -> Result<DocValuesTermIterator> {
-        match self.inner.binary {
-            BoxedBinaryDocValuesEnum::Compressed(ref bin) => {
-                let boxed = bin.get_term_iterator()?;
-                Ok(DocValuesTermIterator::comp_bin(boxed))
-            }
-            _ => {
-                let ti = SortedSetDocValuesTermIterator::new(self.clone());
-                Ok(DocValuesTermIterator::sorted_set_addr(ti))
-            }
-        }
-    }
-}
-
-impl RandomAccessOrds for AddressedRandomAccessOrds {
-    fn ord_at(&self, ctx: &SortedSetDocValuesContext, index: i32) -> Result<i64> {
-        let position = ctx.0 + i64::from(index);
-        self.inner.ordinals.get64(position)
-    }
-    fn cardinality(&self, ctx: &SortedSetDocValuesContext) -> i32 {
-        (ctx.2 - ctx.0) as i32
-    }
-}
-
-struct AddressedRandomAccessOrdsInner {
-    binary: BoxedBinaryDocValuesEnum,
-    ordinals: Box<dyn LongValues>,
-    ord_index: MixinMonotonicLongValues,
-    value_count: usize,
-}
-
-impl AddressedRandomAccessOrdsInner {
-    fn new(
-        binary: Box<dyn LongBinaryDocValues>,
-        ordinals: Box<dyn LongValues>,
-        ord_index: MixinMonotonicLongValues,
-        value_count: usize,
-    ) -> Self {
-        AddressedRandomAccessOrdsInner {
-            binary: BoxedBinaryDocValuesEnum::General(binary),
-            ordinals,
-            ord_index,
-            value_count,
-        }
-    }
-
-    fn with_compression(
-        binary: CompressedBinaryDocValues,
-        ordinals: Box<dyn LongValues>,
-        ord_index: MixinMonotonicLongValues,
-        value_count: usize,
-    ) -> Self {
-        AddressedRandomAccessOrdsInner {
-            binary: BoxedBinaryDocValuesEnum::Compressed(binary),
-            ordinals,
-            ord_index,
-            value_count,
-        }
-    }
-
-    fn set_document(&self, doc: DocId) -> Result<SortedSetDocValuesContext> {
-        let start_offset = self.ord_index.get(doc)?;
-        let offset = start_offset;
-        let end_offset = self.ord_index.get(doc + 1)?;
-        Ok((start_offset, offset, end_offset))
-    }
-
-    fn next_ord(&self, ctx: &mut SortedSetDocValuesContext) -> Result<i64> {
-        let value = if ctx.1 == ctx.2 {
-            NO_MORE_ORDS
-        } else {
-            let ord = self.ordinals.get64(ctx.1)?;
-            ctx.1 += 1;
-            ord
-        };
-        Ok(value)
-    }
-
-    fn lookup_ord(&self, ord: i64) -> Result<Vec<u8>> {
+    fn lookup_term(&mut self, key: &[u8]) -> Result<i64> {
         match self.binary {
-            BoxedBinaryDocValuesEnum::General(ref long_binary) => long_binary.get64(ord),
-            BoxedBinaryDocValuesEnum::Compressed(ref compressed_binary) => {
-                compressed_binary.get64(ord)
-            }
-        }
-    }
-
-    fn lookup_term(&self, key: &[u8]) -> Result<i64> {
-        match self.binary {
-            BoxedBinaryDocValuesEnum::Compressed(ref compressed_binary) => {
+            TailoredBoxedBinaryDocValuesEnum::Compressed(ref mut compressed_binary) => {
                 let value = compressed_binary.lookup_term(key)?;
                 Ok(value as i64)
             }
@@ -252,88 +183,156 @@ impl AddressedRandomAccessOrdsInner {
                 while low <= high {
                     let mid = low + (high - low) / 2;
                     let term = self.lookup_ord(mid)?;
-                    let cmp = bit_util::bcompare(&term, key);
-                    if cmp < 0 {
-                        low = mid + 1;
-                    } else if cmp > 0 {
-                        high = mid - 1;
-                    } else {
-                        return Ok(mid); // key found
+                    match term.as_slice().cmp(key) {
+                        Ordering::Less => {
+                            low = mid + 1;
+                        }
+                        Ordering::Greater => {
+                            high = mid - 1;
+                        }
+                        Ordering::Equal => {
+                            return Ok(mid);
+                        }
                     }
                 }
                 Ok(-(low + 1)) // key not found
             }
         }
     }
-}
 
-#[derive(Clone)]
-pub(crate) struct TabledRandomAccessOrds {
-    inner: Arc<TabledRandomAccessOrdsInner>,
-}
-
-impl TabledRandomAccessOrds {
-    pub fn new(
-        binary: Box<dyn LongBinaryDocValues>,
-        ordinals: Box<dyn LongValues>,
-        table: Vec<i64>,
-        table_offsets: Vec<i32>,
-        value_count: usize,
-    ) -> Self {
-        let inner =
-            TabledRandomAccessOrdsInner::new(binary, ordinals, table, table_offsets, value_count);
-        TabledRandomAccessOrds {
-            inner: Arc::new(inner),
-        }
-    }
-
-    pub fn with_compression(
-        binary: CompressedBinaryDocValues,
-        ordinals: Box<dyn LongValues>,
-        table: Vec<i64>,
-        table_offsets: Vec<i32>,
-        value_count: usize,
-    ) -> Self {
-        let inner = TabledRandomAccessOrdsInner::with_compression(
-            binary,
-            ordinals,
-            table,
-            table_offsets,
-            value_count,
-        );
-        TabledRandomAccessOrds {
-            inner: Arc::new(inner),
-        }
-    }
-}
-impl SortedSetDocValues for TabledRandomAccessOrds {
-    fn set_document(&self, doc: DocId) -> Result<SortedSetDocValuesContext> {
-        self.inner.set_document(doc)
-    }
-
-    fn next_ord(&self, ctx: &mut SortedSetDocValuesContext) -> Result<i64> {
-        self.inner.next_ord(ctx)
-    }
-
-    fn lookup_ord(&self, ord: i64) -> Result<Vec<u8>> {
-        self.inner.lookup_ord(ord)
-    }
-
-    fn get_value_count(&self) -> usize {
-        self.inner.value_count
-    }
-
-    fn lookup_term(&self, key: &[u8]) -> Result<i64> {
-        self.inner.lookup_term(key)
-    }
     fn term_iterator(&self) -> Result<DocValuesTermIterator> {
-        match self.inner.binary {
-            BoxedBinaryDocValuesEnum::Compressed(ref bin) => {
+        match self.binary {
+            TailoredBoxedBinaryDocValuesEnum::Compressed(ref bin) => {
                 let boxed = bin.get_term_iterator()?;
                 Ok(DocValuesTermIterator::comp_bin(boxed))
             }
             _ => {
-                let ti = SortedSetDocValuesTermIterator::new(self.clone());
+                let ti = SortedSetDocValuesTermIterator::new(self);
+                Ok(DocValuesTermIterator::sorted_set_addr(ti))
+            }
+        }
+    }
+}
+
+impl RandomAccessOrds for AddressedRandomAccessOrds {
+    fn ord_at(&mut self, index: i32) -> Result<i64> {
+        let position = self.start_offset + i64::from(index);
+        self.ordinals.get64_mut(position)
+    }
+
+    fn cardinality(&self) -> i32 {
+        (self.end_offset - self.start_offset) as i32
+    }
+}
+
+impl SortedSetDocValuesProvider for AddressedRandomAccessOrds {
+    fn get(&self) -> Result<Box<dyn SortedSetDocValues>> {
+        let binary = self.binary.clone()?;
+        let dv = Self {
+            binary,
+            ordinals: self.ordinals.clone(),
+            ord_index: self.ord_index.clone(),
+            value_count: self.value_count,
+            start_offset: self.start_offset,
+            current_offset: self.current_offset,
+            end_offset: self.end_offset,
+        };
+        Ok(Box::new(dv))
+    }
+}
+
+pub(crate) struct TabledRandomAccessOrds {
+    binary: TailoredBoxedBinaryDocValuesEnum,
+    ordinals: NumericLongValuesEnum,
+    table: Arc<[i64]>,
+    table_offsets: Arc<[i32]>,
+    value_count: usize,
+
+    start_offset: i32,
+    current_offset: i32,
+    end_offset: i32,
+}
+
+impl TabledRandomAccessOrds {
+    pub fn new(
+        binary: TailoredBoxedBinaryDocValuesEnum,
+        ordinals: NumericLongValuesEnum,
+        table: Vec<i64>,
+        table_offsets: Vec<i32>,
+        value_count: usize,
+    ) -> Self {
+        Self {
+            binary,
+            ordinals,
+            table: Arc::from(table),
+            table_offsets: Arc::from(table_offsets),
+            value_count,
+            start_offset: 0,
+            current_offset: 0,
+            end_offset: 0,
+        }
+    }
+}
+impl SortedSetDocValues for TabledRandomAccessOrds {
+    fn set_document(&mut self, doc: DocId) -> Result<()> {
+        let ord = self.ordinals.get_mut(doc)? as usize;
+        self.start_offset = self.table_offsets[ord];
+        self.current_offset = self.start_offset;
+        self.end_offset = self.table_offsets[ord as usize + 1];
+        Ok(())
+    }
+
+    fn next_ord(&mut self) -> Result<i64> {
+        if self.current_offset == self.end_offset {
+            Ok(NO_MORE_ORDS)
+        } else {
+            let ord = self.table[self.current_offset as usize];
+            self.current_offset += 1;
+            Ok(ord)
+        }
+    }
+
+    fn lookup_ord(&mut self, ord: i64) -> Result<Vec<u8>> {
+        self.binary.get64(ord)
+    }
+
+    fn get_value_count(&self) -> usize {
+        self.value_count
+    }
+
+    fn lookup_term(&mut self, key: &[u8]) -> Result<i64> {
+        match self.binary {
+            TailoredBoxedBinaryDocValuesEnum::Compressed(ref mut binary) => binary.lookup_term(key),
+            _ => {
+                let mut low = 0_i64;
+                let mut high = self.value_count as i64 - 1;
+                while low <= high {
+                    let mid = low + (high - low) / 2;
+                    let term = self.lookup_ord(mid)?;
+                    match term.as_slice().cmp(key) {
+                        Ordering::Less => {
+                            low = mid + 1;
+                        }
+                        Ordering::Greater => {
+                            high = mid - 1;
+                        }
+                        Ordering::Equal => {
+                            return Ok(mid);
+                        }
+                    }
+                }
+                Ok(-(low + 1)) // key not found
+            }
+        }
+    }
+
+    fn term_iterator(&self) -> Result<DocValuesTermIterator> {
+        match self.binary {
+            TailoredBoxedBinaryDocValuesEnum::Compressed(ref bin) => {
+                bin.get_term_iterator().map(DocValuesTermIterator::comp_bin)
+            }
+            _ => {
+                let ti = SortedSetDocValuesTermIterator::new(self);
                 Ok(DocValuesTermIterator::sorted_set_table(ti))
             }
         }
@@ -341,107 +340,29 @@ impl SortedSetDocValues for TabledRandomAccessOrds {
 }
 
 impl RandomAccessOrds for TabledRandomAccessOrds {
-    fn ord_at(&self, ctx: &SortedSetDocValuesContext, index: i32) -> Result<i64> {
-        let position = ctx.0 + i64::from(index);
-        let value = self.inner.table[position as usize];
+    fn ord_at(&mut self, index: i32) -> Result<i64> {
+        let position = self.start_offset + index;
+        let value = self.table[position as usize];
         Ok(value)
     }
 
-    fn cardinality(&self, ctx: &SortedSetDocValuesContext) -> i32 {
-        (ctx.2 - ctx.0) as i32
+    fn cardinality(&self) -> i32 {
+        self.end_offset - self.start_offset
     }
 }
 
-struct TabledRandomAccessOrdsInner {
-    binary: BoxedBinaryDocValuesEnum,
-    ordinals: Box<dyn LongValues>,
-    table: Vec<i64>,
-    table_offsets: Vec<i32>,
-    value_count: usize,
-}
-
-impl TabledRandomAccessOrdsInner {
-    pub fn new(
-        binary: Box<dyn LongBinaryDocValues>,
-        ordinals: Box<dyn LongValues>,
-        table: Vec<i64>,
-        table_offsets: Vec<i32>,
-        value_count: usize,
-    ) -> Self {
-        TabledRandomAccessOrdsInner {
-            binary: BoxedBinaryDocValuesEnum::General(binary),
-            ordinals,
-            table,
-            table_offsets,
-            value_count,
-        }
-    }
-
-    pub fn with_compression(
-        binary: CompressedBinaryDocValues,
-        ordinals: Box<dyn LongValues>,
-        table: Vec<i64>,
-        table_offsets: Vec<i32>,
-        value_count: usize,
-    ) -> Self {
-        TabledRandomAccessOrdsInner {
-            binary: BoxedBinaryDocValuesEnum::Compressed(binary),
-            ordinals,
-            table,
-            table_offsets,
-            value_count,
-        }
-    }
-
-    fn set_document(&self, doc: DocId) -> Result<SortedSetDocValuesContext> {
-        let ord = self.ordinals.get(doc)?;
-        let start_offset = self.table_offsets[ord as usize];
-        let offset = start_offset;
-        let end_offset = self.table_offsets[ord as usize + 1];
-        Ok((start_offset.into(), offset.into(), end_offset.into()))
-    }
-
-    fn next_ord(&self, ctx: &mut SortedSetDocValuesContext) -> Result<i64> {
-        let value = if ctx.1 == ctx.2 {
-            NO_MORE_ORDS
-        } else {
-            let val = self.table[ctx.1 as usize];
-            ctx.1 += 1;
-            val
+impl SortedSetDocValuesProvider for TabledRandomAccessOrds {
+    fn get(&self) -> Result<Box<dyn SortedSetDocValues>> {
+        let dv = Self {
+            binary: self.binary.clone()?,
+            ordinals: self.ordinals.clone(),
+            table: self.table.clone(),
+            table_offsets: self.table_offsets.clone(),
+            value_count: self.value_count,
+            start_offset: self.start_offset,
+            current_offset: self.current_offset,
+            end_offset: self.end_offset,
         };
-        Ok(value)
-    }
-
-    fn lookup_ord(&self, ord: i64) -> Result<Vec<u8>> {
-        match self.binary {
-            BoxedBinaryDocValuesEnum::General(ref binary) => binary.get64(ord),
-            BoxedBinaryDocValuesEnum::Compressed(ref binary) => binary.get64(ord),
-        }
-    }
-
-    fn lookup_term(&self, key: &[u8]) -> Result<i64> {
-        match self.binary {
-            BoxedBinaryDocValuesEnum::Compressed(ref binary) => {
-                let val = binary.lookup_term(key)?;
-                Ok(val as i64)
-            }
-            _ => {
-                let mut low = 0_i64;
-                let mut high = self.value_count as i64 - 1;
-                while low <= high {
-                    let mid = low + (high - low) / 2;
-                    let term = self.lookup_ord(mid)?;
-                    let cmp = bit_util::bcompare(&term, key);
-                    if cmp < 0 {
-                        low = mid + 1;
-                    } else if cmp > 0 {
-                        high = mid - 1;
-                    } else {
-                        return Ok(mid); // key found
-                    }
-                }
-                Ok(-(low + 1)) // key not found
-            }
-        }
+        Ok(Box::new(dv))
     }
 }

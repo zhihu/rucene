@@ -12,58 +12,95 @@
 // limitations under the License.
 
 use core::index::{
-    NumericDocValues, NumericDocValuesRef, SortedNumericDocValues, SortedNumericDocValuesContext,
+    CloneableNumericDocValues, CloneableNumericDocValuesProvider, NumericDocValues,
+    SortedNumericDocValues, SortedNumericDocValuesProvider,
 };
-use core::util::{BitsRef, DocId};
+use core::util::BitsMut;
 use error::Result;
 
-use std::sync::Arc;
-
-pub struct SingletonSortedNumericDocValues {
-    numeric_doc_values_in: NumericDocValuesRef,
-    docs_with_field: BitsRef,
+pub(crate) struct SingletonSortedNumericDVProvider<
+    P: CloneableNumericDocValuesProvider,
+    B: BitsMut + Clone,
+> {
+    provider: P,
+    bits: B,
 }
 
-impl SingletonSortedNumericDocValues {
-    pub fn new(numeric_doc_values_in: Box<dyn NumericDocValues>, docs_with_field: BitsRef) -> Self {
+impl<P, B> SingletonSortedNumericDVProvider<P, B>
+where
+    P: CloneableNumericDocValuesProvider,
+    B: BitsMut + Clone,
+{
+    pub fn new(provider: P, bits: B) -> Self {
+        Self { provider, bits }
+    }
+}
+
+impl<P, B> SortedNumericDocValuesProvider for SingletonSortedNumericDVProvider<P, B>
+where
+    P: CloneableNumericDocValuesProvider,
+    B: BitsMut + Clone + 'static,
+{
+    fn get(&self) -> Result<Box<dyn SortedNumericDocValues>> {
+        let dv = self.provider.get()?;
+        Ok(Box::new(SingletonSortedNumericDocValues::new(
+            dv,
+            self.bits.clone(),
+        )))
+    }
+}
+
+pub struct SingletonSortedNumericDocValues<DV: CloneableNumericDocValues, B: BitsMut> {
+    numeric_doc_values_in: DV,
+    docs_with_field: B,
+    value: i64,
+    count: usize,
+}
+
+impl<DV: CloneableNumericDocValues, B: BitsMut> SingletonSortedNumericDocValues<DV, B> {
+    pub fn new(numeric_doc_values_in: DV, docs_with_field: B) -> Self {
         SingletonSortedNumericDocValues {
-            numeric_doc_values_in: Arc::from(numeric_doc_values_in),
+            numeric_doc_values_in,
             docs_with_field,
+            value: 0,
+            count: 0,
         }
     }
 
-    pub fn get_numeric_doc_values_impl(&self) -> NumericDocValuesRef {
-        Arc::clone(&self.numeric_doc_values_in)
+    pub fn get_numeric_doc_values_impl(&self) -> Box<dyn NumericDocValues> {
+        self.numeric_doc_values_in.clone_box()
     }
 }
 
-impl SortedNumericDocValues for SingletonSortedNumericDocValues {
-    fn set_document(
-        &self,
-        ctx: Option<SortedNumericDocValuesContext>,
-        doc: DocId,
-    ) -> Result<SortedNumericDocValuesContext> {
+impl<DV: CloneableNumericDocValues, B: BitsMut> SortedNumericDocValues
+    for SingletonSortedNumericDocValues<DV, B>
+{
+    fn set_document(&mut self, doc: i32) -> Result<()> {
         let value = self.numeric_doc_values_in.get(doc)?;
         let id = self.docs_with_field.id();
-        let bc = ctx.and_then(|c| c.2);
-        let (bc, count) = if id != 1 && value == 0 {
-            let result = self.docs_with_field.get_with_ctx(bc, doc as usize)?;
-            (result.1, if result.0 { 1 } else { 0 })
+        self.count = if id != 1 && value == 0 {
+            let result = self.docs_with_field.get(doc as usize)?;
+            if result {
+                1
+            } else {
+                0
+            }
         } else {
-            (bc, 1)
+            1
         };
-        Ok((value, i64::from(count), bc))
+        self.value = value;
+        Ok(())
     }
 
-    fn value_at(&self, ctx: &SortedNumericDocValuesContext, _index: usize) -> Result<i64> {
-        Ok(ctx.0)
+    fn value_at(&mut self, _index: usize) -> Result<i64> {
+        Ok(self.value)
     }
 
-    fn count(&self, ctx: &SortedNumericDocValuesContext) -> usize {
-        ctx.1 as usize
+    fn count(&self) -> usize {
+        self.count
     }
 
-    fn get_numeric_doc_values(&self) -> Option<NumericDocValuesRef> {
-        Some(self.get_numeric_doc_values_impl())
+    fn get_numeric_doc_values(&self) -> Option<Box<dyn NumericDocValues>> {
+        Some(self.numeric_doc_values_in.clone_box())
     }
 }

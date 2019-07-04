@@ -11,16 +11,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::index::{NumericDocValues, NumericDocValuesContext};
-use core::util::DocId;
-use core::util::{Bits, BitsContext};
-use core::util::{LongValues, LongValuesContext};
+use core::index::{CloneableNumericDocValues, NumericDocValues, NumericDocValuesProvider};
+use core::util::{Bits, BitsMut, CloneableLongValues, DocId, LongValues};
 use error::ErrorKind::{IllegalArgument, IllegalState};
 use error::Result;
-
-use std::sync::Arc;
-
-use byteorder::{NativeEndian, ReadBytesExt, WriteBytesExt};
 
 #[derive(Clone)]
 struct SparseBitsContext {
@@ -33,8 +27,6 @@ struct SparseBitsContext {
     // doc_id at (index + 1)
     next_doc_id: i64, // mutable
 }
-
-const SPARSE_BITS_CONTEXT_SERIALIZED_SIZE: usize = 24;
 
 impl SparseBitsContext {
     fn new(first_doc_id: i64) -> Self {
@@ -50,40 +42,15 @@ impl SparseBitsContext {
         self.doc_id = -1;
         self.next_doc_id = first_doc_id;
     }
-
-    fn serialize(&self) -> BitsContext {
-        let mut data = [0u8; 64];
-        {
-            let mut buffer = &mut data as &mut [u8];
-            buffer.write_i64::<NativeEndian>(self.index).unwrap();
-            buffer.write_i64::<NativeEndian>(self.doc_id).unwrap();
-            buffer.write_i64::<NativeEndian>(self.next_doc_id).unwrap();
-        }
-        Some(data)
-    }
-
-    fn deserialize(mut from: &[u8]) -> Result<Self> {
-        if from.len() < SPARSE_BITS_CONTEXT_SERIALIZED_SIZE {
-            bail!(IllegalArgument(
-                "Serialized bytes is not for SparseBitsContext".into()
-            ))
-        }
-        let index = from.read_i64::<NativeEndian>()?;
-        let doc_id = from.read_i64::<NativeEndian>()?;
-        let next_doc_id = from.read_i64::<NativeEndian>()?;
-        Ok(SparseBitsContext {
-            index,
-            doc_id,
-            next_doc_id,
-        })
-    }
 }
 
+#[derive(Clone)]
 pub struct SparseBits<T: LongValues> {
     max_doc: i64,
     doc_ids_length: i64,
     first_doc_id: i64,
     doc_ids: T,
+    ctx: SparseBitsContext,
 }
 
 impl<T: LongValues> SparseBits<T> {
@@ -103,6 +70,7 @@ impl<T: LongValues> SparseBits<T> {
             doc_ids_length,
             first_doc_id,
             doc_ids,
+            ctx: SparseBitsContext::new(first_doc_id),
         })
     }
 
@@ -200,7 +168,7 @@ impl<T: LongValues> SparseBits<T> {
         self.binary_search(ctx, hi_index, doc_id)
     }
 
-    fn get64(&self, ctx: &mut SparseBitsContext, doc_id: i64) -> Result<(bool, BitsContext)> {
+    fn get64(&self, ctx: &mut SparseBitsContext, doc_id: i64) -> Result<bool> {
         if doc_id < ctx.doc_id {
             // reading doc ids backward, go back to the start
             ctx.reset(self.first_doc_id)
@@ -211,7 +179,7 @@ impl<T: LongValues> SparseBits<T> {
         }
         let next_index = ctx.index + 1;
         self.check_invariants(ctx, next_index, doc_id)?;
-        Ok((doc_id == ctx.doc_id, ctx.serialize()))
+        Ok(doc_id == ctx.doc_id)
     }
 
     fn len(&self) -> usize {
@@ -230,12 +198,8 @@ impl<T: LongValues> SparseBits<T> {
 }
 
 impl<T: LongValues> Bits for SparseBits<T> {
-    fn get_with_ctx(&self, ctx: BitsContext, index: usize) -> Result<(bool, BitsContext)> {
-        let mut ctx = match ctx {
-            Some(c) => SparseBitsContext::deserialize(&c)?,
-            None => self.context(),
-        };
-        self.get64(&mut ctx, index as i64)
+    fn get(&self, index: usize) -> Result<bool> {
+        self.get64(&mut self.context(), index as i64)
     }
 
     fn len(&self) -> usize {
@@ -243,16 +207,39 @@ impl<T: LongValues> Bits for SparseBits<T> {
     }
 }
 
-pub struct SparseLongValues<T: LongValues> {
-    docs_with_field: Arc<SparseBits<T>>,
-    values: Box<dyn LongValues>,
+impl<T: LongValues> BitsMut for SparseBits<T> {
+    fn get(&mut self, index: usize) -> Result<bool> {
+        unsafe {
+            let ctx = &self.ctx as *const _ as *mut _;
+            self.get64(&mut *ctx, index as i64)
+        }
+    }
+
+    fn len(&self) -> usize {
+        SparseBits::len(self)
+    }
+}
+
+pub struct SparseLongValues<T: LongValues + Clone> {
+    docs_with_field: SparseBits<T>,
+    values: Box<dyn CloneableLongValues>,
     missing_value: i64,
 }
 
-impl<T: LongValues> SparseLongValues<T> {
+impl<T: LongValues + Clone> Clone for SparseLongValues<T> {
+    fn clone(&self) -> Self {
+        Self {
+            docs_with_field: self.docs_with_field.clone(),
+            values: self.values.cloned(),
+            missing_value: self.missing_value,
+        }
+    }
+}
+
+impl<T: LongValues + Clone> SparseLongValues<T> {
     pub fn new(
-        docs_with_field: Arc<SparseBits<T>>,
-        values: Box<dyn LongValues>,
+        docs_with_field: SparseBits<T>,
+        values: Box<dyn CloneableLongValues>,
         missing_value: i64,
     ) -> Self {
         SparseLongValues {
@@ -262,37 +249,50 @@ impl<T: LongValues> SparseLongValues<T> {
         }
     }
 
-    pub fn docs_with_field_clone(&self) -> Arc<SparseBits<T>> {
-        Arc::clone(&self.docs_with_field)
+    pub fn docs_with_field_clone(&self) -> SparseBits<T> {
+        self.docs_with_field.clone()
     }
 }
 
-impl<T: LongValues> LongValues for SparseLongValues<T> {
-    fn get64_with_ctx(
-        &self,
-        ctx: LongValuesContext,
-        index: i64,
-    ) -> Result<(i64, LongValuesContext)> {
-        let mut ctx = match ctx {
-            Some(c) => SparseBitsContext::deserialize(&c)?,
-            None => self.docs_with_field.context(),
-        };
-        let (exists, new_ctx) = self.docs_with_field.get64(&mut ctx, index)?;
+impl<T: LongValues + Clone + 'static> LongValues for SparseLongValues<T> {
+    fn get64(&self, index: i64) -> Result<i64> {
+        let mut ctx = self.docs_with_field.context();
+        let exists = self.docs_with_field.get64(&mut ctx, index)?;
         if exists {
-            let r = self.values.get64(ctx.index)?;
-            Ok((r, new_ctx))
+            self.values.get64(ctx.index)
         } else {
-            Ok((self.missing_value, new_ctx))
+            Ok(self.missing_value)
+        }
+    }
+
+    fn get64_mut(&mut self, index: i64) -> Result<i64> {
+        let exists = BitsMut::get(&mut self.docs_with_field, index as usize)?;
+        if exists {
+            self.values.get64_mut(self.docs_with_field.ctx.index)
+        } else {
+            Ok(self.missing_value)
         }
     }
 }
 
-impl<T: LongValues> NumericDocValues for SparseLongValues<T> {
-    fn get_with_ctx(
-        &self,
-        ctx: NumericDocValuesContext,
-        doc_id: DocId,
-    ) -> Result<(i64, NumericDocValuesContext)> {
-        LongValues::get64_with_ctx(self, ctx, i64::from(doc_id))
+impl<T: LongValues + Clone + 'static> NumericDocValues for SparseLongValues<T> {
+    fn get(&self, doc_id: DocId) -> Result<i64> {
+        self.get64(i64::from(doc_id))
+    }
+
+    fn get_mut(&mut self, doc_id: DocId) -> Result<i64> {
+        self.get64_mut(i64::from(doc_id))
+    }
+}
+
+impl<T: LongValues + Clone + 'static> CloneableNumericDocValues for SparseLongValues<T> {
+    fn clone_box(&self) -> Box<dyn NumericDocValues> {
+        Box::new(self.clone())
+    }
+}
+
+impl<T: LongValues + Clone + 'static> NumericDocValuesProvider for SparseLongValues<T> {
+    fn get(&self) -> Result<Box<dyn NumericDocValues>> {
+        Ok(Box::new(self.clone()))
     }
 }

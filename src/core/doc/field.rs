@@ -200,11 +200,11 @@ impl TokenStream for StringTokenStream {
         &mut self.position_attribute
     }
 
-    fn term_bytes_attribute_mut(&mut self) -> &mut TermToBytesRefAttribute {
+    fn term_bytes_attribute_mut(&mut self) -> &mut dyn TermToBytesRefAttribute {
         &mut self.term_attribute
     }
 
-    fn term_bytes_attribute(&self) -> &TermToBytesRefAttribute {
+    fn term_bytes_attribute(&self) -> &dyn TermToBytesRefAttribute {
         &self.term_attribute
     }
 }
@@ -266,11 +266,11 @@ impl TokenStream for BinaryTokenStream {
         &mut self.position_attribute
     }
 
-    fn term_bytes_attribute_mut(&mut self) -> &mut TermToBytesRefAttribute {
+    fn term_bytes_attribute_mut(&mut self) -> &mut dyn TermToBytesRefAttribute {
         &mut self.term_attribute
     }
 
-    fn term_bytes_attribute(&self) -> &TermToBytesRefAttribute {
+    fn term_bytes_attribute(&self) -> &dyn TermToBytesRefAttribute {
         &self.term_attribute
     }
 }
@@ -381,11 +381,11 @@ impl TokenStream for WordTokenStream {
         &mut self.position_attribute
     }
 
-    fn term_bytes_attribute_mut(&mut self) -> &mut TermToBytesRefAttribute {
+    fn term_bytes_attribute_mut(&mut self) -> &mut dyn TermToBytesRefAttribute {
         &mut self.term_attribute
     }
 
-    fn term_bytes_attribute(&self) -> &TermToBytesRefAttribute {
+    fn term_bytes_attribute(&self) -> &dyn TermToBytesRefAttribute {
         &self.term_attribute
     }
 }

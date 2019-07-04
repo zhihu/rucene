@@ -17,9 +17,11 @@ use core::codec::{
 };
 use core::index::{
     segment_file_name, AddressedRandomAccessOrds, AddressedSortedNumericDocValues, BinaryDocValues,
-    DocValues, DocValuesType, FieldInfo, FieldInfos, FixedBinaryDocValues, LongBinaryDocValues,
-    NumericDocValues, SeekStatus, SegmentInfo, SegmentReadState, SortedDocValues,
-    SortedNumericDocValues, SortedSetDocValues, TabledRandomAccessOrds,
+    BinaryDocValuesProvider, CloneableNumericDocValues, DocValues, DocValuesType, FieldInfo,
+    FieldInfos, FixedBinaryDocValues, LongBinaryDocValues, NumericDocValues,
+    NumericDocValuesProvider, SeekStatus, SegmentInfo, SegmentReadState,
+    SingletonSortedNumericDVProvider, SingletonSortedSetDVProvider, SortedDocValuesProvider,
+    SortedNumericDocValuesProvider, SortedSetDocValuesProvider, TabledRandomAccessOrds,
     TabledSortedNumericDocValues, TailoredSortedDocValues, TermIterator, VariableBinaryDocValues,
 };
 use core::store::{BufferedChecksumIndexInput, Directory, IndexInput};
@@ -27,7 +29,7 @@ use core::util::{
     packed::{
         DirectMonotonicMeta, DirectMonotonicReader, DirectReader, MonotonicBlockPackedReader,
     },
-    BitsRef, DeltaLongValues, DocId, GcdLongValues, LiveBits, LiveLongValues, LongValues,
+    BitsMut, DeltaLongValues, DocId, GcdLongValues, LiveBits, LiveLongValues, LongValues,
     MatchAllBits, MatchNoBits, PagedBytes, PagedBytesReader, SparseBits, SparseLongValues,
     TableLongValues,
 };
@@ -36,7 +38,7 @@ use error::ErrorKind::{CorruptIndex, IllegalArgument};
 use error::Result;
 
 use core::util::packed::MixinMonotonicLongValues;
-use core::util::{Bits, BitsContext};
+use core::util::Bits;
 use std::borrow::BorrowMut;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -840,7 +842,7 @@ impl Lucene54DocValuesProducer {
             _ => {
                 let data = self.data.as_ref().clone()?;
                 let boxed = LiveBits::new(data.as_ref(), offset, count)?;
-                LiveBitsEnum::Bits(Arc::new(boxed))
+                LiveBitsEnum::Bits(boxed)
             }
         })
     }
@@ -887,7 +889,7 @@ impl Lucene54DocValuesProducer {
         &self,
         entry: &Arc<NumericEntry>,
     ) -> Result<SparseLongValues<MixinMonotonicLongValues>> {
-        let docs_with_field = Arc::new(self.get_sparse_live_bits_by_entry(&entry)?);
+        let docs_with_field = self.get_sparse_live_bits_by_entry(&entry)?;
 
         debug_assert!(!entry.non_missing_values.is_none());
 
@@ -899,67 +901,29 @@ impl Lucene54DocValuesProducer {
         };
         Ok(SparseLongValues::new(
             docs_with_field,
-            values,
+            Box::new(values),
             missing_value,
         ))
     }
 
-    fn get_numeric_by_entry_outbound(
-        &self,
-        entry: &Arc<NumericEntry>,
-    ) -> Result<Box<dyn NumericDocValues>> {
+    fn get_numeric_by_entry(&self, entry: &Arc<NumericEntry>) -> Result<NumericLongValuesEnum> {
         let fmt = entry.format;
         match fmt {
-            Lucene54DocValuesFormat::CONST_COMPRESSED => {
-                let live_lv = self.get_numeric_const_compressed(entry)?;
-                Ok(Box::new(live_lv))
-            }
-            Lucene54DocValuesFormat::DELTA_COMPRESSED => {
-                let delta_lv = self.get_numeric_delta_compressed(entry)?;
-                Ok(Box::new(delta_lv))
-            }
-            Lucene54DocValuesFormat::GCD_COMPRESSED => {
-                let gcd_lv = self.get_numeric_gcd_compressed(entry)?;
-                Ok(Box::new(gcd_lv))
-            }
-            Lucene54DocValuesFormat::TABLE_COMPRESSED => {
-                let table_lv = self.get_numeric_table_compressed(entry)?;
-                Ok(Box::new(table_lv))
-            }
-            Lucene54DocValuesFormat::SPARSE_COMPRESSED => {
-                let sparse_lv = self.get_numeric_sparse_compressed(entry)?;
-                Ok(Box::new(sparse_lv))
-            }
-            _ => bail!(IllegalArgument(format!(
-                "Unknown numeric entry format: {}",
-                fmt
-            ))),
-        }
-    }
-
-    fn get_numeric_by_entry(&self, entry: &Arc<NumericEntry>) -> Result<Box<dyn LongValues>> {
-        let fmt = entry.format;
-        match fmt {
-            Lucene54DocValuesFormat::CONST_COMPRESSED => {
-                let live_lv = self.get_numeric_const_compressed(entry)?;
-                Ok(Box::new(live_lv))
-            }
-            Lucene54DocValuesFormat::DELTA_COMPRESSED => {
-                let delta_lv = self.get_numeric_delta_compressed(entry)?;
-                Ok(Box::new(delta_lv))
-            }
-            Lucene54DocValuesFormat::GCD_COMPRESSED => {
-                let gcd_lv = self.get_numeric_gcd_compressed(entry)?;
-                Ok(Box::new(gcd_lv))
-            }
-            Lucene54DocValuesFormat::TABLE_COMPRESSED => {
-                let table_lv = self.get_numeric_table_compressed(entry)?;
-                Ok(Box::new(table_lv))
-            }
-            Lucene54DocValuesFormat::SPARSE_COMPRESSED => {
-                let sparse_lv = self.get_numeric_sparse_compressed(entry)?;
-                Ok(Box::new(sparse_lv))
-            }
+            Lucene54DocValuesFormat::CONST_COMPRESSED => self
+                .get_numeric_const_compressed(entry)
+                .map(NumericLongValuesEnum::Live),
+            Lucene54DocValuesFormat::DELTA_COMPRESSED => self
+                .get_numeric_delta_compressed(entry)
+                .map(NumericLongValuesEnum::Delta),
+            Lucene54DocValuesFormat::GCD_COMPRESSED => self
+                .get_numeric_gcd_compressed(entry)
+                .map(NumericLongValuesEnum::Gcd),
+            Lucene54DocValuesFormat::TABLE_COMPRESSED => self
+                .get_numeric_table_compressed(entry)
+                .map(NumericLongValuesEnum::Table),
+            Lucene54DocValuesFormat::SPARSE_COMPRESSED => self
+                .get_numeric_sparse_compressed(entry)
+                .map(NumericLongValuesEnum::Sparse),
             _ => bail!(IllegalArgument(format!(
                 "Unknown numeric entry format: {}",
                 fmt
@@ -1127,7 +1091,7 @@ impl Lucene54DocValuesProducer {
     fn get_sorted_set_with_addresses(
         &self,
         field: &FieldInfo,
-    ) -> Result<Box<dyn SortedSetDocValues>> {
+    ) -> Result<Box<dyn SortedSetDocValuesProvider>> {
         let value_count = self
             .binaries
             .get(&field.name)
@@ -1160,25 +1124,26 @@ impl Lucene54DocValuesProducer {
 
         match my_format {
             Lucene54DocValuesFormat::BINARY_FIXED_UNCOMPRESSED => {
-                let binary = Box::new(self.get_fixed_binary(field, &bytes)?);
+                let binary =
+                    TailoredBoxedBinaryDocValuesEnum::Fixed(self.get_fixed_binary(field, &bytes)?);
                 let boxed =
                     AddressedRandomAccessOrds::new(binary, ordinals, ord_index, value_count);
                 Ok(Box::new(boxed))
             }
             Lucene54DocValuesFormat::BINARY_VARIABLE_UNCOMPRESSED => {
-                let binary = Box::new(self.get_variable_binary(field, &bytes)?);
+                let binary = TailoredBoxedBinaryDocValuesEnum::Variable(
+                    self.get_variable_binary(field, &bytes)?,
+                );
                 let boxed =
                     AddressedRandomAccessOrds::new(binary, ordinals, ord_index, value_count);
                 Ok(Box::new(boxed))
             }
             Lucene54DocValuesFormat::BINARY_PREFIX_COMPRESSED => {
-                let binary = self.get_compressed_binary(field, &bytes)?;
-                let boxed = AddressedRandomAccessOrds::with_compression(
-                    binary,
-                    ordinals,
-                    ord_index,
-                    value_count,
+                let binary = TailoredBoxedBinaryDocValuesEnum::Compressed(
+                    self.get_compressed_binary(field, &bytes)?,
                 );
+                let boxed =
+                    AddressedRandomAccessOrds::new(binary, ordinals, ord_index, value_count);
                 Ok(Box::new(boxed))
             }
             _ => bail!(IllegalArgument(format!(
@@ -1188,7 +1153,10 @@ impl Lucene54DocValuesProducer {
         }
     }
 
-    fn get_sorted_set_table(&self, field: &FieldInfo) -> Result<Box<dyn SortedSetDocValues>> {
+    fn get_sorted_set_table(
+        &self,
+        field: &FieldInfo,
+    ) -> Result<Box<dyn SortedSetDocValuesProvider>> {
         let table;
         let table_offsets;
         {
@@ -1206,15 +1174,14 @@ impl Lucene54DocValuesProducer {
             .ok_or_else(|| IllegalArgument(format!("No binary field named {}", field.name)))?
             .count as usize;
 
-        let ordinals;
-        {
+        let ordinals = {
             let ord_entry;
             ord_entry = self
                 .ords
                 .get(&field.name)
                 .ok_or_else(|| IllegalArgument(format!("No ords field named {}", &field.name)))?;
-            ordinals = self.get_numeric_by_entry(ord_entry)?;
-        }
+            self.get_numeric_by_entry(ord_entry)?
+        };
 
         let bytes = self
             .binaries
@@ -1224,7 +1191,8 @@ impl Lucene54DocValuesProducer {
 
         match bytes.format {
             Lucene54DocValuesFormat::BINARY_FIXED_UNCOMPRESSED => {
-                let binary = Box::new(self.get_fixed_binary(field, &bytes)?);
+                let binary =
+                    TailoredBoxedBinaryDocValuesEnum::Fixed(self.get_fixed_binary(field, &bytes)?);
                 let boxed = TabledRandomAccessOrds::new(
                     binary,
                     ordinals,
@@ -1235,7 +1203,9 @@ impl Lucene54DocValuesProducer {
                 Ok(Box::new(boxed))
             }
             Lucene54DocValuesFormat::BINARY_VARIABLE_UNCOMPRESSED => {
-                let binary = Box::new(self.get_variable_binary(field, &bytes)?);
+                let binary = TailoredBoxedBinaryDocValuesEnum::Variable(
+                    self.get_variable_binary(field, &bytes)?,
+                );
                 let boxed = TabledRandomAccessOrds::new(
                     binary,
                     ordinals,
@@ -1246,8 +1216,10 @@ impl Lucene54DocValuesProducer {
                 Ok(Box::new(boxed))
             }
             Lucene54DocValuesFormat::BINARY_PREFIX_COMPRESSED => {
-                let binary = self.get_compressed_binary(field, &bytes)?;
-                let boxed = TabledRandomAccessOrds::with_compression(
+                let binary = TailoredBoxedBinaryDocValuesEnum::Compressed(
+                    self.get_compressed_binary(field, &bytes)?,
+                );
+                let boxed = TabledRandomAccessOrds::new(
                     binary,
                     ordinals,
                     table,
@@ -1265,15 +1237,15 @@ impl Lucene54DocValuesProducer {
 }
 
 impl DocValuesProducer for Lucene54DocValuesProducer {
-    fn get_numeric(&self, field: &FieldInfo) -> Result<Arc<dyn NumericDocValues>> {
+    fn get_numeric(&self, field: &FieldInfo) -> Result<Arc<dyn NumericDocValuesProvider>> {
         let link = self.numerics.get(&field.name).ok_or_else(|| {
             IllegalArgument(format!("No numeric field named {} found", field.name))
         })?;
-        let boxed = self.get_numeric_by_entry_outbound(link)?;
-        Ok(Arc::from(boxed))
+        let boxed = self.get_numeric_by_entry(link)?;
+        Ok(Arc::new(boxed))
     }
 
-    fn get_binary(&self, field: &FieldInfo) -> Result<Arc<dyn BinaryDocValues>> {
+    fn get_binary(&self, field: &FieldInfo) -> Result<Arc<dyn BinaryDocValuesProvider>> {
         let bytes = self
             .binaries
             .get(&field.name)
@@ -1302,7 +1274,7 @@ impl DocValuesProducer for Lucene54DocValuesProducer {
         }
     }
 
-    fn get_sorted(&self, field: &FieldInfo) -> Result<Arc<dyn SortedDocValues>> {
+    fn get_sorted(&self, field: &FieldInfo) -> Result<Arc<dyn SortedDocValuesProvider>> {
         let value_count = self
             .binaries
             .get(&field.name)
@@ -1324,19 +1296,23 @@ impl DocValuesProducer for Lucene54DocValuesProducer {
 
         match bytes.format {
             Lucene54DocValuesFormat::BINARY_FIXED_UNCOMPRESSED => {
-                let binary = Box::new(self.get_fixed_binary(field, &bytes)?);
+                let binary =
+                    TailoredBoxedBinaryDocValuesEnum::Fixed(self.get_fixed_binary(field, &bytes)?);
                 let boxed = TailoredSortedDocValues::new(ordinals, binary, value_count);
                 Ok(Arc::new(boxed))
             }
             Lucene54DocValuesFormat::BINARY_VARIABLE_UNCOMPRESSED => {
-                let binary = Box::new(self.get_variable_binary(field, &bytes)?);
+                let binary = TailoredBoxedBinaryDocValuesEnum::Variable(
+                    self.get_variable_binary(field, &bytes)?,
+                );
                 let boxed = TailoredSortedDocValues::new(ordinals, binary, value_count);
                 Ok(Arc::new(boxed))
             }
             Lucene54DocValuesFormat::BINARY_PREFIX_COMPRESSED => {
-                let binary = self.get_compressed_binary(field, &bytes)?;
-                let boxed =
-                    TailoredSortedDocValues::with_compression(ordinals, binary, value_count);
+                let binary = TailoredBoxedBinaryDocValuesEnum::Compressed(
+                    self.get_compressed_binary(field, &bytes)?,
+                );
+                let boxed = TailoredSortedDocValues::new(ordinals, binary, value_count);
                 Ok(Arc::new(boxed))
             }
             _ => bail!(IllegalArgument(format!(
@@ -1346,7 +1322,10 @@ impl DocValuesProducer for Lucene54DocValuesProducer {
         }
     }
 
-    fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Arc<dyn SortedNumericDocValues>> {
+    fn get_sorted_numeric(
+        &self,
+        field: &FieldInfo,
+    ) -> Result<Arc<dyn SortedNumericDocValuesProvider>> {
         let ss = self.sorted_numerics.get(&field.name).ok_or_else(|| {
             IllegalArgument(format!("No SortedNumeric field named {}", field.name))
         })?;
@@ -1358,37 +1337,38 @@ impl DocValuesProducer for Lucene54DocValuesProducer {
                 if numeric_entry.format == Lucene54DocValuesFormat::SPARSE_COMPRESSED {
                     let values = self.get_numeric_sparse_compressed(numeric_entry)?;
                     let docs_with_field = values.docs_with_field_clone();
-                    Ok(Arc::new(DocValues::singleton_sorted_numeric_doc_values(
-                        Box::new(values),
+
+                    Ok(Arc::new(SingletonSortedNumericDVProvider::new(
+                        values,
                         docs_with_field,
                     )))
                 } else {
                     let offset = numeric_entry.missing_offset;
                     let count = self.max_doc as usize;
 
-                    let values = self.get_numeric_by_entry_outbound(numeric_entry)?;
+                    let values = self.get_numeric_by_entry(numeric_entry)?;
 
                     match offset as i32 {
                         Lucene54DocValuesFormat::ALL_MISSING => {
                             let living_room = MatchNoBits::new(count);
-                            Ok(Arc::new(DocValues::singleton_sorted_numeric_doc_values(
+                            Ok(Arc::new(SingletonSortedNumericDVProvider::new(
                                 values,
-                                Arc::new(living_room),
+                                living_room,
                             )))
                         }
                         Lucene54DocValuesFormat::ALL_LIVE => {
                             let living_room = MatchAllBits::new(count);
-                            Ok(Arc::new(DocValues::singleton_sorted_numeric_doc_values(
+                            Ok(Arc::new(SingletonSortedNumericDVProvider::new(
                                 values,
-                                Arc::new(living_room),
+                                living_room,
                             )))
                         }
                         _ => {
                             let mut data = self.data.as_ref().clone()?;
                             let living_room = LiveBits::new(data.borrow_mut(), offset, count)?;
-                            Ok(Arc::new(DocValues::singleton_sorted_numeric_doc_values(
+                            Ok(Arc::new(SingletonSortedNumericDVProvider::new(
                                 values,
-                                Arc::new(living_room),
+                                living_room,
                             )))
                         }
                     }
@@ -1425,7 +1405,7 @@ impl DocValuesProducer for Lucene54DocValuesProducer {
         }
     }
 
-    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Arc<dyn SortedSetDocValues>> {
+    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Arc<dyn SortedSetDocValuesProvider>> {
         let my_format = self
             .sorted_sets
             .get(&field.name)
@@ -1435,7 +1415,7 @@ impl DocValuesProducer for Lucene54DocValuesProducer {
         match my_format {
             Lucene54DocValuesFormat::SORTED_SINGLE_VALUED => {
                 let values = self.get_sorted(field)?;
-                let boxed = DocValues::singleton_sorted_doc_values(values);
+                let boxed = SingletonSortedSetDVProvider::new(values);
                 Ok(Arc::new(boxed))
             }
 
@@ -1452,18 +1432,18 @@ impl DocValuesProducer for Lucene54DocValuesProducer {
         }
     }
 
-    fn get_docs_with_field(&self, field: &FieldInfo) -> Result<BitsRef> {
+    fn get_docs_with_field(&self, field: &FieldInfo) -> Result<Box<dyn BitsMut>> {
         match field.doc_values_type {
             DocValuesType::SortedSet => {
-                let dv = self.get_sorted_set(field)?;
+                let dv = self.get_sorted_set(field)?.get()?;
                 Ok(DocValues::docs_with_value_sorted_set(dv, self.max_doc))
             }
             DocValuesType::SortedNumeric => {
-                let dv = self.get_sorted_numeric(field)?;
+                let dv = self.get_sorted_numeric(field)?.get()?;
                 Ok(DocValues::docs_with_value_sorted_numeric(dv, self.max_doc))
             }
             DocValuesType::Sorted => {
-                let dv = self.get_sorted(field)?;
+                let dv = self.get_sorted(field)?.get()?;
                 Ok(DocValues::docs_with_value_sorted(dv, self.max_doc))
             }
             DocValuesType::Binary => {
@@ -1472,18 +1452,18 @@ impl DocValuesProducer for Lucene54DocValuesProducer {
                 })?;
                 Ok(self
                     .get_live_bits(be.missing_offset, self.max_doc as usize)?
-                    .into_bits())
+                    .into_bits_mut())
             }
             DocValuesType::Numeric => {
                 let ne = self.numerics.get(&field.name).ok_or_else(|| {
                     IllegalArgument(format!("No numeric field named {} found", field.name))
                 })?;
                 if ne.format == Lucene54DocValuesFormat::SPARSE_COMPRESSED {
-                    Ok(Arc::new(self.get_sparse_live_bits_by_entry(&ne)?))
+                    Ok(Box::new(self.get_sparse_live_bits_by_entry(&ne)?))
                 } else {
                     Ok(self
                         .get_live_bits(ne.missing_offset, self.max_doc as usize)?
-                        .into_bits())
+                        .into_bits_mut())
                 }
             }
             _ => bail!(IllegalArgument(format!(
@@ -1506,38 +1486,35 @@ impl DocValuesProducer for Lucene54DocValuesProducer {
 
 #[derive(Clone)]
 pub enum LiveBitsEnum {
-    Bits(Arc<LiveBits>),
+    Bits(LiveBits),
     All(MatchAllBits),
     None(MatchNoBits),
 }
 
 impl LiveBitsEnum {
-    fn into_bits(self) -> BitsRef {
+    fn into_bits_mut(self) -> Box<dyn BitsMut> {
         match self {
-            LiveBitsEnum::Bits(b) => {
-                debug_assert_eq!(Arc::strong_count(&b), 1);
-                Arc::new(Arc::try_unwrap(b).ok().unwrap())
-            }
-            LiveBitsEnum::All(b) => Arc::new(b),
-            LiveBitsEnum::None(b) => Arc::new(b),
+            LiveBitsEnum::Bits(b) => Box::new(b),
+            LiveBitsEnum::All(b) => Box::new(b),
+            LiveBitsEnum::None(b) => Box::new(b),
         }
     }
 }
 
 impl Bits for LiveBitsEnum {
-    fn get_with_ctx(&self, ctx: BitsContext, index: usize) -> Result<(bool, BitsContext)> {
+    fn get(&self, index: usize) -> Result<bool> {
         match self {
-            LiveBitsEnum::Bits(b) => b.get_with_ctx(ctx, index),
-            LiveBitsEnum::All(b) => b.get_with_ctx(ctx, index),
-            LiveBitsEnum::None(b) => b.get_with_ctx(ctx, index),
+            LiveBitsEnum::Bits(b) => b.get(index),
+            LiveBitsEnum::All(b) => b.get(index),
+            LiveBitsEnum::None(b) => b.get(index),
         }
     }
 
     fn len(&self) -> usize {
         match self {
-            LiveBitsEnum::Bits(b) => b.len(),
-            LiveBitsEnum::All(b) => b.len(),
-            LiveBitsEnum::None(b) => b.len(),
+            LiveBitsEnum::Bits(b) => Bits::len(b),
+            LiveBitsEnum::All(b) => Bits::len(b),
+            LiveBitsEnum::None(b) => Bits::len(b),
         }
     }
     fn is_empty(&self) -> bool {
@@ -1550,13 +1527,7 @@ impl Bits for LiveBitsEnum {
 }
 
 pub(crate) struct CompressedBinaryDocValues {
-    num_values: i64,
-    num_index_values: i64,
-    num_reverse_index_values: i64,
-    max_term_length: i32,
-    data: Box<dyn IndexInput>,
-    reverse_index: Arc<ReverseTermsIndex>,
-    addresses: Arc<MonotonicBlockPackedReader>,
+    iterator: CompressedBinaryTermIterator,
 }
 
 impl CompressedBinaryDocValues {
@@ -1565,66 +1536,190 @@ impl CompressedBinaryDocValues {
         addresses: Arc<MonotonicBlockPackedReader>,
         reverse_index: Arc<ReverseTermsIndex>,
         data: Box<dyn IndexInput>,
-    ) -> Result<CompressedBinaryDocValues> {
-        let max_term_length = bytes.max_length;
+    ) -> Result<Self> {
         let num_reverse_index_values = reverse_index.term_addresses.size() as i64;
-        let num_values = bytes.count;
         let num_index_values = addresses.size() as i64;
 
-        let dv = CompressedBinaryDocValues {
-            num_values,
-            num_index_values,
-            num_reverse_index_values,
-            max_term_length,
+        let iterator = CompressedBinaryTermIterator::new(
             data,
+            bytes.max_length as usize,
+            num_reverse_index_values,
             reverse_index,
             addresses,
-        };
-        Ok(dv)
+            bytes.count,
+            num_index_values,
+        )?;
+        Ok(Self { iterator })
     }
+}
 
-    pub fn lookup_term(&self, key: &[u8]) -> Result<i64> {
-        let mut term_iterator = self.get_term_iterator()?;
-        match term_iterator.seek_ceil(key)? {
-            SeekStatus::Found => term_iterator.ord(),
+impl CompressedBinaryDocValues {
+    pub fn lookup_term(&mut self, key: &[u8]) -> Result<i64> {
+        match self.iterator.seek_ceil(key)? {
+            SeekStatus::Found => self.iterator.ord(),
             SeekStatus::NotFound => {
-                let val = -term_iterator.ord()? - 1;
+                let val = -self.iterator.ord()? - 1;
                 Ok(val)
             }
-            _ => Ok(-self.num_values - 1),
+            _ => Ok(-self.iterator.num_values() - 1),
         }
     }
 
     pub fn get_term_iterator(&self) -> Result<CompressedBinaryTermIterator> {
-        let data = IndexInput::clone(self.data.as_ref())?;
-        CompressedBinaryTermIterator::new(
-            data,
-            self.max_term_length as usize,
-            self.num_reverse_index_values,
-            Arc::clone(&self.reverse_index),
-            Arc::clone(&self.addresses),
-            self.num_values,
-            self.num_index_values,
-        )
+        self.iterator.clone()
+    }
+
+    fn clone(&self) -> Result<Self> {
+        self.iterator.clone().map(|iterator| Self { iterator })
     }
 }
 
 impl LongBinaryDocValues for CompressedBinaryDocValues {
-    fn get64(&self, id: i64) -> Result<Vec<u8>> {
-        let mut term_iterator = self.get_term_iterator()?;
-        term_iterator.seek_exact_ord(id)?;
-        let term = term_iterator.term()?;
-        Ok(term.to_vec())
+    fn get64(&mut self, id: i64) -> Result<Vec<u8>> {
+        self.iterator.seek_exact_ord(id)?;
+        self.iterator.term().map(|t| t.to_vec())
+    }
+
+    fn clone_long(&self) -> Result<Box<dyn LongBinaryDocValues>> {
+        Ok(Box::new(self.clone()?))
     }
 }
 
 impl BinaryDocValues for CompressedBinaryDocValues {
-    fn get(&self, doc_id: DocId) -> Result<Vec<u8>> {
-        CompressedBinaryDocValues::get64(self, i64::from(doc_id))
+    fn get(&mut self, doc_id: DocId) -> Result<Vec<u8>> {
+        self.get64(i64::from(doc_id))
     }
 }
 
-pub(crate) enum BoxedBinaryDocValuesEnum {
-    General(Box<dyn LongBinaryDocValues>),
+impl BinaryDocValuesProvider for CompressedBinaryDocValues {
+    fn get(&self) -> Result<Box<dyn BinaryDocValues>> {
+        Ok(Box::new(self.clone()?))
+    }
+}
+
+pub(crate) enum TailoredBoxedBinaryDocValuesEnum {
+    Fixed(FixedBinaryDocValues),
+    Variable(VariableBinaryDocValues<MixinMonotonicLongValues>),
     Compressed(CompressedBinaryDocValues),
+}
+
+impl TailoredBoxedBinaryDocValuesEnum {
+    pub fn clone(&self) -> Result<Self> {
+        match self {
+            TailoredBoxedBinaryDocValuesEnum::Fixed(b) => {
+                b.clone().map(TailoredBoxedBinaryDocValuesEnum::Fixed)
+            }
+            TailoredBoxedBinaryDocValuesEnum::Variable(b) => {
+                b.clone().map(TailoredBoxedBinaryDocValuesEnum::Variable)
+            }
+            TailoredBoxedBinaryDocValuesEnum::Compressed(b) => {
+                b.clone().map(TailoredBoxedBinaryDocValuesEnum::Compressed)
+            }
+        }
+    }
+}
+
+impl LongBinaryDocValues for TailoredBoxedBinaryDocValuesEnum {
+    fn get64(&mut self, doc_id: i64) -> Result<Vec<u8>> {
+        match self {
+            TailoredBoxedBinaryDocValuesEnum::Fixed(b) => b.get64(doc_id),
+            TailoredBoxedBinaryDocValuesEnum::Variable(b) => b.get64(doc_id),
+            TailoredBoxedBinaryDocValuesEnum::Compressed(b) => b.get64(doc_id),
+        }
+    }
+
+    fn clone_long(&self) -> Result<Box<dyn LongBinaryDocValues>> {
+        match self {
+            TailoredBoxedBinaryDocValuesEnum::Fixed(b) => Ok(Box::new(b.clone()?)),
+            TailoredBoxedBinaryDocValuesEnum::Variable(b) => Ok(Box::new(b.clone()?)),
+            TailoredBoxedBinaryDocValuesEnum::Compressed(b) => Ok(Box::new(b.clone()?)),
+        }
+    }
+}
+
+impl BinaryDocValues for TailoredBoxedBinaryDocValuesEnum {
+    fn get(&mut self, doc_id: DocId) -> Result<Vec<u8>> {
+        match self {
+            TailoredBoxedBinaryDocValuesEnum::Fixed(b) => b.get(doc_id),
+            TailoredBoxedBinaryDocValuesEnum::Variable(b) => b.get(doc_id),
+            TailoredBoxedBinaryDocValuesEnum::Compressed(b) => b.get(doc_id),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) enum NumericLongValuesEnum {
+    Live(LiveLongValues),
+    Delta(DeltaLongValues),
+    Gcd(GcdLongValues),
+    Table(TableLongValues),
+    Sparse(SparseLongValues<MixinMonotonicLongValues>),
+}
+
+impl LongValues for NumericLongValuesEnum {
+    fn get64(&self, index: i64) -> Result<i64> {
+        match self {
+            NumericLongValuesEnum::Live(l) => l.get64(index),
+            NumericLongValuesEnum::Delta(l) => l.get64(index),
+            NumericLongValuesEnum::Gcd(l) => l.get64(index),
+            NumericLongValuesEnum::Table(l) => l.get64(index),
+            NumericLongValuesEnum::Sparse(l) => l.get64(index),
+        }
+    }
+
+    fn get64_mut(&mut self, index: i64) -> Result<i64> {
+        match self {
+            NumericLongValuesEnum::Live(l) => l.get64_mut(index),
+            NumericLongValuesEnum::Delta(l) => l.get64_mut(index),
+            NumericLongValuesEnum::Gcd(l) => l.get64_mut(index),
+            NumericLongValuesEnum::Table(l) => l.get64_mut(index),
+            NumericLongValuesEnum::Sparse(l) => l.get64_mut(index),
+        }
+    }
+}
+
+impl NumericDocValuesProvider for NumericLongValuesEnum {
+    fn get(&self) -> Result<Box<dyn NumericDocValues>> {
+        match self {
+            NumericLongValuesEnum::Live(l) => Ok(Box::new(l.clone())),
+            NumericLongValuesEnum::Delta(l) => Ok(Box::new(l.clone())),
+            NumericLongValuesEnum::Gcd(l) => Ok(Box::new(l.clone())),
+            NumericLongValuesEnum::Table(l) => Ok(Box::new(l.clone())),
+            NumericLongValuesEnum::Sparse(l) => Ok(l.clone_box()),
+        }
+    }
+}
+
+impl NumericDocValues for NumericLongValuesEnum {
+    fn get(&self, doc_id: DocId) -> Result<i64> {
+        match self {
+            NumericLongValuesEnum::Live(l) => l.get(doc_id),
+            NumericLongValuesEnum::Delta(l) => l.get(doc_id),
+            NumericLongValuesEnum::Gcd(l) => l.get(doc_id),
+            NumericLongValuesEnum::Table(l) => l.get(doc_id),
+            NumericLongValuesEnum::Sparse(l) => NumericDocValues::get(l, doc_id),
+        }
+    }
+
+    fn get_mut(&mut self, doc_id: DocId) -> Result<i64> {
+        match self {
+            NumericLongValuesEnum::Live(l) => l.get_mut(doc_id),
+            NumericLongValuesEnum::Delta(l) => l.get_mut(doc_id),
+            NumericLongValuesEnum::Gcd(l) => l.get_mut(doc_id),
+            NumericLongValuesEnum::Table(l) => l.get_mut(doc_id),
+            NumericLongValuesEnum::Sparse(l) => NumericDocValues::get_mut(l, doc_id),
+        }
+    }
+}
+
+impl CloneableNumericDocValues for NumericLongValuesEnum {
+    fn clone_box(&self) -> Box<dyn NumericDocValues> {
+        match self {
+            NumericLongValuesEnum::Live(l) => Box::new(l.clone()),
+            NumericLongValuesEnum::Delta(l) => Box::new(l.clone()),
+            NumericLongValuesEnum::Gcd(l) => Box::new(l.clone()),
+            NumericLongValuesEnum::Table(l) => Box::new(l.clone()),
+            NumericLongValuesEnum::Sparse(l) => l.clone_box(),
+        }
+    }
 }

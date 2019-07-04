@@ -685,7 +685,7 @@ pub fn get_segment_file_name<D: Directory>(directory: &D) -> Result<String> {
 /// commit finishing.
 pub fn run_with_find_segment_file<T, Output, D: Directory>(
     directory: &Arc<D>,
-    commit: Option<&IndexCommit<D>>,
+    commit: Option<&dyn IndexCommit<D>>,
     do_body: T,
 ) -> Result<Output>
 where
@@ -878,11 +878,11 @@ impl<D: Directory, C: Codec> SegmentCoreReaders<D, C> {
     //        self.core_field_infos.field_info_by_name(field)
     //    }
     //
-    //    fn sorted_doc_values(&self, _field: &str) -> Box<SortedDocValues> {
+    //    fn sorted_doc_values(&self, _field: &str) -> Box<dyn SortedDocValues> {
     //        unimplemented!()
     //    }
     //
-    //    fn sorted_set_doc_values(&self, _field: &str) -> Box<SortedSetDocValues> {
+    //    fn sorted_set_doc_values(&self, _field: &str) -> Box<dyn SortedSetDocValues> {
     //        unimplemented!()
     //    }
 }

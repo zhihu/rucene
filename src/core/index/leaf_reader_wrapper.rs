@@ -17,31 +17,32 @@ use core::codec::{
     StoredFieldsReader, TermVectorsReader,
 };
 use core::index::sorter::{PackedLongDocMap, SorterDocMap};
-use core::index::SegmentReader;
-use core::index::StoredFieldVisitor;
-use core::index::{BinaryDocValues, BinaryDocValuesRef};
-use core::index::{DocValuesTermIterator, LeafReader};
+use core::index::BinaryDocValues;
+use core::index::NumericDocValues;
+use core::index::{
+    BinaryDocValuesProvider, NumericDocValuesProvider, SortedDocValuesProvider,
+    SortedNumericDocValuesProvider, SortedSetDocValuesProvider, StoredFieldVisitor,
+};
+use core::index::{
+    DocValuesTermIterator, SortedDocValues, SortedNumericDocValues, SortedSetDocValues,
+};
 use core::index::{FieldInfo, FieldInfos, Fields, IndexOptions};
 use core::index::{IntersectVisitor, PointValues, Relation};
-use core::index::{NumericDocValues, NumericDocValuesRef};
+use core::index::{LeafReader, SegmentReader};
 use core::index::{SeekStatus, TermIterator, Terms};
-use core::index::{SortedDocValues, SortedDocValuesRef};
-use core::index::{
-    SortedNumericDocValues, SortedNumericDocValuesContext, SortedNumericDocValuesRef,
-};
-use core::index::{SortedSetDocValues, SortedSetDocValuesContext, SortedSetDocValuesRef};
 use core::search::posting_iterator::{PostingIterator, PostingIteratorFlags};
 use core::search::sort::Sort;
 use core::search::{DocIterator, Payload, NO_MORE_DOCS};
 use core::store::{DataInput, Directory, IndexInput, IndexOutput, RAMOutputStream};
 use core::util::external::deferred::Deferred;
 use core::util::fst::bytes_store::{BytesStore, StoreBytesReader};
-use core::util::{Bits, BitsContext, BitsRef, DocId};
+use core::util::{Bits, BitsMut, BitsRef, DocId};
 
 use error::{ErrorKind::IllegalArgument, Result};
 
 use std::any::Any;
 use std::mem;
+use std::ops::DerefMut;
 use std::sync::Arc;
 
 /// This is a hack to make index sorting fast, with a `LeafReader` that
@@ -118,7 +119,7 @@ impl<D: Directory + 'static, C: Codec> LeafReader for MergeReaderWrapper<D, C> {
         }
     }
 
-    fn document(&self, doc_id: i32, visitor: &mut StoredFieldVisitor) -> Result<()> {
+    fn document(&self, doc_id: i32, visitor: &mut dyn StoredFieldVisitor) -> Result<()> {
         self.check_bounds(doc_id)?;
         self.store.visit_document(doc_id, visitor)
     }
@@ -147,49 +148,64 @@ impl<D: Directory + 'static, C: Codec> LeafReader for MergeReaderWrapper<D, C> {
         self.reader.num_docs()
     }
 
-    fn get_numeric_doc_values(&self, field: &str) -> Result<NumericDocValuesRef> {
+    fn get_numeric_doc_values(&self, field: &str) -> Result<Box<dyn NumericDocValues>> {
         if let Some(field_info) = self.field_info(field) {
-            self.doc_values.as_ref().unwrap().get_numeric(field_info)
-        } else {
-            bail!(IllegalArgument(format!("field '{}' not exist!", field)))
-        }
-    }
-
-    fn get_binary_doc_values(&self, field: &str) -> Result<BinaryDocValuesRef> {
-        if let Some(field_info) = self.field_info(field) {
-            Ok(self.doc_values.as_ref().unwrap().get_binary(field_info)?)
-        } else {
-            bail!(IllegalArgument(format!("field '{}' not exist!", field)))
-        }
-    }
-
-    fn get_sorted_doc_values(&self, field: &str) -> Result<SortedDocValuesRef> {
-        if let Some(field_info) = self.field_info(field) {
-            Ok(self.doc_values.as_ref().unwrap().get_sorted(field_info)?)
-        } else {
-            bail!(IllegalArgument(format!("field '{}' not exist!", field)))
-        }
-    }
-
-    fn get_sorted_numeric_doc_values(&self, field: &str) -> Result<SortedNumericDocValuesRef> {
-        if let Some(field_info) = self.field_info(field) {
-            Ok(self
-                .doc_values
+            self.doc_values
                 .as_ref()
                 .unwrap()
-                .get_sorted_numeric(field_info)?)
+                .get_numeric(field_info)?
+                .get()
         } else {
             bail!(IllegalArgument(format!("field '{}' not exist!", field)))
         }
     }
 
-    fn get_sorted_set_doc_values(&self, field: &str) -> Result<SortedSetDocValuesRef> {
+    fn get_binary_doc_values(&self, field: &str) -> Result<Box<dyn BinaryDocValues>> {
         if let Some(field_info) = self.field_info(field) {
-            Ok(self
-                .doc_values
+            self.doc_values
                 .as_ref()
                 .unwrap()
-                .get_sorted_set(field_info)?)
+                .get_binary(field_info)?
+                .get()
+        } else {
+            bail!(IllegalArgument(format!("field '{}' not exist!", field)))
+        }
+    }
+
+    fn get_sorted_doc_values(&self, field: &str) -> Result<Box<dyn SortedDocValues>> {
+        if let Some(field_info) = self.field_info(field) {
+            self.doc_values
+                .as_ref()
+                .unwrap()
+                .get_sorted(field_info)?
+                .get()
+        } else {
+            bail!(IllegalArgument(format!("field '{}' not exist!", field)))
+        }
+    }
+
+    fn get_sorted_numeric_doc_values(
+        &self,
+        field: &str,
+    ) -> Result<Box<dyn SortedNumericDocValues>> {
+        if let Some(field_info) = self.field_info(field) {
+            self.doc_values
+                .as_ref()
+                .unwrap()
+                .get_sorted_numeric(field_info)?
+                .get()
+        } else {
+            bail!(IllegalArgument(format!("field '{}' not exist!", field)))
+        }
+    }
+
+    fn get_sorted_set_doc_values(&self, field: &str) -> Result<Box<dyn SortedSetDocValues>> {
+        if let Some(field_info) = self.field_info(field) {
+            self.doc_values
+                .as_ref()
+                .unwrap()
+                .get_sorted_set(field_info)?
+                .get()
         } else {
             bail!(IllegalArgument(format!("field '{}' not exist!", field)))
         }
@@ -204,7 +220,7 @@ impl<D: Directory + 'static, C: Codec> LeafReader for MergeReaderWrapper<D, C> {
         Ok(None)
     }
 
-    fn get_docs_with_field(&self, field: &str) -> Result<BitsRef> {
+    fn get_docs_with_field(&self, field: &str) -> Result<Box<dyn BitsMut>> {
         if let Some(field_info) = self.field_info(field) {
             self.doc_values
                 .as_ref()
@@ -300,7 +316,7 @@ impl<T: LeafReader + 'static> LeafReader for SortingLeafReader<T> {
         self.reader.term_vector(self.doc_map.new_to_old(doc_id))
     }
 
-    fn document(&self, doc_id: DocId, visitor: &mut StoredFieldVisitor) -> Result<()> {
+    fn document(&self, doc_id: DocId, visitor: &mut dyn StoredFieldVisitor) -> Result<()> {
         self.reader
             .document(self.doc_map.new_to_old(doc_id), visitor)
     }
@@ -332,36 +348,39 @@ impl<T: LeafReader + 'static> LeafReader for SortingLeafReader<T> {
         self.reader.num_docs()
     }
 
-    fn get_numeric_doc_values(&self, field: &str) -> Result<NumericDocValuesRef> {
-        Ok(Arc::new(SortingNumericDocValues::new(
+    fn get_numeric_doc_values(&self, field: &str) -> Result<Box<dyn NumericDocValues>> {
+        Ok(Box::new(SortingNumericDocValues::new(
             self.reader.get_numeric_doc_values(field)?,
             Arc::clone(&self.doc_map),
         )))
     }
 
-    fn get_binary_doc_values(&self, field: &str) -> Result<BinaryDocValuesRef> {
-        Ok(Arc::new(SortingBinaryDocValues::new(
+    fn get_binary_doc_values(&self, field: &str) -> Result<Box<dyn BinaryDocValues>> {
+        Ok(Box::new(SortingBinaryDocValues::new(
             self.reader.get_binary_doc_values(field)?,
             Arc::clone(&self.doc_map),
         )))
     }
 
-    fn get_sorted_doc_values(&self, field: &str) -> Result<SortedDocValuesRef> {
-        Ok(Arc::new(SortingSortedDocValues::new(
+    fn get_sorted_doc_values(&self, field: &str) -> Result<Box<dyn SortedDocValues>> {
+        Ok(Box::new(SortingSortedDocValues::new(
             self.reader.get_sorted_doc_values(field)?,
             Arc::clone(&self.doc_map),
         )))
     }
 
-    fn get_sorted_numeric_doc_values(&self, field: &str) -> Result<SortedNumericDocValuesRef> {
-        Ok(Arc::new(SortingSortedNumericDocValues::new(
+    fn get_sorted_numeric_doc_values(
+        &self,
+        field: &str,
+    ) -> Result<Box<dyn SortedNumericDocValues>> {
+        Ok(Box::new(SortingSortedNumericDocValues::new(
             self.reader.get_sorted_numeric_doc_values(field)?,
             Arc::clone(&self.doc_map),
         )))
     }
 
-    fn get_sorted_set_doc_values(&self, field: &str) -> Result<SortedSetDocValuesRef> {
-        Ok(Arc::new(SortingSortedSetDocValues::new(
+    fn get_sorted_set_doc_values(&self, field: &str) -> Result<Box<dyn SortedSetDocValues>> {
+        Ok(Box::new(SortingSortedSetDocValues::new(
             self.reader.get_sorted_set_doc_values(field)?,
             Arc::clone(&self.doc_map),
         )))
@@ -377,8 +396,8 @@ impl<T: LeafReader + 'static> LeafReader for SortingLeafReader<T> {
         }
     }
 
-    fn get_docs_with_field(&self, field: &str) -> Result<BitsRef> {
-        Ok(Arc::new(SortingBits::new(
+    fn get_docs_with_field(&self, field: &str) -> Result<Box<dyn BitsMut>> {
+        Ok(Box::new(SortingBitsMut::new(
             self.reader.get_docs_with_field(field)?,
             Arc::clone(&self.doc_map),
         )))
@@ -1038,12 +1057,12 @@ impl<T: PostingIterator> DocIterator for SortingPostingIterEnum<T> {
 }
 
 pub struct SortingBinaryDocValues {
-    doc_values: BinaryDocValuesRef,
+    doc_values: Box<dyn BinaryDocValues>,
     doc_map: Arc<PackedLongDocMap>,
 }
 
 impl SortingBinaryDocValues {
-    fn new(doc_values: BinaryDocValuesRef, doc_map: Arc<PackedLongDocMap>) -> Self {
+    fn new(doc_values: Box<dyn BinaryDocValues>, doc_map: Arc<PackedLongDocMap>) -> Self {
         SortingBinaryDocValues {
             doc_map,
             doc_values,
@@ -1052,17 +1071,17 @@ impl SortingBinaryDocValues {
 }
 
 impl BinaryDocValues for SortingBinaryDocValues {
-    fn get(&self, doc_id: i32) -> Result<Vec<u8>> {
+    fn get(&mut self, doc_id: i32) -> Result<Vec<u8>> {
         self.doc_values.get(self.doc_map.new_to_old(doc_id))
     }
 }
 
-pub struct SortingNumericDocValues<T: AsRef<NumericDocValues> + Send + Sync> {
+pub struct SortingNumericDocValues<T> {
     doc_values: T,
     doc_map: Arc<PackedLongDocMap>,
 }
 
-impl<T: AsRef<NumericDocValues> + Send + Sync> SortingNumericDocValues<T> {
+impl<T> SortingNumericDocValues<T> {
     fn new(doc_values: T, doc_map: Arc<PackedLongDocMap>) -> Self {
         SortingNumericDocValues {
             doc_map,
@@ -1071,21 +1090,25 @@ impl<T: AsRef<NumericDocValues> + Send + Sync> SortingNumericDocValues<T> {
     }
 }
 
-impl<T: AsRef<NumericDocValues> + Send + Sync> NumericDocValues for SortingNumericDocValues<T> {
-    fn get_with_ctx(&self, ctx: Option<[u8; 64]>, doc_id: i32) -> Result<(i64, Option<[u8; 64]>)> {
-        self.doc_values
-            .as_ref()
-            .get_with_ctx(ctx, self.doc_map.new_to_old(doc_id))
+impl<T: DerefMut<Target = NumericDocValues> + Send + Sync> NumericDocValues
+    for SortingNumericDocValues<T>
+{
+    fn get(&self, doc_id: DocId) -> Result<i64> {
+        (*self.doc_values).get(self.doc_map.new_to_old(doc_id))
+    }
+
+    fn get_mut(&mut self, doc_id: DocId) -> Result<i64> {
+        (*self.doc_values).get_mut(self.doc_map.new_to_old(doc_id))
     }
 }
 
 struct SortingSortedNumericDocValues {
-    doc_values: SortedNumericDocValuesRef,
+    doc_values: Box<dyn SortedNumericDocValues>,
     doc_map: Arc<PackedLongDocMap>,
 }
 
 impl SortingSortedNumericDocValues {
-    fn new(doc_values: SortedNumericDocValuesRef, doc_map: Arc<PackedLongDocMap>) -> Self {
+    fn new(doc_values: Box<dyn SortedNumericDocValues>, doc_map: Arc<PackedLongDocMap>) -> Self {
         SortingSortedNumericDocValues {
             doc_map,
             doc_values,
@@ -1094,43 +1117,39 @@ impl SortingSortedNumericDocValues {
 }
 
 impl SortedNumericDocValues for SortingSortedNumericDocValues {
-    fn set_document(
-        &self,
-        ctx: Option<SortedNumericDocValuesContext>,
-        doc: i32,
-    ) -> Result<SortedNumericDocValuesContext> {
-        self.doc_values
-            .set_document(ctx, self.doc_map.new_to_old(doc))
+    fn set_document(&mut self, doc: i32) -> Result<()> {
+        let doc_id = self.doc_map.new_to_old(doc);
+        self.doc_values.set_document(doc_id)
     }
 
-    fn value_at(&self, ctx: &SortedNumericDocValuesContext, index: usize) -> Result<i64> {
-        self.doc_values.value_at(ctx, index)
+    fn value_at(&mut self, index: usize) -> Result<i64> {
+        self.doc_values.value_at(index)
     }
 
-    fn count(&self, ctx: &SortedNumericDocValuesContext) -> usize {
-        self.doc_values.count(ctx)
+    fn count(&self) -> usize {
+        self.doc_values.count()
     }
 
-    fn get_numeric_doc_values(&self) -> Option<Arc<dyn NumericDocValues>> {
+    fn get_numeric_doc_values(&self) -> Option<Box<dyn NumericDocValues>> {
         self.doc_values.get_numeric_doc_values()
     }
 }
 
 struct SortingBits {
-    bits: BitsRef,
+    bits: Arc<dyn Bits>,
     doc_map: Arc<PackedLongDocMap>,
 }
 
 impl SortingBits {
-    fn new(bits: BitsRef, doc_map: Arc<PackedLongDocMap>) -> Self {
+    fn new(bits: Arc<dyn Bits>, doc_map: Arc<PackedLongDocMap>) -> Self {
         SortingBits { bits, doc_map }
     }
 }
 
 impl Bits for SortingBits {
-    fn get_with_ctx(&self, ctx: BitsContext, index: usize) -> Result<(bool, BitsContext)> {
+    fn get(&self, index: usize) -> Result<bool> {
         self.bits
-            .get_with_ctx(ctx, self.doc_map.new_to_old(index as i32) as usize)
+            .get(self.doc_map.new_to_old(index as i32) as usize)
     }
 
     fn len(&self) -> usize {
@@ -1139,6 +1158,28 @@ impl Bits for SortingBits {
 
     fn is_empty(&self) -> bool {
         self.bits.is_empty()
+    }
+}
+
+struct SortingBitsMut {
+    bits: Box<dyn BitsMut>,
+    doc_map: Arc<PackedLongDocMap>,
+}
+
+impl SortingBitsMut {
+    fn new(bits: Box<dyn BitsMut>, doc_map: Arc<PackedLongDocMap>) -> Self {
+        SortingBitsMut { bits, doc_map }
+    }
+}
+
+impl BitsMut for SortingBitsMut {
+    fn get(&mut self, index: usize) -> Result<bool> {
+        let idx = self.doc_map.new_to_old(index as i32) as usize;
+        self.bits.get(idx)
+    }
+
+    fn len(&self) -> usize {
+        self.bits.len()
     }
 }
 
@@ -1190,7 +1231,7 @@ impl<P: PointValues + 'static> PointValues for SortingPointValues<P> {
         self.point_values.doc_count(field_name)
     }
 
-    fn as_any(&self) -> &Any {
+    fn as_any(&self) -> &dyn Any {
         self
     }
 }
@@ -1217,12 +1258,12 @@ impl<'a, IV: IntersectVisitor> IntersectVisitor for SortingIntersectVisitor<'a, 
 }
 
 struct SortingSortedDocValues {
-    doc_values: SortedDocValuesRef,
+    doc_values: Box<dyn SortedDocValues>,
     doc_map: Arc<PackedLongDocMap>,
 }
 
 impl SortingSortedDocValues {
-    fn new(doc_values: SortedDocValuesRef, doc_map: Arc<PackedLongDocMap>) -> Self {
+    fn new(doc_values: Box<dyn SortedDocValues>, doc_map: Arc<PackedLongDocMap>) -> Self {
         SortingSortedDocValues {
             doc_map,
             doc_values,
@@ -1231,16 +1272,16 @@ impl SortingSortedDocValues {
 }
 
 impl SortedDocValues for SortingSortedDocValues {
-    fn get_ord(&self, doc_id: i32) -> Result<i32> {
+    fn get_ord(&mut self, doc_id: i32) -> Result<i32> {
         self.doc_values.get_ord(self.doc_map.new_to_old(doc_id))
     }
 
-    fn lookup_ord(&self, ord: i32) -> Result<Vec<u8>> {
+    fn lookup_ord(&mut self, ord: i32) -> Result<Vec<u8>> {
         self.doc_values.lookup_ord(ord)
     }
 
-    fn get_value_count(&self) -> usize {
-        self.doc_values.get_value_count()
+    fn value_count(&self) -> usize {
+        self.doc_values.value_count()
     }
 
     fn term_iterator(&self) -> Result<DocValuesTermIterator> {
@@ -1249,18 +1290,18 @@ impl SortedDocValues for SortingSortedDocValues {
 }
 
 impl BinaryDocValues for SortingSortedDocValues {
-    fn get(&self, doc_id: DocId) -> Result<Vec<u8>> {
+    fn get(&mut self, doc_id: DocId) -> Result<Vec<u8>> {
         self.doc_values.get(self.doc_map.new_to_old(doc_id))
     }
 }
 
 struct SortingSortedSetDocValues {
-    doc_values: SortedSetDocValuesRef,
+    doc_values: Box<dyn SortedSetDocValues>,
     doc_map: Arc<PackedLongDocMap>,
 }
 
 impl SortingSortedSetDocValues {
-    fn new(doc_values: SortedSetDocValuesRef, doc_map: Arc<PackedLongDocMap>) -> Self {
+    fn new(doc_values: Box<dyn SortedSetDocValues>, doc_map: Arc<PackedLongDocMap>) -> Self {
         SortingSortedSetDocValues {
             doc_map,
             doc_values,
@@ -1269,15 +1310,15 @@ impl SortingSortedSetDocValues {
 }
 
 impl SortedSetDocValues for SortingSortedSetDocValues {
-    fn set_document(&self, doc: DocId) -> Result<SortedSetDocValuesContext> {
+    fn set_document(&mut self, doc: DocId) -> Result<()> {
         self.doc_values.set_document(self.doc_map.new_to_old(doc))
     }
 
-    fn next_ord(&self, ctx: &mut SortedSetDocValuesContext) -> Result<i64> {
-        self.doc_values.next_ord(ctx)
+    fn next_ord(&mut self) -> Result<i64> {
+        self.doc_values.next_ord()
     }
 
-    fn lookup_ord(&self, ord: i64) -> Result<Vec<u8>> {
+    fn lookup_ord(&mut self, ord: i64) -> Result<Vec<u8>> {
         self.doc_values.lookup_ord(ord)
     }
 
@@ -1285,7 +1326,7 @@ impl SortedSetDocValues for SortingSortedSetDocValues {
         self.doc_values.get_value_count()
     }
 
-    fn lookup_term(&self, key: &[u8]) -> Result<i64> {
+    fn lookup_term(&mut self, key: &[u8]) -> Result<i64> {
         self.doc_values.lookup_term(key)
     }
 
@@ -1331,7 +1372,7 @@ impl<T: LeafReader + 'static> LeafReader for SlowCodecReaderWrapper<T> {
         self.reader.term_vector(doc_id)
     }
 
-    fn document(&self, doc_id: DocId, visitor: &mut StoredFieldVisitor) -> Result<()> {
+    fn document(&self, doc_id: DocId, visitor: &mut dyn StoredFieldVisitor) -> Result<()> {
         self.reader.document(doc_id, visitor)
     }
 
@@ -1359,23 +1400,26 @@ impl<T: LeafReader + 'static> LeafReader for SlowCodecReaderWrapper<T> {
         self.reader.num_docs()
     }
 
-    fn get_numeric_doc_values(&self, field: &str) -> Result<NumericDocValuesRef> {
+    fn get_numeric_doc_values(&self, field: &str) -> Result<Box<dyn NumericDocValues>> {
         self.reader.get_numeric_doc_values(field)
     }
 
-    fn get_binary_doc_values(&self, field: &str) -> Result<BinaryDocValuesRef> {
+    fn get_binary_doc_values(&self, field: &str) -> Result<Box<dyn BinaryDocValues>> {
         self.reader.get_binary_doc_values(field)
     }
 
-    fn get_sorted_doc_values(&self, field: &str) -> Result<SortedDocValuesRef> {
+    fn get_sorted_doc_values(&self, field: &str) -> Result<Box<dyn SortedDocValues>> {
         self.reader.get_sorted_doc_values(field)
     }
 
-    fn get_sorted_numeric_doc_values(&self, field: &str) -> Result<SortedNumericDocValuesRef> {
+    fn get_sorted_numeric_doc_values(
+        &self,
+        field: &str,
+    ) -> Result<Box<dyn SortedNumericDocValues>> {
         self.reader.get_sorted_numeric_doc_values(field)
     }
 
-    fn get_sorted_set_doc_values(&self, field: &str) -> Result<SortedSetDocValuesRef> {
+    fn get_sorted_set_doc_values(&self, field: &str) -> Result<Box<dyn SortedSetDocValues>> {
         self.reader.get_sorted_set_doc_values(field)
     }
 
@@ -1383,7 +1427,7 @@ impl<T: LeafReader + 'static> LeafReader for SlowCodecReaderWrapper<T> {
         self.reader.norm_values(field)
     }
 
-    fn get_docs_with_field(&self, field: &str) -> Result<BitsRef> {
+    fn get_docs_with_field(&self, field: &str) -> Result<Box<dyn BitsMut>> {
         self.reader.get_docs_with_field(field)
     }
 
@@ -1469,7 +1513,7 @@ impl<T: LeafReader + 'static> StoredFieldsReader for LeafReaderAsStoreFieldsRead
     fn visit_document_mut(
         &mut self,
         doc_id: DocId,
-        visitor: &mut StoredFieldVisitor,
+        visitor: &mut dyn StoredFieldVisitor,
     ) -> Result<()> {
         self.visit_document(doc_id, visitor)
     }
@@ -1478,7 +1522,7 @@ impl<T: LeafReader + 'static> StoredFieldsReader for LeafReaderAsStoreFieldsRead
         Ok(LeafReaderAsStoreFieldsReader::new(Arc::clone(&self.reader)))
     }
 
-    fn as_any(&self) -> &Any {
+    fn as_any(&self) -> &dyn Any {
         self
     }
 }
@@ -1499,7 +1543,7 @@ impl<T: LeafReader + 'static> TermVectorsReader for LeafReaderAsTermVectorsReade
         self.reader.term_vector(doc)
     }
 
-    fn as_any(&self) -> &Any {
+    fn as_any(&self) -> &dyn Any {
         self
     }
 }
@@ -1536,6 +1580,44 @@ impl<T: LeafReader> Clone for LeafReaderAsNormsProducer<T> {
     }
 }
 
+struct LeafReaderAsDVFieldProvider<T: LeafReader> {
+    reader: Arc<T>,
+    field_name: String,
+}
+
+unsafe impl<L: LeafReader> Send for LeafReaderAsDVFieldProvider<L> {}
+unsafe impl<L: LeafReader> Sync for LeafReaderAsDVFieldProvider<L> {}
+
+impl<T: LeafReader> BinaryDocValuesProvider for LeafReaderAsDVFieldProvider<T> {
+    fn get(&self) -> Result<Box<dyn BinaryDocValues>> {
+        self.reader.get_binary_doc_values(&self.field_name)
+    }
+}
+
+impl<T: LeafReader> NumericDocValuesProvider for LeafReaderAsDVFieldProvider<T> {
+    fn get(&self) -> Result<Box<dyn NumericDocValues>> {
+        self.reader.get_numeric_doc_values(&self.field_name)
+    }
+}
+
+impl<T: LeafReader> SortedDocValuesProvider for LeafReaderAsDVFieldProvider<T> {
+    fn get(&self) -> Result<Box<dyn SortedDocValues>> {
+        self.reader.get_sorted_doc_values(&self.field_name)
+    }
+}
+
+impl<T: LeafReader> SortedNumericDocValuesProvider for LeafReaderAsDVFieldProvider<T> {
+    fn get(&self) -> Result<Box<dyn SortedNumericDocValues>> {
+        self.reader.get_sorted_numeric_doc_values(&self.field_name)
+    }
+}
+
+impl<T: LeafReader> SortedSetDocValuesProvider for LeafReaderAsDVFieldProvider<T> {
+    fn get(&self) -> Result<Box<dyn SortedSetDocValues>> {
+        self.reader.get_sorted_set_doc_values(&self.field_name)
+    }
+}
+
 struct LeafReaderAsDocValuesProducer<T: LeafReader> {
     reader: Arc<T>,
 }
@@ -1547,25 +1629,45 @@ impl<T: LeafReader> LeafReaderAsDocValuesProducer<T> {
 }
 
 impl<T: LeafReader + 'static> DocValuesProducer for LeafReaderAsDocValuesProducer<T> {
-    fn get_numeric(&self, field_info: &FieldInfo) -> Result<Arc<dyn NumericDocValues>> {
-        self.reader.get_numeric_doc_values(&field_info.name)
+    fn get_numeric(&self, field_info: &FieldInfo) -> Result<Arc<dyn NumericDocValuesProvider>> {
+        Ok(Arc::new(LeafReaderAsDVFieldProvider {
+            reader: Arc::clone(&self.reader),
+            field_name: field_info.name.clone(),
+        }))
     }
-    fn get_binary(&self, field_info: &FieldInfo) -> Result<Arc<dyn BinaryDocValues>> {
-        self.reader.get_binary_doc_values(&field_info.name)
+    fn get_binary(&self, field_info: &FieldInfo) -> Result<Arc<dyn BinaryDocValuesProvider>> {
+        Ok(Arc::new(LeafReaderAsDVFieldProvider {
+            reader: Arc::clone(&self.reader),
+            field_name: field_info.name.clone(),
+        }))
     }
-    fn get_sorted(&self, field: &FieldInfo) -> Result<Arc<dyn SortedDocValues>> {
-        self.reader.get_sorted_doc_values(&field.name)
+    fn get_sorted(&self, field: &FieldInfo) -> Result<Arc<dyn SortedDocValuesProvider>> {
+        Ok(Arc::new(LeafReaderAsDVFieldProvider {
+            reader: Arc::clone(&self.reader),
+            field_name: field.name.clone(),
+        }))
     }
-    fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Arc<dyn SortedNumericDocValues>> {
-        self.reader.get_sorted_numeric_doc_values(&field.name)
+
+    fn get_sorted_numeric(
+        &self,
+        field: &FieldInfo,
+    ) -> Result<Arc<dyn SortedNumericDocValuesProvider>> {
+        Ok(Arc::new(LeafReaderAsDVFieldProvider {
+            reader: Arc::clone(&self.reader),
+            field_name: field.name.clone(),
+        }))
     }
-    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Arc<dyn SortedSetDocValues>> {
-        self.reader.get_sorted_set_doc_values(&field.name)
+
+    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Arc<dyn SortedSetDocValuesProvider>> {
+        Ok(Arc::new(LeafReaderAsDVFieldProvider {
+            reader: Arc::clone(&self.reader),
+            field_name: field.name.clone(),
+        }))
     }
     /// Returns a `bits` at the size of `reader.max_doc()`, with turned on bits for each doc_id
     /// that does have a value for this field.
     /// The returned instance need not be thread-safe: it will only be used by a single thread.
-    fn get_docs_with_field(&self, field: &FieldInfo) -> Result<BitsRef> {
+    fn get_docs_with_field(&self, field: &FieldInfo) -> Result<Box<dyn BitsMut>> {
         self.reader.get_docs_with_field(&field.name)
     }
     /// Checks consistency of this producer

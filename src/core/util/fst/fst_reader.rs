@@ -414,7 +414,7 @@ impl<F: OutputFactory> FST<F> {
         &self,
         label: Label,
         incoming_arc: &Arc<F::Value>,
-        bytes_reader: &mut BytesReader,
+        bytes_reader: &mut dyn BytesReader,
     ) -> Result<Option<Arc<F::Value>>> {
         self.find_target_arc_with_cache(label, &incoming_arc, bytes_reader, true)
     }
@@ -423,7 +423,7 @@ impl<F: OutputFactory> FST<F> {
         &self,
         label: Label,
         incoming_arc: &Arc<F::Value>,
-        bytes_reader: &mut BytesReader,
+        bytes_reader: &mut dyn BytesReader,
         use_root_arc_cache: bool,
     ) -> Result<Option<Arc<F::Value>>> {
         if label == END_LABEL {
@@ -535,7 +535,7 @@ impl<F: OutputFactory> FST<F> {
         target > 0
     }
 
-    fn read_label(&self, reader: &mut BytesReader) -> Result<Label> {
+    fn read_label(&self, reader: &mut dyn BytesReader) -> Result<Label> {
         match self.input_type {
             InputType::Byte1 => reader.read_byte().map(Label::from),
             InputType::Byte2 => reader.read_short().map(Label::from),
@@ -546,7 +546,7 @@ impl<F: OutputFactory> FST<F> {
     pub fn read_first_real_arc(
         &self,
         node: CompiledAddress,
-        bytes_reader: &mut BytesReader,
+        bytes_reader: &mut dyn BytesReader,
     ) -> Result<Arc<F::Value>> {
         bytes_reader.set_position(node as usize);
 
@@ -570,7 +570,7 @@ impl<F: OutputFactory> FST<F> {
     pub fn read_first_target_arc(
         &self,
         follow: &Arc<F::Value>,
-        input: &mut BytesReader,
+        input: &mut dyn BytesReader,
     ) -> Result<Arc<F::Value>> {
         if follow.is_final() {
             let mut arc = Arc::empty();
@@ -592,7 +592,7 @@ impl<F: OutputFactory> FST<F> {
     pub fn read_next_arc(
         &self,
         arc: &mut Arc<F::Value>,
-        bytes_reader: &mut BytesReader,
+        bytes_reader: &mut dyn BytesReader,
     ) -> Result<()> {
         if arc.label == END_LABEL {
             // This was a fake inserted "final" arc
@@ -612,7 +612,7 @@ impl<F: OutputFactory> FST<F> {
     pub fn read_next_real_arc(
         &self,
         arc: &mut Arc<F::Value>,
-        bytes_reader: &mut BytesReader,
+        bytes_reader: &mut dyn BytesReader,
     ) -> Result<()> {
         if arc.bytes_per_arc > 0 {
             debug_assert!(arc.arc_index < arc.num_arcs);
@@ -658,7 +658,7 @@ impl<F: OutputFactory> FST<F> {
         Ok(())
     }
 
-    fn seek_to_next_node(&self, bytes_reader: &mut BytesReader) -> Result<()> {
+    fn seek_to_next_node(&self, bytes_reader: &mut dyn BytesReader) -> Result<()> {
         loop {
             let flags = bytes_reader.read_byte()?;
             self.read_label(bytes_reader)?;
@@ -679,7 +679,7 @@ impl<F: OutputFactory> FST<F> {
         }
     }
 
-    fn read_unpacked_node(&self, bytes_reader: &mut BytesReader) -> Result<CompiledAddress> {
+    fn read_unpacked_node(&self, bytes_reader: &mut dyn BytesReader) -> Result<CompiledAddress> {
         if self.version < VERSION_VINT_TARGET {
             bytes_reader.read_int().map(|x| x as CompiledAddress)
         } else {

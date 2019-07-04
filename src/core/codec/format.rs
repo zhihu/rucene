@@ -13,14 +13,14 @@
 
 use core::codec::*;
 use core::index::{
-    BinaryDocValuesRef, FieldInfo, FieldInfos, MergeState, NumericDocValues, PointValues,
-    SegmentCommitInfo, SegmentInfo, SegmentReadState, SegmentWriteState, SortedDocValuesRef,
-    SortedNumericDocValuesRef, SortedSetDocValuesRef,
+    BinaryDocValues, FieldInfo, FieldInfos, MergeState, NumericDocValues, PointValues,
+    SegmentCommitInfo, SegmentInfo, SegmentReadState, SegmentWriteState, SortedDocValues,
+    SortedNumericDocValues, SortedSetDocValues,
 };
 use core::store::{Directory, IOContext, IndexOutput};
 use core::util::bit_set::FixedBitSet;
 use core::util::string_util::ID_LENGTH;
-use core::util::{numeric::Numeric, Bits, BitsRef, BytesRef, ReusableIterator};
+use core::util::{numeric::Numeric, Bits, BitsMut, BitsRef, BytesRef, ReusableIterator};
 
 use error::{ErrorKind::IllegalArgument, Result};
 
@@ -386,8 +386,8 @@ impl<D: Directory, DW: Directory, C: Codec> DocValuesConsumer for DocValuesConsu
         &mut self,
         field_info: &FieldInfo,
         merge_state: &MergeState<D1, C1>,
-        to_merge: &[Arc<dyn NumericDocValues>],
-        docs_with_field: &[BitsRef],
+        to_merge: Vec<Box<dyn NumericDocValues>>,
+        docs_with_field: Vec<Box<dyn BitsMut>>,
     ) -> Result<()> {
         match self {
             DocValuesConsumerEnum::Lucene54(d) => {
@@ -403,8 +403,8 @@ impl<D: Directory, DW: Directory, C: Codec> DocValuesConsumer for DocValuesConsu
         &mut self,
         field_info: &FieldInfo,
         merge_state: &MergeState<D1, C1>,
-        to_merge: &[BinaryDocValuesRef],
-        docs_with_field: &[BitsRef],
+        to_merge: Vec<Box<dyn BinaryDocValues>>,
+        docs_with_field: Vec<Box<dyn BitsMut>>,
     ) -> Result<()> {
         match self {
             DocValuesConsumerEnum::Lucene54(d) => {
@@ -420,7 +420,7 @@ impl<D: Directory, DW: Directory, C: Codec> DocValuesConsumer for DocValuesConsu
         &mut self,
         field_info: &FieldInfo,
         merge_state: &MergeState<D1, C1>,
-        to_merge: &[SortedDocValuesRef],
+        to_merge: Vec<Box<dyn SortedDocValues>>,
     ) -> Result<()> {
         match self {
             DocValuesConsumerEnum::Lucene54(d) => {
@@ -436,7 +436,7 @@ impl<D: Directory, DW: Directory, C: Codec> DocValuesConsumer for DocValuesConsu
         &mut self,
         field_info: &FieldInfo,
         merge_state: &MergeState<D1, C1>,
-        to_merge: &[SortedSetDocValuesRef],
+        to_merge: Vec<Box<dyn SortedSetDocValues>>,
     ) -> Result<()> {
         match self {
             DocValuesConsumerEnum::Lucene54(d) => {
@@ -452,7 +452,7 @@ impl<D: Directory, DW: Directory, C: Codec> DocValuesConsumer for DocValuesConsu
         &mut self,
         field_info: &FieldInfo,
         merge_state: &MergeState<D1, C1>,
-        to_merge: &[SortedNumericDocValuesRef],
+        to_merge: Vec<Box<dyn SortedNumericDocValues>>,
     ) -> Result<()> {
         match self {
             DocValuesConsumerEnum::Lucene54(d) => {
@@ -515,7 +515,7 @@ impl<O: IndexOutput> NormsConsumer for NormsConsumerEnum<O> {
         &mut self,
         field_info: &FieldInfo,
         merge_state: &MergeState<D, C>,
-        to_merge: &[Arc<dyn NumericDocValues>],
+        to_merge: Vec<Box<dyn NumericDocValues>>,
     ) -> Result<()> {
         match self {
             NormsConsumerEnum::Lucene53(w) => {
@@ -536,7 +536,7 @@ pub trait LiveDocsFormat {
     /// Creates a new Bits, with all bits set, for the specified size.
     fn new_live_docs(&self, size: usize) -> Result<FixedBitSet>;
     /// Creates a new mutablebits of the same bits set and size of existing.
-    fn new_live_docs_from_existing(&self, existing: &Bits) -> Result<BitsRef>;
+    fn new_live_docs_from_existing(&self, existing: &dyn Bits) -> Result<BitsRef>;
     /// Read live docs bits.
     fn read_live_docs<D: Directory, C: Codec>(
         &self,
@@ -550,7 +550,7 @@ pub trait LiveDocsFormat {
     /// generation of the deletes file you should write to. */
     fn write_live_docs<D: Directory, D1: Directory, C: Codec>(
         &self,
-        bits: &Bits,
+        bits: &dyn Bits,
         dir: &D1,
         info: &SegmentCommitInfo<D, C>,
         new_del_count: i32,

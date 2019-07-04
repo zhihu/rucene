@@ -86,11 +86,11 @@ impl FastVectorHighlighter {
         stored_field: &str,
         frag_char_size: i32,
         max_num_fragments: Option<i32>,
-        frag_list_builder: Option<&FragListBuilder>,
+        frag_list_builder: Option<&dyn FragListBuilder>,
         fragments_builder: Option<&BaseFragmentsBuilder>,
         pre_tags: Option<&[String]>,
         post_tags: Option<&[String]>,
-        encoder: Option<&Encoder>,
+        encoder: Option<&dyn Encoder>,
         score_order: Option<bool>,
     ) -> Result<Vec<String>> {
         let frag_list_builder = match frag_list_builder {
@@ -135,11 +135,11 @@ impl FastVectorHighlighter {
         matched_fields: &[String],
         frag_char_size: i32,
         max_num_fragments: Option<i32>,
-        frag_list_builder: &FragListBuilder,
+        frag_list_builder: &dyn FragListBuilder,
         fragments_builder: &BaseFragmentsBuilder,
         pre_tags: Option<&[String]>,
         post_tags: Option<&[String]>,
-        encoder: Option<&Encoder>,
+        encoder: Option<&dyn Encoder>,
         score_ordered: Option<bool>,
     ) -> Result<Vec<String>> {
         let mut field_frag_list = self.get_fields_frag_list(
@@ -167,14 +167,14 @@ impl FastVectorHighlighter {
     pub fn get_field_query<C: Codec>(
         &self,
         query: &dyn Query<C>,
-        reader: Option<&IndexReader<Codec = C>>,
+        reader: Option<&dyn IndexReader<Codec = C>>,
     ) -> Result<FieldQuery> {
         FieldQuery::new(query, reader, self.phrase_highlight, self.field_match)
     }
 
     fn get_field_frag_list<C: Codec>(
         &self,
-        frag_list_builder: &FragListBuilder,
+        frag_list_builder: &dyn FragListBuilder,
         field_query: &FieldQuery,
         reader: &LeafReaderContext<'_, C>,
         doc_id: DocId,
@@ -190,7 +190,7 @@ impl FastVectorHighlighter {
 
     fn get_fields_frag_list<C: Codec>(
         &self,
-        frag_list_builder: &FragListBuilder,
+        frag_list_builder: &dyn FragListBuilder,
         field_query: &FieldQuery,
         reader: &LeafReaderContext<'_, C>,
         doc_id: DocId,

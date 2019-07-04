@@ -250,7 +250,7 @@ pub(crate) trait TermsHashPerField: Ord + PartialOrd + Eq + PartialEq {
     fn add_by_offset(
         &mut self,
         state: &mut FieldInvertState,
-        token_stream: &TokenStream,
+        token_stream: &dyn TokenStream,
         doc_id: DocId,
         text_start: usize,
     ) -> Result<()> {
@@ -269,7 +269,7 @@ pub(crate) trait TermsHashPerField: Ord + PartialOrd + Eq + PartialEq {
     fn add(
         &mut self,
         field_state: &mut FieldInvertState,
-        token_stream: &TokenStream,
+        token_stream: &dyn TokenStream,
         doc_id: DocId,
     ) -> Result<()> {
         // We are first in the chain so we must "insert" the
@@ -300,7 +300,7 @@ pub(crate) trait TermsHashPerField: Ord + PartialOrd + Eq + PartialEq {
     fn do_next(
         &mut self,
         _field_state: &mut FieldInvertState,
-        _token_stream: &TokenStream,
+        _token_stream: &dyn TokenStream,
         _doc_id: DocId,
         _text_start: usize,
     ) -> Result<()> {
@@ -321,7 +321,7 @@ pub(crate) trait TermsHashPerField: Ord + PartialOrd + Eq + PartialEq {
         &mut self,
         term_id: usize,
         field_state: &mut FieldInvertState,
-        token_stream: &TokenStream,
+        token_stream: &dyn TokenStream,
         doc_id: DocId,
     ) -> Result<()>;
 
@@ -330,7 +330,7 @@ pub(crate) trait TermsHashPerField: Ord + PartialOrd + Eq + PartialEq {
         &mut self,
         term_id: usize,
         field_state: &mut FieldInvertState,
-        token_stream: &TokenStream,
+        token_stream: &dyn TokenStream,
         doc_id: DocId,
     ) -> Result<()>;
 
@@ -472,7 +472,7 @@ where
         term_id: usize,
         prox_code: u32,
         field_state: &FieldInvertState,
-        token_stream: &TokenStream,
+        token_stream: &dyn TokenStream,
     ) -> Result<()> {
         if let Some(payload_attr) = token_stream.payload_attribute() {
             let payload = payload_attr.get_payload();
@@ -492,7 +492,12 @@ where
         Ok(())
     }
 
-    fn write_offsets(&mut self, term_id: usize, offset_accum: usize, token_stream: &TokenStream) {
+    fn write_offsets(
+        &mut self,
+        term_id: usize,
+        offset_accum: usize,
+        token_stream: &dyn TokenStream,
+    ) {
         let start_offset = (offset_accum + token_stream.offset_attribute().start_offset()) as u32;
         let end_offset = (offset_accum + token_stream.offset_attribute().end_offset()) as u32;
         debug_assert!(start_offset >= self.base.postings_array.last_offsets[term_id]);
@@ -533,7 +538,7 @@ where
     fn do_next(
         &mut self,
         field_state: &mut FieldInvertState,
-        token_stream: &TokenStream,
+        token_stream: &dyn TokenStream,
         doc_id: DocId,
         text_start: usize,
     ) -> Result<()> {
@@ -568,7 +573,7 @@ where
         &mut self,
         term_id: usize,
         field_state: &mut FieldInvertState,
-        token_stream: &TokenStream,
+        token_stream: &dyn TokenStream,
         doc_id: DocId,
     ) -> Result<()> {
         // Firset time we're seeing this term since the last flush
@@ -603,7 +608,7 @@ where
         &mut self,
         term_id: usize,
         field_state: &mut FieldInvertState,
-        token_stream: &TokenStream,
+        token_stream: &dyn TokenStream,
         doc_id: DocId,
     ) -> Result<()> {
         debug_assert!(!self.has_freq || self.base.postings_array.term_freqs[term_id] > 0);

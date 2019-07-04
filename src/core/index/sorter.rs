@@ -13,7 +13,7 @@
 
 use core::codec::Codec;
 use core::index::merge_state::{LiveDocsDocMap, ReaderWrapperEnum};
-use core::index::{LeafReader, LeafReaderContext, NumericDocValues, NumericDocValuesRef};
+use core::index::{LeafReader, LeafReaderContext, NumericDocValues};
 use core::search::field_comparator::{ComparatorValue, FieldComparator, FieldComparatorEnum};
 use core::search::sort::Sort;
 use core::search::sort_field::{SortField, SortFieldType, SortedNumericSelector};
@@ -21,7 +21,7 @@ use core::util::packed::{
     PackedLongValues, PackedLongValuesBuilder, PackedLongValuesBuilderType, DEFAULT_PAGE_SIZE,
 };
 use core::util::packed_misc::COMPACT;
-use core::util::{BitsRef, DocId};
+use core::util::{BitsMut, BitsRef, DocId};
 
 use error::ErrorKind::IllegalArgument;
 use error::Result;
@@ -171,7 +171,7 @@ impl Sorter {
     pub fn get_or_wrap_numeric<R: LeafReader + ?Sized>(
         reader: &R,
         sort_field: &SortField,
-    ) -> Result<NumericDocValuesRef> {
+    ) -> Result<Box<dyn NumericDocValues>> {
         match sort_field {
             SortField::SortedNumeric(s) => SortedNumericSelector::wrap(
                 reader.get_sorted_numeric_doc_values(sort_field.field())?,
@@ -277,7 +277,7 @@ impl MultiSorter {
                 i,
                 reader.live_docs(),
                 reader.max_doc(),
-                &comparators,
+                &mut comparators,
             ));
             builders.push(PackedLongValuesBuilder::new(
                 DEFAULT_PAGE_SIZE,
@@ -403,20 +403,20 @@ impl MultiSorter {
     }
 }
 
-struct LeafAndDocId<'a> {
+struct LeafAndDocId {
     reader_index: usize,
     live_docs: BitsRef,
     max_doc: i32,
     doc_id: DocId,
-    comparators: &'a [CrossReaderComparatorEnum],
+    comparators: *mut [CrossReaderComparatorEnum],
 }
 
-impl<'a> LeafAndDocId<'a> {
+impl LeafAndDocId {
     fn new(
         reader_index: usize,
         live_docs: BitsRef,
         max_doc: i32,
-        comparators: &'a [CrossReaderComparatorEnum],
+        comparators: &mut [CrossReaderComparatorEnum],
     ) -> Self {
         LeafAndDocId {
             reader_index,
@@ -426,20 +426,25 @@ impl<'a> LeafAndDocId<'a> {
             doc_id: 0,
         }
     }
+
+    #[allow(clippy::mut_from_ref)]
+    fn comparators(&self) -> &mut [CrossReaderComparatorEnum] {
+        unsafe { &mut *self.comparators }
+    }
 }
 
-impl<'a> Eq for LeafAndDocId<'a> {}
+impl Eq for LeafAndDocId {}
 
-impl<'a> PartialEq for LeafAndDocId<'a> {
+impl PartialEq for LeafAndDocId {
     fn eq(&self, other: &LeafAndDocId) -> bool {
         self.reader_index == other.reader_index && self.doc_id == other.doc_id
     }
 }
 
-impl<'a> Ord for LeafAndDocId<'a> {
+impl Ord for LeafAndDocId {
     // reverse ord for BinaryHeap
     fn cmp(&self, other: &Self) -> Ordering {
-        for comparator in self.comparators {
+        for comparator in self.comparators() {
             let cmp = comparator
                 .compare(
                     other.reader_index,
@@ -461,7 +466,7 @@ impl<'a> Ord for LeafAndDocId<'a> {
     }
 }
 
-impl<'a> PartialOrd for LeafAndDocId<'a> {
+impl PartialOrd for LeafAndDocId {
     fn partial_cmp(&self, other: &LeafAndDocId) -> Option<Ordering> {
         Some(other.cmp(self))
     }
@@ -474,7 +479,7 @@ enum CrossReaderComparatorEnum {
 
 impl CrossReaderComparator for CrossReaderComparatorEnum {
     fn compare(
-        &self,
+        &mut self,
         reader_index1: usize,
         doc_id1: DocId,
         reader_index2: usize,
@@ -493,7 +498,7 @@ impl CrossReaderComparator for CrossReaderComparatorEnum {
 
 trait CrossReaderComparator {
     fn compare(
-        &self,
+        &mut self,
         reader_index1: usize,
         doc_id1: DocId,
         reader_index2: usize,
@@ -502,16 +507,16 @@ trait CrossReaderComparator {
 }
 
 struct LongCrossReaderComparator {
-    docs_with_fields: Vec<BitsRef>,
-    values: Vec<NumericDocValuesRef>,
+    docs_with_fields: Vec<Box<dyn BitsMut>>,
+    values: Vec<Box<dyn NumericDocValues>>,
     missing_value: i64,
     reverse: bool,
 }
 
 impl LongCrossReaderComparator {
     fn new(
-        docs_with_fields: Vec<BitsRef>,
-        values: Vec<NumericDocValuesRef>,
+        docs_with_fields: Vec<Box<dyn BitsMut>>,
+        values: Vec<Box<dyn NumericDocValues>>,
         missing_value: i64,
         reverse: bool,
     ) -> Self {
@@ -526,19 +531,19 @@ impl LongCrossReaderComparator {
 
 impl CrossReaderComparator for LongCrossReaderComparator {
     fn compare(
-        &self,
+        &mut self,
         idx1: usize,
         doc_id1: DocId,
         idx2: usize,
         doc_id2: DocId,
     ) -> Result<Ordering> {
         let value1 = if self.docs_with_fields[idx1].get(doc_id1 as usize)? {
-            self.values[idx1].get(doc_id1)?
+            self.values[idx1].get_mut(doc_id1)?
         } else {
             self.missing_value
         };
         let value2 = if self.docs_with_fields[idx2].get(doc_id2 as usize)? {
-            self.values[idx2].get(doc_id2)?
+            self.values[idx2].get_mut(doc_id2)?
         } else {
             self.missing_value
         };
@@ -552,16 +557,16 @@ impl CrossReaderComparator for LongCrossReaderComparator {
 }
 
 struct DoubleCrossReaderComparator {
-    docs_with_fields: Vec<BitsRef>,
-    values: Vec<NumericDocValuesRef>,
+    docs_with_fields: Vec<Box<dyn BitsMut>>,
+    values: Vec<Box<dyn NumericDocValues>>,
     missing_value: f64,
     reverse: bool,
 }
 
 impl DoubleCrossReaderComparator {
     fn new(
-        docs_with_fields: Vec<BitsRef>,
-        values: Vec<NumericDocValuesRef>,
+        docs_with_fields: Vec<Box<dyn BitsMut>>,
+        values: Vec<Box<dyn NumericDocValues>>,
         missing_value: f64,
         reverse: bool,
     ) -> Self {
@@ -576,19 +581,19 @@ impl DoubleCrossReaderComparator {
 
 impl CrossReaderComparator for DoubleCrossReaderComparator {
     fn compare(
-        &self,
+        &mut self,
         idx1: usize,
         doc_id1: DocId,
         idx2: usize,
         doc_id2: DocId,
     ) -> Result<Ordering> {
         let value1 = if self.docs_with_fields[idx1].get(doc_id1 as usize)? {
-            f64::from_bits(self.values[idx1].get(doc_id1)? as u64)
+            f64::from_bits(self.values[idx1].get_mut(doc_id1)? as u64)
         } else {
             self.missing_value
         };
         let value2 = if self.docs_with_fields[idx2].get(doc_id2 as usize)? {
-            f64::from_bits(self.values[idx2].get(doc_id2)? as u64)
+            f64::from_bits(self.values[idx2].get_mut(doc_id2)? as u64)
         } else {
             self.missing_value
         };

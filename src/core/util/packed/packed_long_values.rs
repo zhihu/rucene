@@ -11,13 +11,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::index::{NumericDocValues, NumericDocValuesContext};
+use core::index::NumericDocValues;
 use core::util::bit_util::BitsRequired;
 use core::util::packed::MonotonicBlockPackedReader;
 use core::util::packed_misc::{
     check_block_size, get_mutable_by_ratio, Mutable, MutableEnum, PackedIntsNullMutable, Reader,
 };
-use core::util::{DocId, LongValues, LongValuesContext, ReusableIterator};
+use core::util::{DocId, LongValues, ReusableIterator};
 
 use error::Result;
 use std::mem;
@@ -143,26 +143,18 @@ impl PackedLongValues {
 }
 
 impl LongValues for PackedLongValues {
-    fn get64_with_ctx(
-        &self,
-        ctx: LongValuesContext,
-        index: i64,
-    ) -> Result<(i64, LongValuesContext)> {
+    fn get64(&self, index: i64) -> Result<i64> {
         debug_assert!(index >= 0 && index < self.size());
         let block = (index >> self.page_shift as i64) as usize;
         let element = (index & self.page_mask as i64) as usize;
 
-        Ok((self.get_by_block(block, element), ctx))
+        Ok(self.get_by_block(block, element))
     }
 }
 
 impl NumericDocValues for PackedLongValues {
-    fn get_with_ctx(
-        &self,
-        ctx: NumericDocValuesContext,
-        doc_id: DocId,
-    ) -> Result<(i64, NumericDocValuesContext)> {
-        Ok((self.get64(doc_id as i64)?, ctx))
+    fn get(&self, doc_id: DocId) -> Result<i64> {
+        self.get64(i64::from(doc_id))
     }
 }
 

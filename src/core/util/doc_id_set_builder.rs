@@ -96,7 +96,7 @@ impl DocIdSetBuilder {
     /// Add the content of the provided `DocIterator` to this builder.
     /// NOTE: if you need to build a `DocIdSet` out of a single
     /// `DocIterator`, you should rather use `RoaringDocIdSet.Builder`.
-    pub fn add(&mut self, iter: &mut DocIterator) -> Result<()> {
+    pub fn add(&mut self, iter: &mut dyn DocIterator) -> Result<()> {
         if let Some(ref mut bit_set) = self.bit_set {
             bit_set.or(iter)?;
         } else {

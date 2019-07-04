@@ -18,7 +18,13 @@ use std::{
 };
 use thread_local::{CachedThreadLocal, ThreadLocal};
 
+use core::index::{
+    BinaryDocValues, BinaryDocValuesProvider, NumericDocValuesProvider, SortedDocValues,
+    SortedDocValuesProvider, SortedNumericDocValues, SortedNumericDocValuesProvider,
+    SortedSetDocValues, SortedSetDocValuesProvider,
+};
 use core::store::Directory;
+use core::util::BitsMut;
 use core::{
     codec::{
         Codec, CodecFieldsProducer, CodecNormsProducer, CodecPointsReader, CodecStoredFieldsReader,
@@ -27,10 +33,9 @@ use core::{
     },
     doc::{Document, DocumentStoredFieldVisitor},
     index::{
-        leaf_reader::LeafReaderContext, BinaryDocValuesRef, CfsDirectory, DocValuesType, FieldInfo,
-        FieldInfos, IndexReader, LeafReader, NumericDocValues, NumericDocValuesRef,
-        SegmentCommitInfo, SegmentCoreReaders, SegmentDocValues, SortedDocValuesRef,
-        SortedNumericDocValuesRef, SortedSetDocValuesRef, StoredFieldVisitor,
+        leaf_reader::LeafReaderContext, CfsDirectory, DocValuesType, FieldInfo, FieldInfos,
+        IndexReader, LeafReader, NumericDocValues, SegmentCommitInfo, SegmentCoreReaders,
+        SegmentDocValues, StoredFieldVisitor,
     },
     search::sort::Sort,
     store::IOContext,
@@ -38,12 +43,12 @@ use core::{
 };
 use error::{ErrorKind::IllegalArgument, Result};
 
-pub enum DocValuesRefEnum {
-    Binary(BinaryDocValuesRef),
-    Numeric(NumericDocValuesRef),
-    Sorted(SortedDocValuesRef),
-    SortedNumeric(SortedNumericDocValuesRef),
-    SortedSet(SortedSetDocValuesRef),
+pub enum DocValuesProviderEnum {
+    Binary(Arc<dyn BinaryDocValuesProvider>),
+    Numeric(Arc<dyn NumericDocValuesProvider>),
+    Sorted(Arc<dyn SortedDocValuesProvider>),
+    SortedNumeric(Arc<dyn SortedNumericDocValuesProvider>),
+    SortedSet(Arc<dyn SortedSetDocValuesProvider>),
 }
 
 pub type ThreadLocalDocValueProducer = ThreadLocal<Arc<dyn DocValuesProducer>>;
@@ -57,8 +62,8 @@ pub struct SegmentReader<D: Directory, C: Codec> {
     pub field_infos: Arc<FieldInfos>,
     // context: LeafReaderContext
     doc_values_producer: ThreadLocalDocValueProducer,
-    docs_with_field_local: CachedThreadLocal<RefCell<HashMap<String, BitsRef>>>,
-    doc_values_local: CachedThreadLocal<RefCell<HashMap<String, DocValuesRefEnum>>>,
+    // docs_with_field_local: CachedThreadLocal<RefCell<HashMap<String, BitsRef>>>,
+    doc_values_local: CachedThreadLocal<RefCell<HashMap<String, DocValuesProviderEnum>>>,
 }
 
 unsafe impl<D: Directory + Send + Sync + 'static, C: Codec> Sync for SegmentReader<D, C> {}
@@ -77,8 +82,8 @@ impl<D: Directory + 'static, C: Codec> SegmentReader<D, C> {
         field_infos: Arc<FieldInfos>,
         doc_values_producer: ThreadLocalDocValueProducer,
     ) -> SegmentReader<D, C> {
-        let docs_with_field_local = CachedThreadLocal::new();
-        docs_with_field_local.get_or(|| Box::new(RefCell::new(HashMap::new())));
+        //        let docs_with_field_local = CachedThreadLocal::new();
+        //        docs_with_field_local.get_or(|| Box::new(RefCell::new(HashMap::new())));
 
         let doc_values_local = CachedThreadLocal::new();
         doc_values_local.get_or(|| Box::new(RefCell::new(HashMap::new())));
@@ -91,7 +96,7 @@ impl<D: Directory + 'static, C: Codec> SegmentReader<D, C> {
             is_nrt,
             field_infos,
             doc_values_producer,
-            docs_with_field_local,
+            // docs_with_field_local,
             doc_values_local,
         }
     }
@@ -392,7 +397,7 @@ where
         }
     }
 
-    fn document(&self, doc_id: DocId, visitor: &mut StoredFieldVisitor) -> Result<()> {
+    fn document(&self, doc_id: DocId, visitor: &mut dyn StoredFieldVisitor) -> Result<()> {
         self.check_bounds(doc_id);
         self.core.fields_reader.visit_document(doc_id, visitor)
     }
@@ -421,7 +426,7 @@ where
         self.num_docs
     }
 
-    fn get_numeric_doc_values(&self, field: &str) -> Result<NumericDocValuesRef> {
+    fn get_numeric_doc_values(&self, field: &str) -> Result<Box<dyn NumericDocValues>> {
         self.init_local_doc_values_producer()?;
 
         match self
@@ -431,7 +436,7 @@ where
             .entry(String::from(field))
         {
             Entry::Occupied(o) => match *o.get() {
-                DocValuesRefEnum::Numeric(ref dv) => Ok(Arc::clone(&dv)),
+                DocValuesProviderEnum::Numeric(ref dv) => dv.get(),
                 _ => bail!(IllegalArgument(format!(
                     "non-numeric dv found for field {}",
                     field
@@ -441,8 +446,8 @@ where
                 Some(fi) if self.doc_values_producer.get().is_some() => {
                     let dv_producer = self.doc_values_producer.get().unwrap();
                     let cell = dv_producer.get_numeric(fi)?;
-                    v.insert(DocValuesRefEnum::Numeric(Arc::clone(&cell)));
-                    Ok(cell)
+                    v.insert(DocValuesProviderEnum::Numeric(Arc::clone(&cell)));
+                    cell.get()
                 }
 
                 _ => bail!(IllegalArgument(format!(
@@ -453,7 +458,7 @@ where
         }
     }
 
-    fn get_binary_doc_values(&self, field: &str) -> Result<BinaryDocValuesRef> {
+    fn get_binary_doc_values(&self, field: &str) -> Result<Box<dyn BinaryDocValues>> {
         self.init_local_doc_values_producer()?;
         match self
             .doc_values_local
@@ -462,7 +467,7 @@ where
             .entry(String::from(field))
         {
             Entry::Occupied(o) => match *o.get() {
-                DocValuesRefEnum::Binary(ref dv) => Ok(Arc::clone(&dv)),
+                DocValuesProviderEnum::Binary(ref dv) => dv.get(),
                 _ => bail!(IllegalArgument(format!(
                     "non-binary dv found for field {}",
                     field
@@ -472,9 +477,8 @@ where
                 Some(fi) if self.doc_values_producer.get().is_some() => {
                     let dv_producer = self.doc_values_producer.get().unwrap();
                     let dv = dv_producer.get_binary(fi)?;
-                    let cell = dv;
-                    v.insert(DocValuesRefEnum::Binary(Arc::clone(&cell)));
-                    Ok(cell)
+                    v.insert(DocValuesProviderEnum::Binary(Arc::clone(&dv)));
+                    dv.get()
                 }
 
                 _ => bail!(IllegalArgument(format!(
@@ -485,7 +489,7 @@ where
         }
     }
 
-    fn get_sorted_doc_values(&self, field: &str) -> Result<SortedDocValuesRef> {
+    fn get_sorted_doc_values(&self, field: &str) -> Result<Box<dyn SortedDocValues>> {
         self.init_local_doc_values_producer()?;
 
         match self
@@ -495,7 +499,7 @@ where
             .entry(String::from(field))
         {
             Entry::Occupied(o) => match *o.get() {
-                DocValuesRefEnum::Sorted(ref dv) => Ok(Arc::clone(&dv)),
+                DocValuesProviderEnum::Sorted(ref dv) => dv.get(),
                 _ => bail!(IllegalArgument(format!(
                     "non-binary dv found for field {}",
                     field
@@ -505,8 +509,8 @@ where
                 Some(fi) if self.doc_values_producer.get().is_some() => {
                     let dv_producer = self.doc_values_producer.get().unwrap();
                     let dv = dv_producer.get_sorted(fi)?;
-                    v.insert(DocValuesRefEnum::Sorted(Arc::clone(&dv)));
-                    Ok(dv)
+                    v.insert(DocValuesProviderEnum::Sorted(Arc::clone(&dv)));
+                    dv.get()
                 }
                 _ => bail!(IllegalArgument(format!(
                     "non-dv-segment or non-exist or non-binary field: {}",
@@ -516,7 +520,10 @@ where
         }
     }
 
-    fn get_sorted_numeric_doc_values(&self, field: &str) -> Result<SortedNumericDocValuesRef> {
+    fn get_sorted_numeric_doc_values(
+        &self,
+        field: &str,
+    ) -> Result<Box<dyn SortedNumericDocValues>> {
         self.init_local_doc_values_producer()?;
 
         match self
@@ -526,7 +533,7 @@ where
             .entry(String::from(field))
         {
             Entry::Occupied(o) => match *o.get() {
-                DocValuesRefEnum::SortedNumeric(ref dv) => Ok(Arc::clone(&dv)),
+                DocValuesProviderEnum::SortedNumeric(ref dv) => dv.get(),
                 _ => bail!(IllegalArgument(format!(
                     "non-binary dv found for field {}",
                     field
@@ -537,8 +544,8 @@ where
                     let dv_producer = self.doc_values_producer.get().unwrap();
                     let dv = dv_producer.get_sorted_numeric(fi)?;
                     let cell = dv;
-                    v.insert(DocValuesRefEnum::SortedNumeric(Arc::clone(&cell)));
-                    Ok(cell)
+                    v.insert(DocValuesProviderEnum::SortedNumeric(Arc::clone(&cell)));
+                    cell.get()
                 }
                 _ => bail!(IllegalArgument(format!(
                     "non-dv-segment or non-exist or non-binary field: {}",
@@ -548,7 +555,7 @@ where
         }
     }
 
-    fn get_sorted_set_doc_values(&self, field: &str) -> Result<SortedSetDocValuesRef> {
+    fn get_sorted_set_doc_values(&self, field: &str) -> Result<Box<dyn SortedSetDocValues>> {
         self.init_local_doc_values_producer()?;
 
         match self
@@ -558,7 +565,7 @@ where
             .entry(String::from(field))
         {
             Entry::Occupied(o) => match *o.get() {
-                DocValuesRefEnum::SortedSet(ref dv) => Ok(Arc::clone(&dv)),
+                DocValuesProviderEnum::SortedSet(ref dv) => dv.get(),
                 _ => bail!(IllegalArgument(format!(
                     "non-binary dv found for field {}",
                     field
@@ -569,8 +576,8 @@ where
                     let dv_producer = self.doc_values_producer.get().unwrap();
                     let dv = dv_producer.get_sorted_set(fi)?;
                     let cell = dv;
-                    v.insert(DocValuesRefEnum::SortedSet(Arc::clone(&cell)));
-                    Ok(cell)
+                    v.insert(DocValuesProviderEnum::SortedSet(Arc::clone(&cell)));
+                    cell.get()
                 }
 
                 _ => bail!(IllegalArgument(format!(
@@ -593,17 +600,17 @@ where
         Ok(None)
     }
 
-    fn get_docs_with_field(&self, field: &str) -> Result<BitsRef> {
-        if let Some(prev) = self
-            .docs_with_field_local
-            .get_or(|| Box::new(RefCell::new(HashMap::new())))
-            .borrow_mut()
-            .get(field)
-        {
-            return Ok(Arc::clone(prev));
-        }
-
-        self.init_local_doc_values_producer()?;
+    fn get_docs_with_field(&self, field: &str) -> Result<Box<dyn BitsMut>> {
+        //        if let Some(prev) = self
+        //            .docs_with_field_local
+        //            .get_or(|| Box::new(RefCell::new(HashMap::new())))
+        //            .borrow_mut()
+        //            .get(field)
+        //        {
+        //            return Ok(Arc::clone(prev));
+        //        }
+        //
+        //        self.init_local_doc_values_producer()?;
 
         match self.field_infos.field_info_by_name(field) {
             Some(fi)
@@ -611,13 +618,7 @@ where
                     && self.doc_values_producer.get().is_some() =>
             {
                 let dv_producer = self.doc_values_producer.get().unwrap();
-                let dv = dv_producer.get_docs_with_field(fi)?;
-                self.docs_with_field_local
-                    .get()
-                    .unwrap()
-                    .borrow_mut()
-                    .insert(field.to_string(), Arc::clone(&dv));
-                Ok(dv)
+                dv_producer.get_docs_with_field(fi)
             }
 
             // FIXME: chain errors

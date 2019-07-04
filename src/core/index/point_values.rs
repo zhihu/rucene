@@ -76,7 +76,7 @@ pub trait PointValues {
     /// field.
     fn doc_count(&self, field_name: &str) -> Result<i32>;
 
-    fn as_any(&self) -> &Any;
+    fn as_any(&self) -> &dyn Any;
 }
 
 impl<T: PointValues + 'static> PointValues for Arc<T> {
@@ -108,7 +108,7 @@ impl<T: PointValues + 'static> PointValues for Arc<T> {
         (**self).doc_count(field_name)
     }
 
-    fn as_any(&self) -> &Any {
+    fn as_any(&self) -> &dyn Any {
         (**self).as_any()
     }
 }
@@ -117,7 +117,10 @@ impl<T: PointValues + 'static> PointValues for Arc<T> {
 /// `IndexReader`. Leaves that do not have points for the given field
 /// are ignored.
 /// @see PointValues#size(String)
-pub fn point_values_size<C: Codec>(reader: &IndexReader<Codec = C>, field: &str) -> Result<i64> {
+pub fn point_values_size<C: Codec>(
+    reader: &dyn IndexReader<Codec = C>,
+    field: &str,
+) -> Result<i64> {
     let mut size = 0i64;
     for leaf_reader in reader.leaves() {
         if let Some(info) = leaf_reader.reader.field_info(field) {
@@ -136,7 +139,7 @@ pub fn point_values_size<C: Codec>(reader: &IndexReader<Codec = C>, field: &str)
 /// given field are ignored.
 /// @see PointValues#getDocCount(String)
 pub fn point_values_doc_count<C: Codec>(
-    reader: &IndexReader<Codec = C>,
+    reader: &dyn IndexReader<Codec = C>,
     field: &str,
 ) -> Result<i32> {
     let mut count = 0i32;
@@ -157,7 +160,7 @@ pub fn point_values_doc_count<C: Codec>(
 /// are ignored.
 /// @see PointValues#getMinPackedValue(String)
 pub fn point_values_min_packed_value<C: Codec>(
-    reader: &IndexReader<Codec = C>,
+    reader: &dyn IndexReader<Codec = C>,
     field: &str,
 ) -> Result<Vec<u8>> {
     let mut min_value = Vec::new();
@@ -198,7 +201,7 @@ pub fn point_values_min_packed_value<C: Codec>(
 /// are ignored.
 ///  @see PointValues#getMaxPackedValue(String)
 pub fn point_values_max_packed_value<C: Codec>(
-    reader: &IndexReader<Codec = C>,
+    reader: &dyn IndexReader<Codec = C>,
     field: &str,
 ) -> Result<Vec<u8>> {
     let mut max_value = Vec::new();

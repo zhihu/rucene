@@ -65,7 +65,7 @@ pub trait IndexDeletionPolicy {
     ///  sorted by age (the 0th one is the oldest commit).
     ///  Note that for a new index this method is invoked with
     ///  an empty list.
-    fn on_init<D: Directory>(&self, commits: Vec<&mut IndexCommit<D>>) -> Result<()>;
+    fn on_init<D: Directory>(&self, commits: Vec<&mut dyn IndexCommit<D>>) -> Result<()>;
 
     /// This is called each time the writer completed a commit.
     /// This gives the policy a chance to remove old commit points
@@ -86,18 +86,18 @@ pub trait IndexDeletionPolicy {
     ///  
     /// @param commits List of `IndexCommit`,
     ///  sorted by age (the 0th one is the oldest commit).
-    fn on_commit<D: Directory>(&self, commits: Vec<&mut IndexCommit<D>>) -> Result<()>;
+    fn on_commit<D: Directory>(&self, commits: Vec<&mut dyn IndexCommit<D>>) -> Result<()>;
 }
 
 #[derive(Default)]
 pub struct KeepOnlyLastCommitDeletionPolicy;
 
 impl IndexDeletionPolicy for KeepOnlyLastCommitDeletionPolicy {
-    fn on_init<D: Directory>(&self, commits: Vec<&mut IndexCommit<D>>) -> Result<()> {
+    fn on_init<D: Directory>(&self, commits: Vec<&mut dyn IndexCommit<D>>) -> Result<()> {
         self.on_commit(commits)
     }
 
-    fn on_commit<D: Directory>(&self, mut commits: Vec<&mut IndexCommit<D>>) -> Result<()> {
+    fn on_commit<D: Directory>(&self, mut commits: Vec<&mut dyn IndexCommit<D>>) -> Result<()> {
         commits.pop();
         for commit in commits {
             commit.delete()?;

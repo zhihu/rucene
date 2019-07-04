@@ -602,9 +602,9 @@ pub fn build_sim_weight<C: Codec, IS: SearchPlanBuilder<C> + ?Sized>(
 
 /// Expert-only.  Public for use by other weight implementations
 pub trait SpanWeight<C: Codec>: Weight<C> {
-    fn sim_weight(&self) -> Option<&SimWeight<C>>;
+    fn sim_weight(&self) -> Option<&dyn SimWeight<C>>;
 
-    fn sim_weight_mut(&mut self) -> Option<&mut SimWeight<C>>;
+    fn sim_weight_mut(&mut self) -> Option<&mut dyn SimWeight<C>>;
 
     /// Expert: Return a Spans object iterating over matches from this Weight
     fn get_spans(
@@ -692,7 +692,7 @@ pub enum SpanWeightEnum<C: Codec> {
 }
 
 impl<C: Codec> SpanWeight<C> for SpanWeightEnum<C> {
-    fn sim_weight(&self) -> Option<&SimWeight<C>> {
+    fn sim_weight(&self) -> Option<&dyn SimWeight<C>> {
         match self {
             SpanWeightEnum::Term(w) => w.sim_weight(),
             SpanWeightEnum::Gap(w) => w.sim_weight(),
@@ -702,7 +702,7 @@ impl<C: Codec> SpanWeight<C> for SpanWeightEnum<C> {
         }
     }
 
-    fn sim_weight_mut(&mut self) -> Option<&mut SimWeight<C>> {
+    fn sim_weight_mut(&mut self) -> Option<&mut dyn SimWeight<C>> {
         match self {
             SpanWeightEnum::Term(w) => w.sim_weight_mut(),
             SpanWeightEnum::Gap(w) => w.sim_weight_mut(),

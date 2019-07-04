@@ -11,10 +11,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::index::{NumericDocValues, NumericDocValuesContext};
+use core::index::NumericDocValues;
 use core::store::IndexInput;
 use core::store::RandomAccessInput;
-use core::util::{packed::DirectReader, DocId, LongValues, LongValuesContext};
+use core::util::{packed::DirectReader, DocId, LongValues};
 use error::Result;
 
 use core::util::packed::direct_reader::DirectPackedReader;
@@ -69,7 +69,7 @@ impl DirectMonotonicReader {
 
     pub fn get_instance(
         meta: &DirectMonotonicMeta,
-        data: &Arc<RandomAccessInput>,
+        data: &Arc<dyn RandomAccessInput>,
     ) -> Result<MixinMonotonicLongValues> {
         let mut readers = Vec::with_capacity(meta.num_blocks);
         for i in 0..meta.num_blocks {
@@ -86,7 +86,7 @@ impl DirectMonotonicReader {
         }
 
         Ok(MixinMonotonicLongValues {
-            readers,
+            readers: Arc::from(Box::from(readers)),
             block_shift: meta.block_shift,
             mins: Arc::clone(&meta.mins),
             avgs: Arc::clone(&meta.avgs),
@@ -94,41 +94,30 @@ impl DirectMonotonicReader {
     }
 }
 
+#[derive(Clone)]
 pub struct MixinMonotonicLongValues {
-    readers: Vec<Option<DirectPackedReader>>,
+    readers: Arc<[Option<DirectPackedReader>]>,
     block_shift: i32,
     mins: Arc<Vec<i64>>,
     avgs: Arc<Vec<f32>>,
 }
 
 impl LongValues for MixinMonotonicLongValues {
-    fn get64_with_ctx(
-        &self,
-        ctx: LongValuesContext,
-        index: i64,
-    ) -> Result<(i64, LongValuesContext)> {
+    fn get64(&self, index: i64) -> Result<i64> {
         // we know all readers don't require context
         let block = ((index as u64) >> self.block_shift) as usize;
         let block_index: i64 = index & ((1 << self.block_shift) - 1);
         let delta = if let Some(ref reader) = self.readers[block] {
-            let (d, _) = LongValues::get64_with_ctx(reader, None, block_index)?;
-            d
+            reader.get64(block_index)?
         } else {
             0
         };
-        Ok((
-            self.mins[block] + (self.avgs[block] * block_index as f32) as i64 + delta,
-            ctx,
-        ))
+        Ok(self.mins[block] + (self.avgs[block] * block_index as f32) as i64 + delta)
     }
 }
 
 impl NumericDocValues for MixinMonotonicLongValues {
-    fn get_with_ctx(
-        &self,
-        ctx: NumericDocValuesContext,
-        doc_id: DocId,
-    ) -> Result<(i64, NumericDocValuesContext)> {
-        LongValues::get64_with_ctx(self, ctx, i64::from(doc_id))
+    fn get(&self, doc_id: DocId) -> Result<i64> {
+        self.get64(i64::from(doc_id))
     }
 }

@@ -11,17 +11,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::index::{NumericDocValues, NumericDocValuesContext};
+use core::index::NumericDocValues;
 use core::store::IndexInput;
 use core::util::packed::PackedIntsNullReader;
 use core::util::packed_misc::{self, Reader, ReaderEnum};
-use core::util::DocId;
-use core::util::{LongValues, LongValuesContext};
+use core::util::{DocId, LongValues};
 use error::ErrorKind::{CorruptIndex, IllegalArgument};
 use error::Result;
 
+use std::sync::Arc;
+
 /// Provides random access to a stream written with MonotonicBlockPackedWriter
+#[derive(Clone)]
 pub(crate) struct MonotonicBlockPackedReader {
+    inner: Arc<MonotonicBlockPackedReaderInner>,
+}
+
+struct MonotonicBlockPackedReaderInner {
     block_shift: usize,
     block_mask: usize,
     value_count: usize,
@@ -85,7 +91,8 @@ impl MonotonicBlockPackedReader {
                 }
             }
         }
-        Ok(MonotonicBlockPackedReader {
+
+        let inner = MonotonicBlockPackedReaderInner {
             block_shift,
             block_mask,
             value_count,
@@ -93,38 +100,37 @@ impl MonotonicBlockPackedReader {
             averages,
             sub_readers,
             sum_bpv,
+        };
+
+        Ok(Self {
+            inner: Arc::new(inner),
         })
     }
 
     /// Returns the number of values
     pub fn size(&self) -> usize {
-        self.value_count
+        self.inner.value_count
     }
 }
 
 impl LongValues for MonotonicBlockPackedReader {
-    fn get64_with_ctx(
-        &self,
-        ctx: LongValuesContext,
-        index: i64,
-    ) -> Result<(i64, LongValuesContext)> {
-        if !(index >= 0 && index < self.value_count as i64) {
+    fn get64(&self, index: i64) -> Result<i64> {
+        if !(index >= 0 && index < self.inner.value_count as i64) {
             bail!(IllegalArgument(format!("index {} out of range", index)))
         }
-        let block = (index >> self.block_shift) as usize;
-        let idx = (index & (self.block_mask as i64)) as i32;
-        let val = Self::expected(self.min_values[block], self.averages[block], idx)
-            + self.sub_readers[block].get(idx as usize);
-        Ok((val, ctx))
+        let block = (index >> self.inner.block_shift) as usize;
+        let idx = (index & (self.inner.block_mask as i64)) as i32;
+        let val = Self::expected(
+            self.inner.min_values[block],
+            self.inner.averages[block],
+            idx,
+        ) + self.inner.sub_readers[block].get(idx as usize);
+        Ok(val)
     }
 }
 
 impl NumericDocValues for MonotonicBlockPackedReader {
-    fn get_with_ctx(
-        &self,
-        ctx: NumericDocValuesContext,
-        doc_id: DocId,
-    ) -> Result<(i64, NumericDocValuesContext)> {
-        LongValues::get64_with_ctx(self, ctx, i64::from(doc_id))
+    fn get(&self, doc_id: DocId) -> Result<i64> {
+        self.get64(i64::from(doc_id))
     }
 }

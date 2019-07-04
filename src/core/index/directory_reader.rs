@@ -252,7 +252,7 @@ where
         self.segment_infos.version
     }
 
-    pub fn open_if_changed(&self, commit: Option<&IndexCommit<D>>) -> Result<Option<Self>> {
+    pub fn open_if_changed(&self, commit: Option<&dyn IndexCommit<D>>) -> Result<Option<Self>> {
         // If we were obtained by writer.getReader(), re-ask the
         // writer to get a new reader.
         if self.writer.is_some() {
@@ -262,7 +262,7 @@ where
         }
     }
 
-    fn open_from_writer(&self, commit: Option<&IndexCommit<D>>) -> Result<Option<Self>> {
+    fn open_from_writer(&self, commit: Option<&dyn IndexCommit<D>>) -> Result<Option<Self>> {
         if commit.is_some() {
             Ok(Some(self.open_from_commit(commit)?))
         } else {
@@ -280,14 +280,14 @@ where
         }
     }
 
-    fn open_from_commit(&self, commit: Option<&IndexCommit<D>>) -> Result<Self> {
+    fn open_from_commit(&self, commit: Option<&dyn IndexCommit<D>>) -> Result<Self> {
         run_with_find_segment_file(&self.directory, commit, |(dir, file_name)| {
             let infos = SegmentInfos::read_commit(dir, file_name)?;
             Self::open_by_readers(Arc::clone(dir), infos, &self.readers)
         })
     }
 
-    fn do_open_no_writer(&self, commit: Option<&IndexCommit<D>>) -> Result<Option<Self>> {
+    fn do_open_no_writer(&self, commit: Option<&dyn IndexCommit<D>>) -> Result<Option<Self>> {
         if let Some(commit) = commit {
             if let Some(name) = self.segment_infos.segment_file_name() {
                 if commit.segments_file_name() == name {

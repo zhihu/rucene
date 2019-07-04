@@ -200,9 +200,9 @@ pub trait DocIterator: Send {
     }
 }
 
-impl Eq for DocIterator {}
+impl Eq for dyn DocIterator {}
 
-impl PartialEq for DocIterator {
+impl PartialEq for dyn DocIterator {
     fn eq(&self, other: &Self) -> bool {
         self == other
     }
@@ -388,7 +388,7 @@ pub trait Query<C: Codec>: Display {
     /// For highlight use.
     fn extract_terms(&self) -> Vec<TermQuery>;
 
-    fn as_any(&self) -> &Any;
+    fn as_any(&self) -> &dyn Any;
 }
 
 /// Expert: Calculate query weights and build query scorers.

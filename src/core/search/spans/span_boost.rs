@@ -206,7 +206,7 @@ impl<C: Codec> Query<C> for SpanBoostQueryEnum {
         }
     }
 
-    fn as_any(&self) -> &Any {
+    fn as_any(&self) -> &dyn Any {
         match self {
             SpanBoostQueryEnum::Term(q) => Query::<C>::as_any(q),
             SpanBoostQueryEnum::Gap(q) => Query::<C>::as_any(q),
@@ -254,11 +254,11 @@ impl<C: Codec> SpanBoostWeight<C> {
 }
 
 impl<C: Codec> SpanWeight<C> for SpanBoostWeight<C> {
-    fn sim_weight(&self) -> Option<&SimWeight<C>> {
+    fn sim_weight(&self) -> Option<&dyn SimWeight<C>> {
         self.sim_weight.as_ref().map(|x| &**x)
     }
 
-    fn sim_weight_mut(&mut self) -> Option<&mut SimWeight<C>> {
+    fn sim_weight_mut(&mut self) -> Option<&mut dyn SimWeight<C>> {
         if let Some(ref mut sim_weight) = self.sim_weight {
             Some(sim_weight.as_mut())
         } else {
@@ -330,7 +330,7 @@ pub enum SpanBoostWeightEnum<C: Codec> {
 }
 
 impl<C: Codec> SpanWeight<C> for SpanBoostWeightEnum<C> {
-    fn sim_weight(&self) -> Option<&SimWeight<C>> {
+    fn sim_weight(&self) -> Option<&dyn SimWeight<C>> {
         match self {
             SpanBoostWeightEnum::Term(w) => w.sim_weight(),
             SpanBoostWeightEnum::Gap(w) => w.sim_weight(),
@@ -339,7 +339,7 @@ impl<C: Codec> SpanWeight<C> for SpanBoostWeightEnum<C> {
         }
     }
 
-    fn sim_weight_mut(&mut self) -> Option<&mut SimWeight<C>> {
+    fn sim_weight_mut(&mut self) -> Option<&mut dyn SimWeight<C>> {
         match self {
             SpanBoostWeightEnum::Term(w) => w.sim_weight_mut(),
             SpanBoostWeightEnum::Gap(w) => w.sim_weight_mut(),

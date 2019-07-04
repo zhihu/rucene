@@ -523,7 +523,7 @@ impl<T: PostingIterator> PartialEq for PostingsAndFreq<T> {
 }
 
 pub struct PostingsAndPosition {
-    postings: *mut PostingIterator,
+    postings: *mut dyn PostingIterator,
     pos: i32,
     offset: i32,
     freq: i32,
@@ -533,7 +533,7 @@ pub struct PostingsAndPosition {
 unsafe impl Send for PostingsAndPosition {}
 
 impl PostingsAndPosition {
-    pub fn new(postings: *mut PostingIterator, offset: i32) -> PostingsAndPosition {
+    pub fn new(postings: *mut dyn PostingIterator, offset: i32) -> PostingsAndPosition {
         PostingsAndPosition {
             postings,
             pos: -1,
@@ -727,7 +727,7 @@ struct PhrasePositions {
     // position in phrase
     pub ord: i32,
     // unique across all PhrasePositions instances
-    pub postings: *mut PostingIterator,
+    pub postings: *mut dyn PostingIterator,
     // stream of docs & positions
     pub next_pp_idx: i32,
     // used to make list
@@ -742,7 +742,7 @@ struct PhrasePositions {
 unsafe impl Send for PhrasePositions {}
 
 impl PhrasePositions {
-    fn new(postings: *mut PostingIterator, offset: i32, ord: i32, terms: Vec<Term>) -> Self {
+    fn new(postings: *mut dyn PostingIterator, offset: i32, ord: i32, terms: Vec<Term>) -> Self {
         PhrasePositions {
             position: 0,
             count: 0,

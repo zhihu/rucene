@@ -12,18 +12,13 @@
 // limitations under the License.
 
 use core::codec::Codec;
-use core::index::{
-    NumericDocValues, NumericDocValuesContext, NumericDocValuesRef, SearchLeafReader,
-    SortedNumericDocValuesRef,
-};
+use core::index::{NumericDocValues, SearchLeafReader, SortedNumericDocValues};
 use core::search::field_comparator::*;
 use core::util::numeric::{sortable_double_bits, sortable_float_bits};
-use core::util::{BitsRef, VariantValue};
+use core::util::{BitsMut, DocId, VariantValue};
 
 use error::ErrorKind::IllegalArgument;
 use error::Result;
-
-use std::sync::Arc;
 
 #[derive(PartialEq, Debug, Clone, Copy, Eq)]
 pub enum SortFieldType {
@@ -290,7 +285,7 @@ impl DocValuesSource for SortedWrapperDocValuesSource {
         &self,
         reader: &SearchLeafReader<C>,
         field: &str,
-    ) -> Result<NumericDocValuesRef> {
+    ) -> Result<Box<dyn NumericDocValues>> {
         SortedNumericSelector::wrap(
             reader.get_sorted_numeric_doc_values(field)?,
             self.selector,
@@ -302,7 +297,7 @@ impl DocValuesSource for SortedWrapperDocValuesSource {
         &self,
         reader: &SearchLeafReader<C>,
         field: &str,
-    ) -> Result<BitsRef> {
+    ) -> Result<Box<dyn BitsMut>> {
         reader.get_docs_with_field(field)
     }
 }
@@ -315,10 +310,10 @@ pub struct SortedNumericSelector;
 
 impl SortedNumericSelector {
     pub fn wrap(
-        sorted_numeric: SortedNumericDocValuesRef,
+        sorted_numeric: Box<dyn SortedNumericDocValues>,
         selector: SortedNumericSelectorType,
         numeric_type: SortFieldType,
-    ) -> Result<NumericDocValuesRef> {
+    ) -> Result<Box<dyn NumericDocValues>> {
         if numeric_type != SortFieldType::Int
             && numeric_type != SortFieldType::Long
             && numeric_type != SortFieldType::Float
@@ -329,130 +324,96 @@ impl SortedNumericSelector {
             ));
         }
         let view = match selector {
-            SortedNumericSelectorType::Min => {
-                SortedNumAsNumDocValuesEnum::Min(SortedNumAsNumDocValuesMin::new(sorted_numeric))
-            }
-            SortedNumericSelectorType::Max => {
-                SortedNumAsNumDocValuesEnum::Max(SortedNumAsNumDocValuesMax::new(sorted_numeric))
-            }
+            SortedNumericSelectorType::Min => SortedNumAsNumDocValues::min(sorted_numeric),
+            SortedNumericSelectorType::Max => SortedNumAsNumDocValues::max(sorted_numeric),
         };
-        let res: NumericDocValuesRef = match numeric_type {
-            SortFieldType::Float => Arc::new(SortableFloatNumericDocValues::new(view)),
-            SortFieldType::Double => Arc::new(SortableDoubleNumericDocValues::new(view)),
-            _ => Arc::new(view),
+        let res: Box<dyn NumericDocValues> = match numeric_type {
+            SortFieldType::Float => Box::new(SortableFloatNumericDocValues::new(view)),
+            SortFieldType::Double => Box::new(SortableDoubleNumericDocValues::new(view)),
+            _ => Box::new(view),
         };
         Ok(res)
     }
 }
 
 struct SortableFloatNumericDocValues {
-    doc_values: SortedNumAsNumDocValuesEnum,
+    doc_values: SortedNumAsNumDocValues,
 }
 
 impl SortableFloatNumericDocValues {
-    fn new(doc_values: SortedNumAsNumDocValuesEnum) -> Self {
+    fn new(doc_values: SortedNumAsNumDocValues) -> Self {
         SortableFloatNumericDocValues { doc_values }
     }
 }
 
 impl NumericDocValues for SortableFloatNumericDocValues {
-    fn get_with_ctx(
-        &self,
-        ctx: NumericDocValuesContext,
-        doc_id: i32,
-    ) -> Result<(i64, NumericDocValuesContext)> {
-        let (value, ctx) = self.doc_values.get_with_ctx(ctx, doc_id)?;
-        let res = sortable_float_bits(value as i32) as i64;
-        Ok((res, ctx))
+    fn get(&self, doc_id: DocId) -> Result<i64> {
+        self.doc_values
+            .get(doc_id)
+            .map(|v| sortable_float_bits(v as i32) as i64)
+    }
+
+    fn get_mut(&mut self, doc_id: DocId) -> Result<i64> {
+        self.doc_values
+            .get_mut(doc_id)
+            .map(|v| sortable_float_bits(v as i32) as i64)
     }
 }
 
 struct SortableDoubleNumericDocValues {
-    doc_values: SortedNumAsNumDocValuesEnum,
+    doc_values: SortedNumAsNumDocValues,
 }
 
 impl SortableDoubleNumericDocValues {
-    fn new(doc_values: SortedNumAsNumDocValuesEnum) -> Self {
+    fn new(doc_values: SortedNumAsNumDocValues) -> Self {
         SortableDoubleNumericDocValues { doc_values }
     }
 }
 
 impl NumericDocValues for SortableDoubleNumericDocValues {
-    fn get_with_ctx(
-        &self,
-        ctx: NumericDocValuesContext,
-        doc_id: i32,
-    ) -> Result<(i64, NumericDocValuesContext)> {
-        let (value, ctx) = self.doc_values.get_with_ctx(ctx, doc_id)?;
-        Ok((sortable_double_bits(value), ctx))
+    fn get(&self, doc_id: DocId) -> Result<i64> {
+        self.doc_values.get(doc_id).map(sortable_double_bits)
+    }
+
+    fn get_mut(&mut self, doc_id: DocId) -> Result<i64> {
+        self.doc_values.get_mut(doc_id).map(sortable_double_bits)
     }
 }
 
-enum SortedNumAsNumDocValuesEnum {
-    Min(SortedNumAsNumDocValuesMin),
-    Max(SortedNumAsNumDocValuesMax),
+struct SortedNumAsNumDocValues {
+    doc_values: Box<dyn SortedNumericDocValues>,
+    index_fn: fn(usize) -> usize,
 }
 
-impl NumericDocValues for SortedNumAsNumDocValuesEnum {
-    fn get_with_ctx(
-        &self,
-        ctx: NumericDocValuesContext,
-        doc_id: i32,
-    ) -> Result<(i64, NumericDocValuesContext)> {
-        match self {
-            SortedNumAsNumDocValuesEnum::Min(m) => m.get_with_ctx(ctx, doc_id),
-            SortedNumAsNumDocValuesEnum::Max(m) => m.get_with_ctx(ctx, doc_id),
+impl SortedNumAsNumDocValues {
+    fn min(doc_values: Box<dyn SortedNumericDocValues>) -> Self {
+        Self {
+            doc_values,
+            index_fn: |_| 0,
+        }
+    }
+
+    fn max(doc_values: Box<dyn SortedNumericDocValues>) -> Self {
+        Self {
+            doc_values,
+            index_fn: |cnt| cnt - 1,
         }
     }
 }
 
-struct SortedNumAsNumDocValuesMin {
-    doc_values: SortedNumericDocValuesRef,
-}
-
-impl SortedNumAsNumDocValuesMin {
-    fn new(doc_values: SortedNumericDocValuesRef) -> Self {
-        SortedNumAsNumDocValuesMin { doc_values }
+impl NumericDocValues for SortedNumAsNumDocValues {
+    // TODO, maybe we should split `NumericDocValues` to 2 trait
+    fn get(&self, _doc_id: i32) -> Result<i64> {
+        unreachable!()
     }
-}
 
-impl NumericDocValues for SortedNumAsNumDocValuesMin {
-    fn get_with_ctx(
-        &self,
-        _ctx: NumericDocValuesContext,
-        doc_id: i32,
-    ) -> Result<(i64, NumericDocValuesContext)> {
-        let ctx = self.doc_values.set_document(None, doc_id)?;
-        if self.doc_values.count(&ctx) == 0 {
-            Ok((0, None))
-        } else {
-            Ok((self.doc_values.value_at(&ctx, 0)?, None))
-        }
-    }
-}
-
-struct SortedNumAsNumDocValuesMax {
-    doc_values: SortedNumericDocValuesRef,
-}
-
-impl SortedNumAsNumDocValuesMax {
-    fn new(doc_values: SortedNumericDocValuesRef) -> Self {
-        SortedNumAsNumDocValuesMax { doc_values }
-    }
-}
-
-impl NumericDocValues for SortedNumAsNumDocValuesMax {
-    fn get_with_ctx(
-        &self,
-        _ctx: NumericDocValuesContext,
-        doc_id: i32,
-    ) -> Result<(i64, NumericDocValuesContext)> {
-        let ctx = self.doc_values.set_document(None, doc_id)?;
-        let count = self.doc_values.count(&ctx);
+    fn get_mut(&mut self, doc_id: i32) -> Result<i64> {
+        self.doc_values.set_document(doc_id)?;
+        let count = self.doc_values.count();
         if count == 0 {
-            Ok((0, None))
+            Ok(0)
         } else {
-            Ok((self.doc_values.value_at(&ctx, count - 1)?, None))
+            self.doc_values.value_at((self.index_fn)(count))
         }
     }
 }

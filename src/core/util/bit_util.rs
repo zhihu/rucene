@@ -84,19 +84,6 @@ impl_bits_required!(u64, 64);
 impl_bits_required!(isize, (size_of::<isize>() * 8) as u32);
 impl_bits_required!(usize, (size_of::<usize>() * 8) as u32);
 
-pub fn bcompare(a: &[u8], b: &[u8]) -> i32 {
-    let alen = a.len();
-    let blen = b.len();
-    let min_len = ::std::cmp::min(alen, blen);
-    for i in 0..min_len {
-        if a[i] != b[i] {
-            return if a[i] < b[i] { -1 } else { 1 };
-        }
-    }
-
-    alen as i32 - blen as i32
-}
-
 // The pop methods used to rely on bit-manipulation tricks for speed but it
 // turns out that it is faster to use the Long.bitCount method (which is an
 // intrinsic since Java 6u18) in a naive loop, see LUCENE-2221

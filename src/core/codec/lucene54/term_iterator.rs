@@ -180,6 +180,31 @@ impl CompressedBinaryTermIterator {
         }
         Ok(high)
     }
+
+    #[inline]
+    pub fn num_values(&self) -> i64 {
+        self.num_values
+    }
+
+    pub fn clone(&self) -> Result<Self> {
+        let input = self.input.clone()?;
+        Ok(Self {
+            num_reverse_index_values: self.num_reverse_index_values,
+            reverse_index: Arc::clone(&self.reverse_index),
+            addresses: Arc::clone(&self.addresses),
+            num_values: self.num_values,
+            num_index_values: self.num_index_values,
+            current_ord: self.current_ord,
+            current_block_start: self.current_block_start,
+            input,
+            offsets: self.offsets,
+            buffer: self.buffer,
+            term: self.term.clone(),
+            term_length: self.term_length,
+            first_term: self.first_term.clone(),
+            first_term_length: self.first_term_length,
+        })
+    }
 }
 
 impl TermIterator for CompressedBinaryTermIterator {

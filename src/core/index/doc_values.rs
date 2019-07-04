@@ -13,20 +13,17 @@
 
 use core::codec::Codec;
 use core::index::{
-    BinaryDocValuesRef, MultiTermIterator, NumericDocValues, NumericDocValuesContext,
-    NumericDocValuesRef, ReaderSlice, SearchLeafReader, SingletonSortedNumericDocValues,
-    SingletonSortedSetDocValues, SortedDocValues, SortedDocValuesRef, SortedNumericDocValues,
-    SortedNumericDocValuesRef, SortedSetDocValues, SortedSetDocValuesRef, TermIterator,
-    TermIteratorIndex, NO_MORE_ORDS,
+    BinaryDocValues, CloneableNumericDocValues, MultiTermIterator, NumericDocValues, ReaderSlice,
+    SearchLeafReader, SingletonSortedNumericDocValues, SingletonSortedSetDocValues,
+    SortedDocValues, SortedNumericDocValues, SortedSetDocValues, TermIterator, TermIteratorIndex,
+    NO_MORE_ORDS,
 };
 use core::util::bit_util::BitsRequired;
 use core::util::packed::{
     PackedLongValues, PackedLongValuesBuilder, PackedLongValuesBuilderType, DEFAULT_PAGE_SIZE,
 };
 use core::util::packed_misc::{get_mutable_by_ratio, Mutable, MutableEnum, Reader, COMPACT};
-use core::util::{
-    Bits, BitsContext, BitsRef, DocId, IdentityLongValues, LongValues, LongValuesContext,
-};
+use core::util::{BitsMut, DocId, IdentityLongValues, LongValues};
 
 use error::Result;
 
@@ -43,85 +40,89 @@ impl DocValues {
         SingletonSortedSetDocValues::new(dv)
     }
 
-    pub fn singleton_sorted_numeric_doc_values(
-        numeric_doc_values_in: Box<dyn NumericDocValues>,
-        docs_with_field: BitsRef,
-    ) -> SingletonSortedNumericDocValues {
+    pub fn singleton_sorted_numeric_doc_values<DV: CloneableNumericDocValues, B: BitsMut>(
+        numeric_doc_values_in: DV,
+        docs_with_field: B,
+    ) -> SingletonSortedNumericDocValues<DV, B> {
         SingletonSortedNumericDocValues::new(numeric_doc_values_in, docs_with_field)
     }
 
-    pub fn docs_with_value_sorted(dv: Arc<dyn SortedDocValues>, max_doc: i32) -> BitsRef {
-        Arc::new(SortedDocValuesBits { dv, max_doc })
+    pub fn docs_with_value_sorted(dv: Box<dyn SortedDocValues>, max_doc: i32) -> Box<dyn BitsMut> {
+        Box::new(SortedDocValuesBits { dv, max_doc })
     }
 
-    pub fn docs_with_value_sorted_set(dv: Arc<dyn SortedSetDocValues>, max_doc: i32) -> BitsRef {
-        Arc::new(SortedSetDocValuesBits { dv, max_doc })
+    pub fn docs_with_value_sorted_set(
+        dv: Box<dyn SortedSetDocValues>,
+        max_doc: i32,
+    ) -> Box<dyn BitsMut> {
+        Box::new(SortedSetDocValuesBits { dv, max_doc })
     }
 
     pub fn docs_with_value_sorted_numeric(
-        dv: Arc<dyn SortedNumericDocValues>,
+        dv: Box<dyn SortedNumericDocValues>,
         max_doc: i32,
-    ) -> BitsRef {
-        Arc::new(SortedNumericDocValuesBits { dv, max_doc })
+    ) -> Box<dyn BitsMut> {
+        Box::new(SortedNumericDocValuesBits { dv, max_doc })
     }
 
     pub fn get_docs_with_field<C: Codec>(
         reader: &SearchLeafReader<C>,
         field: &str,
-    ) -> Result<BitsRef> {
+    ) -> Result<Box<dyn BitsMut>> {
         reader.get_docs_with_field(field)
     }
 
     pub fn get_numeric<C: Codec>(
         reader: &SearchLeafReader<C>,
         field: &str,
-    ) -> Result<NumericDocValuesRef> {
+    ) -> Result<Box<dyn NumericDocValues>> {
         reader.get_numeric_doc_values(field)
     }
 
     pub fn get_binary<C: Codec>(
         reader: &SearchLeafReader<C>,
         field: &str,
-    ) -> Result<BinaryDocValuesRef> {
+    ) -> Result<Box<dyn BinaryDocValues>> {
         reader.get_binary_doc_values(field)
     }
 
     pub fn get_sorted<C: Codec>(
         reader: &SearchLeafReader<C>,
         field: &str,
-    ) -> Result<SortedDocValuesRef> {
+    ) -> Result<Box<dyn SortedDocValues>> {
         reader.get_sorted_doc_values(field)
     }
 
     pub fn get_sorted_numeric<C: Codec>(
         reader: &SearchLeafReader<C>,
         field: &str,
-    ) -> Result<SortedNumericDocValuesRef> {
+    ) -> Result<Box<dyn SortedNumericDocValues>> {
         reader.get_sorted_numeric_doc_values(field)
     }
 
     pub fn get_sorted_set<C: Codec>(
         reader: &SearchLeafReader<C>,
         field: &str,
-    ) -> Result<SortedSetDocValuesRef> {
+    ) -> Result<Box<dyn SortedSetDocValues>> {
         reader.get_sorted_set_doc_values(field)
     }
 
-    pub fn unwrap_singleton(dv: &SortedNumericDocValuesRef) -> Result<Option<NumericDocValuesRef>> {
-        let val = dv.get_numeric_doc_values();
-        Ok(val)
+    pub fn unwrap_singleton<DV: SortedNumericDocValues>(
+        dv: &DV,
+    ) -> Option<Box<dyn NumericDocValues>> {
+        dv.get_numeric_doc_values()
     }
 }
 
 struct SortedDocValuesBits {
-    dv: Arc<dyn SortedDocValues>,
+    dv: Box<dyn SortedDocValues>,
     max_doc: i32,
 }
 
-impl Bits for SortedDocValuesBits {
-    fn get_with_ctx(&self, ctx: BitsContext, index: usize) -> Result<(bool, BitsContext)> {
+impl BitsMut for SortedDocValuesBits {
+    fn get(&mut self, index: usize) -> Result<bool> {
         let ord = self.dv.get_ord(index as DocId)?;
-        Ok((ord >= 0, ctx))
+        Ok(ord >= 0)
     }
 
     fn len(&self) -> usize {
@@ -130,33 +131,33 @@ impl Bits for SortedDocValuesBits {
 }
 
 struct SortedSetDocValuesBits {
-    dv: Arc<dyn SortedSetDocValues>,
+    dv: Box<dyn SortedSetDocValues>,
     max_doc: i32,
 }
 
-impl Bits for SortedSetDocValuesBits {
-    fn get_with_ctx(&self, ctx: BitsContext, index: usize) -> Result<(bool, BitsContext)> {
-        let mut dv_ctx = self.dv.set_document(index as DocId)?;
-        let ord = self.dv.next_ord(&mut dv_ctx)?;
-        Ok((ord != NO_MORE_ORDS, ctx))
+impl BitsMut for SortedSetDocValuesBits {
+    fn get(&mut self, index: usize) -> Result<bool> {
+        self.dv.set_document(index as DocId)?;
+        let ord = self.dv.next_ord()?;
+        Ok(ord != NO_MORE_ORDS)
     }
+
     fn len(&self) -> usize {
         self.max_doc as usize
     }
 }
 
 struct SortedNumericDocValuesBits {
-    dv: Arc<dyn SortedNumericDocValues>,
+    dv: Box<dyn SortedNumericDocValues>,
     max_doc: i32,
 }
 
-impl Bits for SortedNumericDocValuesBits {
-    fn get_with_ctx(&self, ctx: BitsContext, index: usize) -> Result<(bool, BitsContext)> {
-        let dv_ctx = self
-            .dv
-            .set_document(ctx.map(|c| (0, 0, Some(c))), index as DocId)?;
-        Ok((self.dv.count(&dv_ctx) != 0, ctx))
+impl BitsMut for SortedNumericDocValuesBits {
+    fn get(&mut self, index: usize) -> Result<bool> {
+        self.dv.set_document(index as DocId)?;
+        Ok(self.dv.count() > 0)
     }
+
     fn len(&self) -> usize {
         self.max_doc as usize
     }
@@ -173,7 +174,7 @@ pub struct OrdinalMap {
     // globalOrd -> first segment container
     first_segments: PackedLongValues,
     // for every segment, segmentOrd -> globalOrd
-    segment_to_global_ords: Vec<Rc<LongValues>>,
+    segment_to_global_ords: Vec<Rc<dyn LongValues>>,
     // the map from/to segment ids
     segment_map: SegmentMap,
 }
@@ -263,7 +264,7 @@ impl OrdinalMap {
         let first_segments = first_segments_builder.build();
         let global_ord_deltas = global_ord_deltas_builder.build();
 
-        let mut segment_to_global_ords: Vec<Rc<LongValues>> = Vec::with_capacity(subs.len());
+        let mut segment_to_global_ords: Vec<Rc<dyn LongValues>> = Vec::with_capacity(subs.len());
         let mut i = 0;
         for mut d in ord_deltas {
             let deltas = d.build();
@@ -298,7 +299,7 @@ impl OrdinalMap {
                     }
                     debug_assert_eq!(cnt as i64, size);
                     segment_to_global_ords.push(Rc::new(MutableAsLongValues {
-                        mutable: new_deltas,
+                        mutable: Arc::new(new_deltas),
                     }));
                 } else {
                     segment_to_global_ords
@@ -328,7 +329,7 @@ impl OrdinalMap {
         global_ord - self.global_ord_deltas.get64(global_ord).unwrap()
     }
 
-    pub fn get_global_ords(&self, index: usize) -> Rc<LongValues> {
+    pub fn get_global_ords(&self, index: usize) -> Rc<dyn LongValues> {
         let i = self.segment_map.old_to_new(index as i32) as usize;
         Rc::clone(&self.segment_to_global_ords[i])
     }
@@ -374,27 +375,20 @@ impl SegmentMap {
     }
 }
 
+#[derive(Clone)]
 struct MutableAsLongValues {
-    mutable: MutableEnum,
+    mutable: Arc<MutableEnum>,
 }
 
 impl LongValues for MutableAsLongValues {
-    fn get64_with_ctx(
-        &self,
-        ctx: LongValuesContext,
-        index: i64,
-    ) -> Result<(i64, LongValuesContext)> {
-        Ok((index + self.mutable.get(index as usize), ctx))
+    fn get64(&self, index: i64) -> Result<i64> {
+        Ok(index + self.mutable.get(index as usize))
     }
 }
 
 impl NumericDocValues for MutableAsLongValues {
-    fn get_with_ctx(
-        &self,
-        ctx: NumericDocValuesContext,
-        doc_id: DocId,
-    ) -> Result<(i64, NumericDocValuesContext)> {
-        Ok((self.get64(doc_id as i64)?, ctx))
+    fn get(&self, doc_id: DocId) -> Result<i64> {
+        self.get64(i64::from(doc_id))
     }
 }
 
@@ -403,22 +397,13 @@ struct PackedLongValuesWrapper {
 }
 
 impl LongValues for PackedLongValuesWrapper {
-    fn get64_with_ctx(
-        &self,
-        ctx: LongValuesContext,
-        index: i64,
-    ) -> Result<(i64, LongValuesContext)> {
-        let (ret, ctx) = self.values.get64_with_ctx(ctx, index)?;
-        Ok((index + ret, ctx))
+    fn get64(&self, index: i64) -> Result<i64> {
+        self.values.get64(index).map(|v| index + v)
     }
 }
 
 impl NumericDocValues for PackedLongValuesWrapper {
-    fn get_with_ctx(
-        &self,
-        ctx: NumericDocValuesContext,
-        doc_id: DocId,
-    ) -> Result<(i64, NumericDocValuesContext)> {
-        Ok((self.get64(doc_id as i64)?, ctx))
+    fn get(&self, doc_id: DocId) -> Result<i64> {
+        self.get64(i64::from(doc_id))
     }
 }

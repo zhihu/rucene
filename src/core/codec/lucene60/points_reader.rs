@@ -215,7 +215,7 @@ impl PointValues for Lucene60PointsReader {
             .unwrap_or(0i32))
     }
 
-    fn as_any(&self) -> &Any {
+    fn as_any(&self) -> &dyn Any {
         self
     }
 }

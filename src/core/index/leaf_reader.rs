@@ -17,13 +17,12 @@ use core::codec::{
     StoredFieldsReader, TermVectorsReader,
 };
 use core::index::{
-    BinaryDocValuesRef, FieldInfo, FieldInfos, Fields, IndexReader, NumericDocValues,
-    NumericDocValuesRef, SortedDocValuesRef, SortedNumericDocValuesRef, SortedSetDocValuesRef,
-    StoredFieldVisitor, Term, TermIterator, Terms,
+    BinaryDocValues, FieldInfo, FieldInfos, Fields, IndexReader, NumericDocValues, SortedDocValues,
+    SortedNumericDocValues, SortedSetDocValues, StoredFieldVisitor, Term, TermIterator, Terms,
 };
 use core::search::sort::Sort;
 use core::util::external::deferred::Deferred;
-use core::util::{BitsRef, DocId};
+use core::util::{BitsMut, BitsRef, DocId};
 
 use error::Result;
 
@@ -126,19 +125,20 @@ pub trait LeafReader {
 
     fn num_docs(&self) -> i32;
 
-    fn get_numeric_doc_values(&self, field: &str) -> Result<NumericDocValuesRef>;
+    fn get_numeric_doc_values(&self, field: &str) -> Result<Box<dyn NumericDocValues>>;
 
-    fn get_binary_doc_values(&self, field: &str) -> Result<BinaryDocValuesRef>;
+    fn get_binary_doc_values(&self, field: &str) -> Result<Box<dyn BinaryDocValues>>;
 
-    fn get_sorted_doc_values(&self, field: &str) -> Result<SortedDocValuesRef>;
+    fn get_sorted_doc_values(&self, field: &str) -> Result<Box<dyn SortedDocValues>>;
 
-    fn get_sorted_numeric_doc_values(&self, field: &str) -> Result<SortedNumericDocValuesRef>;
+    fn get_sorted_numeric_doc_values(&self, field: &str)
+        -> Result<Box<dyn SortedNumericDocValues>>;
 
-    fn get_sorted_set_doc_values(&self, field: &str) -> Result<SortedSetDocValuesRef>;
+    fn get_sorted_set_doc_values(&self, field: &str) -> Result<Box<dyn SortedSetDocValues>>;
 
     fn norm_values(&self, field: &str) -> Result<Option<Box<dyn NumericDocValues>>>;
 
-    fn get_docs_with_field(&self, field: &str) -> Result<BitsRef>;
+    fn get_docs_with_field(&self, field: &str) -> Result<Box<dyn BitsMut>>;
 
     /// Returns the `PointValues` used for numeric or
     /// spatial searches, or None if there are no point fields.

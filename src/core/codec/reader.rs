@@ -27,13 +27,16 @@ pub trait StoredFieldsReader: Sized {
     fn visit_document(&self, doc_id: DocId, visitor: &mut dyn StoredFieldVisitor) -> Result<()>;
 
     // a mutable version for `Self::visit_document` that maybe more fast
-    fn visit_document_mut(&mut self, doc_id: DocId, visitor: &mut StoredFieldVisitor)
-        -> Result<()>;
+    fn visit_document_mut(
+        &mut self,
+        doc_id: DocId,
+        visitor: &mut dyn StoredFieldVisitor,
+    ) -> Result<()>;
 
     fn get_merge_instance(&self) -> Result<Self>;
 
     // used for type Downcast
-    fn as_any(&self) -> &Any;
+    fn as_any(&self) -> &dyn Any;
 }
 
 impl<T: StoredFieldsReader + 'static> StoredFieldsReader for Arc<T> {
@@ -44,7 +47,7 @@ impl<T: StoredFieldsReader + 'static> StoredFieldsReader for Arc<T> {
     fn visit_document_mut(
         &mut self,
         doc_id: DocId,
-        visitor: &mut StoredFieldVisitor,
+        visitor: &mut dyn StoredFieldVisitor,
     ) -> Result<()> {
         debug_assert_eq!(Arc::strong_count(self), 1);
         Arc::get_mut(self)
@@ -56,7 +59,7 @@ impl<T: StoredFieldsReader + 'static> StoredFieldsReader for Arc<T> {
         Ok(Arc::new((**self).get_merge_instance()?))
     }
 
-    fn as_any(&self) -> &Any {
+    fn as_any(&self) -> &dyn Any {
         &**self
     }
 }
@@ -64,7 +67,7 @@ impl<T: StoredFieldsReader + 'static> StoredFieldsReader for Arc<T> {
 pub trait TermVectorsReader {
     type Fields: Fields;
     fn get(&self, doc: DocId) -> Result<Option<Self::Fields>>;
-    fn as_any(&self) -> &Any;
+    fn as_any(&self) -> &dyn Any;
 }
 
 impl<T: TermVectorsReader + 'static> TermVectorsReader for Arc<T> {
@@ -74,7 +77,7 @@ impl<T: TermVectorsReader + 'static> TermVectorsReader for Arc<T> {
         (**self).get(doc)
     }
 
-    fn as_any(&self) -> &Any {
+    fn as_any(&self) -> &dyn Any {
         (**self).as_any()
     }
 }
@@ -82,7 +85,7 @@ impl<T: TermVectorsReader + 'static> TermVectorsReader for Arc<T> {
 /// trait for visit point values.
 pub trait PointsReader: PointValues {
     fn check_integrity(&self) -> Result<()>;
-    fn as_any(&self) -> &Any;
+    fn as_any(&self) -> &dyn Any;
 }
 
 /// `PointsReader` whose order of points can be changed.

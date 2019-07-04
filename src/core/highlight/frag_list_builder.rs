@@ -38,7 +38,7 @@ impl BaseFragListBuilder {
 
     pub fn create_field_frag_list(
         &self,
-        field_frag_list: &mut FieldFragList,
+        field_frag_list: &mut dyn FieldFragList,
         field_phrase_list: &FieldPhraseList,
         frag_char_size: i32,
     ) -> Result<()> {

@@ -14,8 +14,8 @@
 use core::codec::lucene53::norms::{VERSION_CURRENT, VERSION_START};
 use core::codec::NormsProducer;
 use core::codec::{codec_util, Codec};
+use core::index::NumericDocValues;
 use core::index::{segment_file_name, FieldInfo, FieldInfos, SegmentReadState};
-use core::index::{NumericDocValues, NumericDocValuesContext};
 use core::store::RandomAccessInput;
 use core::store::{Directory, IndexInput};
 use core::util::DocId;
@@ -147,7 +147,7 @@ impl NormsProducer for Lucene53NormsProducer {
                 let slice = self
                     .data
                     .random_access_slice(entry.offset as i64, i64::from(self.max_doc))?;
-                let consumer: fn(&RandomAccessInput, DocId) -> Result<i64> =
+                let consumer: fn(&dyn RandomAccessInput, DocId) -> Result<i64> =
                     move |slice, doc_id| slice.read_byte(i64::from(doc_id)).map(i64::from);
                 Ok(Box::new(RandomAccessNumericDocValues::new(slice, consumer)))
             }
@@ -155,7 +155,7 @@ impl NormsProducer for Lucene53NormsProducer {
                 let slice = self
                     .data
                     .random_access_slice(entry.offset as i64, i64::from(self.max_doc) * 2)?;
-                let consumer: fn(&RandomAccessInput, DocId) -> Result<i64> =
+                let consumer: fn(&dyn RandomAccessInput, DocId) -> Result<i64> =
                     move |slice, doc_id| slice.read_short(i64::from(doc_id) << 1).map(i64::from);
                 Ok(Box::new(RandomAccessNumericDocValues::new(slice, consumer)))
             }
@@ -163,7 +163,7 @@ impl NormsProducer for Lucene53NormsProducer {
                 let slice = self
                     .data
                     .random_access_slice(entry.offset as i64, i64::from(self.max_doc) * 4)?;
-                let consumer: fn(&RandomAccessInput, DocId) -> Result<i64> =
+                let consumer: fn(&dyn RandomAccessInput, DocId) -> Result<i64> =
                     move |slice, doc_id| slice.read_int(i64::from(doc_id) << 2).map(i64::from);
                 Ok(Box::new(RandomAccessNumericDocValues::new(slice, consumer)))
             }
@@ -171,7 +171,7 @@ impl NormsProducer for Lucene53NormsProducer {
                 let slice = self
                     .data
                     .random_access_slice(entry.offset as i64, i64::from(self.max_doc) * 8)?;
-                let consumer: fn(&RandomAccessInput, DocId) -> Result<i64> =
+                let consumer: fn(&dyn RandomAccessInput, DocId) -> Result<i64> =
                     move |slice, doc_id| slice.read_long(i64::from(doc_id) << 3).map(i64::from);
                 Ok(Box::new(RandomAccessNumericDocValues::new(slice, consumer)))
             }
@@ -183,18 +183,14 @@ impl NormsProducer for Lucene53NormsProducer {
 struct ScalarNumericDocValue(i64);
 
 impl NumericDocValues for ScalarNumericDocValue {
-    fn get_with_ctx(
-        &self,
-        ctx: NumericDocValuesContext,
-        _doc_id: DocId,
-    ) -> Result<(i64, NumericDocValuesContext)> {
-        Ok((self.0, ctx))
+    fn get(&self, _doc_id: DocId) -> Result<i64> {
+        Ok(self.0)
     }
 }
 
 struct RandomAccessNumericDocValues<F>
 where
-    F: Fn(&RandomAccessInput, DocId) -> Result<i64> + Send,
+    F: Fn(&dyn RandomAccessInput, DocId) -> Result<i64> + Send,
 {
     input: Box<dyn RandomAccessInput>,
     consumer: F,
@@ -202,7 +198,7 @@ where
 
 impl<F> RandomAccessNumericDocValues<F>
 where
-    F: Fn(&RandomAccessInput, DocId) -> Result<i64> + Send,
+    F: Fn(&dyn RandomAccessInput, DocId) -> Result<i64> + Send,
 {
     fn new(input: Box<dyn RandomAccessInput>, consumer: F) -> RandomAccessNumericDocValues<F> {
         RandomAccessNumericDocValues { input, consumer }
@@ -211,14 +207,9 @@ where
 
 impl<F> NumericDocValues for RandomAccessNumericDocValues<F>
 where
-    F: Fn(&RandomAccessInput, DocId) -> Result<i64> + Send + Sync,
+    F: Fn(&dyn RandomAccessInput, DocId) -> Result<i64> + Send + Sync,
 {
-    fn get_with_ctx(
-        &self,
-        ctx: NumericDocValuesContext,
-        doc_id: DocId,
-    ) -> Result<(i64, NumericDocValuesContext)> {
-        let consumer = &self.consumer;
-        consumer(self.input.as_ref(), doc_id).map(|x| (x, ctx))
+    fn get(&self, doc_id: DocId) -> Result<i64> {
+        (&self.consumer)(self.input.as_ref(), doc_id)
     }
 }

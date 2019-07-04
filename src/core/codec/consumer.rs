@@ -19,13 +19,12 @@ use core::index::doc_id_merger::{
     doc_id_merger_of, DocIdMerger, DocIdMergerEnum, DocIdMergerSub, DocIdMergerSubBase,
 };
 use core::index::{
-    AcceptStatus, BinaryDocValuesRef, DocValuesTermIterator, DocValuesType, EmptyBinaryDocValues,
+    AcceptStatus, BinaryDocValues, DocValuesTermIterator, DocValuesType, EmptyBinaryDocValues,
     EmptyNumericDocValues, EmptySortedDocValues, EmptySortedNumericDocValues,
     EmptySortedSetDocValues, FieldInfo, Fields, FilteredTermIterBase, FilteredTermIterator,
-    LiveDocsDocMap, MappedMultiFields, MergeState, MultiFields, NumericDocValues,
-    NumericDocValuesContext, NumericDocValuesRef, OrdTermState, OrdinalMap, ReaderSlice,
-    SeekStatus, SortedDocValues, SortedDocValuesRef, SortedNumericDocValuesContext,
-    SortedNumericDocValuesRef, SortedSetDocValuesRef, TermIterator, NO_MORE_ORDS,
+    LiveDocsDocMap, MappedMultiFields, MergeState, MultiFields, NumericDocValues, OrdTermState,
+    OrdinalMap, ReaderSlice, SeekStatus, SortedDocValues, SortedNumericDocValues,
+    SortedSetDocValues, TermIterator, NO_MORE_ORDS,
 };
 use core::search::posting_iterator::EmptyPostingIterator;
 use core::search::NO_MORE_DOCS;
@@ -33,7 +32,7 @@ use core::store::Directory;
 use core::util::bkd::LongBitSet;
 use core::util::packed_misc::COMPACT;
 use core::util::{
-    numeric::Numeric, BitsRef, BytesRef, DocId, LongValues, MatchNoBits, ReusableIterator,
+    numeric::Numeric, BitsMut, BytesRef, DocId, LongValues, MatchNoBits, ReusableIterator,
 };
 
 use error::Result;
@@ -182,15 +181,16 @@ pub trait DocValuesConsumer {
                     let mut to_merge = vec![];
                     let mut docs_with_field = vec![];
                     for i in 0..merge_state.doc_values_producers.len() {
-                        let mut values: Arc<NumericDocValues> = Arc::new(EmptyNumericDocValues {});
-                        let mut bits: BitsRef =
-                            Arc::new(MatchNoBits::new(merge_state.max_docs[i] as usize));
+                        let mut values: Box<dyn NumericDocValues> =
+                            Box::new(EmptyNumericDocValues {});
+                        let mut bits: Box<dyn BitsMut> =
+                            Box::new(MatchNoBits::new(merge_state.max_docs[i] as usize));
                         if let Some(ref producer) = merge_state.doc_values_producers[i] {
                             if let Some(field_info) = merge_state.fields_infos[i]
                                 .field_info_by_name(&merge_field_info.name)
                             {
                                 if field_info.doc_values_type == DocValuesType::Numeric {
-                                    values = producer.get_numeric(field_info)?;
+                                    values = producer.get_numeric(field_info)?.get()?;
                                     bits = producer.get_docs_with_field(field_info)?;
                                 }
                             }
@@ -201,23 +201,24 @@ pub trait DocValuesConsumer {
                     self.merge_numeric_field(
                         merge_field_info.as_ref(),
                         merge_state,
-                        &to_merge,
-                        &docs_with_field,
+                        to_merge,
+                        docs_with_field,
                     )?;
                 }
                 DocValuesType::Binary => {
                     let mut to_merge = vec![];
                     let mut docs_with_field = vec![];
                     for i in 0..merge_state.doc_values_producers.len() {
-                        let mut values: BinaryDocValuesRef = Arc::new(EmptyBinaryDocValues {});
-                        let mut bits: BitsRef =
-                            Arc::new(MatchNoBits::new(merge_state.max_docs[i] as usize));
+                        let mut values: Box<dyn BinaryDocValues> =
+                            Box::new(EmptyBinaryDocValues {});
+                        let mut bits: Box<dyn BitsMut> =
+                            Box::new(MatchNoBits::new(merge_state.max_docs[i] as usize));
                         if let Some(ref producer) = merge_state.doc_values_producers[i] {
                             if let Some(field_info) = merge_state.fields_infos[i]
                                 .field_info_by_name(&merge_field_info.name)
                             {
                                 if field_info.doc_values_type == DocValuesType::Binary {
-                                    values = producer.get_binary(field_info)?;
+                                    values = producer.get_binary(field_info)?.get()?;
                                     bits = producer.get_docs_with_field(field_info)?;
                                 }
                             }
@@ -229,56 +230,57 @@ pub trait DocValuesConsumer {
                     self.merge_binary_field(
                         merge_field_info.as_ref(),
                         merge_state,
-                        &to_merge,
-                        &docs_with_field,
+                        to_merge,
+                        docs_with_field,
                     )?;
                 }
                 DocValuesType::Sorted => {
                     let mut to_merge = vec![];
                     for i in 0..merge_state.doc_values_producers.len() {
-                        let mut values: Arc<SortedDocValues> = Arc::new(EmptySortedDocValues {});
+                        let mut values: Box<dyn SortedDocValues> =
+                            Box::new(EmptySortedDocValues {});
                         if let Some(ref producer) = merge_state.doc_values_producers[i] {
                             if let Some(field_info) = merge_state.fields_infos[i]
                                 .field_info_by_name(&merge_field_info.name)
                             {
                                 if field_info.doc_values_type == DocValuesType::Sorted {
-                                    values = producer.get_sorted(field_info)?;
+                                    values = producer.get_sorted(field_info)?.get()?;
                                 }
                             }
                         }
                         to_merge.push(values);
                     }
-                    self.merge_sorted_field(merge_field_info.as_ref(), merge_state, &to_merge)?;
+                    self.merge_sorted_field(merge_field_info.as_ref(), merge_state, to_merge)?;
                 }
                 DocValuesType::SortedSet => {
                     let mut to_merge = vec![];
                     for i in 0..merge_state.doc_values_producers.len() {
-                        let mut values: SortedSetDocValuesRef =
-                            Arc::new(EmptySortedSetDocValues {});
+                        let mut values: Box<dyn SortedSetDocValues> =
+                            Box::new(EmptySortedSetDocValues);
                         if let Some(ref producer) = merge_state.doc_values_producers[i] {
                             if let Some(field_info) = merge_state.fields_infos[i]
                                 .field_info_by_name(&merge_field_info.name)
                             {
                                 if field_info.doc_values_type == DocValuesType::SortedSet {
-                                    values = producer.get_sorted_set(field_info)?;
+                                    values = producer.get_sorted_set(field_info)?.get()?;
                                 }
                             }
                         }
                         to_merge.push(values);
                     }
-                    self.merge_sorted_set_field(merge_field_info.as_ref(), merge_state, &to_merge)?;
+                    self.merge_sorted_set_field(merge_field_info.as_ref(), merge_state, to_merge)?;
                 }
                 DocValuesType::SortedNumeric => {
                     let mut to_merge = vec![];
                     for i in 0..merge_state.doc_values_producers.len() {
-                        let mut values: SortedNumericDocValuesRef =
-                            Arc::new(EmptySortedNumericDocValues {});
+                        let mut values: Box<dyn SortedNumericDocValues> =
+                            Box::new(EmptySortedNumericDocValues {});
                         if let Some(ref producer) = merge_state.doc_values_producers[i] {
                             if let Some(field_info) = merge_state.fields_infos[i]
                                 .field_info_by_name(&merge_field_info.name)
                             {
                                 if field_info.doc_values_type == DocValuesType::SortedNumeric {
-                                    values = producer.get_sorted_numeric(field_info)?;
+                                    values = producer.get_sorted_numeric(field_info)?.get()?;
                                 }
                             }
                         }
@@ -287,7 +289,7 @@ pub trait DocValuesConsumer {
                     self.merge_sorted_numeric_field(
                         merge_field_info.as_ref(),
                         merge_state,
-                        &to_merge,
+                        to_merge,
                     )?;
                 }
             }
@@ -299,8 +301,8 @@ pub trait DocValuesConsumer {
         &mut self,
         field_info: &FieldInfo,
         merge_state: &MergeState<D, C>,
-        to_merge: &[Arc<dyn NumericDocValues>],
-        docs_with_field: &[BitsRef],
+        to_merge: Vec<Box<dyn NumericDocValues>>,
+        docs_with_field: Vec<Box<dyn BitsMut>>,
     ) -> Result<()> {
         let mut iter = NumericDocValuesMergeIter::new(merge_state, to_merge, docs_with_field)?;
         self.add_numeric_field(field_info, &mut iter)
@@ -310,8 +312,8 @@ pub trait DocValuesConsumer {
         &mut self,
         field_info: &FieldInfo,
         merge_state: &MergeState<D, C>,
-        to_merge: &[BinaryDocValuesRef],
-        docs_with_field: &[BitsRef],
+        to_merge: Vec<Box<dyn BinaryDocValues>>,
+        docs_with_field: Vec<Box<dyn BitsMut>>,
     ) -> Result<()> {
         let mut iter = BinaryDocValuesMergeIter::new(merge_state, to_merge, docs_with_field)?;
         self.add_binary_field(field_info, &mut iter)
@@ -321,21 +323,22 @@ pub trait DocValuesConsumer {
         &mut self,
         field_info: &FieldInfo,
         merge_state: &MergeState<D, C>,
-        to_merge: &[SortedDocValuesRef],
+        to_merge: Vec<Box<dyn SortedDocValues>>,
     ) -> Result<()> {
+        let mut to_merge = to_merge;
         let num_readers = to_merge.len();
         // step 1: iterate thru each sub and mark terms still in use
         let mut live_terms = Vec::with_capacity(num_readers);
         let mut weights = Vec::with_capacity(num_readers);
         for i in 0..num_readers {
-            let dv = &to_merge[i];
+            let dv = &mut to_merge[i];
             let max_doc = merge_state.max_docs[i];
             let live_docs = &merge_state.live_docs[i];
             if live_docs.len() == 0 {
                 live_terms.push(Some(MergeDVTermIterEnum::DV(dv.term_iterator()?)));
-                weights.push(dv.get_value_count());
+                weights.push(dv.value_count());
             } else {
-                let mut bitset = LongBitSet::new(dv.get_value_count() as i64);
+                let mut bitset = LongBitSet::new(dv.value_count() as i64);
                 for i in 0..max_doc {
                     if live_docs.get(i as usize)? {
                         let ord = dv.get_ord(i)?;
@@ -355,8 +358,8 @@ pub trait DocValuesConsumer {
         let map = OrdinalMap::build(live_terms, weights, COMPACT)?;
 
         // step 3: add field
-        let mut ords_iter = SortedDocValuesMergeOrdIter::new(to_merge, merge_state, &map)?;
-        let mut bytes_iter = SortedDocValuesMergeBytesIter::new(&map, to_merge);
+        let mut ords_iter = SortedDocValuesMergeOrdIter::new(&mut to_merge, merge_state, &map)?;
+        let mut bytes_iter = SortedDocValuesMergeBytesIter::new(&map, &mut to_merge);
         self.add_sorted_field(field_info, &mut bytes_iter, &mut ords_iter)
     }
 
@@ -364,13 +367,13 @@ pub trait DocValuesConsumer {
         &mut self,
         field_info: &FieldInfo,
         merge_state: &MergeState<D, C>,
-        to_merge: &[SortedSetDocValuesRef],
+        mut to_merge: Vec<Box<dyn SortedSetDocValues>>,
     ) -> Result<()> {
         let num_readers = to_merge.len();
         // step 1: iterate thru each sub and mark terms still in use
         let mut live_terms = Vec::with_capacity(num_readers);
         let mut weights = Vec::with_capacity(num_readers);
-        for (i, dv) in to_merge.iter().enumerate().take(num_readers) {
+        for (i, dv) in to_merge.iter_mut().enumerate() {
             let max_doc = merge_state.max_docs[i];
             let live_docs = &merge_state.live_docs[i];
             if live_docs.len() == 0 {
@@ -380,9 +383,9 @@ pub trait DocValuesConsumer {
                 let mut bitset = LongBitSet::new(dv.get_value_count() as i64);
                 for i in 0..max_doc {
                     if live_docs.get(i as usize)? {
-                        let mut ctx = dv.set_document(i)?;
+                        dv.set_document(i)?;
                         loop {
-                            let ord = dv.next_ord(&mut ctx)?;
+                            let ord = dv.next_ord()?;
                             if ord == NO_MORE_ORDS {
                                 break;
                             }
@@ -403,9 +406,9 @@ pub trait DocValuesConsumer {
         // step 3: add field
         self.add_sorted_set_field(
             field_info,
-            &mut SortedSetDocValuesMergeBytesIter::new(&map, &to_merge),
-            &mut SortedSetDocValuesOrdCountIter::new(&to_merge, merge_state, &map)?,
-            &mut SortedSetDocValuesMergeOrdIter::new(&to_merge, merge_state, &map)?,
+            &mut SortedSetDocValuesMergeBytesIter::new(&map, &mut to_merge),
+            &mut SortedSetDocValuesOrdCountIter::new(&mut to_merge, merge_state, &map)?,
+            &mut SortedSetDocValuesMergeOrdIter::new(&mut to_merge, merge_state, &map)?,
         )
     }
 
@@ -413,10 +416,11 @@ pub trait DocValuesConsumer {
         &mut self,
         field_info: &FieldInfo,
         merge_state: &MergeState<D, C>,
-        to_merge: &[SortedNumericDocValuesRef],
+        to_merge: Vec<Box<dyn SortedNumericDocValues>>,
     ) -> Result<()> {
-        let mut values_iter = SortedNumericDocValuesIter::new(to_merge, merge_state)?;
-        let mut doc_counts_iter = SortedNumericDocValuesCountIter::new(to_merge, merge_state)?;
+        let mut to_merge = to_merge;
+        let mut values_iter = SortedNumericDocValuesIter::new(&mut to_merge, merge_state)?;
+        let mut doc_counts_iter = SortedNumericDocValuesCountIter::new(&mut to_merge, merge_state)?;
 
         self.add_sorted_numeric_field(field_info, &mut values_iter, &mut doc_counts_iter)
     }
@@ -544,35 +548,29 @@ impl<T: TermIterator> FilteredTermIterator for BitsFilteredTermIterator<T> {
     }
 }
 
-struct NumericDocValuesMergeIter<'a, D: Directory + 'static, C: Codec> {
-    merge_state: &'a MergeState<D, C>,
-    to_merge: &'a [Arc<dyn NumericDocValues>],
-    docs_with_field: &'a [BitsRef],
+struct NumericDocValuesMergeIter {
     doc_id_merger: DocIdMergerEnum<NumericDocValuesSub>,
     next_value: Numeric,
     next_is_set: bool,
 }
 
-impl<'a, D: Directory + 'static, C: Codec> NumericDocValuesMergeIter<'a, D, C> {
-    fn new(
-        merge_state: &'a MergeState<D, C>,
-        to_merge: &'a [Arc<dyn NumericDocValues>],
-        docs_with_field: &'a [BitsRef],
+impl NumericDocValuesMergeIter {
+    fn new<D: Directory + 'static, C: Codec>(
+        merge_state: &MergeState<D, C>,
+        to_merge: Vec<Box<dyn NumericDocValues>>,
+        docs_with_field: Vec<Box<dyn BitsMut>>,
     ) -> Result<Self> {
         let mut subs = Vec::with_capacity(to_merge.len());
-        for i in 0..to_merge.len() {
+        for (i, (dv, bits)) in to_merge.into_iter().zip(docs_with_field).enumerate() {
             subs.push(NumericDocValuesSub::new(
                 Arc::clone(&merge_state.doc_maps[i]),
-                Arc::clone(&to_merge[i]),
-                Arc::clone(&docs_with_field[i]),
+                dv,
+                bits,
                 merge_state.max_docs[i],
             ));
         }
         let doc_id_merger = doc_id_merger_of(subs, merge_state.needs_index_sort)?;
         Ok(NumericDocValuesMergeIter {
-            merge_state,
-            to_merge,
-            docs_with_field,
             doc_id_merger,
             next_value: Numeric::Null,
             next_is_set: false,
@@ -585,14 +583,12 @@ impl<'a, D: Directory + 'static, C: Codec> NumericDocValuesMergeIter<'a, D, C> {
     fn set_next(&mut self) -> Result<bool> {
         if let Some(sub) = self.doc_id_merger.next()? {
             self.next_is_set = true;
-            let current_ctx = sub.ctx.take();
-            let (next_value, ctx) = sub.values.get_with_ctx(current_ctx, sub.doc_id)?;
+            let next_value = sub.values.get_mut(sub.doc_id)?;
             self.next_value = if next_value != 0 || sub.docs_with_field.get(sub.doc_id as usize)? {
                 Numeric::Long(next_value)
             } else {
                 Numeric::Null
             };
-            sub.ctx = ctx;
             Ok(true)
         } else {
             Ok(false)
@@ -600,7 +596,7 @@ impl<'a, D: Directory + 'static, C: Codec> NumericDocValuesMergeIter<'a, D, C> {
     }
 }
 
-impl<'a, D: Directory + 'static, C: Codec> Iterator for NumericDocValuesMergeIter<'a, D, C> {
+impl Iterator for NumericDocValuesMergeIter {
     type Item = Result<Numeric>;
 
     fn next(&mut self) -> Option<Result<Numeric>> {
@@ -616,40 +612,27 @@ impl<'a, D: Directory + 'static, C: Codec> Iterator for NumericDocValuesMergeIte
     }
 }
 
-impl<'a, D: Directory + 'static, C: Codec> ReusableIterator
-    for NumericDocValuesMergeIter<'a, D, C>
-{
+impl ReusableIterator for NumericDocValuesMergeIter {
     fn reset(&mut self) {
-        let mut subs = Vec::with_capacity(self.to_merge.len());
-        for i in 0..self.to_merge.len() {
-            subs.push(NumericDocValuesSub::new(
-                Arc::clone(&self.merge_state.doc_maps[i]),
-                Arc::clone(&self.to_merge[i]),
-                Arc::clone(&self.docs_with_field[i]),
-                self.merge_state.max_docs[i],
-            ));
-        }
-        let doc_id_merger = doc_id_merger_of(subs, self.merge_state.needs_index_sort).unwrap();
-        self.doc_id_merger = doc_id_merger;
+        self.doc_id_merger.reset().unwrap();
         self.next_is_set = false;
         self.next_value = Numeric::Null;
     }
 }
 
 struct NumericDocValuesSub {
-    values: NumericDocValuesRef,
-    docs_with_field: BitsRef,
+    values: Box<dyn NumericDocValues>,
+    docs_with_field: Box<dyn BitsMut>,
     doc_id: i32,
     max_doc: i32,
     base: DocIdMergerSubBase,
-    ctx: NumericDocValuesContext,
 }
 
 impl NumericDocValuesSub {
     fn new(
         doc_map: Arc<LiveDocsDocMap>,
-        values: NumericDocValuesRef,
-        docs_with_field: BitsRef,
+        values: Box<dyn NumericDocValues>,
+        docs_with_field: Box<dyn BitsMut>,
         max_doc: i32,
     ) -> Self {
         let base = DocIdMergerSubBase::new(doc_map);
@@ -659,7 +642,6 @@ impl NumericDocValuesSub {
             doc_id: -1,
             max_doc,
             base,
-            ctx: None,
         }
     }
 }
@@ -681,44 +663,44 @@ impl DocIdMergerSub for NumericDocValuesSub {
     fn base_mut(&mut self) -> &mut DocIdMergerSubBase {
         &mut self.base
     }
+
+    fn reset(&mut self) {
+        self.base.reset();
+        self.doc_id = -1;
+    }
 }
 
-struct BinaryDocValuesMergeIter<'a, D: Directory + 'static, C: Codec> {
-    merge_state: &'a MergeState<D, C>,
-    to_merge: &'a [BinaryDocValuesRef],
-    docs_with_field: &'a [BitsRef],
+struct BinaryDocValuesMergeIter {
     doc_id_merger: DocIdMergerEnum<BinaryDocValuesSub>,
     next_value: Vec<u8>,
     next_ref: BytesRef,
     next_is_set: bool,
 }
 
-impl<'a, D: Directory + 'static, C: Codec> BinaryDocValuesMergeIter<'a, D, C> {
-    fn new(
-        merge_state: &'a MergeState<D, C>,
-        to_merge: &'a [BinaryDocValuesRef],
-        docs_with_field: &'a [BitsRef],
+impl BinaryDocValuesMergeIter {
+    fn new<D: Directory + 'static, C: Codec>(
+        merge_state: &MergeState<D, C>,
+        to_merge: Vec<Box<dyn BinaryDocValues>>,
+        docs_with_field: Vec<Box<dyn BitsMut>>,
     ) -> Result<Self> {
         let mut subs = Vec::with_capacity(to_merge.len());
-        for i in 0..to_merge.len() {
+        for (i, (dv, bits)) in to_merge.into_iter().zip(docs_with_field).enumerate() {
             subs.push(BinaryDocValuesSub::new(
                 Arc::clone(&merge_state.doc_maps[i]),
-                Arc::clone(&to_merge[i]),
-                Arc::clone(&docs_with_field[i]),
+                dv,
+                bits,
                 merge_state.max_docs[i],
             ));
         }
         let doc_id_merger = doc_id_merger_of(subs, merge_state.needs_index_sort)?;
         Ok(BinaryDocValuesMergeIter {
-            merge_state,
-            to_merge,
-            docs_with_field,
             doc_id_merger,
             next_value: vec![],
             next_ref: BytesRef::default(),
             next_is_set: false,
         })
     }
+
     fn has_next(&mut self) -> Result<bool> {
         Ok(self.next_is_set || self.set_next()?)
     }
@@ -740,7 +722,7 @@ impl<'a, D: Directory + 'static, C: Codec> BinaryDocValuesMergeIter<'a, D, C> {
     }
 }
 
-impl<'a, D: Directory + 'static, C: Codec> Iterator for BinaryDocValuesMergeIter<'a, D, C> {
+impl Iterator for BinaryDocValuesMergeIter {
     type Item = Result<BytesRef>;
 
     fn next(&mut self) -> Option<Result<BytesRef>> {
@@ -756,19 +738,9 @@ impl<'a, D: Directory + 'static, C: Codec> Iterator for BinaryDocValuesMergeIter
     }
 }
 
-impl<'a, D: Directory + 'static, C: Codec> ReusableIterator for BinaryDocValuesMergeIter<'a, D, C> {
+impl ReusableIterator for BinaryDocValuesMergeIter {
     fn reset(&mut self) {
-        let mut subs = Vec::with_capacity(self.to_merge.len());
-        for i in 0..self.to_merge.len() {
-            subs.push(BinaryDocValuesSub::new(
-                Arc::clone(&self.merge_state.doc_maps[i]),
-                Arc::clone(&self.to_merge[i]),
-                Arc::clone(&self.docs_with_field[i]),
-                self.merge_state.max_docs[i],
-            ));
-        }
-        let doc_id_merger = doc_id_merger_of(subs, self.merge_state.needs_index_sort).unwrap();
-        self.doc_id_merger = doc_id_merger;
+        self.doc_id_merger.reset().unwrap();
         self.next_is_set = false;
         self.next_value.clear();
         self.next_ref = BytesRef::default();
@@ -776,8 +748,8 @@ impl<'a, D: Directory + 'static, C: Codec> ReusableIterator for BinaryDocValuesM
 }
 
 struct BinaryDocValuesSub {
-    values: BinaryDocValuesRef,
-    docs_with_field: BitsRef,
+    values: Box<dyn BinaryDocValues>,
+    docs_with_field: Box<dyn BitsMut>,
     doc_id: i32,
     max_doc: i32,
     base: DocIdMergerSubBase,
@@ -786,8 +758,8 @@ struct BinaryDocValuesSub {
 impl BinaryDocValuesSub {
     fn new(
         doc_map: Arc<LiveDocsDocMap>,
-        values: BinaryDocValuesRef,
-        docs_with_field: BitsRef,
+        values: Box<dyn BinaryDocValues>,
+        docs_with_field: Box<dyn BitsMut>,
         max_doc: i32,
     ) -> Self {
         let base = DocIdMergerSubBase::new(doc_map);
@@ -818,17 +790,22 @@ impl DocIdMergerSub for BinaryDocValuesSub {
     fn base_mut(&mut self) -> &mut DocIdMergerSubBase {
         &mut self.base
     }
+
+    fn reset(&mut self) {
+        self.base.reset();
+        self.doc_id = -1;
+    }
 }
 
 struct SortedDocValuesMergeBytesIter<'a> {
     map: &'a OrdinalMap,
-    dvs: &'a [SortedDocValuesRef],
+    dvs: &'a mut [Box<dyn SortedDocValues>],
     current_ord: i64,
     current: Vec<u8>,
 }
 
 impl<'a> SortedDocValuesMergeBytesIter<'a> {
-    fn new(map: &'a OrdinalMap, dvs: &'a [SortedDocValuesRef]) -> Self {
+    fn new(map: &'a OrdinalMap, dvs: &'a mut [Box<dyn SortedDocValues>]) -> Self {
         SortedDocValuesMergeBytesIter {
             map,
             dvs,
@@ -865,35 +842,29 @@ impl<'a> ReusableIterator for SortedDocValuesMergeBytesIter<'a> {
     }
 }
 
-struct SortedDocValuesMergeOrdIter<'a, D: Directory + 'static, C: Codec> {
-    to_merge: &'a [SortedDocValuesRef],
-    merge_state: &'a MergeState<D, C>,
-    map: &'a OrdinalMap,
+struct SortedDocValuesMergeOrdIter {
     doc_id_merger: DocIdMergerEnum<SortedDocValuesSub>,
     next_value: Numeric,
     next_is_set: bool,
 }
 
-impl<'a, D: Directory + 'static, C: Codec> SortedDocValuesMergeOrdIter<'a, D, C> {
-    fn new(
-        to_merge: &'a [SortedDocValuesRef],
-        merge_state: &'a MergeState<D, C>,
-        map: &'a OrdinalMap,
+impl SortedDocValuesMergeOrdIter {
+    fn new<D: Directory + 'static, C: Codec>(
+        to_merge: &mut [Box<dyn SortedDocValues>],
+        merge_state: &MergeState<D, C>,
+        map: &OrdinalMap,
     ) -> Result<Self> {
         let mut subs = Vec::with_capacity(to_merge.len());
-        for (i, dv) in to_merge.iter().enumerate() {
+        for (i, dv) in to_merge.iter_mut().enumerate() {
             subs.push(SortedDocValuesSub::new(
                 Arc::clone(&merge_state.doc_maps[i]),
-                Arc::clone(dv),
+                &mut **dv,
                 merge_state.max_docs[i],
                 map.get_global_ords(i),
             ));
         }
         let doc_id_merger = doc_id_merger_of(subs, merge_state.needs_index_sort)?;
         Ok(SortedDocValuesMergeOrdIter {
-            to_merge,
-            merge_state,
-            map,
             doc_id_merger,
             next_value: Numeric::Null,
             next_is_set: false,
@@ -903,7 +874,8 @@ impl<'a, D: Directory + 'static, C: Codec> SortedDocValuesMergeOrdIter<'a, D, C>
     fn set_next(&mut self) -> Result<bool> {
         if let Some(sub) = self.doc_id_merger.next()? {
             self.next_is_set = true;
-            let seg_ord = sub.values.get_ord(sub.doc_id)?;
+            let doc_id = sub.doc_id;
+            let seg_ord = sub.values().get_ord(doc_id)?;
             self.next_value = if seg_ord == -1 {
                 Numeric::Int(-1)
             } else {
@@ -920,7 +892,7 @@ impl<'a, D: Directory + 'static, C: Codec> SortedDocValuesMergeOrdIter<'a, D, C>
     }
 }
 
-impl<'a, D: Directory + 'static, C: Codec> Iterator for SortedDocValuesMergeOrdIter<'a, D, C> {
+impl Iterator for SortedDocValuesMergeOrdIter {
     type Item = Result<Numeric>;
 
     fn next(&mut self) -> Option<Result<Numeric>> {
@@ -935,27 +907,16 @@ impl<'a, D: Directory + 'static, C: Codec> Iterator for SortedDocValuesMergeOrdI
     }
 }
 
-impl<'a, D: Directory + 'static, C: Codec> ReusableIterator
-    for SortedDocValuesMergeOrdIter<'a, D, C>
-{
+impl ReusableIterator for SortedDocValuesMergeOrdIter {
     fn reset(&mut self) {
-        let mut subs = Vec::with_capacity(self.to_merge.len());
-        for i in 0..self.to_merge.len() {
-            subs.push(SortedDocValuesSub::new(
-                Arc::clone(&self.merge_state.doc_maps[i]),
-                Arc::clone(&self.to_merge[i]),
-                self.merge_state.max_docs[i],
-                self.map.get_global_ords(i),
-            ));
-        }
-        self.doc_id_merger = doc_id_merger_of(subs, self.merge_state.needs_index_sort).unwrap();
+        self.doc_id_merger.reset().unwrap();
         self.next_value = Numeric::Null;
         self.next_is_set = false;
     }
 }
 
 struct SortedDocValuesSub {
-    values: SortedDocValuesRef,
+    values: *mut dyn SortedDocValues,
     doc_id: DocId,
     max_doc: i32,
     map: Rc<dyn LongValues>,
@@ -965,7 +926,7 @@ struct SortedDocValuesSub {
 impl SortedDocValuesSub {
     fn new(
         doc_map: Arc<LiveDocsDocMap>,
-        values: SortedDocValuesRef,
+        values: &mut (dyn SortedDocValues + 'static),
         max_doc: i32,
         map: Rc<dyn LongValues>,
     ) -> Self {
@@ -977,6 +938,10 @@ impl SortedDocValuesSub {
             max_doc,
             doc_id: -1,
         }
+    }
+
+    fn values(&mut self) -> &mut dyn SortedDocValues {
+        unsafe { &mut *self.values }
     }
 }
 
@@ -997,23 +962,32 @@ impl DocIdMergerSub for SortedDocValuesSub {
     fn base_mut(&mut self) -> &mut DocIdMergerSubBase {
         &mut self.base
     }
+
+    fn reset(&mut self) {
+        self.base.reset();
+        self.doc_id = -1;
+    }
 }
 
 struct SortedSetDocValuesMergeBytesIter<'a> {
     map: &'a OrdinalMap,
-    dvs: &'a [SortedSetDocValuesRef],
+    dvs: *mut [Box<dyn SortedSetDocValues>],
     current_ord: i64,
     current: Vec<u8>,
 }
 
 impl<'a> SortedSetDocValuesMergeBytesIter<'a> {
-    fn new(map: &'a OrdinalMap, dvs: &'a [SortedSetDocValuesRef]) -> Self {
+    fn new(map: &'a OrdinalMap, dvs: &mut [Box<dyn SortedSetDocValues>]) -> Self {
         SortedSetDocValuesMergeBytesIter {
             map,
             dvs,
             current_ord: 0,
             current: Vec::with_capacity(0),
         }
+    }
+
+    fn doc_values(&mut self) -> &mut [Box<dyn SortedSetDocValues>] {
+        unsafe { &mut *self.dvs }
     }
 }
 
@@ -1026,7 +1000,7 @@ impl<'a> Iterator for SortedSetDocValuesMergeBytesIter<'a> {
         }
         let segment_number = self.map.first_segment_number(self.current_ord);
         let segment_ord = self.map.first_segment_ord(self.current_ord);
-        match self.dvs[segment_number as usize].lookup_ord(segment_ord) {
+        match self.doc_values()[segment_number as usize].lookup_ord(segment_ord) {
             Err(e) => Some(Err(e)),
             Ok(term) => {
                 self.current = term;
@@ -1044,35 +1018,29 @@ impl<'a> ReusableIterator for SortedSetDocValuesMergeBytesIter<'a> {
     }
 }
 
-struct SortedSetDocValuesOrdCountIter<'a, D: Directory + 'static, C: Codec> {
-    to_merge: &'a [SortedSetDocValuesRef],
-    merge_state: &'a MergeState<D, C>,
-    map: &'a OrdinalMap,
+struct SortedSetDocValuesOrdCountIter {
     doc_id_merger: DocIdMergerEnum<SortedSetDocValuesSub>,
     next_value: u32,
     next_is_set: bool,
 }
 
-impl<'a, D: Directory + 'static, C: Codec> SortedSetDocValuesOrdCountIter<'a, D, C> {
-    fn new(
-        to_merge: &'a [SortedSetDocValuesRef],
-        merge_state: &'a MergeState<D, C>,
-        map: &'a OrdinalMap,
+impl SortedSetDocValuesOrdCountIter {
+    fn new<D: Directory + 'static, C: Codec>(
+        to_merge: &mut [Box<dyn SortedSetDocValues>],
+        merge_state: &MergeState<D, C>,
+        map: &OrdinalMap,
     ) -> Result<Self> {
         let mut subs = Vec::with_capacity(to_merge.len());
-        for (i, dv) in to_merge.iter().enumerate() {
+        for (i, dv) in to_merge.iter_mut().enumerate() {
             subs.push(SortedSetDocValuesSub::new(
                 Arc::clone(&merge_state.doc_maps[i]),
-                Arc::clone(dv),
+                &mut **dv,
                 merge_state.max_docs[i],
                 map.get_global_ords(i),
             ));
         }
         let doc_id_merger = doc_id_merger_of(subs, merge_state.needs_index_sort)?;
         Ok(SortedSetDocValuesOrdCountIter {
-            to_merge,
-            merge_state,
-            map,
             doc_id_merger,
             next_value: 0,
             next_is_set: false,
@@ -1082,9 +1050,10 @@ impl<'a, D: Directory + 'static, C: Codec> SortedSetDocValuesOrdCountIter<'a, D,
     fn set_next(&mut self) -> Result<bool> {
         if let Some(sub) = self.doc_id_merger.next()? {
             self.next_is_set = true;
-            let mut ctx = sub.values.set_document(sub.doc_id)?;
+            let doc_id = sub.doc_id;
+            sub.values().set_document(doc_id)?;
             self.next_value = 0;
-            while sub.values.next_ord(&mut ctx)? != NO_MORE_ORDS {
+            while sub.values().next_ord()? != NO_MORE_ORDS {
                 self.next_value += 1;
             }
             self.next_is_set = true;
@@ -1099,7 +1068,7 @@ impl<'a, D: Directory + 'static, C: Codec> SortedSetDocValuesOrdCountIter<'a, D,
     }
 }
 
-impl<'a, D: Directory + 'static, C: Codec> Iterator for SortedSetDocValuesOrdCountIter<'a, D, C> {
+impl Iterator for SortedSetDocValuesOrdCountIter {
     type Item = Result<u32>;
 
     fn next(&mut self) -> Option<Result<u32>> {
@@ -1114,30 +1083,15 @@ impl<'a, D: Directory + 'static, C: Codec> Iterator for SortedSetDocValuesOrdCou
     }
 }
 
-impl<'a, D: Directory + 'static, C: Codec> ReusableIterator
-    for SortedSetDocValuesOrdCountIter<'a, D, C>
-{
+impl ReusableIterator for SortedSetDocValuesOrdCountIter {
     fn reset(&mut self) {
-        let mut subs = Vec::with_capacity(self.to_merge.len());
-        for i in 0..self.to_merge.len() {
-            let sub = SortedSetDocValuesSub::new(
-                Arc::clone(&self.merge_state.doc_maps[i]),
-                Arc::clone(&self.to_merge[i]),
-                self.merge_state.max_docs[i],
-                self.map.get_global_ords(i),
-            );
-            subs.push(sub);
-        }
-        self.doc_id_merger = doc_id_merger_of(subs, self.merge_state.needs_index_sort).unwrap();
+        self.doc_id_merger.reset().unwrap();
         self.next_value = 0;
         self.next_is_set = false;
     }
 }
 
-struct SortedSetDocValuesMergeOrdIter<'a, D: Directory + 'static, C: Codec> {
-    to_merge: &'a [SortedSetDocValuesRef],
-    merge_state: &'a MergeState<D, C>,
-    map: &'a OrdinalMap,
+struct SortedSetDocValuesMergeOrdIter {
     doc_id_merger: DocIdMergerEnum<SortedSetDocValuesSub>,
     next_value: Numeric,
     next_is_set: bool,
@@ -1146,26 +1100,23 @@ struct SortedSetDocValuesMergeOrdIter<'a, D: Directory + 'static, C: Codec> {
     ord_length: usize,
 }
 
-impl<'a, D: Directory + 'static, C: Codec> SortedSetDocValuesMergeOrdIter<'a, D, C> {
-    fn new(
-        to_merge: &'a [SortedSetDocValuesRef],
-        merge_state: &'a MergeState<D, C>,
-        map: &'a OrdinalMap,
+impl SortedSetDocValuesMergeOrdIter {
+    fn new<D: Directory + 'static, C: Codec>(
+        to_merge: &mut [Box<dyn SortedSetDocValues>],
+        merge_state: &MergeState<D, C>,
+        map: &OrdinalMap,
     ) -> Result<Self> {
         let mut subs = Vec::with_capacity(to_merge.len());
-        for (i, dv) in to_merge.iter().enumerate() {
+        for (i, dv) in to_merge.iter_mut().enumerate() {
             subs.push(SortedSetDocValuesSub::new(
                 Arc::clone(&merge_state.doc_maps[i]),
-                Arc::clone(dv),
+                &mut **dv,
                 merge_state.max_docs[i],
                 map.get_global_ords(i),
             ));
         }
         let doc_id_merger = doc_id_merger_of(subs, merge_state.needs_index_sort)?;
         Ok(SortedSetDocValuesMergeOrdIter {
-            to_merge,
-            merge_state,
-            map,
             doc_id_merger,
             next_value: Numeric::Null,
             next_is_set: false,
@@ -1185,11 +1136,12 @@ impl<'a, D: Directory + 'static, C: Codec> SortedSetDocValuesMergeOrdIter<'a, D,
             }
 
             if let Some(sub) = self.doc_id_merger.next()? {
-                let mut ctx = sub.values.set_document(sub.doc_id)?;
+                let doc_id = sub.doc_id;
+                sub.values().set_document(doc_id)?;
                 self.ord_upto = 0;
                 self.ords.clear();
                 loop {
-                    let ord = sub.values.next_ord(&mut ctx)?;
+                    let ord = sub.values().next_ord()?;
                     if ord == NO_MORE_ORDS {
                         break;
                     }
@@ -1207,7 +1159,7 @@ impl<'a, D: Directory + 'static, C: Codec> SortedSetDocValuesMergeOrdIter<'a, D,
     }
 }
 
-impl<'a, D: Directory + 'static, C: Codec> Iterator for SortedSetDocValuesMergeOrdIter<'a, D, C> {
+impl Iterator for SortedSetDocValuesMergeOrdIter {
     type Item = Result<Numeric>;
 
     fn next(&mut self) -> Option<Result<Numeric>> {
@@ -1222,21 +1174,9 @@ impl<'a, D: Directory + 'static, C: Codec> Iterator for SortedSetDocValuesMergeO
     }
 }
 
-impl<'a, D: Directory + 'static, C: Codec> ReusableIterator
-    for SortedSetDocValuesMergeOrdIter<'a, D, C>
-{
+impl ReusableIterator for SortedSetDocValuesMergeOrdIter {
     fn reset(&mut self) {
-        let mut subs = Vec::with_capacity(self.to_merge.len());
-        for i in 0..self.to_merge.len() {
-            let sub = SortedSetDocValuesSub::new(
-                Arc::clone(&self.merge_state.doc_maps[i]),
-                Arc::clone(&self.to_merge[i]),
-                self.merge_state.max_docs[i],
-                self.map.get_global_ords(i),
-            );
-            subs.push(sub);
-        }
-        self.doc_id_merger = doc_id_merger_of(subs, self.merge_state.needs_index_sort).unwrap();
+        self.doc_id_merger.reset().unwrap();
         self.next_value = Numeric::Null;
         self.next_is_set = false;
         self.ords.clear();
@@ -1246,7 +1186,7 @@ impl<'a, D: Directory + 'static, C: Codec> ReusableIterator
 }
 
 struct SortedSetDocValuesSub {
-    values: SortedSetDocValuesRef,
+    values: *mut dyn SortedSetDocValues,
     doc_id: DocId,
     max_doc: i32,
     map: Rc<dyn LongValues>,
@@ -1256,7 +1196,7 @@ struct SortedSetDocValuesSub {
 impl SortedSetDocValuesSub {
     fn new(
         doc_map: Arc<LiveDocsDocMap>,
-        values: SortedSetDocValuesRef,
+        values: &mut (dyn SortedSetDocValues + 'static),
         max_doc: i32,
         map: Rc<dyn LongValues>,
     ) -> Self {
@@ -1268,6 +1208,10 @@ impl SortedSetDocValuesSub {
             max_doc,
             doc_id: -1,
         }
+    }
+
+    fn values(&mut self) -> &mut dyn SortedSetDocValues {
+        unsafe { &mut *self.values }
     }
 }
 
@@ -1288,33 +1232,34 @@ impl DocIdMergerSub for SortedSetDocValuesSub {
     fn base_mut(&mut self) -> &mut DocIdMergerSubBase {
         &mut self.base
     }
+
+    fn reset(&mut self) {
+        self.base.reset();
+        self.doc_id = -1;
+    }
 }
 
-struct SortedNumericDocValuesCountIter<'a, D: Directory + 'static, C: Codec> {
-    to_merge: &'a [SortedNumericDocValuesRef],
-    merge_state: &'a MergeState<D, C>,
+struct SortedNumericDocValuesCountIter {
     doc_id_merger: DocIdMergerEnum<SortedNumericDocValuesSub>,
     next_value: u32,
     next_is_set: bool,
 }
 
-impl<'a, D: Directory + 'static, C: Codec> SortedNumericDocValuesCountIter<'a, D, C> {
-    fn new(
-        to_merge: &'a [SortedNumericDocValuesRef],
-        merge_state: &'a MergeState<D, C>,
+impl SortedNumericDocValuesCountIter {
+    fn new<D: Directory + 'static, C: Codec>(
+        to_merge: &mut [Box<dyn SortedNumericDocValues>],
+        merge_state: &MergeState<D, C>,
     ) -> Result<Self> {
         let mut subs = Vec::with_capacity(to_merge.len());
-        for (i, dv) in to_merge.iter().enumerate() {
+        for (i, dv) in to_merge.iter_mut().enumerate() {
             subs.push(SortedNumericDocValuesSub::new(
                 Arc::clone(&merge_state.doc_maps[i]),
-                Arc::clone(dv),
+                &mut **dv,
                 merge_state.max_docs[i],
             ));
         }
         let doc_id_merger = doc_id_merger_of(subs, merge_state.needs_index_sort)?;
         Ok(SortedNumericDocValuesCountIter {
-            to_merge,
-            merge_state,
             doc_id_merger,
             next_value: 0,
             next_is_set: false,
@@ -1323,11 +1268,10 @@ impl<'a, D: Directory + 'static, C: Codec> SortedNumericDocValuesCountIter<'a, D
 
     fn set_next(&mut self) -> Result<bool> {
         if let Some(sub) = self.doc_id_merger.next()? {
-            let ctx = sub.ctx.take();
-            let new_ctx = sub.values.set_document(ctx, sub.doc_id)?;
-            self.next_value = sub.values.count(&new_ctx) as u32;
+            let doc_id = sub.doc_id;
+            sub.values().set_document(doc_id)?;
+            self.next_value = sub.values().count() as u32;
             self.next_is_set = true;
-            sub.ctx = Some(new_ctx);
             Ok(true)
         } else {
             Ok(false)
@@ -1339,7 +1283,7 @@ impl<'a, D: Directory + 'static, C: Codec> SortedNumericDocValuesCountIter<'a, D
     }
 }
 
-impl<'a, D: Directory + 'static, C: Codec> Iterator for SortedNumericDocValuesCountIter<'a, D, C> {
+impl Iterator for SortedNumericDocValuesCountIter {
     type Item = Result<u32>;
 
     fn next(&mut self) -> Option<Result<u32>> {
@@ -1354,28 +1298,15 @@ impl<'a, D: Directory + 'static, C: Codec> Iterator for SortedNumericDocValuesCo
     }
 }
 
-impl<'a, D: Directory + 'static, C: Codec> ReusableIterator
-    for SortedNumericDocValuesCountIter<'a, D, C>
-{
+impl ReusableIterator for SortedNumericDocValuesCountIter {
     fn reset(&mut self) {
-        let mut subs = Vec::with_capacity(self.to_merge.len());
-        for i in 0..self.to_merge.len() {
-            let sub = SortedNumericDocValuesSub::new(
-                Arc::clone(&self.merge_state.doc_maps[i]),
-                Arc::clone(&self.to_merge[i]),
-                self.merge_state.max_docs[i],
-            );
-            subs.push(sub);
-        }
-        self.doc_id_merger = doc_id_merger_of(subs, self.merge_state.needs_index_sort).unwrap();
+        self.doc_id_merger.reset().unwrap();
         self.next_value = 0;
         self.next_is_set = false;
     }
 }
 
-struct SortedNumericDocValuesIter<'a, D: Directory + 'static, C: Codec> {
-    to_merge: &'a [SortedNumericDocValuesRef],
-    merge_state: &'a MergeState<D, C>,
+struct SortedNumericDocValuesIter {
     doc_id_merger: DocIdMergerEnum<SortedNumericDocValuesSub>,
     next_value: Numeric,
     next_is_set: bool,
@@ -1384,23 +1315,21 @@ struct SortedNumericDocValuesIter<'a, D: Directory + 'static, C: Codec> {
     current: *mut SortedNumericDocValuesSub,
 }
 
-impl<'a, D: Directory + 'static, C: Codec> SortedNumericDocValuesIter<'a, D, C> {
-    fn new(
-        to_merge: &'a [SortedNumericDocValuesRef],
-        merge_state: &'a MergeState<D, C>,
+impl SortedNumericDocValuesIter {
+    fn new<D: Directory + 'static, C: Codec>(
+        to_merge: &mut [Box<dyn SortedNumericDocValues>],
+        merge_state: &MergeState<D, C>,
     ) -> Result<Self> {
         let mut subs = Vec::with_capacity(to_merge.len());
-        for i in 0..to_merge.len() {
+        for (i, dv) in to_merge.iter_mut().enumerate() {
             subs.push(SortedNumericDocValuesSub::new(
                 Arc::clone(&merge_state.doc_maps[i]),
-                Arc::clone(&to_merge[i]),
+                &mut **dv,
                 merge_state.max_docs[i],
             ));
         }
         let doc_id_merger = doc_id_merger_of(subs, merge_state.needs_index_sort)?;
         Ok(SortedNumericDocValuesIter {
-            to_merge,
-            merge_state,
             doc_id_merger,
             next_value: Numeric::Null,
             next_is_set: false,
@@ -1414,11 +1343,7 @@ impl<'a, D: Directory + 'static, C: Codec> SortedNumericDocValuesIter<'a, D, C> 
         loop {
             if self.value_upto < self.value_length {
                 debug_assert!(!self.current.is_null());
-                let value = unsafe {
-                    (*self.current)
-                        .values
-                        .value_at((*self.current).ctx.as_ref().unwrap(), self.value_upto)?
-                };
+                let value = unsafe { (*self.current).values().value_at(self.value_upto)? };
                 self.next_value = Numeric::Long(value);
                 self.value_upto += 1;
                 self.next_is_set = true;
@@ -1426,11 +1351,10 @@ impl<'a, D: Directory + 'static, C: Codec> SortedNumericDocValuesIter<'a, D, C> 
             }
 
             if let Some(sub) = self.doc_id_merger.next()? {
-                let current_ctx = sub.ctx.take();
-                let ctx = sub.values.set_document(current_ctx, sub.doc_id)?;
+                let doc_id = sub.doc_id;
+                sub.values().set_document(doc_id)?;
                 self.value_upto = 0;
-                self.value_length = sub.values.count(&ctx);
-                sub.ctx = Some(ctx);
+                self.value_length = sub.values().count();
                 self.current = sub;
             } else {
                 self.current = ptr::null_mut();
@@ -1444,7 +1368,7 @@ impl<'a, D: Directory + 'static, C: Codec> SortedNumericDocValuesIter<'a, D, C> 
     }
 }
 
-impl<'a, D: Directory + 'static, C: Codec> Iterator for SortedNumericDocValuesIter<'a, D, C> {
+impl Iterator for SortedNumericDocValuesIter {
     type Item = Result<Numeric>;
 
     fn next(&mut self) -> Option<Result<Numeric>> {
@@ -1459,20 +1383,9 @@ impl<'a, D: Directory + 'static, C: Codec> Iterator for SortedNumericDocValuesIt
     }
 }
 
-impl<'a, D: Directory + 'static, C: Codec> ReusableIterator
-    for SortedNumericDocValuesIter<'a, D, C>
-{
+impl ReusableIterator for SortedNumericDocValuesIter {
     fn reset(&mut self) {
-        let mut subs = Vec::with_capacity(self.to_merge.len());
-        for i in 0..self.to_merge.len() {
-            subs.push(SortedNumericDocValuesSub::new(
-                Arc::clone(&self.merge_state.doc_maps[i]),
-                Arc::clone(&self.to_merge[i]),
-                self.merge_state.max_docs[i],
-            ));
-        }
-        let doc_id_merger = doc_id_merger_of(subs, self.merge_state.needs_index_sort).unwrap();
-        self.doc_id_merger = doc_id_merger;
+        self.doc_id_merger.reset().unwrap();
         self.next_value = Numeric::Null;
         self.next_is_set = false;
         self.value_upto = 0;
@@ -1482,23 +1395,30 @@ impl<'a, D: Directory + 'static, C: Codec> ReusableIterator
 }
 
 struct SortedNumericDocValuesSub {
-    values: SortedNumericDocValuesRef,
+    values: *mut dyn SortedNumericDocValues,
     doc_id: DocId,
     max_doc: i32,
     base: DocIdMergerSubBase,
-    ctx: Option<SortedNumericDocValuesContext>,
 }
 
 impl SortedNumericDocValuesSub {
-    fn new(doc_map: Arc<LiveDocsDocMap>, values: SortedNumericDocValuesRef, max_doc: i32) -> Self {
+    fn new(
+        doc_map: Arc<LiveDocsDocMap>,
+        values: &mut (dyn SortedNumericDocValues + 'static),
+        max_doc: i32,
+    ) -> Self {
         let base = DocIdMergerSubBase::new(doc_map);
         SortedNumericDocValuesSub {
             values,
             base,
             max_doc,
             doc_id: -1,
-            ctx: None,
         }
+    }
+
+    #[inline]
+    fn values(&mut self) -> &mut dyn SortedNumericDocValues {
+        unsafe { &mut *self.values }
     }
 }
 
@@ -1519,6 +1439,11 @@ impl DocIdMergerSub for SortedNumericDocValuesSub {
     fn base_mut(&mut self) -> &mut DocIdMergerSubBase {
         &mut self.base
     }
+
+    fn reset(&mut self) {
+        self.base.reset();
+        self.doc_id = -1;
+    }
 }
 
 pub trait NormsConsumer {
@@ -1532,7 +1457,7 @@ pub trait NormsConsumer {
         &mut self,
         field_info: &FieldInfo,
         merge_state: &MergeState<D, C>,
-        to_merge: &[Arc<dyn NumericDocValues>],
+        to_merge: Vec<Box<dyn NumericDocValues>>,
     ) -> Result<()> {
         let mut iter = NormsValuesMergeIter::new(merge_state, to_merge)?;
         self.add_norms_field(field_info, &mut iter)
@@ -1555,19 +1480,20 @@ pub trait NormsConsumer {
             if merge_field_info.has_norms() {
                 let mut to_merge = vec![];
                 for i in 0..merge_state.norms_producers.len() {
-                    let mut norms: NumericDocValuesRef = Arc::new(EmptyNumericDocValues::default());
+                    let mut norms: Box<dyn NumericDocValues> =
+                        Box::new(EmptyNumericDocValues::default());
                     if let Some(ref norm_producer) = merge_state.norms_producers[i] {
                         if let Some(field_info) =
                             merge_state.fields_infos[i].field_info_by_name(&merge_field_info.name)
                         {
                             if field_info.has_norms() {
-                                norms = Arc::from(norm_producer.norms(field_info)?);
+                                norms = norm_producer.norms(field_info)?;
                             }
                         }
                     }
                     to_merge.push(norms);
                 }
-                self.merge_norms_field(merge_field_info, merge_state, &to_merge)?;
+                self.merge_norms_field(merge_field_info, merge_state, to_merge)?;
             }
         }
         Ok(())
@@ -1575,22 +1501,20 @@ pub trait NormsConsumer {
 }
 
 struct NormsValuesSub {
-    values: NumericDocValuesRef,
-    ctx: NumericDocValuesContext,
+    values: Box<dyn NumericDocValues>,
     doc_id: i32,
     max_doc: i32,
     base: DocIdMergerSubBase,
 }
 
 impl NormsValuesSub {
-    fn new(doc_map: Arc<LiveDocsDocMap>, values: NumericDocValuesRef, max_doc: i32) -> Self {
+    fn new(doc_map: Arc<LiveDocsDocMap>, values: Box<dyn NumericDocValues>, max_doc: i32) -> Self {
         let base = DocIdMergerSubBase::new(doc_map);
         NormsValuesSub {
             values,
             doc_id: -1,
             max_doc,
             base,
-            ctx: None,
         }
     }
 }
@@ -1612,33 +1536,34 @@ impl DocIdMergerSub for NormsValuesSub {
     fn base_mut(&mut self) -> &mut DocIdMergerSubBase {
         &mut self.base
     }
+
+    fn reset(&mut self) {
+        self.base.reset();
+        self.doc_id = -1;
+    }
 }
 
-struct NormsValuesMergeIter<'a, D: Directory + 'static, C: Codec> {
-    merge_state: &'a MergeState<D, C>,
-    to_merge: &'a [Arc<dyn NumericDocValues>],
+struct NormsValuesMergeIter {
     doc_id_merger: DocIdMergerEnum<NormsValuesSub>,
     next_value: Numeric,
     next_is_set: bool,
 }
 
-impl<'a, D: Directory + 'static, C: Codec> NormsValuesMergeIter<'a, D, C> {
-    fn new(
-        merge_state: &'a MergeState<D, C>,
-        to_merge: &'a [Arc<dyn NumericDocValues>],
+impl NormsValuesMergeIter {
+    fn new<D: Directory + 'static, C: Codec>(
+        merge_state: &MergeState<D, C>,
+        to_merge: Vec<Box<dyn NumericDocValues>>,
     ) -> Result<Self> {
         let mut subs = Vec::with_capacity(to_merge.len());
-        for (i, dv) in to_merge.iter().enumerate() {
+        for (i, dv) in to_merge.into_iter().enumerate() {
             subs.push(NormsValuesSub::new(
                 Arc::clone(&merge_state.doc_maps[i]),
-                Arc::clone(dv),
+                dv,
                 merge_state.max_docs[i],
             ));
         }
         let doc_id_merger = doc_id_merger_of(subs, merge_state.needs_index_sort)?;
         Ok(NormsValuesMergeIter {
-            merge_state,
-            to_merge,
             doc_id_merger,
             next_value: Numeric::Null,
             next_is_set: false,
@@ -1651,10 +1576,8 @@ impl<'a, D: Directory + 'static, C: Codec> NormsValuesMergeIter<'a, D, C> {
     fn set_next(&mut self) -> Result<bool> {
         if let Some(sub) = self.doc_id_merger.next()? {
             self.next_is_set = true;
-            let current_ctx = sub.ctx.take();
-            let (value, ctx) = sub.values.get_with_ctx(current_ctx, sub.doc_id)?;
+            let value = sub.values.get_mut(sub.doc_id)?;
             self.next_value = Numeric::Long(value);
-            sub.ctx = ctx;
             Ok(true)
         } else {
             Ok(false)
@@ -1662,7 +1585,7 @@ impl<'a, D: Directory + 'static, C: Codec> NormsValuesMergeIter<'a, D, C> {
     }
 }
 
-impl<'a, D: Directory + 'static, C: Codec> Iterator for NormsValuesMergeIter<'a, D, C> {
+impl Iterator for NormsValuesMergeIter {
     type Item = Result<Numeric>;
 
     fn next(&mut self) -> Option<Result<Numeric>> {
@@ -1678,18 +1601,9 @@ impl<'a, D: Directory + 'static, C: Codec> Iterator for NormsValuesMergeIter<'a,
     }
 }
 
-impl<'a, D: Directory + 'static, C: Codec> ReusableIterator for NormsValuesMergeIter<'a, D, C> {
+impl ReusableIterator for NormsValuesMergeIter {
     fn reset(&mut self) {
-        let mut subs = Vec::with_capacity(self.to_merge.len());
-        for i in 0..self.to_merge.len() {
-            subs.push(NormsValuesSub::new(
-                Arc::clone(&self.merge_state.doc_maps[i]),
-                Arc::clone(&self.to_merge[i]),
-                self.merge_state.max_docs[i],
-            ));
-        }
-        let doc_id_merger = doc_id_merger_of(subs, self.merge_state.needs_index_sort).unwrap();
-        self.doc_id_merger = doc_id_merger;
+        self.doc_id_merger.reset().unwrap();
         self.next_is_set = false;
         self.next_value = Numeric::Null;
     }

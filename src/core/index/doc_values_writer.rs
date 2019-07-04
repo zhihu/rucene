@@ -1122,7 +1122,7 @@ impl Container {
         &self,
         field: &str,
         doc_values_type: DocValuesType,
-    ) -> Result<&DocValuesFieldUpdates> {
+    ) -> Result<&dyn DocValuesFieldUpdates> {
         match doc_values_type {
             DocValuesType::Numeric => Ok(self
                 .numeric_dv_updates
@@ -1149,7 +1149,7 @@ impl Container {
         field: &str,
         doc_values_type: DocValuesType,
         max_doc: i32,
-    ) -> Result<&DocValuesFieldUpdates> {
+    ) -> Result<&dyn DocValuesFieldUpdates> {
         match doc_values_type {
             DocValuesType::Numeric => {
                 debug_assert!(self.numeric_dv_updates.get(field).is_none());
@@ -1197,7 +1197,7 @@ pub(crate) trait DocValuesFieldUpdates {
     /// Merge with another {@link DocValuesFieldUpdates}. This is called for a
     /// segment which received updates while it was being merged. The given updates
     /// should override whatever updates are in that instance.
-    fn merge(&mut self, other: &DocValuesFieldUpdates) -> Result<()>;
+    fn merge(&mut self, other: &dyn DocValuesFieldUpdates) -> Result<()>;
 
     fn doc_values_type(&self) -> &DocValuesType;
 
@@ -1209,7 +1209,7 @@ pub(crate) trait DocValuesFieldUpdates {
         unimplemented!()
     }
 
-    fn as_base(&self) -> &DocValuesFieldUpdates;
+    fn as_base(&self) -> &dyn DocValuesFieldUpdates;
 }
 
 struct NumericDocValuesFieldUpdatesIterator {
@@ -1396,7 +1396,7 @@ impl DocValuesFieldUpdates for NumericDocValuesFieldUpdates {
         self.size > 0
     }
 
-    fn merge(&mut self, other: &DocValuesFieldUpdates) -> Result<()> {
+    fn merge(&mut self, other: &dyn DocValuesFieldUpdates) -> Result<()> {
         debug_assert!(other.doc_values_type() == self.doc_values_type());
         let other_updates = other.as_numeric();
         if other_updates.size + self.size > i32::max_value() as usize {
@@ -1427,7 +1427,7 @@ impl DocValuesFieldUpdates for NumericDocValuesFieldUpdates {
         self
     }
 
-    fn as_base(&self) -> &DocValuesFieldUpdates {
+    fn as_base(&self) -> &dyn DocValuesFieldUpdates {
         self
     }
 }
@@ -1638,7 +1638,7 @@ impl DocValuesFieldUpdates for BinaryDocValuesFieldUpdates {
         self.size > 0
     }
 
-    fn merge(&mut self, other: &DocValuesFieldUpdates) -> Result<()> {
+    fn merge(&mut self, other: &dyn DocValuesFieldUpdates) -> Result<()> {
         debug_assert!(other.doc_values_type() == self.doc_values_type());
         let other_updates = other.as_binary();
         if other_updates.size + self.size > i32::max_value() as usize {
@@ -1677,7 +1677,7 @@ impl DocValuesFieldUpdates for BinaryDocValuesFieldUpdates {
         self
     }
 
-    fn as_base(&self) -> &DocValuesFieldUpdates {
+    fn as_base(&self) -> &dyn DocValuesFieldUpdates {
         self
     }
 }

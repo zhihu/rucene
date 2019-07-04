@@ -223,7 +223,7 @@ impl<D: Directory, C: Codec> IndexFileDeleter<D, C> {
         // Finally, give policy a chance to remove things on
         // startup:
         {
-            let mut commits: Vec<&mut IndexCommit<D>> = Vec::with_capacity(self.commits.len());
+            let mut commits: Vec<&mut dyn IndexCommit<D>> = Vec::with_capacity(self.commits.len());
             for i in &mut self.commits {
                 commits.push(i);
             }
@@ -352,7 +352,8 @@ impl<D: Directory, C: Codec> IndexFileDeleter<D, C> {
 
             // Tell policy so it can remove commits:
             {
-                let mut commits: Vec<&mut IndexCommit<D>> = Vec::with_capacity(self.commits.len());
+                let mut commits: Vec<&mut dyn IndexCommit<D>> =
+                    Vec::with_capacity(self.commits.len());
                 for i in &mut self.commits {
                     i.commits_to_delete = &mut self.commits_to_delete;
                     commits.push(i);

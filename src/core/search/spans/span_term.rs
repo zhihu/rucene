@@ -262,11 +262,11 @@ impl<C: Codec> SpanTermWeight<C> {
 }
 
 impl<C: Codec> SpanWeight<C> for SpanTermWeight<C> {
-    fn sim_weight(&self) -> Option<&SimWeight<C>> {
+    fn sim_weight(&self) -> Option<&dyn SimWeight<C>> {
         self.sim_weight.as_ref().map(|x| &**x)
     }
 
-    fn sim_weight_mut(&mut self) -> Option<&mut SimWeight<C>> {
+    fn sim_weight_mut(&mut self) -> Option<&mut dyn SimWeight<C>> {
         if let Some(ref mut sim_weight) = self.sim_weight {
             Some(sim_weight.as_mut())
         } else {

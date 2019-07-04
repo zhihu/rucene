@@ -11,39 +11,58 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::util::{BitsContext, DocId};
+use core::util::DocId;
 use error::Result;
 
-use std::sync::Arc;
-
-/// information that make get doc values more faster
-pub type NumericDocValuesContext = BitsContext;
+pub trait NumericDocValuesProvider: Send + Sync {
+    fn get(&self) -> Result<Box<dyn NumericDocValues>>;
+}
 
 /// A per-document numeric value.
 pub trait NumericDocValues: Send + Sync {
-    fn get_with_ctx(
-        &self,
-        ctx: NumericDocValuesContext,
-        doc_id: DocId,
-    ) -> Result<(i64, NumericDocValuesContext)>;
+    fn get(&self, doc_id: DocId) -> Result<i64>;
 
-    fn get(&self, doc_id: DocId) -> Result<i64> {
-        self.get_with_ctx(None, doc_id).map(|x| x.0)
+    fn get_mut(&mut self, doc_id: DocId) -> Result<i64> {
+        self.get(doc_id)
     }
 }
 
-pub type NumericDocValuesRef = Arc<dyn NumericDocValues>;
+impl<T: NumericDocValues + ?Sized> NumericDocValues for Box<T> {
+    fn get(&self, doc_id: DocId) -> Result<i64> {
+        (**self).get(doc_id)
+    }
+
+    fn get_mut(&mut self, doc_id: DocId) -> Result<i64> {
+        (**self).get_mut(doc_id)
+    }
+}
+
+pub trait CloneableNumericDocValues: NumericDocValues {
+    fn clone_box(&self) -> Box<dyn NumericDocValues>;
+}
+
+impl<T: CloneableNumericDocValues + ?Sized> CloneableNumericDocValues for Box<T> {
+    fn clone_box(&self) -> Box<dyn NumericDocValues> {
+        (**self).clone_box()
+    }
+}
+
+pub(crate) trait CloneableNumericDocValuesProvider: Send + Sync {
+    fn get(&self) -> Result<Box<dyn CloneableNumericDocValues>>;
+}
+
+impl<T: CloneableNumericDocValues + Clone + 'static> CloneableNumericDocValuesProvider for T {
+    fn get(&self) -> Result<Box<dyn CloneableNumericDocValues>> {
+        Ok(Box::new(self.clone()))
+    }
+}
 
 /// a `NumericDocValues` that always produce 0
 #[derive(Default)]
 pub struct EmptyNumericDocValues;
 
 impl NumericDocValues for EmptyNumericDocValues {
-    fn get_with_ctx(
-        &self,
-        _ctx: NumericDocValuesContext,
-        _doc_id: DocId,
-    ) -> Result<(i64, NumericDocValuesContext)> {
-        Ok((0, None))
+    fn get(&self, _doc_id: DocId) -> Result<i64> {
+        Ok(0)
     }
 }

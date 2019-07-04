@@ -38,8 +38,7 @@ use core::store::{
 use core::util::io::delete_file_ignoring_error;
 use core::util::numeric::to_base36;
 use core::util::string_util::random_id;
-use core::util::{Bits, BitsRef};
-use core::util::{DerefWrapper, DocId, VERSION_LATEST};
+use core::util::{BitsRef, DerefWrapper, DocId, VERSION_LATEST};
 
 use core::index::ErrorKind::MergeAborted;
 use error::ErrorKind::{AlreadyClosed, IllegalArgument, IllegalState, Index, RuntimeError};
@@ -819,7 +818,7 @@ pub(crate) struct IndexWriterInner<
     segments_to_merge: HashMap<Arc<SegmentCommitInfo<D, C>>, bool>,
     merge_max_num_segments: u32,
 
-    write_lock: Arc<Lock>,
+    write_lock: Arc<dyn Lock>,
 
     closed: AtomicBool,
     closing: AtomicBool,
@@ -3214,7 +3213,7 @@ where
                 // check if the before/after liveDocs have changed.
                 // If so, we must carefully merge the liveDocs one
                 // doc at a time:
-                if cur_live_doc.as_ref() as *const Bits != prev_live_docs.as_ref() as *const Bits {
+                if ptr::eq(cur_live_doc.as_ref(), prev_live_docs.as_ref()) {
                     // This means this segment received new deletes
                     // since we started the merge, so we
                     // must merge them:

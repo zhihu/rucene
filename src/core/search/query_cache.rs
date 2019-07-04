@@ -46,7 +46,7 @@ pub trait QueryCache<C: Codec>: Send + Sync {
     fn do_cache(
         &self,
         weight: Box<dyn Weight<C>>,
-        policy: Arc<QueryCachingPolicy<C>>,
+        policy: Arc<dyn QueryCachingPolicy<C>>,
     ) -> Box<dyn Weight<C>>;
 }
 
@@ -64,7 +64,7 @@ impl<C: Codec> QueryCache<C> for NoCacheQueryCache {
     fn do_cache(
         &self,
         weight: Box<dyn Weight<C>>,
-        _policy: Arc<QueryCachingPolicy<C>>,
+        _policy: Arc<dyn QueryCachingPolicy<C>>,
     ) -> Box<dyn Weight<C>> {
         weight
     }
@@ -248,7 +248,7 @@ impl<C: Codec> QueryCache<C> for LRUQueryCache {
     fn do_cache(
         &self,
         weight: Box<dyn Weight<C>>,
-        policy: Arc<QueryCachingPolicy<C>>,
+        policy: Arc<dyn QueryCachingPolicy<C>>,
     ) -> Box<dyn Weight<C>> {
         if weight.query_type() == CACHING_QUERY_TYPE_STR {
             weight
@@ -265,7 +265,7 @@ impl<C: Codec> QueryCache<C> for LRUQueryCache {
 struct CachingWrapperWeight<C: Codec> {
     cache_data: Arc<RwLock<CacheData>>,
     weight: Box<dyn Weight<C>>,
-    policy: Arc<QueryCachingPolicy<C>>,
+    policy: Arc<dyn QueryCachingPolicy<C>>,
     used: AtomicBool,
     query_key: String,
     hash_code: u32,
@@ -275,7 +275,7 @@ impl<C: Codec> CachingWrapperWeight<C> {
     fn new(
         cache_data: Arc<RwLock<CacheData>>,
         weight: Box<dyn Weight<C>>,
-        policy: Arc<QueryCachingPolicy<C>>,
+        policy: Arc<dyn QueryCachingPolicy<C>>,
     ) -> CachingWrapperWeight<C> {
         let query_key = format!("{}", weight);
         let mut hasher = DefaultHasher::new();
@@ -639,7 +639,7 @@ impl RoaringDocIdSetBuilder {
                     for i in 0..exclude_docs.len() {
                         exclude_doc = dense_buffer.next_set_bit((exclude_doc + 1) as usize);
                         debug_assert_ne!(exclude_doc, NO_MORE_DOCS);
-                        *ptr.offset(i as isize) = exclude_doc as u16;
+                        *ptr.add(i) = exclude_doc as u16;
                     }
                 }
 
@@ -692,10 +692,7 @@ impl RoaringDocIdSetBuilder {
 
         if self.current_block_cardinality < MAX_ARRAY_LENGTH {
             unsafe {
-                *self
-                    .buffer
-                    .as_mut_ptr()
-                    .offset(self.current_block_cardinality as isize) = doc_id as u16
+                *self.buffer.as_mut_ptr().add(self.current_block_cardinality) = doc_id as u16
             };
         } else {
             if self.dense_buffer.is_none() {

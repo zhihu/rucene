@@ -1154,14 +1154,14 @@ pub trait FragmentsBuilder {
     #[allow(clippy::too_many_arguments)]
     fn create_fragments<C: Codec>(
         &self,
-        reader: &IndexReader<Codec = C>,
+        reader: &dyn IndexReader<Codec = C>,
         doc_id: DocId,
         field_name: &str,
-        field_frag_list: &mut FieldFragList,
+        field_frag_list: &mut dyn FieldFragList,
         pre_tags: Option<&[String]>,
         post_tags: Option<&[String]>,
         max_num_fragments: Option<i32>,
-        encoder: Option<&Encoder>,
+        encoder: Option<&dyn Encoder>,
         score_order: Option<bool>,
     ) -> Result<Vec<String>>;
 }

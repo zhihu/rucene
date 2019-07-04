@@ -54,7 +54,7 @@ impl<P: PointsReader, MP: MutablePointsReader> PointsReader for PointsReaderEnum
         }
     }
 
-    fn as_any(&self) -> &Any {
+    fn as_any(&self) -> &dyn Any {
         match self {
             PointsReaderEnum::Simple(s) => PointsReader::as_any(s),
             PointsReaderEnum::Mutable(m) => PointsReader::as_any(m),
@@ -112,7 +112,7 @@ impl<P: PointsReader, MP: MutablePointsReader> PointValues for PointsReaderEnum<
         }
     }
 
-    fn as_any(&self) -> &Any {
+    fn as_any(&self) -> &dyn Any {
         match self {
             PointsReaderEnum::Simple(s) => PointValues::as_any(s),
             PointsReaderEnum::Mutable(m) => PointValues::as_any(m),
@@ -225,7 +225,7 @@ impl<C: Codec> PointsReader for MergePointsReader<C> {
         bail!(UnsupportedOperation(Cow::Borrowed("")))
     }
 
-    fn as_any(&self) -> &Any {
+    fn as_any(&self) -> &dyn Any {
         self
     }
 }
@@ -283,7 +283,7 @@ impl<C: Codec> PointValues for MergePointsReader<C> {
         Ok(self.doc_count)
     }
 
-    fn as_any(&self) -> &Any {
+    fn as_any(&self) -> &dyn Any {
         self
     }
 }
@@ -668,6 +668,11 @@ impl<T: TermVectorsReader> DocIdMergerSub for TermVectorsMergeSub<T> {
     fn base_mut(&mut self) -> &mut DocIdMergerSubBase {
         &mut self.base
     }
+
+    fn reset(&mut self) {
+        self.base.reset();
+        self.doc_id = -1;
+    }
 }
 
 pub enum TermVectorsWriterEnum<O: IndexOutput> {
@@ -924,6 +929,11 @@ impl<S: StoredFieldsWriter, R: StoredFieldsReader> DocIdMergerSub for StoredFiel
 
     fn base_mut(&mut self) -> &mut DocIdMergerSubBase {
         &mut self.base
+    }
+
+    fn reset(&mut self) {
+        self.base.reset();
+        self.doc_id = -1;
     }
 }
 

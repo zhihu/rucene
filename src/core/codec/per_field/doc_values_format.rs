@@ -21,15 +21,14 @@ use core::codec::format::{
 };
 use core::codec::lucene54::Lucene54DocValuesFormat;
 use core::codec::{Codec, DocValuesConsumer, DocValuesProducer, DocValuesProducerRef};
-use core::index::BinaryDocValues;
-use core::index::NumericDocValues;
-use core::index::SortedDocValues;
-use core::index::SortedNumericDocValues;
-use core::index::SortedSetDocValues;
+use core::index::{
+    BinaryDocValuesProvider, NumericDocValuesProvider, SortedDocValuesProvider,
+    SortedNumericDocValuesProvider, SortedSetDocValuesProvider,
+};
 use core::index::{DocValuesType, FieldInfo};
 use core::index::{SegmentReadState, SegmentWriteState};
 use core::store::Directory;
-use core::util::{numeric::Numeric, BitsRef, BytesRef, ReusableIterator};
+use core::util::{numeric::Numeric, BitsMut, BytesRef, ReusableIterator};
 
 use error::ErrorKind::{IllegalArgument, IllegalState};
 use error::Result;
@@ -143,7 +142,7 @@ impl DocValuesFieldsReader {
 }
 
 impl DocValuesProducer for DocValuesFieldsReader {
-    fn get_numeric(&self, field: &FieldInfo) -> Result<Arc<dyn NumericDocValues>> {
+    fn get_numeric(&self, field: &FieldInfo) -> Result<Arc<dyn NumericDocValuesProvider>> {
         match self.fields.get(&field.name) {
             Some(producer) => producer.get_numeric(field),
             None => bail!(IllegalArgument(format! {
@@ -153,7 +152,7 @@ impl DocValuesProducer for DocValuesFieldsReader {
         }
     }
 
-    fn get_binary(&self, field: &FieldInfo) -> Result<Arc<dyn BinaryDocValues>> {
+    fn get_binary(&self, field: &FieldInfo) -> Result<Arc<dyn BinaryDocValuesProvider>> {
         match self.fields.get(&field.name) {
             Some(producer) => producer.get_binary(field),
             None => bail!(IllegalArgument(format! {
@@ -163,7 +162,7 @@ impl DocValuesProducer for DocValuesFieldsReader {
         }
     }
 
-    fn get_sorted(&self, field: &FieldInfo) -> Result<Arc<dyn SortedDocValues>> {
+    fn get_sorted(&self, field: &FieldInfo) -> Result<Arc<dyn SortedDocValuesProvider>> {
         match self.fields.get(&field.name) {
             Some(producer) => producer.get_sorted(field),
             None => bail!(IllegalArgument(format! {
@@ -173,7 +172,10 @@ impl DocValuesProducer for DocValuesFieldsReader {
         }
     }
 
-    fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Arc<dyn SortedNumericDocValues>> {
+    fn get_sorted_numeric(
+        &self,
+        field: &FieldInfo,
+    ) -> Result<Arc<dyn SortedNumericDocValuesProvider>> {
         match self.fields.get(&field.name) {
             Some(producer) => producer.get_sorted_numeric(field),
             None => bail!(IllegalArgument(format! {
@@ -183,7 +185,7 @@ impl DocValuesProducer for DocValuesFieldsReader {
         }
     }
 
-    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Arc<dyn SortedSetDocValues>> {
+    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Arc<dyn SortedSetDocValuesProvider>> {
         match self.fields.get(&field.name) {
             Some(producer) => producer.get_sorted_set(field),
             None => bail!(IllegalArgument(format! {
@@ -193,7 +195,7 @@ impl DocValuesProducer for DocValuesFieldsReader {
         }
     }
 
-    fn get_docs_with_field(&self, field: &FieldInfo) -> Result<BitsRef> {
+    fn get_docs_with_field(&self, field: &FieldInfo) -> Result<Box<dyn BitsMut>> {
         match self.fields.get(&field.name) {
             Some(producer) => producer.get_docs_with_field(field),
             None => bail!(IllegalArgument(format! {

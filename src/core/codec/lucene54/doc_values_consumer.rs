@@ -755,7 +755,7 @@ impl<O: IndexOutput> Lucene54DocValuesConsumer<O> {
     fn add_ord_index(
         &mut self,
         field_info: &FieldInfo,
-        values: &mut ReusableIterator<Item = Result<u32>>,
+        values: &mut dyn ReusableIterator<Item = Result<u32>>,
     ) -> Result<()> {
         self.meta.write_vint(field_info.number as i32)?;
         self.meta.write_byte(Lucene54DocValuesFormat::NUMERIC)?;

@@ -120,7 +120,7 @@ impl<C: Codec> Query<C> for BooleanQuery<C> {
         term_query_list
     }
 
-    fn as_any(&self) -> &Any {
+    fn as_any(&self) -> &dyn Any {
         self
     }
 }

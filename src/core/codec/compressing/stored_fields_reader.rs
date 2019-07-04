@@ -968,7 +968,11 @@ impl StoredFieldsReader for CompressingStoredFieldsReader {
         self.clone()?.do_visit_document(doc_id, visitor)
     }
 
-    fn visit_document_mut(&mut self, doc_id: i32, visitor: &mut StoredFieldVisitor) -> Result<()> {
+    fn visit_document_mut(
+        &mut self,
+        doc_id: i32,
+        visitor: &mut dyn StoredFieldVisitor,
+    ) -> Result<()> {
         self.do_visit_document(doc_id, visitor)
     }
 
@@ -976,7 +980,7 @@ impl StoredFieldsReader for CompressingStoredFieldsReader {
         self.copy_for_merge()
     }
 
-    fn as_any(&self) -> &Any {
+    fn as_any(&self) -> &dyn Any {
         self
     }
 }

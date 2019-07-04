@@ -53,7 +53,7 @@ impl Count for AtomicCounter {
 enum CounterEnum {
     Serial(Box<SerialCounter>),
     Atomic(Box<AtomicCounter>),
-    Borrowed(*mut Count),
+    Borrowed(*mut dyn Count),
     // TODO unsafe use for borrow a exist counter
 }
 
@@ -99,11 +99,11 @@ impl Counter {
 
     pub fn borrow(counter: &Count) -> Self {
         Counter {
-            count: CounterEnum::Borrowed(counter as *const Count as *mut Count),
+            count: CounterEnum::Borrowed(counter as *const dyn Count as *mut dyn Count),
         }
     }
 
-    fn borrow_raw(counter: *mut Count) -> Self {
+    fn borrow_raw(counter: *mut dyn Count) -> Self {
         Counter {
             count: CounterEnum::Borrowed(counter),
         }
@@ -119,7 +119,7 @@ impl Counter {
         }
     }
 
-    pub fn ptr(&self) -> *const Count {
+    pub fn ptr(&self) -> *const dyn Count {
         match self.count {
             CounterEnum::Serial(ref s) => s.as_ref(),
             CounterEnum::Atomic(ref s) => s.as_ref(),
