@@ -749,7 +749,6 @@ mod tests {
     use core::search::TermQuery;
     use core::search::*;
     use core::util::DocId;
-    use std::sync::atomic::Ordering;
 
     struct MockQuery {
         docs: Vec<DocId>,
@@ -810,12 +809,7 @@ mod tests {
                 }
             }
 
-            assert_eq!(
-                early_terminating_collector
-                    .early_terminated
-                    .load(Ordering::Acquire),
-                true
-            );
+            assert_eq!(early_terminating_collector.early_terminated(), true);
         }
 
         let top_docs = top_collector.top_docs();

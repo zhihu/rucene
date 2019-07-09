@@ -16,9 +16,8 @@ use core::index::LeafReaderContext;
 use core::search::collector;
 use core::search::collector::{Collector, ParallelLeafCollector, SearchCollector};
 use core::search::Scorer;
-use core::util::DocId;
+use core::util::{DocId, Volatile};
 use error::{ErrorKind, Result};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -34,7 +33,7 @@ use std::time::{Duration, SystemTime};
 pub struct TimeoutCollector {
     timeout_duration: Duration,
     start_time: SystemTime,
-    pub timeout: Arc<AtomicBool>,
+    timeout: Arc<Volatile<bool>>,
 }
 
 impl TimeoutCollector {
@@ -42,8 +41,12 @@ impl TimeoutCollector {
         TimeoutCollector {
             timeout_duration,
             start_time,
-            timeout: Arc::new(AtomicBool::new(false)),
+            timeout: Arc::new(Volatile::new(false)),
         }
+    }
+
+    pub fn timeout(&self) -> bool {
+        self.timeout.read()
     }
 }
 
@@ -82,7 +85,7 @@ impl Collector for TimeoutCollector {
     fn collect<S: Scorer + ?Sized>(&mut self, _doc: DocId, _scorer: &mut S) -> Result<()> {
         let now = SystemTime::now();
         if self.start_time < now && now.duration_since(self.start_time)? >= self.timeout_duration {
-            self.timeout.store(true, Ordering::Release);
+            self.timeout.write(true);
             bail!(ErrorKind::Collector(
                 collector::ErrorKind::CollectionTimeout,
             ))
@@ -94,14 +97,14 @@ impl Collector for TimeoutCollector {
 pub struct TimeoutLeafCollector {
     timeout_duration: Duration,
     start_time: SystemTime,
-    timeout: Arc<AtomicBool>,
+    timeout: Arc<Volatile<bool>>,
 }
 
 impl TimeoutLeafCollector {
     pub fn new(
         timeout_duration: Duration,
         start_time: SystemTime,
-        timeout: Arc<AtomicBool>,
+        timeout: Arc<Volatile<bool>>,
     ) -> TimeoutLeafCollector {
         TimeoutLeafCollector {
             timeout_duration,
@@ -119,7 +122,7 @@ impl Collector for TimeoutLeafCollector {
     fn collect<S: Scorer + ?Sized>(&mut self, _doc: i32, _scorer: &mut S) -> Result<()> {
         let now = SystemTime::now();
         if self.start_time < now && now.duration_since(self.start_time)? >= self.timeout_duration {
-            self.timeout.store(true, Ordering::Release);
+            self.timeout.write(true);
             bail!(ErrorKind::Collector(
                 collector::ErrorKind::CollectionTerminated,
             ))

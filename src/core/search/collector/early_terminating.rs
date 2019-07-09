@@ -16,13 +16,12 @@ use core::index::LeafReaderContext;
 use core::search::collector;
 use core::search::collector::{Collector, ParallelLeafCollector, SearchCollector};
 use core::search::Scorer;
-use core::util::DocId;
+use core::util::{DocId, Volatile};
 use error::{ErrorKind, Result};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 pub struct EarlyTerminatingSortingCollector {
-    pub early_terminated: Arc<AtomicBool>,
+    early_terminated: Arc<Volatile<bool>>,
     num_docs_to_collect_per_reader: usize,
     num_docs_collected_per_reader: usize,
 }
@@ -38,10 +37,14 @@ impl EarlyTerminatingSortingCollector {
         );
 
         EarlyTerminatingSortingCollector {
-            early_terminated: Arc::new(AtomicBool::new(false)),
+            early_terminated: Arc::new(Volatile::new(false)),
             num_docs_to_collect_per_reader,
             num_docs_collected_per_reader: 0,
         }
+    }
+
+    pub fn early_terminated(&self) -> bool {
+        self.early_terminated.read()
     }
 }
 
@@ -78,7 +81,7 @@ impl Collector for EarlyTerminatingSortingCollector {
         self.num_docs_collected_per_reader += 1;
 
         if self.num_docs_collected_per_reader > self.num_docs_to_collect_per_reader {
-            self.early_terminated.store(true, Ordering::Release);
+            self.early_terminated.write(true);
             bail!(ErrorKind::Collector(
                 collector::ErrorKind::LeafCollectionTerminated,
             ))
@@ -102,7 +105,7 @@ impl Collector for EarlyTerminatingSortingCollector {
 /// However the total of hit count will be vastly underestimated since not all matching documents
 /// will have been collected.
 pub struct EarlyTerminatingLeafCollector {
-    early_terminated: Arc<AtomicBool>,
+    early_terminated: Arc<Volatile<bool>>,
     num_docs_to_collect: usize,
     num_docs_collected: usize,
 }
@@ -110,7 +113,7 @@ pub struct EarlyTerminatingLeafCollector {
 impl EarlyTerminatingLeafCollector {
     pub fn new(
         num_docs_to_collect: usize,
-        early_terminated: Arc<AtomicBool>,
+        early_terminated: Arc<Volatile<bool>>,
     ) -> EarlyTerminatingLeafCollector {
         EarlyTerminatingLeafCollector {
             early_terminated,
@@ -120,7 +123,7 @@ impl EarlyTerminatingLeafCollector {
     }
 
     pub fn early_terminated(&self) -> bool {
-        self.early_terminated.load(Ordering::Relaxed)
+        self.early_terminated.read()
     }
 }
 
@@ -139,7 +142,7 @@ impl Collector for EarlyTerminatingLeafCollector {
         self.num_docs_collected += 1;
 
         if self.num_docs_collected > self.num_docs_to_collect {
-            self.early_terminated.swap(true, Ordering::AcqRel);
+            self.early_terminated.write(true);
             bail!(ErrorKind::Collector(
                 collector::ErrorKind::LeafCollectionTerminated,
             ))

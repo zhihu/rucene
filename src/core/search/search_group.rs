@@ -40,55 +40,35 @@ impl WilsonInfo {
     }
 }
 
+impl Ord for WilsonInfo {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match (&self.wilson_score, &other.wilson_score) {
+            (Some(w1), Some(w2)) => w1.cmp(w2),
+            (Some(_), None) => Ordering::Greater,
+            (None, Some(_)) => Ordering::Less,
+            (None, None) => Ordering::Equal,
+        }
+    }
+}
+
+impl PartialOrd for WilsonInfo {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct SortInfo {
     pub sort_type: SortFieldType,
     pub sort_value: ComparatorValue,
-    pub wilson_infos: Vec<WilsonInfo>,
 }
 
 impl SortInfo {
-    pub fn new(
-        sort_type: SortFieldType,
-        sort_value: ComparatorValue,
-        wilson_infos: Vec<WilsonInfo>,
-    ) -> SortInfo {
+    pub fn new(sort_type: SortFieldType, sort_value: ComparatorValue) -> SortInfo {
         SortInfo {
             sort_type,
             sort_value,
-            wilson_infos,
         }
-    }
-
-    pub fn append_wilson_info(&mut self, wilson_info: WilsonInfo) {
-        self.wilson_infos.push(wilson_info)
-    }
-
-    pub fn max_score_doc(&self) -> Option<DocId> {
-        let mut top_doc = None;
-        let mut max_score = 0f64;
-        for info in &self.wilson_infos {
-            if let Some(ref w) = info.wilson_score {
-                match w {
-                    VariantValue::Double(s) => {
-                        if *s > max_score {
-                            max_score = *s;
-                            top_doc = Some(info.doc_id);
-                        }
-                    }
-                    VariantValue::Float(s) => {
-                        let score = *s as f64;
-                        if score > max_score {
-                            max_score = score;
-                            top_doc = Some(info.doc_id);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        top_doc
     }
 }
 
@@ -97,6 +77,7 @@ pub struct CollectedSearchGroup {
     pub group_value: VariantValue,
     pub sort_info_list: Vec<SortInfo>,
     pub comparator_slot: usize,
+    pub max_wilson_info: WilsonInfo,
 
     pub top_doc: DocId,
 }
@@ -105,12 +86,14 @@ impl CollectedSearchGroup {
     pub fn new(
         group_value: VariantValue,
         sort_info_list: Vec<SortInfo>,
+        max_wilson_info: WilsonInfo,
         comparator_slot: usize,
         top_doc: DocId,
     ) -> Self {
         CollectedSearchGroup {
             group_value,
             sort_info_list,
+            max_wilson_info,
             comparator_slot,
             top_doc,
         }
@@ -153,7 +136,7 @@ impl Hash for CollectedSearchGroup {
 
 impl PartialEq for CollectedSearchGroup {
     fn eq(&self, other: &CollectedSearchGroup) -> bool {
-        self.group_value.cmp(&other.group_value) == Ordering::Equal
+        self.group_value.eq(&other.group_value)
             && self.cmp(other) == Ordering::Equal
     }
 }
@@ -167,9 +150,10 @@ mod tests {
         let collected_search_group = CollectedSearchGroup::new(
             VariantValue::Int(1),
             vec![
-                SortInfo::new(SortFieldType::Score, ComparatorValue::Score(1.0), vec![]),
-                SortInfo::new(SortFieldType::Doc, ComparatorValue::Doc(2), vec![]),
+                SortInfo::new(SortFieldType::Score, ComparatorValue::Score(1.0)),
+                SortInfo::new(SortFieldType::Doc, ComparatorValue::Doc(2)),
             ],
+            WilsonInfo::new(1, VariantValue::Float(1.0), Some(VariantValue::Double(0.0))),
             3,
             0,
         );
@@ -178,8 +162,8 @@ mod tests {
         assert_eq!(
             collected_search_group.sort_info_list,
             vec![
-                SortInfo::new(SortFieldType::Score, ComparatorValue::Score(1.0), vec![]),
-                SortInfo::new(SortFieldType::Doc, ComparatorValue::Doc(2), vec![]),
+                SortInfo::new(SortFieldType::Score, ComparatorValue::Score(1.0)),
+                SortInfo::new(SortFieldType::Doc, ComparatorValue::Doc(2)),
             ]
         );
         assert_eq!(collected_search_group.comparator_slot, 3);
@@ -191,9 +175,10 @@ mod tests {
         let collected_search_group_one = CollectedSearchGroup::new(
             VariantValue::Int(1),
             vec![
-                SortInfo::new(SortFieldType::Score, ComparatorValue::Score(1.0), vec![]),
-                SortInfo::new(SortFieldType::Doc, ComparatorValue::Doc(2), vec![]),
+                SortInfo::new(SortFieldType::Score, ComparatorValue::Score(1.0)),
+                SortInfo::new(SortFieldType::Doc, ComparatorValue::Doc(2)),
             ],
+            WilsonInfo::new(1, VariantValue::Float(1.0), Some(VariantValue::Double(0.0))),
             10,
             0,
         );
@@ -203,9 +188,10 @@ mod tests {
             let collected_search_group_two = CollectedSearchGroup::new(
                 VariantValue::Int(1),
                 vec![
-                    SortInfo::new(SortFieldType::Score, ComparatorValue::Score(1.0), vec![]),
-                    SortInfo::new(SortFieldType::Doc, ComparatorValue::Doc(2), vec![]),
+                    SortInfo::new(SortFieldType::Score, ComparatorValue::Score(1.0)),
+                    SortInfo::new(SortFieldType::Doc, ComparatorValue::Doc(2)),
                 ],
+                WilsonInfo::new(1, VariantValue::Float(1.0), Some(VariantValue::Double(0.0))),
                 10,
                 0,
             );
@@ -218,9 +204,10 @@ mod tests {
             let collected_search_group_two = CollectedSearchGroup::new(
                 VariantValue::Int(2),
                 vec![
-                    SortInfo::new(SortFieldType::Score, ComparatorValue::Score(1.0), vec![]),
-                    SortInfo::new(SortFieldType::Doc, ComparatorValue::Doc(2), vec![]),
+                    SortInfo::new(SortFieldType::Score, ComparatorValue::Score(1.0)),
+                    SortInfo::new(SortFieldType::Doc, ComparatorValue::Doc(2)),
                 ],
+                WilsonInfo::new(1, VariantValue::Float(1.0), Some(VariantValue::Double(0.0))),
                 10,
                 0,
             );
@@ -233,9 +220,10 @@ mod tests {
             let collected_search_group_two = CollectedSearchGroup::new(
                 VariantValue::Int(1),
                 vec![
-                    SortInfo::new(SortFieldType::Score, ComparatorValue::Score(1.0), vec![]),
-                    SortInfo::new(SortFieldType::Doc, ComparatorValue::Doc(3), vec![]),
+                    SortInfo::new(SortFieldType::Score, ComparatorValue::Score(1.0)),
+                    SortInfo::new(SortFieldType::Doc, ComparatorValue::Doc(3)),
                 ],
+                WilsonInfo::new(1, VariantValue::Float(1.0), Some(VariantValue::Double(0.0))),
                 10,
                 0,
             );
@@ -255,9 +243,10 @@ mod tests {
             let collected_search_group_two = CollectedSearchGroup::new(
                 VariantValue::Int(1),
                 vec![
-                    SortInfo::new(SortFieldType::Score, ComparatorValue::Score(2.0), vec![]),
-                    SortInfo::new(SortFieldType::Doc, ComparatorValue::Doc(2), vec![]),
+                    SortInfo::new(SortFieldType::Score, ComparatorValue::Score(2.0)),
+                    SortInfo::new(SortFieldType::Doc, ComparatorValue::Doc(2)),
                 ],
+                WilsonInfo::new(1, VariantValue::Float(1.0), Some(VariantValue::Double(0.0))),
                 10,
                 0,
             );
@@ -277,9 +266,10 @@ mod tests {
             let collected_search_group_two = CollectedSearchGroup::new(
                 VariantValue::Int(1),
                 vec![
-                    SortInfo::new(SortFieldType::Score, ComparatorValue::Score(1.0), vec![]),
-                    SortInfo::new(SortFieldType::Doc, ComparatorValue::Doc(2), vec![]),
+                    SortInfo::new(SortFieldType::Score, ComparatorValue::Score(1.0)),
+                    SortInfo::new(SortFieldType::Doc, ComparatorValue::Doc(2)),
                 ],
+                WilsonInfo::new(1, VariantValue::Float(1.0), Some(VariantValue::Double(0.0))),
                 10,
                 1,
             );
