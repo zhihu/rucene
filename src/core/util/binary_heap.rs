@@ -142,6 +142,10 @@ impl<T: Ord> BinaryHeapPub<T> {
         &self.data
     }
 
+    pub fn inner_mut(&mut self) -> &mut [T] {
+        &mut self.data
+    }
+
     fn sift_up(&mut self, start: usize, pos: usize) -> usize {
         unsafe {
             // Take out the value at `pos` and create a hole.

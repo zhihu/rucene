@@ -1452,10 +1452,6 @@ impl<T: PostingIterator + 'static> Scorer for SloppyPhraseScorer<T> {
         let doc_id = self.doc_id();
         self.doc_scorer.score(doc_id, self.sloppy_freq)
     }
-
-    fn support_two_phase(&self) -> bool {
-        true
-    }
 }
 
 impl<T: PostingIterator + 'static> DocIterator for SloppyPhraseScorer<T> {
@@ -1485,6 +1481,10 @@ impl<T: PostingIterator + 'static> DocIterator for SloppyPhraseScorer<T> {
 
     fn match_cost(&self) -> f32 {
         self.match_cost
+    }
+
+    fn support_two_phase(&self) -> bool {
+        true
     }
 
     fn approximate_next(&mut self) -> Result<DocId> {

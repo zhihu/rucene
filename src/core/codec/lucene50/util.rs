@@ -12,6 +12,8 @@
 // limitations under the License.
 
 use std::cmp::max;
+use std::mem;
+use std::ptr;
 use std::sync::{Arc, Once, ONCE_INIT};
 
 use core::codec::lucene50::posting_format::BLOCK_SIZE;
@@ -19,8 +21,6 @@ use core::store::{DataOutput, IndexInput, IndexOutput};
 use core::util::bit_util::BitsRequired;
 use core::util::packed::packed_misc::*;
 use error::Result;
-
-use smallvec::SmallVec;
 
 /// Special number of bits per value used whenever all values to encode are equal.
 const ALL_VALUES_EQUAL: i32 = 0;
@@ -31,9 +31,17 @@ pub const MAX_ENCODED_SIZE: usize = BLOCK_SIZE as usize * 4;
 
 /// Upper limit of the number of values that might be decoded in a single call to
 /// {@link #read_block(IndexInput, [u8], [i32])}. Although values after
-/// <code>BLOCK_SIZE</code> are garbage, it is necessary to allocate value buffers
+/// `BLOCK_SIZE` are garbage, it is necessary to allocate value buffers
 /// whose size is `MAX_DATA_SIZE` to avoid `IndexOutOfBounds` Error.
-static mut MAX_DATA_SIZE: usize = 0;
+///
+/// NOTE: this value is always equal to `max_data_size()`, use const instead of
+/// something like lazy_static can allow us use [; MAX_DATA_SIZE] instead of Vec.
+pub const MAX_DATA_SIZE: usize = 147;
+
+#[test]
+fn test_max_data_size() {
+    assert_eq!(MAX_DATA_SIZE, max_data_size());
+}
 
 static START: Once = ONCE_INIT;
 
@@ -42,6 +50,7 @@ fn compute_iterations(decoder: &impl PackedIntDecoder) -> i32 {
 }
 
 pub fn max_data_size() -> usize {
+    static mut MAX_DATA_SIZE: usize = 0;
     START.call_once(|| {
         let mut max_data_size: usize = 0;
         for version in VERSION_START..=VERSION_CURRENT {
@@ -81,8 +90,8 @@ fn encoded_size(format: Format, version: i32, bits_per_value: i32) -> i32 {
 
 struct ForUtilInstance {
     encoded_sizes: [i32; 32],
-    decoders: SmallVec<[BulkOperationEnum; 32]>,
-    encoders: SmallVec<[BulkOperationEnum; 32]>,
+    decoders: [BulkOperationEnum; 32],
+    encoders: [BulkOperationEnum; 32],
     iterations: [i32; 32],
 }
 
@@ -92,7 +101,8 @@ impl ForUtilInstance {
         check_version(packed_ints_version)?;
         let mut encoded_sizes = [0; 32];
         let mut iterations = [0; 32];
-        let mut decoders: SmallVec<[BulkOperationEnum; 32]> = SmallVec::new();
+        let mut decoders: [BulkOperationEnum; 32] = unsafe { mem::uninitialized() };
+        let mut encoders: [BulkOperationEnum; 32] = unsafe { mem::uninitialized() };
 
         for bpv in 0..32 {
             let code = input.read_vint()?;
@@ -100,14 +110,23 @@ impl ForUtilInstance {
             let bits_per_value = (code & 31) + 1;
             let format = Format::with_id(format_id);
             encoded_sizes[bpv] = encoded_size(format, packed_ints_version, bits_per_value);
-            decoders.push(get_decoder(format, packed_ints_version, bits_per_value)?);
+            unsafe {
+                ptr::write(
+                    &mut decoders[bpv],
+                    get_decoder(format, packed_ints_version, bits_per_value)?,
+                );
+                ptr::write(
+                    &mut encoders[bpv],
+                    get_encoder(format, packed_ints_version, bits_per_value)?,
+                );
+            }
             iterations[bpv] = compute_iterations(&decoders[bpv]);
         }
 
         Ok(ForUtilInstance {
             encoded_sizes,
             decoders,
-            encoders: SmallVec::new(),
+            encoders,
             // not used when read
             iterations,
         })
@@ -119,38 +138,33 @@ impl ForUtilInstance {
     ) -> Result<Self> {
         output.write_vint(VERSION_CURRENT)?;
 
-        let mut encoders = SmallVec::new();
-        let mut decoders: SmallVec<[BulkOperationEnum; 32]> = SmallVec::new();
+        let mut encoders: [BulkOperationEnum; 32] = unsafe { mem::uninitialized() };
+        let mut decoders: [BulkOperationEnum; 32] = unsafe { mem::uninitialized() };
         let mut iterations = [0i32; 32];
         let mut encoded_sizes = [0i32; 32];
 
         for bpv in 1..33usize {
-            let format_and_bits =
-                FormatAndBits::fastest(BLOCK_SIZE, bpv as i32, acceptable_overhead_ratio);
-            debug_assert!(format_and_bits
-                .format
-                .is_supported(format_and_bits.bits_per_value));
-            debug_assert!(format_and_bits.bits_per_value <= 32);
-            encoded_sizes[bpv - 1] = encoded_size(
-                format_and_bits.format,
-                VERSION_CURRENT,
-                format_and_bits.bits_per_value,
-            );
-            encoders.push(get_encoder(
-                format_and_bits.format,
-                VERSION_CURRENT,
-                format_and_bits.bits_per_value,
-            )?);
-            decoders.push(get_decoder(
-                format_and_bits.format,
-                VERSION_CURRENT,
-                format_and_bits.bits_per_value,
-            )?);
+            let FormatAndBits {
+                format,
+                bits_per_value,
+            } = FormatAndBits::fastest(BLOCK_SIZE, bpv as i32, acceptable_overhead_ratio);
+
+            debug_assert!(format.is_supported(bits_per_value));
+            debug_assert!(bits_per_value <= 32);
+            encoded_sizes[bpv - 1] = encoded_size(format, VERSION_CURRENT, bits_per_value);
+            unsafe {
+                ptr::write(
+                    &mut decoders[bpv - 1],
+                    get_decoder(format, VERSION_CURRENT, bits_per_value)?,
+                );
+                ptr::write(
+                    &mut encoders[bpv - 1],
+                    get_encoder(format, VERSION_CURRENT, bits_per_value)?,
+                );
+            }
             iterations[bpv - 1] = compute_iterations(&decoders[bpv - 1]);
 
-            output.write_vint(
-                format_and_bits.format.get_id() << 5 | (format_and_bits.bits_per_value - 1),
-            )?;
+            output.write_vint(format.get_id() << 5 | (bits_per_value - 1))?;
         }
 
         Ok(ForUtilInstance {

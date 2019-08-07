@@ -38,8 +38,11 @@ use core::{
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::SystemTime;
+
+use crossbeam::queue::ArrayQueue;
+use crossbeam::sync::{ShardedLock, ShardedLockWriteGuard};
 
 use core::util::Volatile;
 use error::ErrorKind::IllegalArgument;
@@ -611,9 +614,8 @@ pub(crate) struct DocumentsWriterPerThreadPool<
     MS: MergeScheduler,
     MP: MergePolicy,
 > {
-    inner: Mutex<DWPTPoolInner<D, C, MS, MP>>,
+    inner: ShardedLock<DWPTPoolInner<D, C, MS, MP>>,
     aborted: Volatile<bool>,
-    cond: Condvar,
 }
 
 struct DWPTPoolInner<
@@ -624,7 +626,7 @@ struct DWPTPoolInner<
 > {
     thread_states: Vec<Arc<ThreadState<D, C, MS, MP>>>,
     // valid thread_state index in `self.thread_states`
-    free_list: Vec<usize>,
+    free_list: ArrayQueue<usize>,
 }
 
 impl<D, C, MS, MP> DocumentsWriterPerThreadPool<D, C, MS, MP>
@@ -637,53 +639,47 @@ where
     pub fn new() -> Self {
         let inner = DWPTPoolInner {
             thread_states: vec![],
-            free_list: vec![],
+            free_list: ArrayQueue::new(32),
         };
         DocumentsWriterPerThreadPool {
-            inner: Mutex::new(inner),
+            inner: ShardedLock::new(inner),
             aborted: Volatile::new(false),
-            cond: Condvar::new(),
         }
     }
 
     /// Returns the active number of `ThreadState` instances.
     pub fn active_thread_state_count(&self) -> usize {
-        self.inner.lock().unwrap().thread_states.len()
+        self.inner.read().unwrap().thread_states.len()
     }
 
     pub fn get_thread_state(&self, i: usize) -> Arc<ThreadState<D, C, MS, MP>> {
-        let guard = self.inner.lock().unwrap();
+        let guard = self.inner.read().unwrap();
         debug_assert!(i < guard.thread_states.len());
         Arc::clone(&guard.thread_states[i])
     }
 
     pub fn set_abort(&self) {
-        let _l = self.inner.lock().unwrap();
         self.aborted.write(true);
-    }
-
-    #[allow(dead_code)]
-    fn clear_abort(&self) {
-        let _guard = self.inner.lock().unwrap();
-        self.aborted.write(false);
-        self.cond.notify_all();
     }
 
     /// Returns a new `ThreadState` iff any new state is available other `None`
     /// NOTE: the returned `ThreadState` is already locked iff non-None
     fn new_thread_state(
         &self,
-        guard: MutexGuard<'_, DWPTPoolInner<D, C, MS, MP>>,
+        mut guard: ShardedLockWriteGuard<'_, DWPTPoolInner<D, C, MS, MP>>,
     ) -> Result<Arc<ThreadState<D, C, MS, MP>>> {
-        let mut l = guard;
-        while self.aborted.read() {
-            l = self.cond.wait(l)?;
+        let thread_state = Arc::new(ThreadState::new(None, guard.thread_states.len()));
+        guard.thread_states.push(thread_state);
+        let idx = guard.thread_states.len() - 1;
+        // recap the free list queue
+        if guard.thread_states.len() > guard.free_list.capacity() {
+            let new_free_list = ArrayQueue::new(guard.free_list.capacity() * 2);
+            while let Ok(idx) = guard.free_list.pop() {
+                new_free_list.push(idx).unwrap();
+            }
+            guard.free_list = new_free_list;
         }
-
-        let thread_state = Arc::new(ThreadState::new(None, l.thread_states.len()));
-        l.thread_states.push(thread_state);
-        let idx = l.thread_states.len() - 1;
-        Ok(Arc::clone(&l.thread_states[idx]))
+        Ok(Arc::clone(&guard.thread_states[idx]))
     }
 
     pub fn reset(
@@ -697,50 +693,60 @@ where
         // do nothing
     }
 
-    /// this method is used by DocumentsWriter/FlushControl to obtain a ThreadState
-    /// to do an indexing operation (add/update_document).
     pub fn get_and_lock(&self) -> Result<Arc<ThreadState<D, C, MS, MP>>> {
-        let mut guard = self.inner.lock().unwrap();
-        if let Some(mut idx) = guard.free_list.pop() {
-            if guard.thread_states[idx].dwpt.is_none() {
-                // This thread-state is not initialized, e.g. it
-                // was just flushed. See if we can instead find
-                // another free thread state that already has docs
-                // indexed. This way if incoming thread concurrency
-                // has decreased, we don't leave docs
-                // indefinitely buffered, tying up RAM.  This
-                // will instead get those thread states flushed,
-                // freeing up RAM for larger segment flushes:
-                for i in 0..guard.free_list.len() {
-                    let new_idx = guard.free_list[i];
-                    if guard.thread_states[new_idx].dwpt.is_some() {
-                        // Use this one instead, and swap it with
-                        // the un-initialized one:
-                        guard.free_list[i] = idx;
-                        idx = new_idx;
-                        break;
-                    }
-                }
+        {
+            let guard = self.inner.read().unwrap();
+            if let Ok(idx) = guard.free_list.pop() {
+                return Ok(Arc::clone(&guard.thread_states[idx]));
             }
-
-            Ok(Arc::clone(&guard.thread_states[idx]))
-        } else {
-            self.new_thread_state(guard)
         }
+        let guard = self.inner.write().unwrap();
+        self.new_thread_state(guard)
     }
 
+    /// this method is used by DocumentsWriter/FlushControl to obtain a ThreadState
+    /// to do an indexing operation (add/update_document).
+    //    pub fn get_and_lock2(&self) -> Result<Arc<ThreadState<D, C, MS, MP>>> {
+    //        let mut guard = self.inner.read().unwrap();
+    //        if let Some(mut idx) = guard.free_list.pop() {
+    //            if guard.thread_states[idx].dwpt.is_none() {
+    //                // This thread-state is not initialized, e.g. it
+    //                // was just flushed. See if we can instead find
+    //                // another free thread state that already has docs
+    //                // indexed. This way if incoming thread concurrency
+    //                // has decreased, we don't leave docs
+    //                // indefinitely buffered, tying up RAM.  This
+    //                // will instead get those thread states flushed,
+    //                // freeing up RAM for larger segment flushes:
+    //                for i in 0..guard.free_list.len() {
+    //                    let new_idx = guard.free_list[i];
+    //                    if guard.thread_states[new_idx].dwpt.is_some() {
+    //                        // Use this one instead, and swap it with
+    //                        // the un-initialized one:
+    //                        guard.free_list[i] = idx;
+    //                        idx = new_idx;
+    //                        break;
+    //                    }
+    //                }
+    //            }
+    //
+    //            Ok(Arc::clone(&guard.thread_states[idx]))
+    //        } else {
+    //            self.new_thread_state(guard)
+    //        }
+    //    }
+
     pub fn release(&self, state: Arc<ThreadState<D, C, MS, MP>>) {
-        let mut guard = self.inner.lock().unwrap();
-        debug_assert!(!guard.free_list.contains(&state.index));
-        guard.free_list.push(state.index);
+        let guard = self.inner.read().unwrap();
+        // this shouldn't fail
+        guard.free_list.push(state.index).unwrap();
         // In case any thread is waiting, wake one of them up since we just
         // released a thread state; notify() should be sufficient but we do
         // notifyAll defensively:
-        self.cond.notify_all();
     }
 
     pub fn locked_state(&self, idx: usize) -> Arc<ThreadState<D, C, MS, MP>> {
-        let guard = self.inner.lock().unwrap();
+        let guard = self.inner.read().unwrap();
         debug_assert!(idx < guard.thread_states.len());
         Arc::clone(&guard.thread_states[idx])
     }

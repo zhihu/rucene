@@ -416,10 +416,6 @@ impl<P: PostingIterator> Spans for SpanOrSpans<P> {
     fn positions_cost(&self) -> f32 {
         self.positions_cost
     }
-
-    fn support_two_phase(&self) -> bool {
-        self.support_two_phase
-    }
 }
 
 impl<P: PostingIterator> DocIterator for SpanOrSpans<P> {
@@ -460,6 +456,10 @@ impl<P: PostingIterator> DocIterator for SpanOrSpans<P> {
 
     fn match_cost(&self) -> f32 {
         self.match_cost
+    }
+
+    fn support_two_phase(&self) -> bool {
+        self.support_two_phase
     }
 
     fn approximate_next(&mut self) -> Result<DocId> {

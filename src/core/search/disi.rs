@@ -134,35 +134,42 @@ impl<T: DocIterator> PartialOrd for DisiWrapper<T> {
 
 pub struct DisiPriorityQueue<T: DocIterator> {
     heap: Vec<*mut DisiWrapper<T>>,
-    size: isize,
-    _buffer: Vec<DisiWrapper<T>>,
+    size: usize,
+    buffer: Vec<DisiWrapper<T>>,
 }
 
 unsafe impl<T: DocIterator> Send for DisiPriorityQueue<T> {}
 
 impl<T: DocIterator> DisiPriorityQueue<T> {
-    fn left_node(node: isize) -> isize {
+    #[inline]
+    fn left_node(node: usize) -> usize {
         ((node + 1) << 1) - 1
     }
 
-    fn right_node(left_node: isize) -> isize {
+    #[inline]
+    fn right_node(left_node: usize) -> usize {
         left_node + 1
     }
 
-    fn parent_node(node: isize) -> isize {
-        ((node + 1) >> 1) - 1
+    #[inline]
+    fn parent_node(node: usize) -> Option<usize> {
+        if node > 0 {
+            Some(((node + 1) >> 1) - 1)
+        } else {
+            None
+        }
     }
 
     pub fn new(children: Vec<T>) -> DisiPriorityQueue<T> {
-        let mut _buffer: Vec<DisiWrapper<T>> = children.into_iter().map(DisiWrapper::new).collect();
-        let children: Vec<*mut DisiWrapper<T>> = _buffer
+        let mut buffer: Vec<DisiWrapper<T>> = children.into_iter().map(DisiWrapper::new).collect();
+        let children: Vec<*mut DisiWrapper<T>> = buffer
             .iter_mut()
             .map(|x| x as *mut DisiWrapper<T>)
             .collect();
         let mut queue = DisiPriorityQueue {
             heap: vec![ptr::null_mut(); children.len()],
             size: 0,
-            _buffer,
+            buffer,
         };
 
         for disi in children {
@@ -174,12 +181,11 @@ impl<T: DocIterator> DisiPriorityQueue<T> {
     }
 
     pub fn size(&self) -> usize {
-        self.size as usize
+        self.size
     }
 
     /// Get the list of scorers which are on the current doc.
-    #[allow(clippy::mut_from_ref)]
-    pub fn top_list(&self) -> &mut DisiWrapper<T> {
+    pub fn top_list(&mut self) -> &mut DisiWrapper<T> {
         unsafe { &mut *self.do_top_list() }
     }
 
@@ -205,10 +211,10 @@ impl<T: DocIterator> DisiPriorityQueue<T> {
     unsafe fn top_list_to(
         mut list: *mut DisiWrapper<T>,
         heap: &[*mut DisiWrapper<T>],
-        size: isize,
-        i: isize,
+        size: usize,
+        i: usize,
     ) -> *mut DisiWrapper<T> {
-        let w = heap[i as usize];
+        let w = heap[i];
         if (*w).doc() == (*list).doc() {
             list = Self::prepend(w, list);
             let left = Self::left_node(i);
@@ -216,8 +222,8 @@ impl<T: DocIterator> DisiPriorityQueue<T> {
             if right < size {
                 list = Self::top_list_to(list, heap, size, left);
                 list = Self::top_list_to(list, heap, size, right);
-            } else if left < size && (*heap[left as usize]).doc() == (*list).doc() {
-                list = Self::prepend(heap[left as usize], list);
+            } else if left < size && (*heap[left]).doc() == (*list).doc() {
+                list = Self::prepend(heap[left], list);
             }
         }
         list
@@ -229,8 +235,9 @@ impl<T: DocIterator> DisiPriorityQueue<T> {
         }
     }
 
+    #[inline(always)]
     unsafe fn do_push(&mut self, entry: *mut DisiWrapper<T>) -> *mut DisiWrapper<T> {
-        self.heap[self.size as usize] = entry;
+        self.heap[self.size] = entry;
         let size = self.size;
         self.up_heap(size);
         self.size += 1;
@@ -241,22 +248,20 @@ impl<T: DocIterator> DisiPriorityQueue<T> {
         unsafe { &mut *self.do_pop() }
     }
 
+    #[inline(always)]
     unsafe fn do_pop(&mut self) -> *mut DisiWrapper<T> {
+        debug_assert!(self.size > 0);
         let result = self.heap[0];
         self.size -= 1;
         let size = self.size;
-        self.heap[0] = self.heap[size as usize];
-        self.heap[size as usize] = ptr::null_mut();
+        self.heap[0] = self.heap[size];
+        self.heap[size] = ptr::null_mut();
         self.down_heap(size);
         result
     }
 
-    #[allow(clippy::mut_from_ref)]
-    pub fn peek(&self) -> &mut DisiWrapper<T> {
-        unsafe {
-            let result = self.heap[0];
-            &mut *result
-        }
+    pub fn peek(&self) -> &DisiWrapper<T> {
+        unsafe { &*self.heap[0] }
     }
 
     pub fn peek_mut(&mut self) -> PeekMut<T> {
@@ -289,41 +294,43 @@ impl<T: DocIterator> DisiPriorityQueue<T> {
         self.update_top()
     }
 
-    unsafe fn up_heap(&mut self, mut i: isize) {
-        let node = self.heap[i as usize];
+    unsafe fn up_heap(&mut self, mut i: usize) {
+        let node = self.heap[i];
         let node_doc = (*node).doc();
-        let mut j = Self::parent_node(i);
-        while j >= 0 && node_doc < (*self.heap[j as usize]).doc() {
-            self.heap[i as usize] = self.heap[j as usize];
+        while let Some(j) = Self::parent_node(i) {
+            if node_doc >= (*self.heap[j]).doc() {
+                break;
+            }
+            self.heap[i] = self.heap[j];
             i = j;
-            j = Self::parent_node(j);
         }
-        self.heap[i as usize] = node;
+
+        self.heap[i] = node;
     }
 
-    unsafe fn down_heap(&mut self, size: isize) {
+    unsafe fn down_heap(&mut self, size: usize) {
         let mut i = 0;
         let node = self.heap[0];
         let mut j = Self::left_node(i);
         if j < self.size {
             let mut k = Self::right_node(j);
-            if k < size && (*self.heap[k as usize]).doc() < (*self.heap[j as usize]).doc() {
+            if k < size && (*self.heap[k]).doc() < (*self.heap[j]).doc() {
                 j = k;
             }
-            if (*self.heap[j as usize]).doc() < (*node).doc() {
+            if (*self.heap[j]).doc() < (*node).doc() {
                 loop {
-                    self.heap[i as usize] = self.heap[j as usize];
+                    self.heap[i] = self.heap[j];
                     i = j;
                     j = Self::left_node(i);
                     k = Self::right_node(j);
-                    if k < size && (*self.heap[k as usize]).doc() < (*self.heap[j as usize]).doc() {
+                    if k < size && (*self.heap[k]).doc() < (*self.heap[j]).doc() {
                         j = k;
                     }
-                    if j >= size || (*self.heap[j as usize]).doc() >= (*node).doc() {
+                    if j >= size || (*self.heap[j]).doc() >= (*node).doc() {
                         break;
                     }
                 }
-                self.heap[i as usize] = node;
+                self.heap[i] = node;
             }
         }
     }
@@ -357,9 +364,9 @@ impl<'a, T: 'a + DocIterator> Iterator for DisiQueueIterator<'a, T> {
     type Item = &'a T;
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        if self.index < self.queue._buffer.len() {
+        if self.index < self.queue.buffer.len() {
             let index = self.index;
-            let v = &self.queue._buffer[index].inner();
+            let v = &self.queue.buffer[index].inner();
             self.index += 1;
             Some(v)
         } else {

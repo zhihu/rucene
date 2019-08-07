@@ -191,6 +191,10 @@ impl DocIterator for FilterScorer {
         1.0 * self.filters.len() as f32
     }
 
+    fn support_two_phase(&self) -> bool {
+        true
+    }
+
     fn approximate_next(&mut self) -> Result<DocId> {
         self.scorer.approximate_next()
     }
@@ -203,10 +207,6 @@ impl DocIterator for FilterScorer {
 impl Scorer for FilterScorer {
     fn score(&mut self) -> Result<f32> {
         self.scorer.score()
-    }
-
-    fn support_two_phase(&self) -> bool {
-        true
     }
 
     fn score_context(&mut self) -> Result<IndexedContext> {

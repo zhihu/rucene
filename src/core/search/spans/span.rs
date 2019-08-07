@@ -213,9 +213,6 @@ pub trait Spans: DocIterator {
         Ok(())
     }
 
-    /// support two phase
-    fn support_two_phase(&self) -> bool;
-
     fn advance_position(&mut self, position: i32) -> Result<i32> {
         while self.start_position() < position {
             self.next_start_position()?;
@@ -313,16 +310,6 @@ impl<P: PostingIterator> Spans for SpansEnum<P> {
         }
     }
 
-    fn support_two_phase(&self) -> bool {
-        match self {
-            SpansEnum::Gap(s) => s.support_two_phase(),
-            SpansEnum::NearOrdered(s) => s.support_two_phase(),
-            SpansEnum::NearUnordered(s) => s.support_two_phase(),
-            SpansEnum::Or(s) => s.support_two_phase(),
-            SpansEnum::Term(s) => s.support_two_phase(),
-        }
-    }
-
     fn advance_position(&mut self, position: i32) -> Result<i32> {
         match self {
             SpansEnum::Gap(s) => s.advance_position(position),
@@ -402,6 +389,16 @@ impl<P: PostingIterator> DocIterator for SpansEnum<P> {
             SpansEnum::NearUnordered(s) => s.match_cost(),
             SpansEnum::Or(s) => s.match_cost(),
             SpansEnum::Term(s) => s.match_cost(),
+        }
+    }
+
+    fn support_two_phase(&self) -> bool {
+        match self {
+            SpansEnum::Gap(s) => s.support_two_phase(),
+            SpansEnum::NearOrdered(s) => s.support_two_phase(),
+            SpansEnum::NearUnordered(s) => s.support_two_phase(),
+            SpansEnum::Or(s) => s.support_two_phase(),
+            SpansEnum::Term(s) => s.support_two_phase(),
         }
     }
 
@@ -536,10 +533,6 @@ impl<S: Spans> Scorer for SpanScorer<S> {
         self.ensure_freq()?;
         self.score_current_doc()
     }
-
-    fn support_two_phase(&self) -> bool {
-        self.spans.support_two_phase()
-    }
 }
 
 impl<S: Spans> DocIterator for SpanScorer<S> {
@@ -564,6 +557,10 @@ impl<S: Spans> DocIterator for SpanScorer<S> {
 
     fn match_cost(&self) -> f32 {
         self.spans.match_cost()
+    }
+
+    fn support_two_phase(&self) -> bool {
+        self.spans.support_two_phase()
     }
 
     fn approximate_next(&mut self) -> Result<i32> {
@@ -912,10 +909,6 @@ impl<T: PostingIterator> Scorer for SpansAsScorer<T> {
     fn score(&mut self) -> Result<f32> {
         unreachable!()
     }
-
-    fn support_two_phase(&self) -> bool {
-        self.spans().support_two_phase()
-    }
 }
 
 impl<T: PostingIterator> DocIterator for SpansAsScorer<T> {
@@ -945,6 +938,10 @@ impl<T: PostingIterator> DocIterator for SpansAsScorer<T> {
 
     fn match_cost(&self) -> f32 {
         self.spans().match_cost()
+    }
+
+    fn support_two_phase(&self) -> bool {
+        self.spans().support_two_phase()
     }
 
     fn approximate_next(&mut self) -> Result<i32> {
@@ -1079,6 +1076,10 @@ macro_rules! conjunction_span_doc_iter {
 
             fn match_cost(&self) -> f32 {
                 self.conjunction_span_base().two_phase_match_cost
+            }
+
+            fn support_two_phase(&self) -> bool {
+                true
             }
 
             fn approximate_next(&mut self) -> Result<i32> {

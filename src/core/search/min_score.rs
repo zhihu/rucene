@@ -45,9 +45,6 @@ impl<S: Scorer> Scorer for MinScoreScorer<S> {
         }
         Ok(self.cur_score)
     }
-    fn support_two_phase(&self) -> bool {
-        true
-    }
 }
 
 impl<S: Scorer> DocIterator for MinScoreScorer<S> {
@@ -76,6 +73,10 @@ impl<S: Scorer> DocIterator for MinScoreScorer<S> {
     fn match_cost(&self) -> f32 {
         // 1000 for random constant for the score computation
         1000f32 + self.origin.match_cost()
+    }
+
+    fn support_two_phase(&self) -> bool {
+        self.origin.support_two_phase()
     }
 
     fn approximate_next(&mut self) -> Result<DocId> {

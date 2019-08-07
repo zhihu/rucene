@@ -317,10 +317,10 @@ fn read_vint_block(
 }
 
 struct BlockDocIterator {
-    pub encoded: Vec<u8>,
+    encoded: [u8; MAX_ENCODED_SIZE],
 
-    pub doc_delta_buffer: Vec<i32>,
-    freq_buffer: Vec<i32>,
+    doc_delta_buffer: [i32; MAX_DATA_SIZE],
+    freq_buffer: [i32; MAX_DATA_SIZE],
 
     doc_buffer_upto: i32,
 
@@ -378,10 +378,10 @@ impl BlockDocIterator {
     ) -> Result<BlockDocIterator> {
         let options = &field_info.index_options;
         let mut iterator = BlockDocIterator {
-            encoded: vec![0 as u8; MAX_ENCODED_SIZE],
+            encoded: [0u8; MAX_ENCODED_SIZE],
             start_doc_in,
-            doc_delta_buffer: vec![0 as i32; max_data_size()],
-            freq_buffer: vec![0 as i32; max_data_size()],
+            doc_delta_buffer: [0i32; MAX_DATA_SIZE],
+            freq_buffer: [0i32; MAX_DATA_SIZE],
             doc_buffer_upto: 0,
             skipped: false,
             skipper: None,
@@ -423,9 +423,7 @@ impl BlockDocIterator {
                 self.doc_in = Some(self.start_doc_in.clone()?);
             }
             let start = self.doc_term_start_fp;
-            if let Some(ref mut doc_in) = self.doc_in {
-                doc_in.seek(start)?;
-            }
+            self.doc_in.as_mut().unwrap().seek(start)?;
         }
 
         self.doc = -1;
@@ -616,11 +614,11 @@ impl DocIterator for BlockDocIterator {
 }
 
 struct BlockPostingIterator {
-    encoded: Vec<u8>,
+    encoded: [u8; MAX_ENCODED_SIZE],
 
-    doc_delta_buffer: Vec<i32>,
-    freq_buffer: Vec<i32>,
-    pos_delta_buffer: Vec<i32>,
+    doc_delta_buffer: [i32; MAX_DATA_SIZE],
+    freq_buffer: [i32; MAX_DATA_SIZE],
+    pos_delta_buffer: [i32; MAX_DATA_SIZE],
 
     doc_buffer_upto: i32,
     pos_buffer_upto: i32,
@@ -699,11 +697,11 @@ impl BlockPostingIterator {
     ) -> Result<BlockPostingIterator> {
         let options = &field_info.index_options;
         let mut iterator = BlockPostingIterator {
-            encoded: vec![0 as u8; MAX_ENCODED_SIZE],
+            encoded: [0; MAX_ENCODED_SIZE],
             start_doc_in,
-            doc_delta_buffer: vec![0 as i32; max_data_size()],
-            freq_buffer: vec![0 as i32; max_data_size()],
-            pos_delta_buffer: vec![0 as i32; max_data_size()],
+            doc_delta_buffer: [0i32; MAX_DATA_SIZE],
+            freq_buffer: [0i32; MAX_DATA_SIZE],
+            pos_delta_buffer: [0i32; MAX_DATA_SIZE],
             doc_buffer_upto: 0,
             pos_buffer_upto: 0,
             skipped: false,
@@ -1028,17 +1026,17 @@ impl DocIterator for BlockPostingIterator {
 
 // Also handles payloads + offsets
 struct EverythingIterator {
-    encoded: Vec<u8>,
+    encoded: [u8; MAX_ENCODED_SIZE],
 
-    doc_delta_buffer: Vec<i32>,
-    freq_buffer: Vec<i32>,
-    pos_delta_buffer: Vec<i32>,
+    doc_delta_buffer: [i32; MAX_DATA_SIZE],
+    freq_buffer: [i32; MAX_DATA_SIZE],
+    pos_delta_buffer: [i32; MAX_DATA_SIZE],
 
-    payload_length_buffer: Option<Vec<i32>>,
-    offset_start_delta_buffer: Option<Vec<i32>>,
-    offset_length_buffer: Option<Vec<i32>>,
+    payload_length_buffer: [i32; MAX_DATA_SIZE],
+    offset_start_delta_buffer: [i32; MAX_DATA_SIZE],
+    offset_length_buffer: [i32; MAX_DATA_SIZE],
 
-    payload_bytes: Option<Vec<u8>>,
+    payload_bytes: Vec<u8>,
     payload_byte_upto: i32,
     payload_length: i32,
 
@@ -1057,7 +1055,6 @@ struct EverythingIterator {
     doc_in: Option<Box<dyn IndexInput>>,
     pos_in: Box<dyn IndexInput>,
     pay_in: Box<dyn IndexInput>,
-    payload: Option<Vec<u8>>,
 
     index_has_offsets: bool,
     index_has_payloads: bool,
@@ -1131,35 +1128,23 @@ impl<'a> EverythingIterator {
         flags: u16,
         for_util: ForUtil,
     ) -> Result<EverythingIterator> {
-        let encoded = vec![0 as u8; MAX_ENCODED_SIZE];
+        let encoded = [0u8; MAX_ENCODED_SIZE];
         let index_has_offsets = field_info.index_options.has_offsets();
-        let (offset_start_delta_buffer, offset_length_buffer, start_offset, end_offset) =
-            if index_has_offsets {
-                (
-                    Some(vec![0 as i32; max_data_size()]),
-                    Some(vec![0 as i32; max_data_size()]),
-                    0 as i32,
-                    0 as i32,
-                )
-            } else {
-                (None, None, -1, -1)
-            };
+        let offset_start_delta_buffer = [0; MAX_DATA_SIZE];
+        let offset_length_buffer = [0; MAX_DATA_SIZE];
+        let (start_offset, end_offset) = if index_has_offsets { (0, 0) } else { (-1, -1) };
 
         let index_has_payloads = field_info.has_store_payloads;
-        let empty: Vec<u8> = Vec::new();
-        let (payload_length_buffer, payload_bytes, payload) = if index_has_payloads {
-            (
-                Some(vec![0 as i32; max_data_size()]),
-                Some(vec![0 as u8; 128]),
-                Some(empty),
-            )
+        let payload_bytes = if index_has_payloads {
+            vec![0 as u8; 128]
         } else {
-            (None, None, None)
+            vec![]
         };
+        let payload_length_buffer = [0; MAX_DATA_SIZE];
 
-        let doc_delta_buffer = vec![0 as i32; max_data_size()];
-        let freq_buffer = vec![0 as i32; max_data_size()];
-        let pos_delta_buffer = vec![0 as i32; max_data_size()];
+        let doc_delta_buffer = [0i32; MAX_DATA_SIZE];
+        let freq_buffer = [0i32; MAX_DATA_SIZE];
+        let pos_delta_buffer = [0i32; MAX_DATA_SIZE];
 
         let mut iterator = EverythingIterator {
             start_doc_in,
@@ -1174,7 +1159,6 @@ impl<'a> EverythingIterator {
             index_has_payloads,
             payload_length_buffer,
             payload_bytes,
-            payload,
             doc_delta_buffer,
             freq_buffer,
             pos_delta_buffer,
@@ -1210,38 +1194,6 @@ impl<'a> EverythingIterator {
 
         iterator.reset(term_state, flags)?;
         Ok(iterator)
-    }
-
-    #[allow(dead_code)]
-    pub fn payload_length_buffer(&self) -> Option<&[i32]> {
-        match self.payload_length_buffer {
-            Some(ref buffer) => Some(&buffer),
-            None => None,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn offset_start_delta_buffer(&self) -> Option<&[i32]> {
-        match self.offset_start_delta_buffer {
-            Some(ref buffer) => Some(&buffer),
-            None => None,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn offset_length_buffer(&self) -> Option<&[i32]> {
-        match self.offset_length_buffer {
-            Some(ref buffer) => Some(&buffer),
-            None => None,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn payload_bytes(&self) -> Option<&[u8]> {
-        match self.payload_bytes {
-            Some(ref buffer) => Some(&buffer),
-            None => None,
-        }
     }
 
     pub fn reset(&mut self, term_state: &BlockTermState, flags: u16) -> Result<()> {
@@ -1333,15 +1285,16 @@ impl<'a> EverythingIterator {
                     if (code & 1) != 0 {
                         payload_length = pos_in.read_vint()?;
                     }
-                    self.payload_length_buffer.as_mut().unwrap()[i] = payload_length;
+                    self.payload_length_buffer[i] = payload_length;
                     self.pos_delta_buffer[i] = ((code as u32) >> 1) as i32;
                     if payload_length != 0 {
-                        let payload_bytes = self.payload_bytes.as_mut().unwrap();
-                        if self.payload_byte_upto + payload_length > payload_bytes.len() as i32 {
-                            payload_bytes.resize((payload_byte_upto + payload_length) as usize, 0);
+                        if self.payload_byte_upto + payload_length > self.payload_bytes.len() as i32
+                        {
+                            self.payload_bytes
+                                .resize((payload_byte_upto + payload_length) as usize, 0);
                         }
                         pos_in.read_exact(
-                            &mut payload_bytes[self.payload_byte_upto as usize
+                            &mut self.payload_bytes[self.payload_byte_upto as usize
                                 ..(self.payload_byte_upto + payload_length) as usize],
                         )?;
                         self.payload_byte_upto += payload_length;
@@ -1355,9 +1308,8 @@ impl<'a> EverythingIterator {
                     if delta_code & 1 != 0 {
                         offset_length = pos_in.read_vint()?;
                     }
-                    self.offset_start_delta_buffer.as_mut().unwrap()[i] =
-                        ((delta_code as u32) >> 1) as i32;
-                    self.offset_length_buffer.as_mut().unwrap()[i] = offset_length;
+                    self.offset_start_delta_buffer[i] = ((delta_code as u32) >> 1) as i32;
+                    self.offset_length_buffer[i] = offset_length;
                 }
             }
             self.payload_byte_upto = 0;
@@ -1374,14 +1326,13 @@ impl<'a> EverythingIterator {
                     self.for_util.read_block(
                         pay_in.as_mut(),
                         &mut self.encoded,
-                        self.payload_length_buffer.as_mut().unwrap(),
+                        self.payload_length_buffer.as_mut(),
                     )?;
                     let num_bytes = pay_in.read_vint()? as usize;
-                    let payload_bytes = self.payload_bytes.as_mut().unwrap();
-                    if num_bytes > payload_bytes.len() {
-                        payload_bytes.resize(num_bytes, 0);
+                    if num_bytes > self.payload_bytes.len() {
+                        self.payload_bytes.resize(num_bytes, 0);
                     }
-                    pay_in.read_exact(&mut payload_bytes[0..num_bytes])?;
+                    pay_in.read_exact(&mut self.payload_bytes[0..num_bytes])?;
                 } else {
                     // this works, because when writing a vint block we always force the first
                     // length to be written
@@ -1398,12 +1349,12 @@ impl<'a> EverythingIterator {
                     self.for_util.read_block(
                         pay_in.as_mut(),
                         &mut self.encoded,
-                        self.offset_start_delta_buffer.as_mut().unwrap(),
+                        self.offset_start_delta_buffer.as_mut(),
                     )?;
                     self.for_util.read_block(
                         pay_in.as_mut(),
                         &mut self.encoded,
-                        self.offset_length_buffer.as_mut().unwrap(),
+                        self.offset_length_buffer.as_mut(),
                     )?;
                 } else {
                     // this works, because when writing a vint block we always force the first
@@ -1430,7 +1381,7 @@ impl<'a> EverythingIterator {
             while self.pos_buffer_upto < end {
                 if self.index_has_payloads {
                     self.payload_byte_upto +=
-                        self.payload_length_buffer.as_mut().unwrap()[self.pos_buffer_upto as usize];
+                        self.payload_length_buffer[self.pos_buffer_upto as usize];
                 }
                 self.pos_buffer_upto += 1;
             }
@@ -1463,7 +1414,7 @@ impl<'a> EverythingIterator {
             while self.pos_buffer_upto < to_skip {
                 if self.index_has_payloads {
                     self.payload_byte_upto +=
-                        self.payload_length_buffer.as_mut().unwrap()[self.pos_buffer_upto as usize];
+                        self.payload_length_buffer[self.pos_buffer_upto as usize];
                 }
                 self.pos_buffer_upto += 1;
             }
@@ -1520,24 +1471,19 @@ impl PostingIterator for EverythingIterator {
         self.position += self.pos_delta_buffer[self.pos_buffer_upto as usize];
 
         if self.index_has_payloads {
-            debug_assert!(self.payload_length_buffer.is_some());
-            debug_assert!(self.payload_bytes.is_some());
-            self.payload_length =
-                self.payload_length_buffer.as_ref().unwrap()[self.pos_buffer_upto as usize];
-            let payload_offset = self.payload_byte_upto as usize;
-            let payload_end = payload_offset + self.payload_length as usize;
-            self.payload =
-                Some(self.payload_bytes.as_ref().unwrap()[payload_offset..payload_end].to_vec());
+            debug_assert!(!self.payload_length_buffer.is_empty());
+            // debug_assert!(!self.payload_bytes.is_empty());
+            self.payload_length = self.payload_length_buffer[self.pos_buffer_upto as usize];
             self.payload_byte_upto += self.payload_length;
         }
 
         if self.index_has_offsets {
-            debug_assert!(self.offset_start_delta_buffer.is_some());
-            debug_assert!(self.offset_length_buffer.is_some());
+            debug_assert!(!self.offset_start_delta_buffer.is_empty());
+            debug_assert!(!self.offset_length_buffer.is_empty());
             self.start_offset = self.last_start_offset
-                + self.offset_start_delta_buffer.as_ref().unwrap()[self.pos_buffer_upto as usize];
-            self.end_offset = self.start_offset
-                + self.offset_length_buffer.as_ref().unwrap()[self.pos_buffer_upto as usize];
+                + self.offset_start_delta_buffer[self.pos_buffer_upto as usize];
+            self.end_offset =
+                self.start_offset + self.offset_length_buffer[self.pos_buffer_upto as usize];
             self.last_start_offset = self.start_offset;
         }
 
@@ -1555,12 +1501,13 @@ impl PostingIterator for EverythingIterator {
     }
 
     fn payload(&self) -> Result<Payload> {
-        Ok(if self.payload_length == 0 {
-            Payload::new()
+        if self.payload_length == 0 {
+            Ok(vec![])
         } else {
-            debug_assert!(self.payload.is_some());
-            self.payload.as_ref().unwrap().clone()
-        })
+            let start = self.payload_byte_upto as usize;
+            let end = start + self.payload_length as usize;
+            Ok(self.payload_bytes[start..end].to_vec())
+        }
     }
 }
 

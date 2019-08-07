@@ -509,10 +509,6 @@ impl<P: PostingIterator> Spans for NearSpansUnordered<P> {
         // support_two_phase always return `true`
         unreachable!()
     }
-
-    fn support_two_phase(&self) -> bool {
-        true
-    }
 }
 
 conjunction_span_doc_iter!(NearSpansUnordered<P: PostingIterator>);
@@ -595,10 +591,6 @@ impl<P: PostingIterator> Spans for SpansCell<P> {
         // support_two_phase always return `true`
         self.spans.positions_cost()
     }
-
-    fn support_two_phase(&self) -> bool {
-        self.spans.support_two_phase()
-    }
 }
 
 impl<P: PostingIterator> DocIterator for SpansCell<P> {
@@ -616,6 +608,26 @@ impl<P: PostingIterator> DocIterator for SpansCell<P> {
 
     fn cost(&self) -> usize {
         self.spans.cost()
+    }
+
+    fn matches(&mut self) -> Result<bool> {
+        self.spans.matches()
+    }
+
+    fn match_cost(&self) -> f32 {
+        self.spans.match_cost()
+    }
+
+    fn support_two_phase(&self) -> bool {
+        self.spans.support_two_phase()
+    }
+
+    fn approximate_next(&mut self) -> Result<DocId> {
+        self.spans.approximate_next()
+    }
+
+    fn approximate_advance(&mut self, target: i32) -> Result<DocId> {
+        self.spans.approximate_advance(target)
     }
 }
 
@@ -821,10 +833,6 @@ impl<P: PostingIterator> Spans for NearSpansOrdered<P> {
     fn positions_cost(&self) -> f32 {
         unreachable!()
     }
-
-    fn support_two_phase(&self) -> bool {
-        true
-    }
 }
 
 conjunction_span_doc_iter!(NearSpansOrdered<P: PostingIterator>);
@@ -1016,10 +1024,6 @@ impl Spans for GapSpans {
 
     fn positions_cost(&self) -> f32 {
         0.0
-    }
-
-    fn support_two_phase(&self) -> bool {
-        false
     }
 
     fn advance_position(&mut self, position: i32) -> Result<i32> {

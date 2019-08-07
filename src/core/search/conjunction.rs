@@ -104,9 +104,6 @@ impl<T: Scorer> Scorer for ConjunctionScorer<T> {
 
         Ok(score)
     }
-    fn support_two_phase(&self) -> bool {
-        self.support_two_phase
-    }
 }
 
 impl<T: Scorer> DocIterator for ConjunctionScorer<T> {
@@ -134,19 +131,21 @@ impl<T: Scorer> DocIterator for ConjunctionScorer<T> {
         } else if !self.lead1.matches()? || !self.lead2.matches()? {
             Ok(false)
         } else {
-            let mut res = true;
             for s in &mut self.others {
                 if !s.matches()? {
-                    res = false;
-                    break;
+                    return Ok(false);
                 }
             }
-            Ok(res)
+            Ok(true)
         }
     }
 
     fn match_cost(&self) -> f32 {
         self.two_phase_match_cost
+    }
+
+    fn support_two_phase(&self) -> bool {
+        self.support_two_phase
     }
 
     fn approximate_next(&mut self) -> Result<DocId> {

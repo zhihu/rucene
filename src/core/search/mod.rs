@@ -187,6 +187,11 @@ pub trait DocIterator: Send {
         0f32
     }
 
+    /// whether this iterator support *two phase iterator*, default to false
+    fn support_two_phase(&self) -> bool {
+        false
+    }
+
     /// advance to the next approximate match doc, this works the same as Lucene's
     /// `TwoPhaseIterator#next`
     fn approximate_next(&mut self) -> Result<DocId> {
@@ -257,11 +262,6 @@ pub trait Scorer: DocIterator {
     /// the first time, or when called from within `LeafCollector::collect`.
     fn score(&mut self) -> Result<f32>;
 
-    /// whether this scorer support *two phase iterator*, default to false
-    fn support_two_phase(&self) -> bool {
-        false
-    }
-
     fn score_context(&mut self) -> Result<IndexedContext> {
         unimplemented!()
     }
@@ -274,10 +274,6 @@ pub trait Scorer: DocIterator {
 impl Scorer for Box<dyn Scorer> {
     fn score(&mut self) -> Result<f32> {
         (**self).score()
-    }
-
-    fn support_two_phase(&self) -> bool {
-        (**self).support_two_phase()
     }
 
     fn score_context(&mut self) -> Result<IndexedContext> {
@@ -316,6 +312,10 @@ impl DocIterator for Box<dyn Scorer> {
 
     fn match_cost(&self) -> f32 {
         (**self).match_cost()
+    }
+
+    fn support_two_phase(&self) -> bool {
+        (**self).support_two_phase()
     }
 
     fn approximate_next(&mut self) -> Result<i32> {
@@ -896,10 +896,6 @@ pub mod tests {
         fn score(&mut self) -> Result<f32> {
             Ok(self.doc_id() as f32)
         }
-
-        fn support_two_phase(&self) -> bool {
-            true
-        }
     }
 
     impl DocIterator for MockTwoPhaseScorer {
@@ -929,6 +925,10 @@ pub mod tests {
 
         fn match_cost(&self) -> f32 {
             1f32
+        }
+
+        fn support_two_phase(&self) -> bool {
+            true
         }
 
         fn approximate_next(&mut self) -> Result<DocId> {

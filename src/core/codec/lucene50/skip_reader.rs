@@ -235,7 +235,7 @@ impl Lucene50SkipReader {
         let num_skipped = vec![0 as i64; max_number_of_skip_levels];
         let skip_interval = BLOCK_SIZE;
         let skip_multiplier = 8;
-        let mut skip_intervals = vec![0 as i64; 0];
+        let mut skip_intervals = vec![];
         let mut skip_streams = Vec::with_capacity(max_number_of_skip_levels);
         let input_is_buffered = skip_stream.is_buffered();
         skip_streams.push(Some(skip_stream));

@@ -209,10 +209,6 @@ impl<T: PostingIterator> Spans for TermSpans<T> {
     fn positions_cost(&self) -> f32 {
         self.positions_cost
     }
-
-    fn support_two_phase(&self) -> bool {
-        false
-    }
 }
 
 /// A guess of the relative cost of dealing with the term positions

@@ -136,8 +136,7 @@ impl Hash for CollectedSearchGroup {
 
 impl PartialEq for CollectedSearchGroup {
     fn eq(&self, other: &CollectedSearchGroup) -> bool {
-        self.group_value.eq(&other.group_value)
-            && self.cmp(other) == Ordering::Equal
+        self.group_value.eq(&other.group_value) && self.cmp(other) == Ordering::Equal
     }
 }
 
