@@ -38,9 +38,12 @@ impl<T: ImmutableBitSet> BitDocIdSet<T> {
 }
 
 impl<T: ImmutableBitSet + 'static> DocIdSet for BitDocIdSet<T> {
-    type Iter = BitSetIterator<T>;
+    type Iter = BitSetDocIterator<T>;
     fn iterator(&self) -> Result<Option<Self::Iter>> {
-        Ok(Some(BitSetIterator::new(Arc::clone(&self.set), self.cost)?))
+        Ok(Some(BitSetDocIterator::new(
+            Arc::clone(&self.set),
+            self.cost,
+        )?))
     }
 
     //    fn bits(&self) -> Result<Option<ImmutableBitSetRef>> {
@@ -48,17 +51,17 @@ impl<T: ImmutableBitSet + 'static> DocIdSet for BitDocIdSet<T> {
     //    }
 }
 
-pub struct BitSetIterator<T: ImmutableBitSet> {
+pub struct BitSetDocIterator<T: ImmutableBitSet> {
     bits: Arc<T>,
     length: usize,
     cost: usize,
     doc: DocId,
 }
 
-impl<T: ImmutableBitSet> BitSetIterator<T> {
+impl<T: ImmutableBitSet> BitSetDocIterator<T> {
     pub fn new(bits: Arc<T>, cost: usize) -> Result<Self> {
         let length = bits.len();
-        Ok(BitSetIterator {
+        Ok(BitSetDocIterator {
             bits,
             length,
             cost,
@@ -71,7 +74,7 @@ impl<T: ImmutableBitSet> BitSetIterator<T> {
     }
 }
 
-impl<T: ImmutableBitSet> DocIterator for BitSetIterator<T> {
+impl<T: ImmutableBitSet> DocIterator for BitSetDocIterator<T> {
     fn doc_id(&self) -> DocId {
         self.doc
     }
@@ -197,7 +200,7 @@ pub enum DocIdSetDocIterEnum {
     ShortArray(ShortArrayDocIterator),
     IntArray(IntArrayDocIterator),
     NotDocId(NotDocIterator<ShortArrayDocIterator>),
-    BitDocId(BitSetIterator<FixedBitSet>),
+    BitDocId(BitSetDocIterator<FixedBitSet>),
 }
 
 // used for empty stub

@@ -331,7 +331,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let path: PathBuf = temp_dir.path().join(name);
 
-        let mut fsout = FSIndexOutput::new(&path).unwrap();
+        let mut fsout = FSIndexOutput::new(name.to_string(), &path).unwrap();
         fsout.write_byte(b'a').unwrap();
         fsout.write_short(0x7F_i16).unwrap();
         fsout.write_long(567_890).unwrap();
@@ -351,7 +351,7 @@ mod tests {
         let path: PathBuf = Path::new("test.txt").into();
         let name = "test.txt";
 
-        let mut fsout = FSIndexOutput::new(&path).unwrap();
+        let mut fsout = FSIndexOutput::new(name.to_string(), &path).unwrap();
         fsout.write_byte(b'a').unwrap();
         fsout.write_short(0x7F_i16).unwrap();
         fsout.write_long(567_890).unwrap();

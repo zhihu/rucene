@@ -11,10 +11,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::codec::{Codec, FieldsConsumer, PostingsFormat};
+use core::codec::{Codec, FieldsConsumer, NormsProducer, PostingsFormat};
 use core::index::byte_slice_reader::ByteSliceReader;
+use core::index::leaf_reader_wrapper::SortingFields;
 use core::index::merge_policy::MergePolicy;
 use core::index::merge_scheduler::MergeScheduler;
+use core::index::sorter::PackedLongDocMap;
 use core::index::term::{SeekStatus, TermIterator, Terms};
 use core::index::term_vector::TermVectorsConsumer;
 use core::index::terms_hash_per_field::{FreqProxTermsWriterPerField, TermsHashPerField};
@@ -30,13 +32,13 @@ use core::util::bit_set::{BitSet, FixedBitSet};
 use core::util::byte_block_pool::{ByteBlockAllocator, ByteBlockPool};
 use core::util::int_block_pool::IntBlockPool;
 use core::util::{Bits, BytesRef, Counter, DocId};
+use error::{ErrorKind, Result};
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::ptr;
-
-use error::{ErrorKind, Result};
+use std::sync::Arc;
 
 /// This class is passed each token produced by the analyzer
 /// on each field during indexing, and it stores these
@@ -116,6 +118,8 @@ pub(crate) trait TermsHash<D: Directory, C: Codec> {
         &mut self,
         field_to_flush: BTreeMap<&str, &Self::PerField>,
         state: &mut SegmentWriteState<D, DW, C>,
+        sort_map: Option<&Arc<PackedLongDocMap>>,
+        norms: Option<&impl NormsProducer>,
     ) -> Result<()>;
 
     fn abort(&mut self) -> Result<()> {
@@ -148,13 +152,6 @@ where
     MS: MergeScheduler,
     MP: MergePolicy,
 {
-    pub fn new_default() -> Self {
-        FreqProxTermsWriter {
-            base: TermsHashBase::default(),
-            next_terms_hash: TermVectorsConsumer::new_default(),
-        }
-    }
-
     pub fn new(
         doc_writer: &mut DocumentsWriterPerThread<D, C, MS, MP>,
         term_vectors: TermVectorsConsumer<D, C, MS, MP>,
@@ -168,8 +165,9 @@ where
 
     pub fn init(&mut self) {
         self.base.term_byte_pool = &mut self.base.byte_pool;
-        self.next_terms_hash.base.term_byte_pool = &mut self.base.byte_pool;
-        self.next_terms_hash.inited = true;
+        self.next_terms_hash
+            .set_term_bytes_pool(&mut self.base.byte_pool);
+        self.next_terms_hash.set_inited(true);
     }
 }
 
@@ -257,17 +255,20 @@ where
         &mut self,
         field_to_flush: BTreeMap<&str, &Self::PerField>,
         state: &mut SegmentWriteState<D, DW, C>,
+        sort_map: Option<&Arc<PackedLongDocMap>>,
+        norms: Option<&impl NormsProducer>,
     ) -> Result<()> {
         let mut next_child_fields = BTreeMap::new();
         for (k, v) in &field_to_flush {
             next_child_fields.insert(*k, &(*v).next_per_field);
         }
-        self.next_terms_hash.flush(next_child_fields, state)?;
+        self.next_terms_hash
+            .flush(next_child_fields, state, sort_map, norms)?;
 
         // Gather all fields that saw any positions:
         let mut all_fields = Vec::with_capacity(field_to_flush.len());
         for (_, f) in field_to_flush {
-            if f.base().bytes_hash.len() > 0 {
+            if !f.base().bytes_hash.is_empty() {
                 // TODO: Hack logic, it's because it's hard to gain param `field_to_flush` as
                 // `HashMap<&str, &mut FreqProxTermsWriterPerField>`
                 // this should be fixed later
@@ -295,7 +296,16 @@ where
                 .postings_format()
                 .fields_consumer(state)?;
 
-            consumer.write(&fields)
+            if let Some(sort_map) = sort_map {
+                let fields = SortingFields::new(
+                    fields,
+                    Arc::new(state.field_infos.clone()),
+                    Arc::clone(sort_map),
+                );
+                consumer.write(&fields)
+            } else {
+                consumer.write(&fields)
+            }
         } else {
             Ok(())
         }

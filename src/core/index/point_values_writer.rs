@@ -16,17 +16,18 @@ use core::codec::{
 };
 use core::index::merge_policy::MergePolicy;
 use core::index::merge_scheduler::MergeScheduler;
+use core::index::sorter::SorterDocMap;
 use core::index::thread_doc_writer::DocumentsWriterPerThread;
-use core::index::FieldInfo;
 use core::index::IntersectVisitor;
 use core::index::PointValues;
 use core::index::SegmentWriteState;
+use core::index::{FieldInfo, Relation};
+use core::store::Directory;
 use core::util::byte_block_pool::{ByteBlockAllocator, ByteBlockPool};
 use core::util::{BytesRef, DocId};
 
 use error::Result;
 
-use core::store::Directory;
 use std::any::Any;
 
 pub(crate) struct PointValuesWriter {
@@ -90,14 +91,30 @@ impl PointValuesWriter {
         Ok(())
     }
 
-    pub fn flush<D: Directory, C: Codec, DW: Directory, W: PointsWriter>(
+    pub fn flush<
+        D: Directory,
+        C: Codec,
+        DW: Directory,
+        W: PointsWriter,
+        M: SorterDocMap + 'static,
+    >(
         &mut self,
         _state: &SegmentWriteState<D, DW, C>,
+        sort_map: Option<&M>,
         writer: &mut W,
     ) -> Result<()> {
-        let reader: PointsReaderEnum<MergePointsReader<C>, TempMutablePointsReader> =
-            PointsReaderEnum::Mutable(TempMutablePointsReader::new(self));
-        writer.write_field(&self.field_info, reader)
+        let points_reader = TempMutablePointsReader::new(self);
+        if let Some(sort_map) = sort_map {
+            let reader: PointsReaderEnum<
+                MergePointsReader<C>,
+                MutableSortingPointValues<TempMutablePointsReader, M>,
+            > = PointsReaderEnum::Mutable(MutableSortingPointValues::new(points_reader, sort_map));
+            writer.write_field(&self.field_info, reader)
+        } else {
+            let reader: PointsReaderEnum<MergePointsReader<C>, TempMutablePointsReader> =
+                PointsReaderEnum::Mutable(points_reader);
+            writer.write_field(&self.field_info, reader)
+        }
     }
 }
 
@@ -228,5 +245,124 @@ impl MutablePointsReader for TempMutablePointsReader {
             point_values_writer: self.point_values_writer,
             ords: self.ords.clone(),
         }
+    }
+}
+
+pub(crate) struct MutableSortingPointValues<PV: MutablePointsReader, M: SorterDocMap> {
+    point_values: PV,
+    doc_map: *const M,
+}
+
+impl<PR, M> MutableSortingPointValues<PR, M>
+where
+    PR: MutablePointsReader,
+    M: SorterDocMap,
+{
+    pub fn new(point_values: PR, doc_map: &M) -> Self {
+        Self {
+            point_values,
+            doc_map,
+        }
+    }
+}
+
+impl<PR, M> PointValues for MutableSortingPointValues<PR, M>
+where
+    PR: MutablePointsReader + 'static,
+    M: SorterDocMap + 'static,
+{
+    fn intersect(&self, field_name: &str, visitor: &mut impl IntersectVisitor) -> Result<()> {
+        let doc_map = unsafe { &*self.doc_map };
+        let mut v = SorterIntersectVisitor { visitor, doc_map };
+        self.point_values.intersect(field_name, &mut v)
+    }
+
+    fn min_packed_value(&self, field_name: &str) -> Result<Vec<u8>> {
+        self.point_values.min_packed_value(field_name)
+    }
+
+    fn max_packed_value(&self, field_name: &str) -> Result<Vec<u8>> {
+        self.point_values.max_packed_value(field_name)
+    }
+
+    fn num_dimensions(&self, field_name: &str) -> Result<usize> {
+        self.point_values.num_dimensions(field_name)
+    }
+
+    fn bytes_per_dimension(&self, field_name: &str) -> Result<usize> {
+        self.point_values.bytes_per_dimension(field_name)
+    }
+
+    fn size(&self, field_name: &str) -> Result<i64> {
+        self.point_values.size(field_name)
+    }
+
+    fn doc_count(&self, field_name: &str) -> Result<i32> {
+        self.point_values.doc_count(field_name)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl<PR, M> PointsReader for MutableSortingPointValues<PR, M>
+where
+    PR: MutablePointsReader + 'static,
+    M: SorterDocMap + 'static,
+{
+    fn check_integrity(&self) -> Result<()> {
+        self.point_values.check_integrity()
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl<PR, M> MutablePointsReader for MutableSortingPointValues<PR, M>
+where
+    PR: MutablePointsReader + 'static,
+    M: SorterDocMap + 'static,
+{
+    fn value(&self, i: i32, packed_value: &mut Vec<u8>) {
+        self.point_values.value(i, packed_value)
+    }
+    fn byte_at(&self, i: i32, k: i32) -> u8 {
+        self.point_values.byte_at(i, k)
+    }
+    fn doc_id(&self, i: i32) -> DocId {
+        let doc = self.point_values.doc_id(i);
+        unsafe { (*self.doc_map).old_to_new(doc) }
+    }
+    fn swap(&mut self, i: i32, j: i32) {
+        self.point_values.swap(i, j)
+    }
+    fn clone(&self) -> Self {
+        Self {
+            point_values: self.point_values.clone(),
+            doc_map: self.doc_map,
+        }
+    }
+}
+
+struct SorterIntersectVisitor<'a, IV: IntersectVisitor + 'a, M: SorterDocMap + 'a> {
+    visitor: &'a mut IV,
+    doc_map: &'a M,
+}
+
+impl<'a, IV: IntersectVisitor + 'a, M: SorterDocMap + 'a> IntersectVisitor
+    for SorterIntersectVisitor<'a, IV, M>
+{
+    fn visit(&mut self, doc_id: i32) -> Result<()> {
+        self.visitor.visit(self.doc_map.old_to_new(doc_id))
+    }
+
+    fn visit_by_packed_value(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()> {
+        self.visitor
+            .visit_by_packed_value(self.doc_map.old_to_new(doc_id), packed_value)
+    }
+
+    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Relation {
+        self.visitor.compare(min_packed_value, max_packed_value)
     }
 }

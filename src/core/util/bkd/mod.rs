@@ -350,7 +350,7 @@ impl LongBitSet {
         let word_num = (index >> 6) as usize;
         let mask = 1i64 << (index & 0x3fi64);
         unsafe {
-            *self.bits.as_mut_ptr().offset(word_num as isize) |= mask;
+            *self.bits.as_mut_ptr().add(word_num) |= mask;
         }
     }
 
@@ -359,7 +359,7 @@ impl LongBitSet {
         let word_num = (index >> 6) as usize;
         let mask = 1i64 << (index & 0x3fi64);
         unsafe {
-            *self.bits.as_mut_ptr().offset(word_num as isize) &= !mask;
+            *self.bits.as_mut_ptr().add(word_num) &= !mask;
         }
     }
 }

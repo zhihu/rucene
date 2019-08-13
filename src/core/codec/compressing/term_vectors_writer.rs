@@ -829,7 +829,7 @@ impl<O: IndexOutput> TermVectorsWriter for CompressingTermVectorsWriter<O> {
         Ok(())
     }
 
-    fn start_term(&mut self, term: &BytesRef, freq: i32) -> Result<()> {
+    fn start_term(&mut self, term: BytesRef, freq: i32) -> Result<()> {
         debug_assert!(freq >= 1);
         let prefix = bytes_difference(&self.last_term, &term.bytes());
         let cur_field: &mut FieldData = &mut self.pending_docs[self.cur_doc].fields[self.cur_field];

@@ -417,7 +417,7 @@ pub trait TermVectorsWriter {
     /// If this field has positions and/or offsets enabled, then
     /// {@link #addPosition(int, int, int, BytesRef)} will be called
     /// <code>freq</code> times respectively.
-    fn start_term(&mut self, term: &BytesRef, freq: i32) -> Result<()>;
+    fn start_term(&mut self, term: BytesRef, freq: i32) -> Result<()>;
 
     /// Called after a term and all its positions have been added.
     fn finish_term(&mut self) -> Result<()> {
@@ -564,7 +564,7 @@ pub trait TermVectorsWriter {
                 while let Some(term) = terms_iter.next()? {
                     term_count += 1;
                     let freq = terms_iter.total_term_freq()?;
-                    self.start_term(&BytesRef::new(&term), freq as i32)?;
+                    self.start_term(BytesRef::new(&term), freq as i32)?;
 
                     if has_positions || has_offsets {
                         let mut docs_and_positions_iter =
@@ -713,7 +713,7 @@ impl<O: IndexOutput> TermVectorsWriter for TermVectorsWriterEnum<O> {
         }
     }
 
-    fn start_term(&mut self, term: &BytesRef, freq: i32) -> Result<()> {
+    fn start_term(&mut self, term: BytesRef, freq: i32) -> Result<()> {
         match self {
             TermVectorsWriterEnum::Compressing(w) => w.start_term(term, freq),
         }

@@ -14,7 +14,6 @@
 use core::analysis::TokenStream;
 use core::codec::{
     Codec, DocValuesFormat, FieldInfosFormat, NormsFormat, PointsFormat, PointsWriter,
-    StoredFieldsFormat, StoredFieldsWriter, StoredFieldsWriterEnum,
 };
 use core::doc::FieldType;
 use core::index::doc_values_type::DocValuesType;
@@ -24,7 +23,6 @@ use core::index::doc_values_writer::SortedDocValuesWriter;
 use core::index::doc_values_writer::SortedNumericDocValuesWriter;
 use core::index::doc_values_writer::SortedSetDocValuesWriter;
 use core::index::doc_values_writer::{DocValuesWriter, DocValuesWriterEnum};
-use core::index::index_writer;
 use core::index::merge_policy::MergePolicy;
 use core::index::norm_values_writer::NormValuesWriter;
 use core::index::point_values_writer::PointValuesWriter;
@@ -32,6 +30,7 @@ use core::index::term_vector::TermVectorsConsumer;
 use core::index::terms_hash::{FreqProxTermsWriter, TermsHash};
 use core::index::terms_hash_per_field::{FreqProxTermsWriterPerField, TermsHashPerField};
 use core::index::thread_doc_writer::{DocState, DocumentsWriterPerThread};
+use core::index::{index_writer, SegmentReadState};
 use core::index::{
     FieldInfo, FieldInfosBuilder, FieldInvertState, FieldNumbersRef, Fieldable, IndexOptions,
     SegmentWriteState,
@@ -47,10 +46,12 @@ use error::{
 };
 
 use core::index::merge_scheduler::MergeScheduler;
+use core::index::sorter::{PackedLongDocMap, Sorter, SorterDocMap};
+use core::index::stored_fields_consumer::StoredFieldsConsumer;
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
-use std::ptr;
+use std::collections::{BTreeMap, HashSet};
+use std::sync::Arc;
 
 const MAX_FIELD_COUNT: usize = 65536;
 
@@ -61,7 +62,10 @@ pub trait DocConsumer<D: Directory, C: Codec> {
         doc: &mut [F],
     ) -> Result<()>;
 
-    fn flush<DW>(&mut self, state: &mut SegmentWriteState<D, DW, C>) -> Result<()>
+    fn flush<DW>(
+        &mut self,
+        state: &mut SegmentWriteState<D, DW, C>,
+    ) -> Result<Option<Arc<PackedLongDocMap>>>
     where
         DW: Directory + 'static;
 
@@ -80,8 +84,7 @@ pub(crate) struct DefaultIndexingChain<
     pub terms_hash: FreqProxTermsWriter<D, C, MS, MP>,
     // TODO, maybe we should use `TermsHash` instead
     // lazy init:
-    stored_fields_writer: Option<StoredFieldsWriterEnum<D::IndexOutput>>,
-    last_stored_doc_id: DocId,
+    stored_fields_consumer: StoredFieldsConsumer<D, C, MS, MP>,
     // NOTE: I tried using Hash Map<String,PerField>
     // but it was ~2% slower on Wiki and Geonames with Java
     // but we will use may anyway.
@@ -93,30 +96,8 @@ pub(crate) struct DefaultIndexingChain<
     // Holds fields seen in each document
     fields: Vec<usize>,
     parent: *mut DocumentsWriterPerThread<D, C, MS, MP>,
-}
 
-impl<D, C, MS, MP> Default for DefaultIndexingChain<D, C, MS, MP>
-where
-    D: Directory + Send + Sync + 'static,
-    C: Codec,
-    MS: MergeScheduler,
-    MP: MergePolicy,
-{
-    fn default() -> Self {
-        DefaultIndexingChain {
-            bytes_used: Counter::default(),
-            field_infos: FieldInfosBuilder::new(FieldNumbersRef::default()),
-            terms_hash: FreqProxTermsWriter::new_default(),
-            stored_fields_writer: None,
-            last_stored_doc_id: 0,
-            field_hash: Vec::with_capacity(MAX_FIELD_COUNT),
-            total_field_count: 0,
-            next_field_gen: 0,
-            inited: false,
-            fields: vec![],
-            parent: ptr::null_mut(),
-        }
-    }
+    finished_doc_values: HashSet<String>,
 }
 
 impl<D, C, MS, MP> DefaultIndexingChain<D, C, MS, MP>
@@ -130,22 +111,33 @@ where
         doc_writer: &mut DocumentsWriterPerThread<D, C, MS, MP>,
         field_infos: FieldInfosBuilder<FieldNumbersRef>,
     ) -> Self {
-        let term_vectors_writer = TermVectorsConsumer::new(doc_writer);
-        let terms_hash = FreqProxTermsWriter::new(doc_writer, term_vectors_writer);
+        let (tv_writer, stored_writer) = if doc_writer.segment_info.index_sort().is_some() {
+            (
+                TermVectorsConsumer::new_sorting(doc_writer),
+                StoredFieldsConsumer::new_sorting(doc_writer),
+            )
+        } else {
+            (
+                TermVectorsConsumer::new_raw(doc_writer),
+                StoredFieldsConsumer::new_raw(doc_writer),
+            )
+        };
+        let terms_hash = FreqProxTermsWriter::new(doc_writer, tv_writer);
         let bytes_used = unsafe { doc_writer.bytes_used.shallow_copy() };
 
         DefaultIndexingChain {
             bytes_used,
             field_infos,
             terms_hash,
-            stored_fields_writer: None,
-            last_stored_doc_id: 0,
+            stored_fields_consumer: stored_writer,
             field_hash: Vec::with_capacity(MAX_FIELD_COUNT),
             total_field_count: 0,
             next_field_gen: 0,
             inited: false,
             fields: vec![],
             parent: doc_writer,
+
+            finished_doc_values: HashSet::new(),
         }
     }
 
@@ -157,6 +149,8 @@ where
     pub fn reset_doc_writer(&mut self, parent: *mut DocumentsWriterPerThread<D, C, MS, MP>) {
         debug_assert!(self.inited);
         self.parent = parent;
+        self.terms_hash.next_terms_hash.reset_doc_writer(parent);
+        self.stored_fields_consumer.reset_doc_writer(parent);
     }
 
     #[allow(clippy::mut_from_ref)]
@@ -165,7 +159,11 @@ where
     }
 
     /// Writes all buffered points.
-    fn write_points<DW: Directory>(&mut self, state: &SegmentWriteState<D, DW, C>) -> Result<()> {
+    fn write_points<DW: Directory>(
+        &mut self,
+        state: &SegmentWriteState<D, DW, C>,
+        sort_map: Option<&PackedLongDocMap>,
+    ) -> Result<()> {
         let mut points_writer = None;
         for per_field in &mut self.field_hash {
             if per_field.point_values_writer.is_some() {
@@ -180,11 +178,11 @@ where
                             .fields_writer(state)?,
                     );
                 }
-                per_field
-                    .point_values_writer
-                    .as_mut()
-                    .unwrap()
-                    .flush(state, points_writer.as_mut().unwrap())?;
+                per_field.point_values_writer.as_mut().unwrap().flush(
+                    state,
+                    sort_map,
+                    points_writer.as_mut().unwrap(),
+                )?;
                 per_field.point_values_writer = None;
             } else {
                 debug_assert_eq!(per_field.field_info().point_dimension_count, 0);
@@ -200,6 +198,7 @@ where
     fn write_doc_values<DW: Directory>(
         &mut self,
         state: &SegmentWriteState<D, DW, C>,
+        sort_map: Option<&impl SorterDocMap>,
     ) -> Result<()> {
         let max_doc = state.segment_info.max_doc;
         let mut dv_consumer = None;
@@ -220,11 +219,11 @@ where
                     .as_mut()
                     .unwrap()
                     .finish(max_doc);
-                per_field
-                    .doc_values_writer
-                    .as_mut()
-                    .unwrap()
-                    .flush(state, dv_consumer.as_mut().unwrap())?;
+                per_field.doc_values_writer.as_mut().unwrap().flush(
+                    state,
+                    sort_map,
+                    dv_consumer.as_mut().unwrap(),
+                )?;
                 per_field.doc_values_writer = None;
             } else {
                 debug_assert_eq!(per_field.field_info().doc_values_type, DocValuesType::Null);
@@ -235,60 +234,22 @@ where
         Ok(())
     }
 
-    /// Catch up for all docs before us that had no stored fields,
-    /// or hit non-aborting exceptions before writing stored fields
-    fn fill_stored_fields(&mut self, doc_id: DocId) -> Result<()> {
-        loop {
-            if self.last_stored_doc_id >= doc_id {
-                break;
-            }
-            self.start_stored_fields()?;
-            self.finished_stored_fields()?;
-        }
-        Ok(())
-    }
-
     /// Calls StoredFieldsWriter.startDocument, aborting the
     /// segment if it hits any exception
-    fn start_stored_fields(&mut self) -> Result<()> {
-        self.init_stored_fields_writer()?;
-        self.stored_fields_writer
-            .as_mut()
-            .unwrap()
-            .start_document()?;
-        self.last_stored_doc_id += 1;
-        Ok(())
+    fn start_stored_fields(&mut self, doc: DocId) -> Result<()> {
+        self.stored_fields_consumer.start_document(doc)
     }
 
     /// Calls StoredFieldsWriter.finish_document, aborting
     /// the segment if it hits any exception
     fn finished_stored_fields(&mut self) -> Result<()> {
-        self.stored_fields_writer
-            .as_mut()
-            .unwrap()
-            .finish_document()
-    }
-
-    fn init_stored_fields_writer(&mut self) -> Result<()> {
-        if self.stored_fields_writer.is_none() {
-            self.stored_fields_writer = Some(
-                self.doc_writer()
-                    .codec()
-                    .stored_fields_format()
-                    .fields_writer(
-                        self.doc_writer().directory.clone(),
-                        &mut self.doc_writer().segment_info,
-                        &IOContext::Default,
-                    )?,
-            );
-        }
-
-        Ok(())
+        self.stored_fields_consumer.finish_document()
     }
 
     fn write_norms<D1: Directory, D2: Directory, C1: Codec>(
         &mut self,
         state: &SegmentWriteState<D1, D2, C1>,
+        sort_map: Option<&impl SorterDocMap>,
     ) -> Result<()> {
         let max_doc = state.segment_info.max_doc;
         if state.field_infos.has_norms {
@@ -302,10 +263,11 @@ where
                         debug_assert!(pf.norms.is_some());
                         if pf.norms.is_some() {
                             pf.norms.as_mut().unwrap().finish(max_doc);
-                            pf.norms
-                                .as_mut()
-                                .unwrap()
-                                .flush(state, &mut norms_consumer)?;
+                            pf.norms.as_mut().unwrap().flush(
+                                state,
+                                sort_map,
+                                &mut norms_consumer,
+                            )?;
                         }
                     }
                 }
@@ -360,9 +322,7 @@ where
                         bail!(IllegalArgument("stored field is too large".into()));
                     }
                 }
-                self.stored_fields_writer
-                    .as_mut()
-                    .unwrap()
+                self.stored_fields_consumer
                     .write_field(self.field_hash[per_field.unwrap()].field_info(), field)?;
             }
         }
@@ -621,6 +581,52 @@ where
                 &BytesRef::new(field.binary_value().unwrap()),
             )
     }
+
+    fn get_per_field_index(&mut self, name: &str) -> Option<usize> {
+        for (idx, pf) in self.field_hash.iter().enumerate() {
+            if pf.field_info().name.as_str() == name {
+                return Some(idx);
+            }
+        }
+        None
+    }
+
+    fn maybe_sort_segment<DW: Directory>(
+        &mut self,
+        state: &SegmentWriteState<D, DW, C>,
+    ) -> Result<Option<Arc<PackedLongDocMap>>> {
+        if let Some(sort) = state.segment_info.index_sort() {
+            let mut comparators = Vec::with_capacity(sort.get_sort().len());
+            for sort_field in sort.get_sort() {
+                if let Some(idx) = self.get_per_field_index(sort_field.field()) {
+                    if self.field_hash[idx].doc_values_writer.is_some() {
+                        if !self
+                            .finished_doc_values
+                            .contains(&self.field_hash[idx].field_info().name)
+                        {
+                            self.field_hash[idx]
+                                .doc_values_writer
+                                .as_mut()
+                                .unwrap()
+                                .finish(state.segment_info.max_doc);
+                            let cmp = self.field_hash[idx]
+                                .doc_values_writer
+                                .as_mut()
+                                .unwrap()
+                                .get_doc_comparator(state.segment_info.max_doc, sort_field)?;
+                            comparators.push(cmp);
+                            self.finished_doc_values
+                                .insert(self.field_hash[idx].field_info().name.clone());
+                        }
+                    }
+                }
+            }
+            Sorter::sort_by_comps(state.segment_info.max_doc, comparators)
+                .map(|map_opt| map_opt.map(Arc::new))
+        } else {
+            Ok(None)
+        }
+    }
 }
 
 impl<D, C, MS, MP> DocConsumer<D, C> for DefaultIndexingChain<D, C, MS, MP>
@@ -651,8 +657,7 @@ where
         // running "at once"):
         self.terms_hash.start_document()?;
 
-        self.fill_stored_fields(doc_state.doc_id)?;
-        self.start_stored_fields()?;
+        self.start_stored_fields(doc_state.doc_id)?;
         for field in doc {
             field_count = unsafe { self.process_field(field, doc_state, field_gen, field_count)? };
         }
@@ -667,29 +672,45 @@ where
         self.terms_hash.finish_document(&mut self.field_infos)
     }
 
-    fn flush<DW: Directory>(&mut self, state: &mut SegmentWriteState<D, DW, C>) -> Result<()> {
+    fn flush<DW>(
+        &mut self,
+        state: &mut SegmentWriteState<D, DW, C>,
+    ) -> Result<Option<Arc<PackedLongDocMap>>>
+    where
+        DW: Directory,
+        <DW as Directory>::IndexOutput: 'static,
+    {
         debug_assert!(self.inited);
         // NOTE: caller (DocumentsWriterPerThread) handles
         // aborting on any exception from this method
+        let sort_map = self.maybe_sort_segment(state)?;
         let max_doc = state.segment_info.max_doc();
-        self.write_norms(state)?;
+        self.write_norms(state, sort_map.as_ref().map(|m| m.as_ref()))?;
+
+        // TODO: remove this unsafe borrow
+        let segment_info_ptr = &state.segment_info as *const _;
+        let read_state = unsafe {
+            SegmentReadState::new(
+                Arc::clone(&state.directory),
+                &*segment_info_ptr,
+                Arc::new(state.field_infos.clone()),
+                &IOContext::READ,
+                state.segment_suffix.clone(),
+            )
+        };
 
         for per_field in &mut self.field_hash {
             let field_info = self.field_infos.get_or_add(&per_field.invert_state.name)?;
             per_field.reset_field_info_ptr(field_info);
         }
 
-        self.write_doc_values(state)?;
-        self.write_points(state)?;
+        self.write_doc_values(state, sort_map.as_ref().map(|m| m.as_ref()))?;
+        self.write_points(state, sort_map.as_ref().map(|m| m.as_ref()))?;
 
         // it's possible all docs hit non-aborting exceptions...
-        self.init_stored_fields_writer()?;
-        self.fill_stored_fields(max_doc)?;
-        self.stored_fields_writer
-            .as_mut()
-            .unwrap()
-            .finish(&state.field_infos, max_doc as usize)?;
-        self.stored_fields_writer = None;
+        self.stored_fields_consumer.finish(max_doc)?;
+        self.stored_fields_consumer
+            .flush(state, sort_map.as_ref().map(|m| m.as_ref()))?;
 
         {
             let mut fields_to_flush = BTreeMap::new();
@@ -712,8 +733,20 @@ where
             // consumer can alter the FieldInfo* if necessary.  EG,
             // FreqProxTermsWriter does this with
             // FieldInfo.storePayload.
+            let norms = if read_state.field_infos.has_norms {
+                Some(
+                    state
+                        .segment_info
+                        .codec()
+                        .norms_format()
+                        .norms_producer(&read_state)?,
+                )
+            } else {
+                None
+            };
 
-            self.terms_hash.flush(fields_to_flush, state)?;
+            self.terms_hash
+                .flush(fields_to_flush, state, sort_map.as_ref(), norms.as_ref())?;
         }
 
         let codec = self.doc_writer().codec();
@@ -723,12 +756,14 @@ where
             "",
             &state.field_infos,
             &IOContext::Default,
-        )
+        )?;
+        Ok(sort_map)
     }
 
     fn abort(&mut self) -> Result<()> {
         let res = self.terms_hash.abort();
         self.field_hash.clear();
+        self.stored_fields_consumer.abort();
         res
     }
 }

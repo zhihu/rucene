@@ -127,8 +127,8 @@ impl PrefixCodedTermsBuilder {
         end
     }
 
-    fn compare(&self, field: &String, term: &[u8]) -> Ordering {
-        let cmp = self.last_term.field.cmp(field);
+    fn compare(&self, field: &str, term: &[u8]) -> Ordering {
+        let cmp = self.last_term.field.as_str().cmp(field);
         if cmp == Ordering::Equal {
             (self.last_term.bytes.as_slice()).cmp(term)
         } else {

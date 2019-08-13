@@ -21,6 +21,8 @@
 #![feature(fnbox)]
 #![feature(integer_atomics)]
 #![feature(vec_remove_item)]
+#![feature(specialization)]
+#![allow(clippy::cast_lossless)]
 
 #[macro_use]
 extern crate error_chain;

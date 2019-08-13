@@ -11,7 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::store::{Directory, IOContext, IndexInput, IndexOutput};
+use core::store::{Directory, FilterDirectory, IOContext, IndexInput, IndexOutput};
 
 use error::Result;
 
@@ -39,6 +39,19 @@ impl<D: Directory, T: Deref<Target = D>> TrackingDirectoryWrapper<D, T> {
     }
 }
 
+impl<D, T> FilterDirectory for TrackingDirectoryWrapper<D, T>
+where
+    D: Directory,
+    T: Deref<Target = D>,
+{
+    type Dir = D;
+
+    #[inline]
+    fn dir(&self) -> &Self::Dir {
+        &*self.directory
+    }
+}
+
 impl<D, T> Directory for TrackingDirectoryWrapper<D, T>
 where
     D: Directory,
@@ -47,14 +60,6 @@ where
     type LK = D::LK;
     type IndexOutput = D::IndexOutput;
     type TempOutput = D::TempOutput;
-
-    fn list_all(&self) -> Result<Vec<String>> {
-        self.directory.list_all()
-    }
-
-    fn file_length(&self, name: &str) -> Result<i64> {
-        self.directory.file_length(name)
-    }
 
     fn create_output(&self, name: &str, ctx: &IOContext) -> Result<Self::IndexOutput> {
         let output = self.directory.create_output(name, ctx)?;
@@ -87,14 +92,6 @@ where
         self.directory.delete_file(name)?;
         self.create_file_names.lock()?.remove(name);
         Ok(())
-    }
-
-    fn sync(&self, name: &HashSet<String>) -> Result<()> {
-        self.directory.sync(name)
-    }
-
-    fn sync_meta_data(&self) -> Result<()> {
-        self.directory.sync_meta_data()
     }
 
     fn rename(&self, source: &str, dest: &str) -> Result<()> {

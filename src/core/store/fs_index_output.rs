@@ -18,7 +18,7 @@ use error::Result;
 use std::fs::{File, OpenOptions};
 use std::io::BufWriter;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use flate2::CrcWriter;
 
@@ -26,16 +26,14 @@ const CHUNK_SIZE: usize = 8192;
 
 /// `IndexOutput` implement for `FsDirectory`
 pub struct FSIndexOutput {
-    name: PathBuf,
+    name: String,
     writer: CrcWriter<BufWriter<File>>,
     bytes_written: usize,
 }
 
 impl FSIndexOutput {
-    pub fn new<P: AsRef<Path>>(path: P) -> Result<FSIndexOutput> {
-        let name = PathBuf::from(path.as_ref());
+    pub fn new<P: AsRef<Path>>(name: String, path: P) -> Result<FSIndexOutput> {
         let file = OpenOptions::new().write(true).create(true).open(path)?;
-
         Ok(FSIndexOutput {
             name,
             writer: CrcWriter::new(BufWriter::with_capacity(CHUNK_SIZE, file)),
@@ -47,7 +45,7 @@ impl FSIndexOutput {
 impl Drop for FSIndexOutput {
     fn drop(&mut self) {
         if let Err(ref desc) = self.writer.flush() {
-            error!("Oops, failed to flush {:?}, errmsg: {}", self.name, desc);
+            error!("Oops, failed to flush {}, errmsg: {}", self.name, desc);
         }
         self.bytes_written = 0;
     }
@@ -69,7 +67,7 @@ impl Write for FSIndexOutput {
 
 impl IndexOutput for FSIndexOutput {
     fn name(&self) -> &str {
-        self.name.to_str().unwrap()
+        &self.name
     }
 
     fn file_pointer(&self) -> i64 {
@@ -85,12 +83,13 @@ impl IndexOutput for FSIndexOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn test_write_byte() {
-        let path: PathBuf = Path::new("hello.txt").into();
-        let mut fsout = FSIndexOutput::new(&path).unwrap();
+        let name = "hello.txt";
+        let path: PathBuf = Path::new(name).into();
+        let mut fsout = FSIndexOutput::new(name.to_string(), &path).unwrap();
         fsout.write_byte(b'a').unwrap();
         assert_eq!(fsout.file_pointer(), 1);
         ::std::fs::remove_file("hello.txt").unwrap();

@@ -40,11 +40,14 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::SystemTime;
+use std::{mem, ptr};
 
 use crossbeam::queue::ArrayQueue;
 use crossbeam::sync::{ShardedLock, ShardedLockWriteGuard};
 
-use core::util::Volatile;
+use core::index::sorter::{PackedLongDocMap, SorterDocMap};
+use core::util::bit_set::FixedBitSet;
+use core::util::{Bits, Volatile};
 use error::ErrorKind::IllegalArgument;
 use error::Result;
 
@@ -65,6 +68,11 @@ impl DocState {
     }
 }
 
+pub(crate) type TrackingValidDirectory<D> = TrackingDirectoryWrapper<
+    LockValidatingDirectoryWrapper<D>,
+    Arc<LockValidatingDirectoryWrapper<D>>,
+>;
+
 pub(crate) struct DocumentsWriterPerThread<
     D: Directory + Send + Sync + 'static,
     C: Codec,
@@ -72,12 +80,7 @@ pub(crate) struct DocumentsWriterPerThread<
     MP: MergePolicy,
 > {
     // we should use TrackingDirectoryWrapper instead
-    pub directory: Arc<
-        TrackingDirectoryWrapper<
-            LockValidatingDirectoryWrapper<D>,
-            Arc<LockValidatingDirectoryWrapper<D>>,
-        >,
-    >,
+    pub directory: Arc<TrackingValidDirectory<D>>,
     pub directory_orig: Arc<D>,
     pub doc_state: DocState,
     pub consumer: DefaultIndexingChain<D, C, MS, MP>,
@@ -94,7 +97,7 @@ pub(crate) struct DocumentsWriterPerThread<
     pub byte_block_allocator: DirectTrackingAllocator,
     pub int_block_allocator: Box<dyn IntAllocator>,
     pending_num_docs: Arc<AtomicI64>,
-    index_writer_config: Arc<IndexWriterConfig<C, MS, MP>>,
+    pub index_writer_config: Arc<IndexWriterConfig<C, MS, MP>>,
     // enable_test_points: bool,
     index_writer: Weak<IndexWriterInner<D, C, MS, MP>>,
     pub files_to_delete: HashSet<String>,
@@ -129,7 +132,7 @@ where
             HashMap::new(),
             random_id(),
             HashMap::new(),
-            None,
+            writer.config.index_sort().map(|s| s.clone()),
         )?;
         let delete_slice = delete_queue.new_slice();
         let doc_state = DocState::new();
@@ -138,7 +141,7 @@ where
             directory,
             directory_orig,
             doc_state,
-            consumer: DefaultIndexingChain::default(),
+            consumer: unsafe { mem::uninitialized() },
             bytes_used: Counter::new(false),
             pending_updates: BufferedUpdates::new(segment_name),
             segment_info,
@@ -157,16 +160,19 @@ where
         })
     }
 
-    pub fn init(&mut self, field_numbers: Arc<FieldNumbers>, codec: Arc<C>) {
+    pub fn init(&mut self, field_numbers: Arc<FieldNumbers>) {
         let field_infos = FieldInfosBuilder::new(FieldNumbersRef::new(field_numbers));
         self.byte_block_allocator =
             DirectTrackingAllocator::new(unsafe { self.bytes_used.shallow_copy() });
         self.int_block_allocator = Box::new(IntBlockAllocator::new(unsafe {
             self.bytes_used.shallow_copy()
         }));
-        self.segment_info.set_codec(codec);
-        let consumer = DefaultIndexingChain::new(self, field_infos);
-        self.consumer = consumer;
+        unsafe {
+            ptr::write(
+                &mut self.consumer,
+                DefaultIndexingChain::new(self, field_infos),
+            );
+        }
         self.consumer.init();
         self.inited = true;
     }
@@ -430,10 +436,14 @@ where
         res
     }
 
-    fn do_flush<DW: Directory + 'static>(
+    fn do_flush<DW>(
         &mut self,
         mut flush_state: SegmentWriteState<D, DW, C>,
-    ) -> Result<Option<FlushedSegment<D, C>>> {
+    ) -> Result<Option<FlushedSegment<D, C>>>
+    where
+        DW: Directory + 'static,
+        <DW as Directory>::IndexOutput: 'static,
+    {
         let t0 = SystemTime::now();
         let doc_writer = self as *mut DocumentsWriterPerThread<D, C, MS, MP>;
 
@@ -441,7 +451,7 @@ where
         self.consumer.reset_doc_writer(doc_writer);
         self.consumer.init();
 
-        self.consumer.flush(&mut flush_state)?;
+        let sort_map = self.consumer.flush(&mut flush_state)?;
         self.pending_updates.deleted_terms.clear();
         self.segment_info
             .set_files(&self.directory.create_files())?;
@@ -470,7 +480,7 @@ where
                 flush_state.del_count_on_flush,
             )
         };
-        self.seal_flushed_segment(&mut fs)?;
+        self.seal_flushed_segment(&mut fs, sort_map)?;
 
         debug!(
             "DWPT: flush time {:?}",
@@ -479,7 +489,22 @@ where
         Ok(Some(fs))
     }
 
-    fn seal_flushed_segment(&mut self, flushed_segment: &mut FlushedSegment<D, C>) -> Result<()> {
+    fn sort_live_docs(&self, live_docs: &Bits, sort_map: &PackedLongDocMap) -> Result<FixedBitSet> {
+        let mut sorted_live_docs = FixedBitSet::new(live_docs.len());
+        sorted_live_docs.batch_set(0, live_docs.len());
+        for i in 0..live_docs.len() {
+            if !live_docs.get(i)? {
+                sorted_live_docs.clear(sort_map.old_to_new(i as i32) as usize);
+            }
+        }
+        Ok(sorted_live_docs)
+    }
+
+    fn seal_flushed_segment(
+        &mut self,
+        flushed_segment: &mut FlushedSegment<D, C>,
+        sort_map: Option<Arc<PackedLongDocMap>>,
+    ) -> Result<()> {
         // set_diagnostics(&mut flushed_segment.segment_info.info, index_writer::SOURCE_FLUSH);
 
         let flush_info = FlushInfo::new(
@@ -532,13 +557,26 @@ where
             // carry the changes; there's no reason to use
             // filesystem as intermediary here.
             let codec = flushed_segment.segment_info.info.codec();
-            codec.live_docs_format().write_live_docs(
-                flushed_segment.live_docs.as_ref(),
-                self.directory.as_ref(),
-                flushed_segment.segment_info.as_ref(),
-                flushed_segment.del_count as i32,
-                ctx,
-            )?;
+            if let Some(sort_map) = sort_map {
+                let sorted_bits =
+                    self.sort_live_docs(flushed_segment.live_docs.as_ref(), sort_map.as_ref())?;
+                codec.live_docs_format().write_live_docs(
+                    &sorted_bits,
+                    self.directory.as_ref(),
+                    flushed_segment.segment_info.as_ref(),
+                    flushed_segment.del_count as i32,
+                    ctx,
+                )?;
+            } else {
+                codec.live_docs_format().write_live_docs(
+                    flushed_segment.live_docs.as_ref(),
+                    self.directory.as_ref(),
+                    flushed_segment.segment_info.as_ref(),
+                    flushed_segment.del_count as i32,
+                    ctx,
+                )?;
+            }
+
             flushed_segment
                 .segment_info
                 .set_del_count(flushed_segment.del_count as i32)?;

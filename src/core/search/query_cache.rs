@@ -28,7 +28,7 @@ use core::search::match_all::ConstantScoreScorer;
 use core::search::{two_phase_next, DocIdSet, DocIterator, Scorer, Weight, NO_MORE_DOCS};
 use core::util::bit_set::{BitSet, FixedBitSet, ImmutableBitSet};
 use core::util::bit_util::UnsignedShift;
-use core::util::doc_id_set::{BitDocIdSet, BitSetIterator, DocIdSetDocIterEnum, DocIdSetEnum};
+use core::util::doc_id_set::{BitDocIdSet, BitSetDocIterator, DocIdSetDocIterEnum, DocIdSetEnum};
 use core::util::external::deferred::Deferred;
 use core::util::{Bits, DocId};
 
@@ -1024,7 +1024,7 @@ impl DocIdSet for CacheDocIdSetEnum {
 }
 
 enum CachedDocIdSetIterEnum {
-    Bit(BitSetIterator<FixedBitSet>),
+    Bit(BitSetDocIterator<FixedBitSet>),
     Roaring(RoaringDocIterator),
 }
 

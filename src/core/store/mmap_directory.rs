@@ -12,7 +12,7 @@
 // limitations under the License.
 
 use std::collections::hash_map::Entry as HashMapEntry;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
@@ -21,7 +21,7 @@ use memmap::Mmap;
 
 use core::store::fs_index_output::FSIndexOutput;
 use core::store::lock::LockFactory;
-use core::store::{Directory, FSDirectory, IOContext};
+use core::store::{Directory, FSDirectory, FilterDirectory, IOContext};
 use core::store::{IndexInput, MmapIndexInput, ReadOnlySource};
 use error::Result;
 
@@ -167,18 +167,19 @@ impl<LF: LockFactory> MmapDirectory<LF> {
     }
 }
 
+impl<LF: LockFactory> FilterDirectory for MmapDirectory<LF> {
+    type Dir = FSDirectory<LF>;
+
+    #[inline]
+    fn dir(&self) -> &Self::Dir {
+        &self.directory
+    }
+}
+
 impl<LF: LockFactory> Directory for MmapDirectory<LF> {
     type LK = LF::LK;
     type IndexOutput = FSIndexOutput;
     type TempOutput = FSIndexOutput;
-
-    fn list_all(&self) -> Result<Vec<String>> {
-        self.directory.list_all()
-    }
-
-    fn file_length(&self, name: &str) -> Result<i64> {
-        self.directory.file_length(name)
-    }
 
     fn create_output(&self, name: &str, context: &IOContext) -> Result<Self::IndexOutput> {
         self.directory.create_output(name, context)
@@ -206,27 +207,6 @@ impl<LF: LockFactory> Directory for MmapDirectory<LF> {
         ctx: &IOContext,
     ) -> Result<Self::TempOutput> {
         self.directory.create_temp_output(prefix, suffix, ctx)
-    }
-
-    fn delete_file(&self, name: &str) -> Result<()> {
-        self.directory.delete_file(name)
-    }
-
-    fn sync(&self, name: &HashSet<String>) -> Result<()> {
-        self.directory.sync(name)
-    }
-
-    /// Ensure that directory metadata, such as recent file renames, are made durable.
-    fn sync_meta_data(&self) -> Result<()> {
-        self.directory.sync_meta_data()
-    }
-
-    fn rename(&self, source: &str, dest: &str) -> Result<()> {
-        self.directory.rename(source, dest)
-    }
-
-    fn resolve(&self, name: &str) -> PathBuf {
-        self.directory.resolve(name)
     }
 }
 

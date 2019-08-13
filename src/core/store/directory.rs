@@ -149,18 +149,19 @@ impl<D: Directory> LockValidatingDirectoryWrapper<D> {
     }
 }
 
+impl<D: Directory> FilterDirectory for LockValidatingDirectoryWrapper<D> {
+    type Dir = D;
+
+    #[inline]
+    fn dir(&self) -> &Self::Dir {
+        &*self.dir
+    }
+}
+
 impl<D: Directory> Directory for LockValidatingDirectoryWrapper<D> {
     type LK = D::LK;
     type IndexOutput = D::IndexOutput;
     type TempOutput = D::TempOutput;
-
-    fn list_all(&self) -> Result<Vec<String>> {
-        self.dir.list_all()
-    }
-
-    fn file_length(&self, name: &str) -> Result<i64> {
-        self.dir.file_length(name)
-    }
 
     fn create_output(&self, name: &str, context: &IOContext) -> Result<Self::IndexOutput> {
         self.write_lock.ensure_valid()?;
@@ -219,5 +220,63 @@ impl<D: Directory> Directory for LockValidatingDirectoryWrapper<D> {
 impl<D: Directory> fmt::Display for LockValidatingDirectoryWrapper<D> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "LockValidatingDirectoryWrapper({})", self.dir.as_ref())
+    }
+}
+
+/// `Directory` implementation that delegates calls to another directory.
+pub trait FilterDirectory {
+    type Dir: Directory;
+    fn dir(&self) -> &Self::Dir;
+}
+
+default impl<T: FilterDirectory> Directory for T {
+    type LK = <T::Dir as Directory>::LK;
+    type IndexOutput = <T::Dir as Directory>::IndexOutput;
+    type TempOutput = <T::Dir as Directory>::TempOutput;
+
+    fn list_all(&self) -> Result<Vec<String>> {
+        self.dir().list_all()
+    }
+
+    fn file_length(&self, name: &str) -> Result<i64> {
+        self.dir().file_length(name)
+    }
+
+    fn open_input(&self, name: &str, ctx: &IOContext) -> Result<Box<dyn IndexInput>> {
+        self.dir().open_input(name, ctx)
+    }
+
+    fn delete_file(&self, name: &str) -> Result<()> {
+        self.dir().delete_file(name)
+    }
+
+    fn sync(&self, name: &HashSet<String>) -> Result<()> {
+        self.dir().sync(name)
+    }
+
+    fn sync_meta_data(&self) -> Result<()> {
+        self.dir().sync_meta_data()
+    }
+
+    fn rename(&self, source: &str, dest: &str) -> Result<()> {
+        self.dir().rename(source, dest)
+    }
+
+    fn copy_from<D: Directory>(
+        &self,
+        from: Arc<D>,
+        src: &str,
+        dest: &str,
+        ctx: &IOContext,
+    ) -> Result<()> {
+        self.dir().copy_from(from, src, dest, ctx)
+    }
+
+    fn create_files(&self) -> HashSet<String> {
+        self.dir().create_files()
+    }
+
+    fn resolve(&self, name: &str) -> PathBuf {
+        self.dir().resolve(name)
     }
 }

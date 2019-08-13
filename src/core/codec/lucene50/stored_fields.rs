@@ -33,6 +33,15 @@ pub enum StoredFieldCompressMode {
     BestCompression,
 }
 
+impl StoredFieldCompressMode {
+    fn name(&self) -> &'static str {
+        match self {
+            StoredFieldCompressMode::BestSpeed => "BEST_SPEED",
+            StoredFieldCompressMode::BestCompression => "BEST_COMPRESSION",
+        }
+    }
+}
+
 impl FromStr for StoredFieldCompressMode {
     type Err = CoreError;
     fn from_str(v: &str) -> Result<Self> {
@@ -119,15 +128,17 @@ impl StoredFieldsFormat for Lucene50StoredFieldsFormat {
         DW::IndexOutput: 'static,
         C: Codec,
     {
-        if si.attributes.contains_key(MODE_KEY) {
-            bail!(IllegalState(format!(
-                "found existing value for {} for segment: {}",
-                MODE_KEY, si.name
-            )))
+        let previous = si
+            .attributes
+            .insert(MODE_KEY.to_string(), self.mode.name().to_string());
+        if let Some(prev_name) = previous {
+            if prev_name.as_str() != self.mode.name() {
+                bail!(IllegalState(format!(
+                    "found existing value for {} for segment: {}",
+                    MODE_KEY, si.name
+                )));
+            }
         }
-
-        si.attributes
-            .insert(MODE_KEY.to_string(), "BEST_SPEED".to_string());
         self.format(self.mode).fields_writer(directory, si, ioctx)
     }
 }

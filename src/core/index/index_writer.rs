@@ -32,8 +32,8 @@ use core::index::{
 use core::search::match_all::MatchAllDocsQuery;
 use core::search::Query;
 use core::store::{
-    Directory, FlushInfo, IOContext, IndexInput, Lock, LockValidatingDirectoryWrapper,
-    RateLimitIndexOutput, RateLimiter, TrackingDirectoryWrapper,
+    Directory, FilterDirectory, FlushInfo, IOContext, IndexInput, Lock,
+    LockValidatingDirectoryWrapper, RateLimitIndexOutput, RateLimiter, TrackingDirectoryWrapper,
 };
 use core::util::io::delete_file_ignoring_error;
 use core::util::numeric::to_base36;
@@ -1672,7 +1672,7 @@ where
 
         self.cond.notify_all();
 
-        println!(
+        debug!(
             "debug abort_merges {} {} {}",
             self.pending_merges.len(),
             self.running_merges.len(),
@@ -4266,6 +4266,19 @@ where
     }
 }
 
+impl<D, RL> FilterDirectory for RateLimitFilterDirectory<D, RL>
+where
+    D: Directory,
+    RL: RateLimiter + ?Sized,
+{
+    type Dir = D;
+
+    #[inline]
+    fn dir(&self) -> &Self::Dir {
+        &*self.dir
+    }
+}
+
 impl<D, RL> Directory for RateLimitFilterDirectory<D, RL>
 where
     D: Directory,
@@ -4274,14 +4287,6 @@ where
     type LK = D::LK;
     type IndexOutput = RateLimitIndexOutput<D::IndexOutput, RL>;
     type TempOutput = D::TempOutput;
-
-    fn list_all(&self) -> Result<Vec<String>> {
-        self.dir.list_all()
-    }
-
-    fn file_length(&self, name: &str) -> Result<i64> {
-        self.dir.file_length(name)
-    }
 
     fn create_output(&self, name: &str, context: &IOContext) -> Result<Self::IndexOutput> {
         debug_assert!(context.is_merge());
@@ -4306,22 +4311,6 @@ where
         ctx: &IOContext,
     ) -> Result<Self::TempOutput> {
         self.dir.create_temp_output(prefix, suffix, ctx)
-    }
-
-    fn delete_file(&self, name: &str) -> Result<()> {
-        self.dir.delete_file(name)
-    }
-
-    fn sync(&self, name: &HashSet<String>) -> Result<()> {
-        self.dir.sync(name)
-    }
-
-    fn sync_meta_data(&self) -> Result<()> {
-        self.dir.sync_meta_data()
-    }
-
-    fn rename(&self, source: &str, dest: &str) -> Result<()> {
-        self.dir.rename(source, dest)
     }
 }
 

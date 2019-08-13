@@ -40,6 +40,7 @@ use core::util::{Bits, BitsMut, BitsRef, DocId};
 
 use error::{ErrorKind::IllegalArgument, Result};
 
+use core::util::bit_set::FixedBitSet;
 use std::any::Any;
 use std::mem;
 use std::ops::DerefMut;
@@ -455,14 +456,42 @@ impl<T: LeafReader + 'static> LeafReader for SortingLeafReader<T> {
     }
 }
 
-pub struct SortingFields<T: FieldsProducer> {
+pub(super) struct CachedBinaryDVs {
+    pub values: Vec<Vec<u8>>,
+    pub docs_with_field: FixedBitSet,
+}
+
+impl CachedBinaryDVs {
+    pub fn new(values: Vec<Vec<u8>>, docs_with_field: FixedBitSet) -> Self {
+        Self {
+            values,
+            docs_with_field,
+        }
+    }
+}
+
+pub(super) struct CachedNumericDVs {
+    pub values: Vec<i64>,
+    pub docs_with_field: FixedBitSet,
+}
+
+impl CachedNumericDVs {
+    pub fn new(values: Vec<i64>, docs_with_field: FixedBitSet) -> Self {
+        Self {
+            values,
+            docs_with_field,
+        }
+    }
+}
+
+pub struct SortingFields<T: Fields> {
     fields: T,
     doc_map: Arc<PackedLongDocMap>,
     infos: Arc<FieldInfos>,
 }
 
-impl<T: FieldsProducer> SortingFields<T> {
-    fn new(fields: T, infos: Arc<FieldInfos>, doc_map: Arc<PackedLongDocMap>) -> Self {
+impl<T: Fields> SortingFields<T> {
+    pub fn new(fields: T, infos: Arc<FieldInfos>, doc_map: Arc<PackedLongDocMap>) -> Self {
         SortingFields {
             fields,
             doc_map,
@@ -471,7 +500,7 @@ impl<T: FieldsProducer> SortingFields<T> {
     }
 }
 
-impl<T: FieldsProducer> Fields for SortingFields<T> {
+impl<T: Fields> Fields for SortingFields<T> {
     type Terms = SortingTerms<T::Terms>;
     fn fields(&self) -> Vec<String> {
         self.fields.fields()

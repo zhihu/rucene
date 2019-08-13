@@ -18,9 +18,13 @@ use core::codec::compressing::{Compress, CompressionMode, Compressor};
 use core::codec::reader::StoredFieldsReader;
 use core::codec::writer::{merge_store_fields, MergeVisitor, StoredFieldsWriter};
 use core::codec::Codec;
-use core::index::MergeState;
+use core::index::doc_id_merger::{
+    doc_id_merger_of, DocIdMerger, DocIdMergerSub, DocIdMergerSubBase,
+};
 use core::index::{segment_file_name, SegmentInfo};
 use core::index::{FieldInfo, FieldInfos, Fieldable};
+use core::index::{LiveDocsDocMap, MergeState};
+use core::search::NO_MORE_DOCS;
 use core::store::Directory;
 use core::store::{DataOutput, GrowableByteArrayDataOutput, IOContext, IndexOutput};
 use core::util::bit_util::{BitsRequired, UnsignedShift, ZigZagEncoding};
@@ -665,6 +669,50 @@ impl<O: IndexOutput + 'static> StoredFieldsWriter for CompressingStoredFieldsWri
         let mut doc_count = 0i32;
         let num_readers = merge_state.max_docs.len();
         let matching = MatchingReaders::new(merge_state);
+        if merge_state.needs_index_sort {
+            // If all readers are compressed and they have the same fieldinfos then we can
+            // merge the serialized document directly.
+
+            let mut subs = Vec::with_capacity(merge_state.stored_fields_readers.len());
+            for i in 0..merge_state.stored_fields_readers.len() {
+                if matching.matching_readers[i]
+                    && merge_state.stored_fields_readers[i]
+                        .as_any()
+                        .is::<CompressingStoredFieldsReader>()
+                {
+                    let reader = merge_state.stored_fields_readers[i]
+                        .as_any() // TODO: we should use `as_any_mut` here
+                        .downcast_ref::<CompressingStoredFieldsReader>()
+                        .unwrap();
+                    let sub = CompressingStoredFieldMergeSub::new(
+                        reader as *const _ as *mut _,
+                        Arc::clone(&merge_state.doc_maps[i]),
+                        merge_state.max_docs[i],
+                    );
+                    subs.push(sub);
+                } else {
+                    return merge_store_fields(self, merge_state);
+                }
+            }
+
+            let mut doc_id_merger = doc_id_merger_of(subs, true)?;
+            while let Some(sub) = doc_id_merger.next()? {
+                debug_assert_eq!(sub.base.mapped_doc_id, doc_count);
+                let doc = sub.doc_id;
+                sub.reader().document(doc)?;
+                let doc = sub.reader().current_doc_mut();
+                self.start_document()?;
+                self.buffered_docs.copy_bytes(&mut doc.input, doc.length)?;
+                self.num_stored_fields_in_doc = doc.num_stored_fields as usize;
+                self.finish_document()?;
+                doc_count += 1;
+            }
+            self.finish(
+                &merge_state.merge_field_infos.as_ref().unwrap().as_ref(),
+                doc_count as usize,
+            )?;
+            return Ok(doc_count);
+        }
 
         for i in 0..num_readers {
             let mut visitor = MergeVisitor::new(merge_state, i, self);
@@ -825,5 +873,56 @@ impl<O: IndexOutput + 'static> StoredFieldsWriter for CompressingStoredFieldsWri
             doc_count as usize,
         )?;
         Ok(doc_count)
+    }
+}
+
+struct CompressingStoredFieldMergeSub {
+    base: DocIdMergerSubBase,
+    reader: *mut CompressingStoredFieldsReader,
+    max_doc: DocId,
+    doc_id: DocId,
+}
+
+impl CompressingStoredFieldMergeSub {
+    fn new(
+        reader: *mut CompressingStoredFieldsReader,
+        doc_map: Arc<LiveDocsDocMap>,
+        max_doc: DocId,
+    ) -> Self {
+        let base = DocIdMergerSubBase::new(doc_map);
+        Self {
+            base,
+            reader,
+            max_doc,
+            doc_id: -1,
+        }
+    }
+
+    fn reader(&mut self) -> &mut CompressingStoredFieldsReader {
+        unsafe { &mut *self.reader }
+    }
+}
+
+impl DocIdMergerSub for CompressingStoredFieldMergeSub {
+    fn next_doc(&mut self) -> Result<DocId> {
+        self.doc_id += 1;
+        if self.doc_id == self.max_doc {
+            Ok(NO_MORE_DOCS)
+        } else {
+            Ok(self.doc_id)
+        }
+    }
+
+    fn base(&self) -> &DocIdMergerSubBase {
+        &self.base
+    }
+
+    fn base_mut(&mut self) -> &mut DocIdMergerSubBase {
+        &mut self.base
+    }
+
+    fn reset(&mut self) {
+        self.base.reset();
+        self.doc_id = -1;
     }
 }

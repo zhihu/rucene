@@ -11,6 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::mem::size_of;
 use std::sync::Arc;
 
 use core::search::{DocIterator, NO_MORE_DOCS};
@@ -41,6 +42,37 @@ pub trait ImmutableBitSet: Bits {
             )))
         }
         Ok(())
+    }
+}
+
+pub(crate) struct BitSetIterator<'a, S> {
+    bit_set: &'a S,
+    current: i32,
+}
+
+impl<'a, S: ImmutableBitSet> BitSetIterator<'a, S> {
+    pub(crate) fn new(bit_set: &'a S) -> Self {
+        Self {
+            bit_set,
+            current: -1,
+        }
+    }
+}
+
+impl<'a, S: ImmutableBitSet + 'a> Iterator for BitSetIterator<'a, S> {
+    type Item = i32;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current + 1 >= self.bit_set.len() as i32 {
+            None
+        } else {
+            self.current = self.bit_set.next_set_bit((self.current + 1) as usize);
+            if self.current == NO_MORE_DOCS {
+                None
+            } else {
+                Some(self.current)
+            }
+        }
     }
 }
 
@@ -225,6 +257,10 @@ impl FixedBitSet {
         for i in 0..other_num_words {
             this_arr[i] |= other_arr[i];
         }
+    }
+
+    pub fn bytes_used(&self) -> usize {
+        4 * size_of::<usize>() + 8 + self.bits.capacity() * 8
     }
 }
 

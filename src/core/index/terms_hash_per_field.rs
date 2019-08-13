@@ -390,7 +390,7 @@ impl<T: PostingsArray + 'static> BytesStartArray for PostingsBytesStartArray<T> 
         unsafe {
             let postings_array = &mut (*self.per_field).postings_array;
             let size = postings_array.parallel_array().size * postings_array.bytes_per_posting();
-            self.bytes_used.add_get(-1 * size as i64);
+            self.bytes_used.add_get(-(size as i64));
             postings_array.clear();
         }
     }

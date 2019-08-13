@@ -160,7 +160,7 @@ impl<LF: LockFactory> Directory for FSDirectory<LF> {
         self.pending_deletes.write()?.remove(name);
         self.maybe_delete_pending_files()?;
         let path = self.resolve(name);
-        FSIndexOutput::new(&path)
+        FSIndexOutput::new(name.to_string(), &path)
     }
 
     fn open_input(&self, name: &str, _ctx: &IOContext) -> Result<Box<dyn IndexInput>> {
@@ -198,7 +198,7 @@ impl<LF: LockFactory> Directory for FSDirectory<LF> {
             }
 
             let path = self.resolve(&name);
-            return FSIndexOutput::new(&path);
+            return FSIndexOutput::new(name, &path);
         }
     }
 

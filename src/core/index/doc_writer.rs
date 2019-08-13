@@ -406,12 +406,11 @@ where
             )?;
 
             state.dwpt = Some(dwpt);
-            let codec = Arc::clone(&writer.config.codec);
             state
                 .dwpt
                 .as_mut()
                 .unwrap()
-                .init(Arc::clone(&writer.global_field_numbers()), codec);
+                .init(Arc::clone(&writer.global_field_numbers()));
         }
         Ok(())
     }

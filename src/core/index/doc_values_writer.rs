@@ -12,12 +12,15 @@
 // limitations under the License.
 
 use core::codec::{Codec, DocValuesConsumer, INT_BYTES, LONG_BYTES};
+use core::index::leaf_reader_wrapper::{CachedBinaryDVs, CachedNumericDVs};
+use core::index::sorter::{DVSortDocComparator, SorterDocComparator, SorterDocMap};
 use core::index::{
     numeric_doc_values::NumericDocValues, DocValuesType, FieldInfo, SegmentWriteState, Term,
 };
+use core::search::sort_field::{SortField, SortFieldType, SortedNumericSelectorType};
 use core::search::NO_MORE_DOCS;
 use core::store::{DataInput, DataOutput, Directory};
-use core::util::bit_set::{BitSet, FixedBitSet};
+use core::util::bit_set::{BitSet, BitSetIterator, FixedBitSet};
 use core::util::bit_util::BitsRequired;
 use core::util::byte_block_pool::{ByteBlockPool, DirectTrackingAllocator};
 use core::util::bytes_ref_hash::{self, BytesRefHash, DirectByteStartArray};
@@ -28,7 +31,7 @@ use core::util::packed::{
 use core::util::packed_misc::{COMPACT, FAST};
 use core::util::sorter::{Sorter, BINARY_SORT_THRESHOLD};
 use core::util::{
-    numeric::Numeric, Bits, BytesRef, Counter, DocId, PagedBytes, PagedBytesDataInput,
+    numeric::Numeric, Bits, BytesRef, Count, Counter, DocId, PagedBytes, PagedBytesDataInput,
     ReusableIterator, VariantValue,
 };
 
@@ -40,6 +43,7 @@ use error::{
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt;
+use std::mem;
 
 pub trait DocValuesWriter {
     fn finish(&mut self, num_doc: i32);
@@ -47,8 +51,15 @@ pub trait DocValuesWriter {
     fn flush<D: Directory, DW: Directory, C: Codec, W: DocValuesConsumer>(
         &mut self,
         state: &SegmentWriteState<D, DW, C>,
+        sort_map: Option<&impl SorterDocMap>,
         consumer: &mut W,
     ) -> Result<()>;
+
+    fn get_doc_comparator(
+        &mut self,
+        num_doc: i32,
+        sort_field: &SortField,
+    ) -> Result<Box<dyn SorterDocComparator>>;
 }
 
 pub enum DocValuesWriterEnum {
@@ -85,14 +96,29 @@ impl DocValuesWriter for DocValuesWriterEnum {
     fn flush<D: Directory, DW: Directory, C: Codec, W: DocValuesConsumer>(
         &mut self,
         state: &SegmentWriteState<D, DW, C>,
+        sort_map: Option<&impl SorterDocMap>,
         consumer: &mut W,
     ) -> Result<()> {
         match self {
-            DocValuesWriterEnum::Numeric(n) => n.flush(state, consumer),
-            DocValuesWriterEnum::Binary(b) => b.flush(state, consumer),
-            DocValuesWriterEnum::Sorted(s) => s.flush(state, consumer),
-            DocValuesWriterEnum::SortedNumeric(s) => s.flush(state, consumer),
-            DocValuesWriterEnum::SortedSet(s) => s.flush(state, consumer),
+            DocValuesWriterEnum::Numeric(n) => n.flush(state, sort_map, consumer),
+            DocValuesWriterEnum::Binary(b) => b.flush(state, sort_map, consumer),
+            DocValuesWriterEnum::Sorted(s) => s.flush(state, sort_map, consumer),
+            DocValuesWriterEnum::SortedNumeric(s) => s.flush(state, sort_map, consumer),
+            DocValuesWriterEnum::SortedSet(s) => s.flush(state, sort_map, consumer),
+        }
+    }
+
+    fn get_doc_comparator(
+        &mut self,
+        num_doc: i32,
+        sort_field: &SortField,
+    ) -> Result<Box<dyn SorterDocComparator>> {
+        match self {
+            DocValuesWriterEnum::Numeric(n) => n.get_doc_comparator(num_doc, sort_field),
+            DocValuesWriterEnum::Binary(b) => b.get_doc_comparator(num_doc, sort_field),
+            DocValuesWriterEnum::Sorted(s) => s.get_doc_comparator(num_doc, sort_field),
+            DocValuesWriterEnum::SortedNumeric(s) => s.get_doc_comparator(num_doc, sort_field),
+            DocValuesWriterEnum::SortedSet(s) => s.get_doc_comparator(num_doc, sort_field),
         }
     }
 }
@@ -164,6 +190,30 @@ impl BinaryDocValuesWriter {
 
         Ok(())
     }
+
+    fn sort_doc_values(
+        &self,
+        max_doc: i32,
+        sort_map: &SorterDocMap,
+        mut iter: BinaryBytesIterator,
+    ) -> Result<CachedBinaryDVs> {
+        let mut docs_with_fields = FixedBitSet::new(max_doc as usize);
+        let mut values = vec![vec![]; max_doc as usize];
+        // TODO: we should use the doc values iterator API as define in `LUCENE-7407`
+        let mut i = 0;
+        while let Some(v) = iter.next() {
+            let value = v?;
+            if !value.is_empty() {
+                let new_id = sort_map.old_to_new(i) as usize;
+                docs_with_fields.set(new_id);
+                values[new_id] = value.as_ref().to_vec();
+            }
+            i += 1;
+        }
+        debug_assert_eq!(i, max_doc);
+
+        Ok(CachedBinaryDVs::new(values, docs_with_fields))
+    }
 }
 
 impl DocValuesWriter for BinaryDocValuesWriter {
@@ -172,6 +222,7 @@ impl DocValuesWriter for BinaryDocValuesWriter {
     fn flush<D: Directory, DW: Directory, C: Codec, W: DocValuesConsumer>(
         &mut self,
         state: &SegmentWriteState<D, DW, C>,
+        sort_map: Option<&impl SorterDocMap>,
         consumer: &mut W,
     ) -> Result<()> {
         self.bytes.freeze(false)?;
@@ -183,14 +234,30 @@ impl DocValuesWriter for BinaryDocValuesWriter {
         let mut iter =
             BinaryBytesIterator::new(max_doc, lengths, size, &self.bytes, &self.docs_with_field);
 
-        consumer.add_binary_field(&self.field_info, &mut iter)
+        if let Some(sort_map) = sort_map {
+            let sorted_values = self.sort_doc_values(max_doc, sort_map, iter)?;
+            let mut iter = SortedDVIter::new(sorted_values);
+            consumer.add_binary_field(&self.field_info, &mut iter)
+        } else {
+            consumer.add_binary_field(&self.field_info, &mut iter)
+        }
+    }
+
+    fn get_doc_comparator(
+        &mut self,
+        _num_doc: i32,
+        _sort_field: &SortField,
+    ) -> Result<Box<dyn SorterDocComparator>> {
+        unreachable!()
     }
 }
 
+#[allow(dead_code)]
 const MISSING: i64 = 0;
 
 pub struct NumericDocValuesWriter {
     pending: PackedLongValuesBuilder,
+    final_values: Option<PackedLongValues>,
     docs_with_field: FixedBitSet,
     field_info: FieldInfo,
 }
@@ -203,6 +270,7 @@ impl NumericDocValuesWriter {
                 COMPACT as f32,
                 PackedLongValuesBuilderType::Delta,
             ),
+            final_values: None,
             docs_with_field: FixedBitSet::new(64),
             field_info: field_info.clone(),
         }
@@ -216,15 +284,30 @@ impl NumericDocValuesWriter {
                 self.field_info.name
             )));
         }
-        // Fill in any holes:
-        for _ in self.pending.size()..doc_id as i64 {
-            self.pending.add(MISSING);
-        }
+
         self.pending.add(value);
         self.docs_with_field.ensure_capacity(doc_id as usize);
         self.docs_with_field.set(doc_id as usize);
 
         Ok(())
+    }
+
+    pub(super) fn sort_doc_values(
+        max_doc: i32,
+        doc_map: &impl SorterDocMap,
+        docs_with_field: &FixedBitSet,
+        mut values: LongValuesIterator,
+    ) -> CachedNumericDVs {
+        let mut sorted_docs_with_fields = FixedBitSet::new(max_doc as usize);
+        let mut data = vec![0i64; max_doc as usize];
+        let iter = BitSetIterator::new(docs_with_field);
+        for doc_id in iter {
+            let new_id = doc_map.old_to_new(doc_id);
+            data[new_id as usize] = values.next().unwrap();
+            sorted_docs_with_fields.set(new_id as usize);
+        }
+        debug_assert!(values.next().is_none());
+        CachedNumericDVs::new(data, sorted_docs_with_fields)
     }
 }
 
@@ -234,19 +317,71 @@ impl DocValuesWriter for NumericDocValuesWriter {
     fn flush<D: Directory, DW: Directory, C: Codec, W: DocValuesConsumer>(
         &mut self,
         state: &SegmentWriteState<D, DW, C>,
+        sort_map: Option<&impl SorterDocMap>,
         consumer: &mut W,
     ) -> Result<()> {
-        let values = self.pending.build();
-        let max_doc = state.segment_info.max_doc() as usize;
+        let values = self
+            .final_values
+            .take()
+            .unwrap_or_else(|| self.pending.build());
+        let max_doc = state.segment_info.max_doc();
 
-        let mut iter = NumericDocValuesIter::new(
-            values.iterator(),
-            &self.docs_with_field,
-            max_doc,
-            values.size() as usize,
-        );
+        if let Some(sort_map) = sort_map {
+            let dvs =
+                Self::sort_doc_values(max_doc, sort_map, &self.docs_with_field, values.iterator());
+            let mut iter = NumericDVIter::new(dvs);
+            consumer.add_numeric_field(&self.field_info, &mut iter)
+        } else {
+            let mut iter = NumericDocValuesIter::new(
+                values.iterator(),
+                &self.docs_with_field,
+                max_doc as usize,
+            );
 
-        consumer.add_numeric_field(&self.field_info, &mut iter)
+            consumer.add_numeric_field(&self.field_info, &mut iter)
+        }
+    }
+
+    fn get_doc_comparator(
+        &mut self,
+        num_doc: i32,
+        sort_field: &SortField,
+    ) -> Result<Box<dyn SorterDocComparator>> {
+        debug_assert!(self.final_values.is_none());
+        let final_values = self.pending.build();
+        let default_value = if let Some(d) = sort_field.missing_value() {
+            match sort_field.field_type() {
+                SortFieldType::Int => d.get_int().unwrap() as i64,
+                SortFieldType::Long => d.get_long().unwrap(),
+                _ => unreachable!(),
+            }
+        } else {
+            0
+        };
+        let mut values = vec![default_value; num_doc as usize];
+        let iter = BitSetIterator::new(&self.docs_with_field);
+        for doc_id in iter {
+            values[doc_id as usize] = final_values.get(doc_id)?;
+        }
+
+        // the float type is only 32 bits valid for sort
+        let cmp_fn: fn(v1: &i64, v2: &i64) -> Ordering = if sort_field.is_reverse() {
+            if sort_field.field_type() == SortFieldType::Float {
+                |d1: &i64, d2: &i64| (*d2 as i32).cmp(&(*d1 as i32))
+            } else {
+                |d1: &i64, d2: &i64| d2.cmp(d1)
+            }
+        } else {
+            if sort_field.field_type() == SortFieldType::Float {
+                |d1: &i64, d2: &i64| (*d1 as i32).cmp(&(*d2 as i32))
+            } else {
+                |d1: &i64, d2: &i64| d1.cmp(d2)
+            }
+        };
+
+        self.final_values = Some(final_values);
+
+        Ok(Box::new(DVSortDocComparator::new(values, cmp_fn)))
     }
 }
 
@@ -255,7 +390,6 @@ struct NumericDocValuesIter<'a> {
     docs_with_field: &'a FixedBitSet,
     upto: usize,
     max_doc: usize,
-    size: usize,
 }
 
 impl<'a> NumericDocValuesIter<'a> {
@@ -263,14 +397,12 @@ impl<'a> NumericDocValuesIter<'a> {
         values_iter: LongValuesIterator<'a>,
         docs_with_field: &'a FixedBitSet,
         max_doc: usize,
-        size: usize,
     ) -> Self {
         NumericDocValuesIter {
             values_iter,
             docs_with_field,
             upto: 0,
             max_doc,
-            size,
         }
     }
 }
@@ -280,23 +412,14 @@ impl<'a> Iterator for NumericDocValuesIter<'a> {
 
     fn next(&mut self) -> Option<Result<Numeric>> {
         if self.upto < self.max_doc {
-            if self.upto < self.size {
+            let current = if self.docs_with_field.get(self.upto).unwrap() {
                 let v = self.values_iter.next().unwrap();
-                match self.docs_with_field.get(self.upto) {
-                    Err(e) => {
-                        self.upto += 1;
-                        Some(Err(e))
-                    }
-                    Ok(b) => {
-                        let current = if b { Numeric::Long(v) } else { Numeric::Null };
-                        self.upto += 1;
-                        Some(Ok(current))
-                    }
-                }
+                Numeric::Long(v)
             } else {
-                self.upto += 1;
-                Some(Ok(Numeric::Null))
-            }
+                Numeric::Null
+            };
+            self.upto += 1;
+            Some(Ok(current))
         } else {
             None
         }
@@ -310,6 +433,43 @@ impl<'a> ReusableIterator for NumericDocValuesIter<'a> {
     }
 }
 
+pub(super) struct NumericDVIter {
+    dv: CachedNumericDVs,
+    doc: i32,
+    max_doc: i32,
+}
+
+impl NumericDVIter {
+    pub fn new(dv: CachedNumericDVs) -> Self {
+        let max_doc = dv.values.len() as i32;
+        Self {
+            dv,
+            doc: -1,
+            max_doc,
+        }
+    }
+}
+
+impl Iterator for NumericDVIter {
+    type Item = Result<Numeric>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.doc += 1;
+        if self.doc >= self.max_doc {
+            None
+        } else {
+            let value = Numeric::Long(self.dv.values[self.doc as usize]);
+            Some(Ok(value))
+        }
+    }
+}
+
+impl ReusableIterator for NumericDVIter {
+    fn reset(&mut self) {
+        self.doc = -1;
+    }
+}
+
 pub struct SortedNumericDocValuesWriter {
     // stream of all values
     pending: PackedLongValuesBuilder,
@@ -318,7 +478,9 @@ pub struct SortedNumericDocValuesWriter {
     field_info: FieldInfo,
     current_doc: DocId,
     current_values: Vec<i64>,
-    current_up_to: usize,
+
+    final_values: Option<PackedLongValues>,
+    final_values_count: Option<PackedLongValues>,
 }
 
 impl SortedNumericDocValuesWriter {
@@ -337,7 +499,9 @@ impl SortedNumericDocValuesWriter {
             field_info: field_info.clone(),
             current_doc: 0,
             current_values: vec![],
-            current_up_to: 0,
+
+            final_values: None,
+            final_values_count: None,
         }
     }
 
@@ -357,50 +521,149 @@ impl SortedNumericDocValuesWriter {
     // finalize currentDoc: this sorts the values in the current doc
     fn finish_current_doc(&mut self) {
         self.current_values.sort();
-        for i in 0..self.current_up_to {
-            self.pending.add(self.current_values[i]);
+        for v in &self.current_values {
+            self.pending.add(*v);
         }
-        self.pending_counts.add(self.current_up_to as i64);
-        self.current_values = vec![];
-        self.current_up_to = 0;
+        self.pending_counts.add(self.current_values.len() as i64);
+        self.current_values.clear();
         self.current_doc += 1;
     }
 
     fn add_one_value(&mut self, value: i64) {
-        if self.current_up_to == self.current_values.len() {
-            self.current_values.push(value);
-        } else {
-            self.current_values[self.current_up_to] = value;
-        }
+        self.current_values.push(value);
+    }
 
-        self.current_up_to += 1;
+    fn sort_doc_values(
+        &mut self,
+        num_doc: i32,
+        doc_map: &dyn SorterDocMap,
+        counts_iter: LongValuesIterator,
+        mut values_iter: LongValuesIterator,
+    ) -> Vec<Vec<i64>> {
+        let mut res = vec![vec![]; num_doc as usize];
+        for (i, v) in counts_iter.enumerate() {
+            if v > 0 {
+                let mut values = Vec::with_capacity(v as usize);
+                for _ in 0..v {
+                    values.push(values_iter.next().unwrap());
+                }
+                let idx = doc_map.old_to_new(i as i32) as usize;
+                res[idx] = values;
+            }
+        }
+        res
     }
 }
 
 impl DocValuesWriter for SortedNumericDocValuesWriter {
+    // `finish` may be called twice before `self.get_doc_comparator` and `self.flush` in
+    // DefaultIndexingChain
     fn finish(&mut self, num_doc: i32) {
-        self.finish_current_doc();
+        if self.current_doc < num_doc {
+            self.finish_current_doc();
 
-        for _ in self.current_doc..num_doc {
-            self.pending_counts.add(0);
+            for _ in self.current_doc..num_doc {
+                self.pending_counts.add(0);
+            }
+            self.current_doc = num_doc;
         }
     }
 
     fn flush<D: Directory, DW: Directory, C: Codec, W: DocValuesConsumer>(
         &mut self,
         state: &SegmentWriteState<D, DW, C>,
+        sort_map: Option<&impl SorterDocMap>,
         consumer: &mut W,
     ) -> Result<()> {
         debug_assert_eq!(
             self.pending_counts.size() as i32,
             state.segment_info.max_doc
         );
-        let pending_counts = self.pending_counts.build();
-        let pending = self.pending.build();
-        let mut values_iter = SNValuesIterator::new(&pending);
-        let mut counts_iter = SNCountIterator::new(&pending_counts);
+        let pending_counts = self
+            .final_values_count
+            .take()
+            .unwrap_or_else(|| self.pending_counts.build());
+        let pending = self
+            .final_values
+            .take()
+            .unwrap_or_else(|| self.pending.build());
 
-        consumer.add_sorted_numeric_field(&self.field_info, &mut values_iter, &mut counts_iter)
+        if let Some(sort_map) = sort_map {
+            let values = self.sort_doc_values(
+                state.segment_info.max_doc(),
+                sort_map,
+                pending_counts.iterator(),
+                pending.iterator(),
+            );
+            let mut values_iter = SortSNValuesIterator::new(&values);
+            let mut counts_iter = SortSNCountIterator::new(&values);
+            consumer.add_sorted_numeric_field(&self.field_info, &mut values_iter, &mut counts_iter)
+        } else {
+            let mut values_iter = SNValuesIterator::new(&pending);
+            let mut counts_iter = SNCountIterator::new(&pending_counts);
+
+            consumer.add_sorted_numeric_field(&self.field_info, &mut values_iter, &mut counts_iter)
+        }
+    }
+
+    fn get_doc_comparator(
+        &mut self,
+        num_doc: i32,
+        sort_field: &SortField,
+    ) -> Result<Box<dyn SorterDocComparator>> {
+        debug_assert!(self.final_values.is_none() && self.final_values_count.is_none());
+        self.final_values = Some(self.pending.build());
+        self.final_values_count = Some(self.pending_counts.build());
+
+        let counts_iter = self.final_values_count.as_ref().unwrap().iterator();
+        let mut values_iter = self.final_values.as_ref().unwrap().iterator();
+
+        let select_type = match sort_field {
+            SortField::SortedNumeric(s) => s.selector(),
+            _ => unreachable!(),
+        };
+
+        // TODO: currently the missing value is auto set to 0.
+        // NOTE: if missing is explicitly set to none zero, then you must convert it to sorted bit
+        // if type is float/double, else the compare may be in-corrent.
+        let mut data = vec![0; num_doc as usize];
+        for (i, v) in counts_iter.enumerate() {
+            if v > 0 {
+                let val = match select_type {
+                    SortedNumericSelectorType::Min => {
+                        let value = values_iter.next().unwrap();
+                        for _ in 0..v - 1 {
+                            let _ = values_iter.next().unwrap();
+                        }
+                        value
+                    }
+                    SortedNumericSelectorType::Max => {
+                        for _ in 0..v - 1 {
+                            let _ = values_iter.next().unwrap();
+                        }
+                        values_iter.next().unwrap()
+                    }
+                };
+                data[i] = val;
+            }
+        }
+
+        // the float type is only 32 bits valid for sort
+        let cmp_fn: fn(v1: &i64, v2: &i64) -> Ordering = if sort_field.is_reverse() {
+            if sort_field.field_type() == SortFieldType::Float {
+                |d1: &i64, d2: &i64| (*d2 as i32).cmp(&(*d1 as i32))
+            } else {
+                |d1: &i64, d2: &i64| d2.cmp(d1)
+            }
+        } else {
+            if sort_field.field_type() == SortFieldType::Float {
+                |d1: &i64, d2: &i64| (*d1 as i32).cmp(&(*d2 as i32))
+            } else {
+                |d1: &i64, d2: &i64| d1.cmp(d2)
+            }
+        };
+
+        Ok(Box::new(DVSortDocComparator::new(data, cmp_fn)))
     }
 }
 
@@ -448,10 +711,7 @@ impl<'a> Iterator for SNValuesIterator<'a> {
     type Item = Result<Numeric>;
 
     fn next(&mut self) -> Option<Result<Numeric>> {
-        match self.iter.next() {
-            Some(v) => Some(Ok(Numeric::Long(v))),
-            None => None,
-        }
+        self.iter.next().map(|v| Ok(Numeric::Long(v)))
     }
 }
 
@@ -461,15 +721,92 @@ impl<'a> ReusableIterator for SNValuesIterator<'a> {
     }
 }
 
+struct SortSNCountIterator<'a> {
+    data: &'a [Vec<i64>],
+    upto: usize,
+}
+
+impl<'a> SortSNCountIterator<'a> {
+    fn new(data: &'a [Vec<i64>]) -> Self {
+        Self { data, upto: 0 }
+    }
+}
+
+impl<'a> Iterator for SortSNCountIterator<'a> {
+    type Item = Result<u32>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.upto < self.data.len() {
+            let v = self.data[self.upto].len() as u32;
+            self.upto += 1;
+            Some(Ok(v))
+        } else {
+            None
+        }
+    }
+}
+
+impl<'a> ReusableIterator for SortSNCountIterator<'a> {
+    fn reset(&mut self) {
+        self.upto = 0;
+    }
+}
+
+struct SortSNValuesIterator<'a> {
+    data: &'a [Vec<i64>],
+    upto: usize,
+    idx: usize,
+}
+
+impl<'a> SortSNValuesIterator<'a> {
+    fn new(data: &'a [Vec<i64>]) -> Self {
+        Self {
+            data,
+            upto: 0,
+            idx: 0,
+        }
+    }
+}
+
+impl<'a> Iterator for SortSNValuesIterator<'a> {
+    type Item = Result<Numeric>;
+
+    fn next(&mut self) -> Option<Result<Numeric>> {
+        while self.upto < self.data.len() {
+            if self.idx < self.data[self.upto].len() {
+                let v = self.data[self.upto][self.idx];
+                self.idx += 1;
+                return Some(Ok(Numeric::Long(v)));
+            } else {
+                self.upto += 1;
+                self.idx = 0;
+            }
+        }
+        None
+    }
+}
+
+impl<'a> ReusableIterator for SortSNValuesIterator<'a> {
+    fn reset(&mut self) {
+        self.upto = 0;
+        self.idx = 0;
+    }
+}
+
 const EMPTY_ORD: i64 = -1;
 
 pub struct SortedDocValuesWriter {
     // stream of all values
     pending: PackedLongValuesBuilder,
     field_info: FieldInfo,
+    docs_with_field: FixedBitSet,
+    counter: Counter,
     hash: BytesRefHash,
     // the hash.pool is pointed to this, so it must be boxed
     _bytes_block_pool: Box<ByteBlockPool>,
+
+    final_ords: Option<PackedLongValues>,
+    final_ord_map: Vec<i32>,
 }
 
 impl SortedDocValuesWriter {
@@ -484,7 +821,7 @@ impl SortedDocValuesWriter {
             bytes_ref_hash::DEFAULT_CAPACITY,
             Box::new(DirectByteStartArray::new(
                 bytes_ref_hash::DEFAULT_CAPACITY,
-                iw_bytes_used,
+                unsafe { iw_bytes_used.shallow_copy() },
             )),
         );
         SortedDocValuesWriter {
@@ -494,8 +831,12 @@ impl SortedDocValuesWriter {
                 PackedLongValuesBuilderType::Delta,
             ),
             field_info: field_info.clone(),
+            docs_with_field: FixedBitSet::new(64),
             hash,
+            counter: iw_bytes_used,
             _bytes_block_pool: bytes_block_pool,
+            final_ords: None,
+            final_ord_map: vec![],
         }
     }
 
@@ -521,11 +862,9 @@ impl SortedDocValuesWriter {
             )));
         }
 
-        while self.pending.size() < doc_id as i64 {
-            self.pending.add(EMPTY_ORD);
-        }
-
         self.add_one_value(value);
+        self.docs_with_field.ensure_capacity(doc_id as usize);
+        self.docs_with_field.set(doc_id as usize);
         Ok(())
     }
 
@@ -542,37 +881,107 @@ impl SortedDocValuesWriter {
 
         self.pending.add(term_id);
     }
+
+    fn sort_doc_values(
+        &self,
+        max_doc: i32,
+        doc_map: &dyn SorterDocMap,
+        mut iter: LongValuesIterator,
+    ) -> Vec<i32> {
+        let mut values = vec![-1; max_doc as usize];
+        let doc_id_iter = BitSetIterator::new(&self.docs_with_field);
+        for doc_id in doc_id_iter {
+            let new_id = doc_map.old_to_new(doc_id);
+            values[new_id as usize] = iter.next().unwrap() as i32;
+        }
+        debug_assert!(iter.next().is_none());
+        values
+    }
 }
 
 impl DocValuesWriter for SortedDocValuesWriter {
-    fn finish(&mut self, num_doc: i32) {
-        while self.pending.size() < num_doc as i64 {
-            self.pending.add(EMPTY_ORD);
-        }
+    fn finish(&mut self, _num_doc: i32) {
+        self.counter
+            .add_get(self.docs_with_field.bytes_used() as i64);
     }
 
     fn flush<D: Directory, DW: Directory, C: Codec, W: DocValuesConsumer>(
         &mut self,
         state: &SegmentWriteState<D, DW, C>,
+        sort_map: Option<&impl SorterDocMap>,
         consumer: &mut W,
     ) -> Result<()> {
         let max_doc = state.segment_info.max_doc();
         debug_assert!(self.pending.size() == max_doc as i64);
 
         let value_count = self.hash.len();
-        self.hash.sort();
-        let mut ord_map = vec![0i32; value_count];
 
+        let (pending, ord_map) = if self.final_ords.is_some() {
+            (
+                self.final_ords.take().unwrap(),
+                mem::replace(&mut self.final_ord_map, vec![]),
+            )
+        } else {
+            self.hash.sort();
+            let mut ord_map = vec![0i32; value_count];
+            for ord in 0..value_count {
+                let idx = self.hash.ids[ord] as usize;
+                ord_map[idx] = ord as i32;
+            }
+            (self.pending.build(), ord_map)
+        };
+        let mut values_iter = SortedValuesIterator::new(&self.hash.ids, value_count, &self.hash);
+
+        if let Some(sort_map) = sort_map {
+            let values = self.sort_doc_values(max_doc, sort_map, pending.iterator());
+            let mut ords_iter = SortSortedOrdsIter {
+                ords: values,
+                doc_upto: 0,
+            };
+            consumer.add_sorted_field(&self.field_info, &mut values_iter, &mut ords_iter)
+        } else {
+            let mut ords_iter = SortedOrdsIterator::new(
+                &ord_map,
+                max_doc,
+                &self.docs_with_field,
+                pending.iterator(),
+            );
+            consumer.add_sorted_field(&self.field_info, &mut values_iter, &mut ords_iter)
+        }
+    }
+
+    fn get_doc_comparator(
+        &mut self,
+        num_doc: i32,
+        sort_field: &SortField,
+    ) -> Result<Box<dyn SorterDocComparator>> {
+        debug_assert!(self.final_ords.is_none() && self.final_ord_map.is_empty());
+
+        let mut data = vec![i32::min_value(); num_doc as usize];
+        self.hash.sort();
+        let value_count = self.hash.len();
+
+        let mut ord_map = vec![0i32; value_count];
         for ord in 0..value_count {
             let idx = self.hash.ids[ord] as usize;
             ord_map[idx] = ord as i32;
         }
+        self.final_ords = Some(self.pending.build());
+        let mut value_iter = self.final_ords.as_ref().unwrap().iterator();
+        let doc_id_iter = BitSetIterator::new(&self.docs_with_field);
+        for doc in doc_id_iter {
+            let i = value_iter.next().unwrap() as usize;
+            data[doc as usize] = self.final_ord_map[i];
+        }
+        self.final_ord_map = ord_map;
 
-        let pending = self.pending.build();
-        let mut values_iter = SortedValuesIterator::new(&self.hash.ids, value_count, &self.hash);
-        let mut ords_iter = SortedOrdsIterator::new(&ord_map, max_doc, pending.iterator());
+        let cmp_fn: fn(v1: &i32, v2: &i32) -> Ordering = if sort_field.is_reverse() {
+            |d1: &i32, d2: &i32| d2.cmp(d1)
+        } else {
+            |d1: &i32, d2: &i32| d1.cmp(d2)
+        };
 
-        consumer.add_sorted_field(&self.field_info, &mut values_iter, &mut ords_iter)
+        Ok(Box::new(DVSortDocComparator::new(data, cmp_fn)))
     }
 }
 
@@ -616,16 +1025,23 @@ impl<'a> ReusableIterator for SortedValuesIterator<'a> {
 
 struct SortedOrdsIterator<'a> {
     iter: LongValuesIterator<'a>,
+    docs_with_field: &'a FixedBitSet,
     ord_map: &'a [i32],
     max_doc: i32,
     doc_upto: i32,
 }
 
 impl<'a> SortedOrdsIterator<'a> {
-    fn new(ord_map: &'a [i32], max_doc: i32, iter: LongValuesIterator<'a>) -> Self {
+    fn new(
+        ord_map: &'a [i32],
+        max_doc: i32,
+        docs_with_field: &'a FixedBitSet,
+        iter: LongValuesIterator<'a>,
+    ) -> Self {
         SortedOrdsIterator {
             ord_map,
             max_doc,
+            docs_with_field,
             iter,
             doc_upto: 0,
         }
@@ -639,14 +1055,14 @@ impl<'a> Iterator for SortedOrdsIterator<'a> {
         if self.doc_upto >= self.max_doc {
             None
         } else {
-            let ord = self.iter.next().unwrap();
             self.doc_upto += 1;
-            let res = if ord == -1 {
-                ord as i32
+            let ord = if self.docs_with_field.get(self.doc_upto as usize).unwrap() {
+                let i = self.iter.next().unwrap();
+                self.ord_map[i as usize]
             } else {
-                self.ord_map[ord as usize]
+                -1
             };
-            Some(Ok(Numeric::Int(res)))
+            Some(Ok(Numeric::Int(ord)))
         }
     }
 }
@@ -654,6 +1070,31 @@ impl<'a> Iterator for SortedOrdsIterator<'a> {
 impl<'a> ReusableIterator for SortedOrdsIterator<'a> {
     fn reset(&mut self) {
         self.iter.reset();
+        self.doc_upto = 0;
+    }
+}
+
+struct SortSortedOrdsIter {
+    ords: Vec<i32>,
+    doc_upto: usize,
+}
+
+impl Iterator for SortSortedOrdsIter {
+    type Item = Result<Numeric>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.doc_upto < self.ords.len() {
+            let v = Numeric::Int(self.ords[self.doc_upto]);
+            self.doc_upto += 1;
+            Some(Ok(v))
+        } else {
+            None
+        }
+    }
+}
+
+impl ReusableIterator for SortSortedOrdsIter {
+    fn reset(&mut self) {
         self.doc_upto = 0;
     }
 }
@@ -666,7 +1107,6 @@ pub struct SortedSetDocValuesWriter {
     field_info: FieldInfo,
     current_doc: DocId,
     current_values: Vec<i64>,
-    current_up_to: usize,
     max_count: i32,
     hash: BytesRefHash,
     // the hash.pool is pointed to this, so it must be boxed
@@ -702,7 +1142,6 @@ impl SortedSetDocValuesWriter {
             field_info: field_info.clone(),
             current_doc: 0,
             current_values: vec![],
-            current_up_to: 0,
             max_count: 0,
             hash,
             _bytes_block_pool: bytes_block_pool,
@@ -742,22 +1181,20 @@ impl SortedSetDocValuesWriter {
         self.current_values.sort();
         let mut last_value = EMPTY_ORD;
         let mut count = 0i32;
-        for i in 0..self.current_up_to {
-            let term_id = self.current_values[i];
+        for term_id in &self.current_values {
             // if it's not a duplicate
-            if term_id != last_value {
-                self.pending.add(term_id);
+            if *term_id != last_value {
+                self.pending.add(*term_id);
                 count += 1;
             }
-            last_value = term_id;
+            last_value = *term_id;
         }
 
         // record the number of unique term ids for this doc
         self.pending_counts.add(count as i64);
         self.max_count = self.max_count.max(count);
 
-        self.current_values = vec![];
-        self.current_up_to = 0;
+        self.current_values.clear();
         self.current_doc += 1;
     }
 
@@ -772,12 +1209,30 @@ impl SortedSetDocValuesWriter {
             // 2. when flushing, we need 1 int per value (slot in the ordMap).
         }
 
-        if self.current_up_to == self.current_values.len() {
-            self.current_values.push(term_id);
-        } else {
-            self.current_values[self.current_up_to] = term_id;
+        self.current_values.push(term_id);
+    }
+
+    fn sort_doc_values(
+        &self,
+        max_doc: i32,
+        doc_map: &dyn SorterDocMap,
+        mut ord_iter: LongValuesIterator,
+        ord_count_iter: LongValuesIterator,
+        ord_map: &[i32],
+    ) -> Vec<Vec<i32>> {
+        let mut res = vec![vec![]; max_doc as usize];
+        for (i, v) in ord_count_iter.enumerate() {
+            if v > 0 {
+                let mut values = Vec::with_capacity(v as usize);
+                for _ in 0..v {
+                    let ord = ord_iter.next().unwrap();
+                    values.push(ord_map[ord as usize]);
+                }
+                let idx = doc_map.old_to_new(i as i32) as usize;
+                res[idx] = values;
+            }
         }
-        self.current_up_to += 1;
+        res
     }
 }
 
@@ -793,6 +1248,7 @@ impl DocValuesWriter for SortedSetDocValuesWriter {
     fn flush<D: Directory, DW: Directory, C: Codec, W: DocValuesConsumer>(
         &mut self,
         state: &SegmentWriteState<D, DW, C>,
+        sort_map: Option<&impl SorterDocMap>,
         consumer: &mut W,
     ) -> Result<()> {
         let max_doc = state.segment_info.max_doc();
@@ -811,16 +1267,44 @@ impl DocValuesWriter for SortedSetDocValuesWriter {
         }
 
         let mut value_iter = SortedValuesIterator::new(&self.hash.ids, value_count, &self.hash);
-        let mut ord_iter = SortedSetOrdsIterator::new(&ord_map, &pending, &pending_counts);
-        let mut ord_count_iter =
-            SortedSetOrdCountIterator::new(max_doc as i32, pending_counts.iterator());
 
-        consumer.add_sorted_set_field(
-            &self.field_info,
-            &mut value_iter,
-            &mut ord_count_iter,
-            &mut ord_iter,
-        )
+        if let Some(sort_map) = sort_map {
+            let values = self.sort_doc_values(
+                max_doc,
+                sort_map,
+                pending.iterator(),
+                pending_counts.iterator(),
+                &ord_map,
+            );
+            let mut ords_iter = SortSSOrdsIterator::new(&values);
+            let mut counts_iter = SortSSCountIterator::new(&values);
+
+            consumer.add_sorted_set_field(
+                &self.field_info,
+                &mut value_iter,
+                &mut counts_iter,
+                &mut ords_iter,
+            )
+        } else {
+            let mut ord_iter = SortedSetOrdsIterator::new(&ord_map, &pending, &pending_counts);
+            let mut ord_count_iter =
+                SortedSetOrdCountIterator::new(max_doc as i32, pending_counts.iterator());
+
+            consumer.add_sorted_set_field(
+                &self.field_info,
+                &mut value_iter,
+                &mut ord_count_iter,
+                &mut ord_iter,
+            )
+        }
+    }
+
+    fn get_doc_comparator(
+        &mut self,
+        _num_doc: i32,
+        _sort_field: &SortField,
+    ) -> Result<Box<dyn SorterDocComparator>> {
+        unimplemented!()
     }
 }
 
@@ -921,6 +1405,78 @@ impl<'a> ReusableIterator for SortedSetOrdCountIterator<'a> {
     fn reset(&mut self) {
         self.iter.reset();
         self.doc_upto = 0;
+    }
+}
+
+struct SortSSOrdsIterator<'a> {
+    data: &'a [Vec<i32>],
+    upto: usize,
+    idx: usize,
+}
+
+impl<'a> SortSSOrdsIterator<'a> {
+    fn new(data: &'a [Vec<i32>]) -> Self {
+        Self {
+            data,
+            upto: 0,
+            idx: 0,
+        }
+    }
+}
+
+impl<'a> Iterator for SortSSOrdsIterator<'a> {
+    type Item = Result<Numeric>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.upto < self.data.len() {
+            if self.idx < self.data[self.upto].len() {
+                let v = self.data[self.upto][self.idx];
+                self.idx += 1;
+                return Some(Ok(Numeric::Int(v)));
+            } else {
+                self.upto += 1;
+                self.idx = 0;
+            }
+        }
+        None
+    }
+}
+
+impl<'a> ReusableIterator for SortSSOrdsIterator<'a> {
+    fn reset(&mut self) {
+        self.upto = 0;
+        self.idx = 0;
+    }
+}
+
+struct SortSSCountIterator<'a> {
+    data: &'a [Vec<i32>],
+    upto: usize,
+}
+
+impl<'a> SortSSCountIterator<'a> {
+    fn new(data: &'a [Vec<i32>]) -> Self {
+        Self { data, upto: 0 }
+    }
+}
+
+impl<'a> Iterator for SortSSCountIterator<'a> {
+    type Item = Result<u32>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.upto < self.data.len() {
+            let v = self.data[self.upto].len() as u32;
+            self.upto += 1;
+            Some(Ok(v))
+        } else {
+            None
+        }
+    }
+}
+
+impl<'a> ReusableIterator for SortSSCountIterator<'a> {
+    fn reset(&mut self) {
+        self.upto = 0;
     }
 }
 
@@ -1757,5 +2313,42 @@ impl<'a> ReusableIterator for BinaryBytesIterator<'a> {
         self.lengths_iter.reset();
         self.upto = 0;
         self.value.clear();
+    }
+}
+
+struct SortedDVIter {
+    dv: CachedBinaryDVs,
+    doc: i32,
+    max_doc: i32,
+}
+
+impl SortedDVIter {
+    fn new(dv: CachedBinaryDVs) -> Self {
+        let max_doc = dv.values.len() as i32;
+        Self {
+            dv,
+            doc: -1,
+            max_doc,
+        }
+    }
+}
+
+impl Iterator for SortedDVIter {
+    type Item = Result<BytesRef>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.doc += 1;
+        if self.doc >= self.max_doc {
+            None
+        } else {
+            let value = BytesRef::new(&self.dv.values[self.doc as usize]);
+            Some(Ok(value))
+        }
+    }
+}
+
+impl ReusableIterator for SortedDVIter {
+    fn reset(&mut self) {
+        self.doc = -1;
     }
 }

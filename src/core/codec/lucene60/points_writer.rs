@@ -124,12 +124,9 @@ impl<D: Directory, DW: Directory, C: Codec> PointsWriter for Lucene60PointsWrite
     }
 
     fn merge<D1: Directory, C1: Codec>(&mut self, merge_state: &MergeState<D1, C1>) -> Result<()> {
-        if merge_state.needs_index_sort {
-            // TODO: can we gain back some optos even if index is sorted?
-            // E.g. if sort results in large chunks of contiguous docs from one sub
-            // being copied over...?
-            return merge_point_values(self, merge_state);
-        }
+        // If indexSort is activated and some of the leaves are not sorted the next test will catch
+        // that and the non-optimized merge will run. If the readers are all sorted then
+        // it's safe to perform a bulk merge of the points.
 
         for reader_opt in &merge_state.points_readers {
             if let Some(reader) = reader_opt {

@@ -12,38 +12,50 @@
 // limitations under the License.
 
 use core::analysis::TokenStream;
-use core::codec::{Codec, TermVectorsFormat, TermVectorsWriter, TermVectorsWriterEnum};
+use core::codec::{
+    Codec, NormsProducer, TermVectorsFormat, TermVectorsReader, TermVectorsWriter,
+    TermVectorsWriterEnum,
+};
 use core::index::byte_slice_reader::ByteSliceReader;
+use core::index::dir_wrapper::TrackingTmpOutputDirectoryWrapper;
 use core::index::merge_policy::MergePolicy;
 use core::index::merge_scheduler::MergeScheduler;
 use core::index::postings_array::{ParallelPostingsArray, PostingsArray};
+use core::index::sorter::{PackedLongDocMap, SorterDocMap};
 use core::index::terms_hash::{TermsHash, TermsHashBase};
 use core::index::terms_hash_per_field::{TermsHashPerField, TermsHashPerFieldBase};
-use core::index::thread_doc_writer::DocumentsWriterPerThread;
+use core::index::thread_doc_writer::{DocumentsWriterPerThread, TrackingValidDirectory};
 use core::index::{
-    FieldInfo, FieldInfosBuilder, FieldInvertState, FieldNumbersRef, Fieldable, IndexOptions,
-    SegmentWriteState,
+    FieldInfo, FieldInfos, FieldInfosBuilder, FieldInvertState, FieldNumbersRef, Fieldable, Fields,
+    IndexOptions, SegmentWriteState, TermIterator, Terms,
 };
+use core::search::posting_iterator::{PostingIterator, PostingIteratorFlags};
+use core::search::DocIterator;
+use core::search::NO_MORE_DOCS;
 use core::store::{Directory, FlushInfo, IOContext};
-use core::util::DocId;
+use core::util::byte_block_pool::ByteBlockPool;
+use core::util::{BytesRef, DocId};
 
 use error::{ErrorKind, Result};
 
+use core::index::stored_fields_consumer::TrackingTmpDirectory;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
-use std::ptr;
+use std::sync::Arc;
 
-pub(crate) struct TermVectorsConsumer<
+pub(super) struct TermVectorsConsumerImpl<
     D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
+    DW: Directory + Send + Sync + 'static,
 > {
     pub base: TermsHashBase,
     // format: Box<TermVectorsFormat>,
     // directory: DirectoryRc,
     // segment_info: SegmentInfo,
-    writer: Option<TermVectorsWriterEnum<D::IndexOutput>>,
+    writer: Option<TermVectorsWriterEnum<DW::IndexOutput>>,
+    out_dir: Arc<DW>,
     vector_slice_reader_pos: ByteSliceReader,
     vector_slice_reader_off: ByteSliceReader,
     has_vectors: bool,
@@ -54,34 +66,23 @@ pub(crate) struct TermVectorsConsumer<
     pub inited: bool,
 }
 
-impl<D, C, MS, MP> TermVectorsConsumer<D, C, MS, MP>
+impl<D, C, MS, MP, DW> TermVectorsConsumerImpl<D, C, MS, MP, DW>
 where
     D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
+    DW: Directory + Send + Sync + 'static,
 {
-    // only used for init
-    pub fn new_default() -> Self {
-        let base = TermsHashBase::default();
-        TermVectorsConsumer {
-            base,
-            writer: None,
-            vector_slice_reader_off: ByteSliceReader::default(),
-            vector_slice_reader_pos: ByteSliceReader::default(),
-            has_vectors: false,
-            num_vector_fields: 0,
-            last_doc_id: 0,
-            doc_writer: ptr::null(),
-            per_fields: vec![],
-            inited: false,
-        }
-    }
-    pub fn new(doc_writer: &mut DocumentsWriterPerThread<D, C, MS, MP>) -> Self {
+    pub(super) fn new(
+        doc_writer: &mut DocumentsWriterPerThread<D, C, MS, MP>,
+        out_dir: Arc<DW>,
+    ) -> Self {
         let base = TermsHashBase::new(doc_writer, false);
-        TermVectorsConsumer {
+        TermVectorsConsumerImpl {
             base,
             writer: None,
+            out_dir,
             vector_slice_reader_off: ByteSliceReader::default(),
             vector_slice_reader_pos: ByteSliceReader::default(),
             has_vectors: false,
@@ -93,7 +94,7 @@ where
         }
     }
 
-    pub fn terms_writer(&mut self) -> &mut TermVectorsWriterEnum<D::IndexOutput> {
+    pub fn terms_writer(&mut self) -> &mut TermVectorsWriterEnum<DW::IndexOutput> {
         debug_assert!(self.writer.is_some());
         self.writer.as_mut().unwrap()
     }
@@ -107,7 +108,7 @@ where
                 doc_writer.bytes_used() as u64,
             ));
             self.writer = Some(doc_writer.codec().term_vectors_format().tv_writer(
-                &*doc_writer.directory,
+                self.out_dir.as_ref(),
                 &doc_writer.segment_info,
                 &context,
             )?);
@@ -132,10 +133,10 @@ where
         Ok(())
     }
 
-    fn do_flush<DW: Directory>(
+    fn do_flush<DW1: Directory>(
         &mut self,
         _field_to_flush: BTreeMap<&str, &TermVectorsConsumerPerField<D, C, MS, MP>>,
-        state: &mut SegmentWriteState<D, DW, C>,
+        state: &mut SegmentWriteState<D, DW1, C>,
     ) -> Result<()> {
         if self.writer.is_some() {
             let num_docs = state.segment_info.max_doc;
@@ -164,35 +165,20 @@ where
     }
 }
 
-impl<D, C, MS, MP> TermsHash<D, C> for TermVectorsConsumer<D, C, MS, MP>
+impl<D, C, MS, MP, DW> TermVectorsConsumerImpl<D, C, MS, MP, DW>
 where
     D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
+    DW: Directory + Send + Sync + 'static,
 {
-    type PerField = TermVectorsConsumerPerField<D, C, MS, MP>;
-
-    fn base(&self) -> &TermsHashBase {
-        &self.base
-    }
-
-    fn base_mut(&mut self) -> &mut TermsHashBase {
-        &mut self.base
-    }
-
-    fn add_field(
-        &mut self,
-        _field_invert_state: &FieldInvertState,
-        field_info: &FieldInfo,
-    ) -> TermVectorsConsumerPerField<D, C, MS, MP> {
-        TermVectorsConsumerPerField::new(self, field_info.clone())
-    }
-
-    fn flush<DW: Directory>(
+    fn flush<DW1: Directory>(
         &mut self,
         field_to_flush: BTreeMap<&str, &TermVectorsConsumerPerField<D, C, MS, MP>>,
-        state: &mut SegmentWriteState<D, DW, C>,
+        state: &mut SegmentWriteState<D, DW1, C>,
+        _sort_map: Option<&Arc<PackedLongDocMap>>,
+        _norms: Option<&impl NormsProducer>,
     ) -> Result<()> {
         let res = self.do_flush(field_to_flush, state);
         self.writer = None;
@@ -205,7 +191,7 @@ where
         self.has_vectors = false;
         self.writer = None;
         self.last_doc_id = 0;
-        self.base_mut().reset();
+        self.base.reset();
         Ok(())
     }
 
@@ -259,10 +245,341 @@ where
         debug_assert!(self.last_doc_id == doc_id);
         self.last_doc_id += 1;
 
-        self.base_mut().reset();
+        self.base.reset();
         self.reset_field();
 
         Ok(())
+    }
+}
+
+pub(crate) struct SortingTermVectorsConsumerImpl<
+    D: Directory + Send + Sync + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+> {
+    consumer: TermVectorsConsumerImpl<D, C, MS, MP, TrackingTmpDirectory<D>>,
+    tmp_directory: Arc<TrackingTmpDirectory<D>>,
+}
+
+impl<D, C, MS, MP> SortingTermVectorsConsumerImpl<D, C, MS, MP>
+where
+    D: Directory + Send + Sync + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
+    fn new(doc_writer: &mut DocumentsWriterPerThread<D, C, MS, MP>) -> Self {
+        let dir = Arc::new(TrackingTmpOutputDirectoryWrapper::new(Arc::clone(
+            &doc_writer.directory,
+        )));
+        let consumer = TermVectorsConsumerImpl::new(doc_writer, Arc::clone(&dir));
+        Self {
+            consumer,
+            tmp_directory: dir,
+        }
+    }
+
+    fn finish_document(
+        &mut self,
+        field_infos: &mut FieldInfosBuilder<FieldNumbersRef>,
+    ) -> Result<()> {
+        self.consumer.finish_document(field_infos)
+    }
+
+    fn flush<DW: Directory>(
+        &mut self,
+        field_to_flush: BTreeMap<&str, &TermVectorsConsumerPerField<D, C, MS, MP>>,
+        state: &mut SegmentWriteState<D, DW, C>,
+        sort_map: Option<&Arc<PackedLongDocMap>>,
+        norms: Option<&impl NormsProducer>,
+    ) -> Result<()> {
+        let skip_flush = self.consumer.writer.is_none();
+        self.consumer
+            .flush(field_to_flush, state, sort_map, norms)?;
+        if skip_flush {
+            return Ok(());
+        }
+
+        if let Some(sort_map) = sort_map {
+            let res = self.flush_sorted(state, sort_map.as_ref());
+            self.tmp_directory.delete_temp_files();
+            res
+        } else {
+            // we're lucky the index is already sorted, just rename the temporary file and return
+            for (k, v) in &*self.tmp_directory.file_names.lock().unwrap() {
+                self.tmp_directory.rename(v, k)?;
+            }
+            Ok(())
+        }
+    }
+
+    fn flush_sorted<DW: Directory>(
+        &mut self,
+        flush_state: &SegmentWriteState<D, DW, C>,
+        sort_map: &impl SorterDocMap,
+    ) -> Result<()> {
+        let doc_writer = unsafe { &*self.consumer.doc_writer };
+        let reader = doc_writer.codec().term_vectors_format().tv_reader(
+            self.tmp_directory.as_ref(),
+            &flush_state.segment_info,
+            Arc::new(flush_state.field_infos.clone()),
+            &IOContext::Default,
+        )?;
+        let mut writer = doc_writer.codec().term_vectors_format().tv_writer(
+            flush_state.directory.as_ref(),
+            &flush_state.segment_info,
+            &IOContext::Default,
+        )?;
+        for i in 0..flush_state.segment_info.max_doc {
+            let vectors = reader.get(sort_map.new_to_old(i))?;
+            Self::write_term_vectors(&mut writer, vectors, &flush_state.field_infos)?;
+        }
+        writer.finish(
+            &flush_state.field_infos,
+            flush_state.segment_info.max_doc as usize,
+        )
+    }
+
+    fn write_term_vectors(
+        writer: &mut impl TermVectorsWriter,
+        vectors: Option<impl Fields>,
+        fields_infos: &FieldInfos,
+    ) -> Result<()> {
+        if let Some(vectors) = vectors {
+            let num_fields = vectors.size();
+            writer.start_document(num_fields)?;
+
+            let mut last_field_name = String::new();
+            let mut field_count = 0;
+            for field in vectors.fields() {
+                field_count += 1;
+                debug_assert!(field > last_field_name);
+                let field_info = fields_infos.field_info_by_name(&field).unwrap();
+                if let Some(terms) = vectors.terms(&field)? {
+                    let has_positions = terms.has_positions()?;
+                    let has_offsets = terms.has_offsets()?;
+                    let has_payloads = terms.has_payloads()?;
+                    debug_assert!(!has_payloads || has_positions);
+
+                    let mut num_terms = terms.size()?;
+                    if num_terms == -1 {
+                        // count manually. It is stupid, but needed, as Terms.size() is not a
+                        // mandatory statistics function
+                        num_terms = 0;
+                        let mut term_iter = terms.iterator()?;
+                        while term_iter.next()?.is_some() {
+                            num_terms += 1;
+                        }
+                    }
+
+                    writer.start_field(
+                        field_info,
+                        num_terms as usize,
+                        has_positions,
+                        has_offsets,
+                        has_payloads,
+                    )?;
+                    let mut terms_iter = terms.iterator()?;
+
+                    let mut term_count = 0;
+                    while let Some(term) = terms_iter.next()? {
+                        term_count += 1;
+
+                        let freq = terms_iter.total_term_freq()? as i32;
+                        writer.start_term(BytesRef::new(&term), freq)?;
+
+                        if has_positions || has_offsets {
+                            let mut docs_and_pos_iter = terms_iter.postings_with_flags(
+                                PostingIteratorFlags::OFFSETS | PostingIteratorFlags::PAYLOADS,
+                            )?;
+                            let doc = docs_and_pos_iter.next()?;
+                            debug_assert_ne!(doc, NO_MORE_DOCS);
+                            debug_assert_eq!(docs_and_pos_iter.freq()?, freq);
+
+                            for _pos_upto in 0..freq {
+                                let pos = docs_and_pos_iter.next_position()?;
+                                let start_offset = docs_and_pos_iter.start_offset()?;
+                                let end_offset = docs_and_pos_iter.end_offset()?;
+                                let payloads = docs_and_pos_iter.payload()?;
+
+                                debug_assert!(!has_positions || pos >= 0);
+                                writer.add_position(pos, start_offset, end_offset, &payloads)?;
+                            }
+                        }
+                        writer.finish_term()?;
+                    }
+                    debug_assert_eq!(term_count, num_terms);
+                    writer.finish_field()?;
+                    last_field_name = field;
+                }
+            }
+            assert_eq!(field_count, num_fields);
+        } else {
+            writer.start_document(0)?;
+        }
+        writer.finish_document()
+    }
+
+    fn abort(&mut self) -> Result<()> {
+        self.consumer.abort()?;
+        self.tmp_directory.delete_temp_files();
+        Ok(())
+    }
+}
+
+enum TermVectorsConsumerEnum<
+    D: Directory + Send + Sync + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+> {
+    Raw(TermVectorsConsumerImpl<D, C, MS, MP, TrackingValidDirectory<D>>),
+    Sorting(SortingTermVectorsConsumerImpl<D, C, MS, MP>),
+}
+
+pub(crate) struct TermVectorsConsumer<
+    D: Directory + Send + Sync + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+>(TermVectorsConsumerEnum<D, C, MS, MP>);
+
+impl<D, C, MS, MP> TermVectorsConsumer<D, C, MS, MP>
+where
+    D: Directory + Send + Sync + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
+    pub fn new_raw(dwpt: &mut DocumentsWriterPerThread<D, C, MS, MP>) -> Self {
+        let dir = Arc::clone(&dwpt.directory);
+        let raw = TermVectorsConsumerImpl::new(dwpt, dir);
+        TermVectorsConsumer(TermVectorsConsumerEnum::Raw(raw))
+    }
+
+    pub fn new_sorting(dwpt: &mut DocumentsWriterPerThread<D, C, MS, MP>) -> Self {
+        let c = SortingTermVectorsConsumerImpl::new(dwpt);
+        TermVectorsConsumer(TermVectorsConsumerEnum::Sorting(c))
+    }
+
+    pub fn reset_doc_writer(&mut self, parent: *const DocumentsWriterPerThread<D, C, MS, MP>) {
+        match &mut self.0 {
+            TermVectorsConsumerEnum::Raw(c) => c.doc_writer = parent,
+            TermVectorsConsumerEnum::Sorting(c) => c.consumer.doc_writer = parent,
+        }
+    }
+
+    pub fn set_term_bytes_pool(&mut self, byte_pool: *mut ByteBlockPool) {
+        match &mut self.0 {
+            TermVectorsConsumerEnum::Raw(c) => {
+                c.base.term_byte_pool = byte_pool;
+            }
+            TermVectorsConsumerEnum::Sorting(c) => {
+                c.consumer.base.term_byte_pool = byte_pool;
+            }
+        }
+    }
+
+    pub fn set_inited(&mut self, init: bool) {
+        match &mut self.0 {
+            TermVectorsConsumerEnum::Raw(c) => {
+                c.inited = init;
+            }
+            TermVectorsConsumerEnum::Sorting(c) => {
+                c.consumer.inited = init;
+            }
+        }
+    }
+
+    fn set_has_vectors(&mut self, has_vectors: bool) {
+        match &mut self.0 {
+            TermVectorsConsumerEnum::Raw(c) => c.has_vectors = has_vectors,
+            TermVectorsConsumerEnum::Sorting(c) => c.consumer.has_vectors = has_vectors,
+        }
+    }
+
+    fn add_field_to_flush(&mut self, field_to_flush: &TermVectorsConsumerPerField<D, C, MS, MP>) {
+        match &mut self.0 {
+            TermVectorsConsumerEnum::Raw(c) => c.add_field_to_flush(field_to_flush),
+            TermVectorsConsumerEnum::Sorting(c) => c.consumer.add_field_to_flush(field_to_flush),
+        }
+    }
+
+    fn base(&mut self) -> &mut TermsHashBase {
+        match &mut self.0 {
+            TermVectorsConsumerEnum::Raw(c) => &mut c.base,
+            TermVectorsConsumerEnum::Sorting(c) => &mut c.consumer.base,
+        }
+    }
+}
+
+impl<D, C, MS, MP> TermsHash<D, C> for TermVectorsConsumer<D, C, MS, MP>
+where
+    D: Directory + Send + Sync + 'static,
+    C: Codec,
+    MS: MergeScheduler,
+    MP: MergePolicy,
+{
+    type PerField = TermVectorsConsumerPerField<D, C, MS, MP>;
+
+    fn base(&self) -> &TermsHashBase {
+        match &self.0 {
+            TermVectorsConsumerEnum::Raw(c) => &c.base,
+            TermVectorsConsumerEnum::Sorting(s) => &s.consumer.base,
+        }
+    }
+
+    fn base_mut(&mut self) -> &mut TermsHashBase {
+        match &mut self.0 {
+            TermVectorsConsumerEnum::Raw(c) => &mut c.base,
+            TermVectorsConsumerEnum::Sorting(s) => &mut s.consumer.base,
+        }
+    }
+
+    fn add_field(
+        &mut self,
+        _field_invert_state: &FieldInvertState,
+        field_info: &FieldInfo,
+    ) -> TermVectorsConsumerPerField<D, C, MS, MP> {
+        TermVectorsConsumerPerField::new(self, field_info.clone())
+    }
+
+    fn flush<DW: Directory>(
+        &mut self,
+        field_to_flush: BTreeMap<&str, &Self::PerField>,
+        state: &mut SegmentWriteState<D, DW, C>,
+        sort_map: Option<&Arc<PackedLongDocMap>>,
+        norms: Option<&impl NormsProducer>,
+    ) -> Result<()> {
+        match &mut self.0 {
+            TermVectorsConsumerEnum::Raw(c) => c.flush(field_to_flush, state, sort_map, norms),
+            TermVectorsConsumerEnum::Sorting(s) => s.flush(field_to_flush, state, sort_map, norms),
+        }
+    }
+
+    fn abort(&mut self) -> Result<()> {
+        match &mut self.0 {
+            TermVectorsConsumerEnum::Raw(c) => c.abort(),
+            TermVectorsConsumerEnum::Sorting(s) => s.abort(),
+        }
+    }
+
+    fn start_document(&mut self) -> Result<()> {
+        match &mut self.0 {
+            TermVectorsConsumerEnum::Raw(c) => c.start_document(),
+            TermVectorsConsumerEnum::Sorting(s) => s.consumer.start_document(),
+        }
+    }
+
+    fn finish_document(
+        &mut self,
+        field_infos: &mut FieldInfosBuilder<FieldNumbersRef>,
+    ) -> Result<()> {
+        match &mut self.0 {
+            TermVectorsConsumerEnum::Raw(c) => c.finish_document(field_infos),
+            TermVectorsConsumerEnum::Sorting(s) => s.finish_document(field_infos),
+        }
     }
 }
 
@@ -290,13 +607,10 @@ where
     MS: MergeScheduler,
     MP: MergePolicy,
 {
-    pub fn new(
-        terms_writer: &mut TermVectorsConsumer<D, C, MS, MP>,
-        field_info: FieldInfo,
-    ) -> Self {
+    fn new(terms_writer: &mut TermVectorsConsumer<D, C, MS, MP>, field_info: FieldInfo) -> Self {
         let base = TermsHashPerFieldBase::new(
             2,
-            &mut terms_writer.base,
+            terms_writer.base(),
             field_info,
             TermVectorPostingsArray::default(),
         );
@@ -336,13 +650,26 @@ where
         // of a given field in the doc.  At this point we flush
         // our hash into the DocWriter.
         self.base.bytes_hash.sort();
-        self.term_vectors_writer().terms_writer().start_field(
-            &self.base.field_info,
-            num_postings,
-            self.do_vector_positions,
-            self.do_vector_offsets,
-            self.has_payloads,
-        )?;
+        match &mut self.term_vectors_writer().0 {
+            TermVectorsConsumerEnum::Raw(r) => {
+                r.terms_writer().start_field(
+                    &self.base.field_info,
+                    num_postings,
+                    self.do_vector_positions,
+                    self.do_vector_offsets,
+                    self.has_payloads,
+                )?;
+            }
+            TermVectorsConsumerEnum::Sorting(r) => {
+                r.consumer.terms_writer().start_field(
+                    &self.base.field_info,
+                    num_postings,
+                    self.do_vector_positions,
+                    self.do_vector_offsets,
+                    self.has_payloads,
+                )?;
+            }
+        }
         for j in 0..num_postings {
             let term_id = self.base.bytes_hash.ids[j] as usize;
             let freq = self.base.postings_array.freqs[term_id];
@@ -352,7 +679,7 @@ where
                 .base
                 .term_pool()
                 .set_bytes_ref(self.base.postings_array.base.text_starts[term_id] as usize);
-            tv.start_term(&flush_term, freq as i32)?;
+            tv.start_term(flush_term, freq as i32)?;
 
             if self.do_vector_positions || self.do_vector_offsets {
                 if self.do_vector_positions {
@@ -448,7 +775,7 @@ where
         debug_assert!(self.inited);
         debug_assert_ne!(field.field_type().index_options(), IndexOptions::Null);
         if first {
-            if self.base.bytes_hash.len() != 0 {
+            if !self.base.bytes_hash.is_empty() {
                 // Only necessary if previous doc hit a
                 // non-aborting exception while writing vectors in
                 // this field:
@@ -459,7 +786,7 @@ where
             self.has_payloads = false;
             self.do_vectors = field.field_type().store_term_vectors();
             if self.do_vectors {
-                self.term_vectors_writer().has_vectors = true;
+                self.term_vectors_writer().set_has_vectors(true);
 
                 self.do_vector_positions = field.field_type().store_term_vector_positions();
                 // Somewhat confusingly, unlike postings, you are
@@ -535,7 +862,7 @@ where
     /// RAMOutputStream, which is then quickly flushed to
     /// the real term vectors files in the Directory.
     fn finish(&mut self, _field_state: &FieldInvertState) -> Result<()> {
-        if self.do_vectors && self.base.bytes_hash.len() > 0 {
+        if self.do_vectors && !self.base.bytes_hash.is_empty() {
             self.term_vectors_writer().add_field_to_flush(self);
         }
         Ok(())

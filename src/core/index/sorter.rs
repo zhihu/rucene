@@ -138,6 +138,14 @@ impl Sorter {
         }))
     }
 
+    pub fn sort_by_comps(
+        max_doc: i32,
+        comparators: Vec<Box<dyn SorterDocComparator>>,
+    ) -> Result<Option<PackedLongDocMap>> {
+        let mut multi_cmp = MultiSorterDocComps { cmps: comparators };
+        Self::sort(max_doc, &mut multi_cmp)
+    }
+
     /// Returns a mapping from the old document ID to its new location in the
     /// sorted index. Implementations can use the auxiliary
     /// {@link #sort(int, DocComparator)} to compute the old-to-new permutation
@@ -183,6 +191,22 @@ impl Sorter {
     }
 }
 
+struct MultiSorterDocComps {
+    cmps: Vec<Box<dyn SorterDocComparator>>,
+}
+
+impl SorterDocComparator for MultiSorterDocComps {
+    fn compare(&mut self, doc1: i32, doc2: i32) -> Result<Ordering> {
+        for cmp in &mut self.cmps {
+            let res = cmp.compare(doc1, doc2)?;
+            if res != Ordering::Equal {
+                return Ok(res);
+            }
+        }
+        Ok(doc1.cmp(&doc2))
+    }
+}
+
 pub struct PackedLongDocMap {
     max_doc: usize,
     old_to_new: PackedLongValues,
@@ -221,7 +245,7 @@ pub trait SorterDocMap {
 }
 
 /// a comparator of doc IDs
-trait SorterDocComparator {
+pub trait SorterDocComparator {
     fn compare(&mut self, doc1: DocId, doc2: DocId) -> Result<Ordering>;
 }
 
@@ -603,5 +627,25 @@ impl CrossReaderComparator for DoubleCrossReaderComparator {
         } else {
             Ok(res)
         }
+    }
+}
+
+pub struct DVSortDocComparator<T> {
+    data: Vec<T>,
+    cmp_fn: fn(d1: &T, d2: &T) -> Ordering,
+}
+
+impl<T> DVSortDocComparator<T> {
+    pub fn new(data: Vec<T>, cmp_fn: fn(d1: &T, d2: &T) -> Ordering) -> Self {
+        Self { data, cmp_fn }
+    }
+}
+
+impl<T> SorterDocComparator for DVSortDocComparator<T> {
+    fn compare(&mut self, doc1: i32, doc2: i32) -> Result<Ordering> {
+        Ok((self.cmp_fn)(
+            &self.data[doc1 as usize],
+            &self.data[doc2 as usize],
+        ))
     }
 }

@@ -242,6 +242,7 @@ pub struct PackedLongValuesBuilder {
     mins: Vec<i64>,
     averages: Vec<f32>,
     builder_type: PackedLongValuesBuilderType,
+    built: bool,
 }
 
 impl PackedLongValuesBuilder {
@@ -262,10 +263,13 @@ impl PackedLongValuesBuilder {
             mins: vec![],
             averages: vec![],
             builder_type,
+            built: false,
         }
     }
 
     pub fn build(&mut self) -> PackedLongValues {
+        assert!(!self.built);
+        self.built = true;
         self.finish();
         self.pending = vec![];
 
