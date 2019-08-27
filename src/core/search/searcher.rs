@@ -202,7 +202,7 @@ pub struct DefaultIndexSearcher<
 }
 
 const MAX_DOCS_PER_SLICE: i32 = 250_000;
-const MAX_SEGMENTS_PER_SLICE: usize = 5;
+const MAX_SEGMENTS_PER_SLICE: usize = 20;
 
 struct LeafOrdSlice(Vec<usize>);
 
@@ -319,7 +319,7 @@ where
         }
 
         // reverse order by leaf reader max doc
-        leaves.sort_by(|l1, l2| l2.reader.max_doc().cmp(&l1.reader.max_doc()));
+        leaves.sort_by(|l1, l2| l1.reader.max_doc().cmp(&l2.reader.max_doc()));
 
         let mut slices = vec![];
         let mut doc_sum = 0;
@@ -335,6 +335,7 @@ where
                     ords.sort();
                     slices.push(LeafOrdSlice(ords));
                     ords = vec![];
+                    doc_sum = 0;
                 }
                 ords.push(ctx.ord);
                 doc_sum += ctx.reader.max_doc();
