@@ -330,7 +330,13 @@ impl<C: Codec> CachingWrapperWeight<C> {
         };
 
         let bits: Option<FixedBitSet> = None;
-        scorer.score(&mut leaf_collector, bits.as_ref(), 0, NO_MORE_DOCS)?;
+        scorer.score(
+            &mut leaf_collector,
+            bits.as_ref(),
+            0,
+            NO_MORE_DOCS,
+            NO_MORE_DOCS as usize,
+        )?;
 
         Ok(BitDocIdSet::new(
             Arc::new(leaf_collector.bit_set),
@@ -351,7 +357,13 @@ impl<C: Codec> CachingWrapperWeight<C> {
         };
 
         let bits: Option<FixedBitSet> = None;
-        scorer.score(&mut leaf_collector, bits.as_ref(), 0, NO_MORE_DOCS)?;
+        scorer.score(
+            &mut leaf_collector,
+            bits.as_ref(),
+            0,
+            NO_MORE_DOCS,
+            NO_MORE_DOCS as usize,
+        )?;
 
         Ok(leaf_collector.doc_id_set.build())
     }

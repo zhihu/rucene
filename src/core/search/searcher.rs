@@ -199,6 +199,7 @@ pub struct DefaultIndexSearcher<
     // used for concurrent search - each slice holds a set of LeafReader's ord that
     // executed within one thread.
     leaf_ord_slices: Vec<LeafOrdSlice>,
+    next_limit: usize,
 }
 
 const MAX_DOCS_PER_SLICE: i32 = 250_000;
@@ -221,8 +222,14 @@ impl<C: Codec, R: IndexReader<Codec = C> + ?Sized, IR: Deref<Target = R>>
     pub fn new(
         reader: IR,
         term_contexts_limit: Option<usize>,
+        next_limit: Option<usize>,
     ) -> DefaultIndexSearcher<C, R, IR, DefaultSimilarityProducer> {
-        Self::with_similarity(reader, DefaultSimilarityProducer {}, term_contexts_limit)
+        Self::with_similarity(
+            reader,
+            DefaultSimilarityProducer {},
+            term_contexts_limit,
+            next_limit,
+        )
     }
 }
 
@@ -237,11 +244,18 @@ where
         reader: IR,
         sim_producer: SP,
         term_contexts_limit: Option<usize>,
+        next_limit: Option<usize>,
     ) -> DefaultIndexSearcher<C, R, IR, SP> {
         let term_contexts_limit = if term_contexts_limit.is_some() {
             term_contexts_limit.unwrap()
         } else {
             1_000_000
+        };
+
+        let next_limit = if next_limit.is_some() {
+            next_limit.unwrap()
+        } else {
+            500_000
         };
 
         DefaultIndexSearcher {
@@ -254,6 +268,7 @@ where
             term_contexts_limit,
             thread_pool: None,
             leaf_ord_slices: vec![],
+            next_limit,
         }
     }
 
@@ -288,9 +303,10 @@ where
         scorer: &mut S,
         collector: &mut T,
         live_docs: &B,
+        next_limit: usize,
     ) -> Result<()> {
         let mut bulk_scorer = BulkScorer::new(scorer);
-        match bulk_scorer.score(collector, Some(live_docs), 0, NO_MORE_DOCS) {
+        match bulk_scorer.score(collector, Some(live_docs), 0, NO_MORE_DOCS, next_limit) {
             Err(Error(ErrorKind::Collector(collector::ErrorKind::CollectionTerminated), _)) => {
                 // Collection was terminated prematurely
                 Ok(())
@@ -383,7 +399,8 @@ where
                 }
                 let live_docs = reader.reader.live_docs();
 
-                match Self::do_search(&mut *scorer, collector, live_docs.as_ref()) {
+                match Self::do_search(&mut *scorer, collector, live_docs.as_ref(), self.next_limit)
+                {
                     Ok(()) => {}
                     Err(Error(
                         ErrorKind::Collector(collector::ErrorKind::CollectionTimeout),
@@ -435,12 +452,14 @@ where
                     }
                 }
                 if !scorer_and_collectors.is_empty() {
+                    let next_limit = self.next_limit;
                     thread_pool.execute(move |_ctx| {
                         for (mut scorer, mut collector, live_docs) in scorer_and_collectors {
                             let should_terminate = match Self::do_search(
                                 scorer.as_mut(),
                                 &mut collector,
                                 live_docs.as_ref(),
+                                next_limit,
                             ) {
                                 Ok(()) => false,
                                 Err(Error(
@@ -805,7 +824,7 @@ mod tests {
                     ChainedCollector::new(&mut early_terminating_collector, &mut top_collector);
                 let query = MockQuery::new(vec![1, 5, 3, 4, 2]);
                 {
-                    let searcher = DefaultIndexSearcher::new(index_reader, None);
+                    let searcher = DefaultIndexSearcher::new(index_reader, None, None);
                     searcher.search(&query, &mut chained_collector).unwrap();
                 }
             }

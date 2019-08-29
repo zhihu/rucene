@@ -59,6 +59,7 @@ impl<'a, S: Scorer + ?Sized + 'a> BulkScorer<'a, S> {
         accept_docs: Option<&B>,
         min: DocId,
         max: DocId,
+        next_limit: usize,
     ) -> Result<DocId> {
         let current_doc = if min == 0 && max == NO_MORE_DOCS {
             self.scorer.approximate_next()?
@@ -66,7 +67,7 @@ impl<'a, S: Scorer + ?Sized + 'a> BulkScorer<'a, S> {
             self.scorer.approximate_advance(min)?
         };
 
-        self.score_range(collector, accept_docs, current_doc, max)
+        self.score_range(collector, accept_docs, current_doc, max, next_limit)
     }
 
     fn score_range<T: Collector, B: Bits + ?Sized>(
@@ -75,11 +76,12 @@ impl<'a, S: Scorer + ?Sized + 'a> BulkScorer<'a, S> {
         accept_docs: Option<&B>,
         min: DocId,
         max: DocId,
+        next_limit: usize,
     ) -> Result<DocId> {
         if let Some(bits) = accept_docs {
-            self.score_range_in_docs_set(collector, bits, min, max)
+            self.score_range_in_docs_set(collector, bits, min, max, next_limit)
         } else {
-            self.score_range_all(collector, min, max)
+            self.score_range_all(collector, min, max, next_limit)
         }
     }
 
@@ -89,14 +91,23 @@ impl<'a, S: Scorer + ?Sized + 'a> BulkScorer<'a, S> {
         accept_docs: &B,
         min: DocId,
         max: DocId,
+        next_limit: usize,
     ) -> Result<DocId> {
         let mut current_doc = min;
         if self.scorer.support_two_phase() {
+            let mut next = 0;
+            let mut collect = 0;
+
             while current_doc < max {
                 if accept_docs.get(current_doc as usize)? && self.scorer.matches()? {
                     collector.collect(current_doc, self.scorer)?;
+                    collect += 1;
                 }
                 current_doc = self.scorer.approximate_next()?;
+                next += 1;
+                if collect == 0 && next > next_limit {
+                    break;
+                }
             }
         } else {
             while current_doc < max {
@@ -114,14 +125,23 @@ impl<'a, S: Scorer + ?Sized + 'a> BulkScorer<'a, S> {
         collector: &mut T,
         min: DocId,
         max: DocId,
+        next_limit: usize,
     ) -> Result<DocId> {
         let mut current_doc = min;
         if self.scorer.support_two_phase() {
+            let mut next = 0;
+            let mut collect = 0;
+
             while current_doc < max {
                 if self.scorer.matches()? {
                     collector.collect(current_doc, self.scorer)?;
+                    collect += 1;
                 }
                 current_doc = self.scorer.approximate_next()?;
+                next += 1;
+                if collect == 0 && next > next_limit {
+                    break;
+                }
             }
         } else {
             while current_doc < max {
@@ -159,7 +179,13 @@ mod tests {
                 .set_next_reader(&leaf_reader_context[0])
                 .unwrap();
             bulk_scorer
-                .score(&mut top_collector, Some(&bits), 0, NO_MORE_DOCS)
+                .score(
+                    &mut top_collector,
+                    Some(&bits),
+                    0,
+                    NO_MORE_DOCS,
+                    NO_MORE_DOCS as usize,
+                )
                 .unwrap();
         }
 
