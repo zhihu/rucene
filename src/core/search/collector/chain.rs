@@ -47,8 +47,13 @@ where
         self.first.support_parallel() && self.second.support_parallel()
     }
 
+    fn init_parallel(&mut self) {
+        self.first.init_parallel();
+        self.second.init_parallel();
+    }
+
     fn leaf_collector<C: Codec>(
-        &mut self,
+        &self,
         reader: &LeafReaderContext<'_, C>,
     ) -> Result<ChainedCollector<A::LC, B::LC>> {
         Ok(ChainedCollector {

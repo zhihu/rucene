@@ -77,9 +77,10 @@ pub trait SearchCollector: Collector {
 
     /// iff this collector support parallel collect
     fn support_parallel(&self) -> bool;
+    fn init_parallel(&mut self) {}
 
     /// segment collector for parallel search
-    fn leaf_collector<C: Codec>(&mut self, reader: &LeafReaderContext<'_, C>) -> Result<Self::LC>;
+    fn leaf_collector<C: Codec>(&self, reader: &LeafReaderContext<'_, C>) -> Result<Self::LC>;
 
     fn finish_parallel(&mut self) -> Result<()>;
 }
@@ -95,7 +96,11 @@ impl<'a, T: SearchCollector + 'a> SearchCollector for &'a mut T {
         (**self).support_parallel()
     }
 
-    fn leaf_collector<C: Codec>(&mut self, reader: &LeafReaderContext<'_, C>) -> Result<Self::LC> {
+    fn init_parallel(&mut self) {
+        (**self).init_parallel()
+    }
+
+    fn leaf_collector<C: Codec>(&self, reader: &LeafReaderContext<'_, C>) -> Result<Self::LC> {
         (**self).leaf_collector(reader)
     }
 

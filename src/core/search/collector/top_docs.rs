@@ -141,13 +141,16 @@ impl SearchCollector for TopDocsCollector {
         true
     }
 
-    fn leaf_collector<C: Codec>(
-        &mut self,
-        reader: &LeafReaderContext<'_, C>,
-    ) -> Result<TopDocsLeafCollector> {
+    fn init_parallel(&mut self) {
         if self.channel.is_none() {
             self.channel = Some(channel());
         }
+    }
+
+    fn leaf_collector<C: Codec>(
+        &self,
+        reader: &LeafReaderContext<'_, C>,
+    ) -> Result<TopDocsLeafCollector> {
         let mut collector = TopDocsBaseCollector::new(self.base.estimated_hits);
         collector.cur_doc_base = reader.doc_base;
         Ok(TopDocsLeafCollector::new(

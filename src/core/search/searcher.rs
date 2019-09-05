@@ -19,7 +19,9 @@ use std::sync::{Arc, RwLock};
 use crossbeam::channel::{unbounded, Receiver, Sender};
 
 use core::codec::{Codec, CodecTermState};
-use core::index::{get_terms, IndexReader, LeafReaderContext, SearchLeafReader};
+use core::index::{
+    get_terms, IndexReader, LeafReaderContext, LeafReaderContextPtr, SearchLeafReader,
+};
 use core::index::{Term, TermContext, Terms};
 use core::search::bulk_scorer::BulkScorer;
 use core::search::cache_policy::{QueryCachingPolicy, UsageTrackingQueryCachingPolicy};
@@ -423,73 +425,100 @@ where
     where
         S: SearchCollector,
     {
-        if collector.support_parallel()
-            && self.reader.max_doc() > MAX_DOCS_PER_SLICE
-            && self.leaf_ord_slices.len() > 1
-        {
+        if collector.support_parallel() && self.leaf_ord_slices.len() > 1 {
             debug_assert!(self.thread_pool.is_some());
             let thread_pool = self.thread_pool.as_ref().unwrap();
             let weight = self.create_weight(query, collector.needs_scores())?;
             let leaf_readers = self.reader.leaves();
+
+            collector.init_parallel();
+
             for leaf_slice in &self.leaf_ord_slices {
                 let mut scorer_and_collectors = vec![];
+
                 for ord in leaf_slice.into_iter() {
                     let leaf_ctx = &leaf_readers[*ord];
-                    if let Some(scorer) = weight.create_scorer(leaf_ctx)? {
-                        match collector.leaf_collector(leaf_ctx) {
-                            Ok(leaf_collector) => {
-                                let live_docs = leaf_ctx.reader.live_docs();
-                                scorer_and_collectors.push((scorer, leaf_collector, live_docs));
-                            }
-                            Err(e) => {
-                                error!(
-                                    "create leaf collector for leaf {} failed with '{:?}'",
-                                    leaf_ctx.reader.name(),
-                                    e
-                                );
-                            }
+                    match collector.leaf_collector(leaf_ctx) {
+                        Ok(leaf_collector) => {
+                            let w = &weight as *const Box<dyn Weight<C>> as u64;
+                            let reader = unsafe { ::std::mem::transmute(leaf_ctx.reader) };
+                            let parent = unsafe { ::std::mem::transmute(leaf_ctx.parent) };
+                            let leaf_ctx_ptr = LeafReaderContextPtr::new(
+                                leaf_ctx.ord,
+                                leaf_ctx.doc_base,
+                                reader,
+                                parent,
+                            );
+                            scorer_and_collectors.push((w, leaf_ctx_ptr, leaf_collector));
+                        }
+                        Err(e) => {
+                            error!(
+                                "create leaf collector for leaf {} failed with '{:?}'",
+                                leaf_ctx.reader.name(),
+                                e
+                            );
                         }
                     }
                 }
+
                 if !scorer_and_collectors.is_empty() {
                     let next_limit = self.next_limit;
-                    thread_pool.execute(move |_ctx| {
-                        for (mut scorer, mut collector, live_docs) in scorer_and_collectors {
-                            let should_terminate = match Self::do_search(
-                                scorer.as_mut(),
-                                &mut collector,
-                                live_docs.as_ref(),
-                                next_limit,
-                            ) {
-                                Ok(()) => false,
-                                Err(Error(
-                                    ErrorKind::Collector(collector::ErrorKind::CollectionTimeout),
-                                    _,
-                                )) => {
-                                    // Collection timeout, we must terminate the search
-                                    true
-                                }
-                                Err(e) => {
+
+                    thread_pool.execute(move |_| {
+                        for (w, leaf_ctx_ptr, mut collector) in scorer_and_collectors {
+                            let weight = unsafe { &*(w as *const Box<dyn Weight<C>>) };
+                            let reader = unsafe { &(*leaf_ctx_ptr.reader) };
+                            let parent = unsafe { &(*leaf_ctx_ptr.parent) };
+                            let leaf_ctx = LeafReaderContext::new(
+                                parent,
+                                reader,
+                                leaf_ctx_ptr.ord,
+                                leaf_ctx_ptr.doc_base,
+                            );
+
+                            if let Some(mut scorer) =
+                                weight.create_scorer(&leaf_ctx).unwrap_or(None)
+                            {
+                                let live_docs = leaf_ctx.reader.live_docs();
+
+                                let should_terminate = match Self::do_search(
+                                    scorer.as_mut(),
+                                    &mut collector,
+                                    live_docs.as_ref(),
+                                    next_limit,
+                                ) {
+                                    Ok(()) => false,
+                                    Err(Error(
+                                        ErrorKind::Collector(
+                                            collector::ErrorKind::CollectionTimeout,
+                                        ),
+                                        _,
+                                    )) => {
+                                        // Collection timeout, we must terminate the search
+                                        true
+                                    }
+                                    Err(e) => {
+                                        error!(
+                                            "do search parallel failed by '{:?}', may return \
+                                             partial result",
+                                            e
+                                        );
+                                        true
+                                    }
+                                };
+                                if let Err(e) = collector.finish_leaf() {
                                     error!(
-                                        "do search parallel failed by '{:?}', may return partial \
-                                         result",
+                                        "finish search parallel failed by '{:?}', may return \
+                                         partial result",
                                         e
                                     );
-                                    true
                                 }
-                            };
-                            if let Err(e) = collector.finish_leaf() {
-                                error!(
-                                    "finish search parallel failed by '{:?}', may return partial \
-                                     result",
-                                    e
-                                );
-                            }
-                            if should_terminate {
-                                break;
+                                if should_terminate {
+                                    break;
+                                }
                             }
                         }
-                    })
+                    });
                 }
             }
             return collector.finish_parallel();
@@ -628,7 +657,7 @@ where
     ) -> TermStatistics {
         TermStatistics::new(
             term.bytes.clone(),
-            i64::from(context.doc_freq),
+            context.doc_freq as i64,
             context.total_term_freq,
         )
     }
@@ -651,8 +680,8 @@ where
         }
         let stat = CollectionStatistics::new(
             field.into(),
-            i64::from(self.reader.max_doc()),
-            i64::from(doc_count),
+            self.reader.max_doc() as i64,
+            doc_count as i64,
             sum_total_term_freq,
             sum_doc_freq,
         );
@@ -691,13 +720,16 @@ impl SearchCollector for TotalHitCountCollector {
         true
     }
 
-    fn leaf_collector<C: Codec>(
-        &mut self,
-        _reader: &LeafReaderContext<'_, C>,
-    ) -> Result<TotalHitsCountLeafCollector> {
+    fn init_parallel(&mut self) {
         if self.channel.is_none() {
             self.channel = Some(unbounded());
         }
+    }
+
+    fn leaf_collector<C: Codec>(
+        &self,
+        _reader: &LeafReaderContext<'_, C>,
+    ) -> Result<TotalHitsCountLeafCollector> {
         Ok(TotalHitsCountLeafCollector {
             count: 0,
             sender: self.channel.as_ref().unwrap().0.clone(),

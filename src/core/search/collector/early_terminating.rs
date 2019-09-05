@@ -59,7 +59,7 @@ impl SearchCollector for EarlyTerminatingSortingCollector {
         true
     }
 
-    fn leaf_collector<C: Codec>(&mut self, _reader: &LeafReaderContext<'_, C>) -> Result<Self::LC> {
+    fn leaf_collector<C: Codec>(&self, _reader: &LeafReaderContext<'_, C>) -> Result<Self::LC> {
         assert!(self.support_parallel());
         Ok(EarlyTerminatingLeafCollector::new(
             self.num_docs_to_collect_per_reader,

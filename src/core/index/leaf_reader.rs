@@ -224,3 +224,32 @@ impl<'a, C: Codec> Clone for LeafReaderContext<'a, C> {
         }
     }
 }
+
+pub struct LeafReaderContextPtr<C: Codec> {
+    /// ord in parent
+    pub ord: usize,
+    /// doc base in parent
+    pub doc_base: DocId,
+    pub reader: *const SearchLeafReader<C>,
+    pub parent: *const IndexReader<Codec = C>,
+}
+
+impl<C: Codec> LeafReaderContextPtr<C> {
+    pub fn new(
+        ord: usize,
+        doc_base: DocId,
+        reader: *const SearchLeafReader<C>,
+        parent: *const IndexReader<Codec = C>,
+    ) -> LeafReaderContextPtr<C> {
+        LeafReaderContextPtr {
+            ord,
+            doc_base,
+            reader,
+            parent,
+        }
+    }
+}
+
+unsafe impl<C: Codec> Send for LeafReaderContextPtr<C> {}
+
+unsafe impl<C: Codec> Sync for LeafReaderContextPtr<C> {}

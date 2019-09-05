@@ -62,7 +62,7 @@ impl SearchCollector for TimeoutCollector {
     }
 
     fn leaf_collector<C: Codec>(
-        &mut self,
+        &self,
         _reader: &LeafReaderContext<'_, C>,
     ) -> Result<TimeoutLeafCollector> {
         Ok(TimeoutLeafCollector::new(
