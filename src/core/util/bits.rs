@@ -152,7 +152,7 @@ impl LiveBits {
 
 impl Bits for LiveBits {
     fn get(&self, index: usize) -> Result<bool> {
-        let bitset = self.input.read_byte((index >> 3) as i64)?;
+        let bitset = self.input.read_byte((index >> 3) as u64)?;
         Ok((bitset & (1u8 << (index & 0x7))) != 0)
     }
 
@@ -163,7 +163,7 @@ impl Bits for LiveBits {
 
 impl BitsMut for LiveBits {
     fn get(&mut self, index: usize) -> Result<bool> {
-        let bitset = self.input.read_byte((index >> 3) as i64)?;
+        let bitset = self.input.read_byte((index >> 3) as u64)?;
         Ok((bitset & (1u8 << (index & 0x7))) != 0)
     }
 

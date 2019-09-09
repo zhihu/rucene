@@ -260,9 +260,9 @@ impl<F: OutputFactory> FST<F> {
             bytes_array = Vec::with_capacity(0);
             use_bytes_array = false;
         } else {
-            bytes_array = vec![0u8; num_bytes as usize];
-            let len = bytes_array.len();
-            data_in.read_bytes(&mut bytes_array, 0, len)?;
+            let len = num_bytes as usize;
+            bytes_array = vec![0u8; len];
+            data_in.read_exact(&mut bytes_array)?;
             // a dummy struct
             bytes_store = BytesStore::with_block_bits(8);
             use_bytes_array = true;

@@ -148,7 +148,7 @@ impl NormsProducer for Lucene53NormsProducer {
                     .data
                     .random_access_slice(entry.offset as i64, i64::from(self.max_doc))?;
                 let consumer: fn(&dyn RandomAccessInput, DocId) -> Result<i64> =
-                    move |slice, doc_id| slice.read_byte(i64::from(doc_id)).map(i64::from);
+                    move |slice, doc_id| slice.read_byte(u64::from(doc_id as u32)).map(i64::from);
                 Ok(Box::new(RandomAccessNumericDocValues::new(slice, consumer)))
             }
             2 => {
@@ -156,7 +156,11 @@ impl NormsProducer for Lucene53NormsProducer {
                     .data
                     .random_access_slice(entry.offset as i64, i64::from(self.max_doc) * 2)?;
                 let consumer: fn(&dyn RandomAccessInput, DocId) -> Result<i64> =
-                    move |slice, doc_id| slice.read_short(i64::from(doc_id) << 1).map(i64::from);
+                    move |slice, doc_id| {
+                        slice
+                            .read_short(u64::from(doc_id as u32) << 1)
+                            .map(i64::from)
+                    };
                 Ok(Box::new(RandomAccessNumericDocValues::new(slice, consumer)))
             }
             4 => {
@@ -164,7 +168,9 @@ impl NormsProducer for Lucene53NormsProducer {
                     .data
                     .random_access_slice(entry.offset as i64, i64::from(self.max_doc) * 4)?;
                 let consumer: fn(&dyn RandomAccessInput, DocId) -> Result<i64> =
-                    move |slice, doc_id| slice.read_int(i64::from(doc_id) << 2).map(i64::from);
+                    move |slice, doc_id| {
+                        slice.read_int(u64::from(doc_id as u32) << 2).map(i64::from)
+                    };
                 Ok(Box::new(RandomAccessNumericDocValues::new(slice, consumer)))
             }
             8 => {
@@ -172,7 +178,11 @@ impl NormsProducer for Lucene53NormsProducer {
                     .data
                     .random_access_slice(entry.offset as i64, i64::from(self.max_doc) * 8)?;
                 let consumer: fn(&dyn RandomAccessInput, DocId) -> Result<i64> =
-                    move |slice, doc_id| slice.read_long(i64::from(doc_id) << 3).map(i64::from);
+                    move |slice, doc_id| {
+                        slice
+                            .read_long(u64::from(doc_id as u32) << 3)
+                            .map(i64::from)
+                    };
                 Ok(Box::new(RandomAccessNumericDocValues::new(slice, consumer)))
             }
             x => bail!(CorruptIndex(format!("Invalid norm bytes size: {}", x))),

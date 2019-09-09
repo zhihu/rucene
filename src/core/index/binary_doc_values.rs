@@ -15,6 +15,7 @@ use core::store::IndexInput;
 use core::util::DocId;
 use core::util::LongValues;
 use error::Result;
+use std::io::Read;
 
 pub trait BinaryDocValuesProvider: Send + Sync {
     fn get(&self) -> Result<Box<dyn BinaryDocValues>>;
@@ -78,7 +79,7 @@ impl LongBinaryDocValues for FixedBinaryDocValues {
         let length = self.buffer_len;
         self.data.seek(id * length as i64)?;
         let mut buffer = vec![0u8; length];
-        self.data.read_bytes(&mut buffer, 0, length)?;
+        self.data.read_exact(&mut buffer)?;
         Ok(buffer)
     }
 
@@ -128,7 +129,7 @@ impl<T: LongValues + Clone + 'static> LongBinaryDocValues for VariableBinaryDocV
         let length = (end_address - start_address) as usize;
         self.data.seek(start_address)?;
         let mut buffer = vec![0u8; length];
-        self.data.read_bytes(&mut buffer, 0, length)?;
+        self.data.read_exact(&mut buffer)?;
         Ok(buffer)
     }
 

@@ -22,6 +22,7 @@ use core::util::BytesRef;
 use error::Result;
 
 use std::cmp::Ordering;
+use std::io::Read;
 use std::ptr;
 
 pub(crate) struct SegmentTermsIterFrame {
@@ -209,7 +210,7 @@ impl SegmentTermsIterFrame {
                 .input
                 .as_mut()
                 .unwrap()
-                .read_bytes(&mut self.suffix_bytes, 0, num_bytes)?;
+                .read_exact(&mut self.suffix_bytes)?;
         }
         self.suffixes_reader
             .reset(BytesRef::new(&self.suffix_bytes));
@@ -222,7 +223,7 @@ impl SegmentTermsIterFrame {
                 .input
                 .as_mut()
                 .unwrap()
-                .read_bytes(&mut self.stat_bytes, 0, num_bytes)?;
+                .read_exact(&mut self.stat_bytes)?;
         }
         self.stats_reader.reset(BytesRef::new(&self.stat_bytes));
         self.metadata_upto = 0;
@@ -241,7 +242,7 @@ impl SegmentTermsIterFrame {
                 .input
                 .as_mut()
                 .unwrap()
-                .read_bytes(&mut self.bytes, 0, num_bytes)?;
+                .read_exact(&mut self.bytes)?;
         }
         self.bytes_reader.reset(BytesRef::new(&self.bytes));
 

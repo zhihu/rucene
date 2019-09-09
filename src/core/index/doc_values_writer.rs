@@ -14,12 +14,10 @@
 use core::codec::{Codec, DocValuesConsumer, INT_BYTES, LONG_BYTES};
 use core::index::leaf_reader_wrapper::{CachedBinaryDVs, CachedNumericDVs};
 use core::index::sorter::{DVSortDocComparator, SorterDocComparator, SorterDocMap};
-use core::index::{
-    numeric_doc_values::NumericDocValues, DocValuesType, FieldInfo, SegmentWriteState, Term,
-};
+use core::index::{DocValuesType, FieldInfo, NumericDocValues, SegmentWriteState, Term};
 use core::search::sort_field::{SortField, SortFieldType, SortedNumericSelectorType};
 use core::search::NO_MORE_DOCS;
-use core::store::{DataInput, DataOutput, Directory};
+use core::store::{DataOutput, Directory};
 use core::util::bit_set::{BitSet, BitSetIterator, FixedBitSet};
 use core::util::bit_util::BitsRequired;
 use core::util::byte_block_pool::{ByteBlockPool, DirectTrackingAllocator};
@@ -43,6 +41,7 @@ use error::{
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt;
+use std::io::Read;
 use std::mem;
 
 pub trait DocValuesWriter {
@@ -2286,8 +2285,8 @@ impl<'a> Iterator for BinaryBytesIterator<'a> {
         if self.upto < self.size {
             let length = self.lengths_iter.next().unwrap() as usize;
             self.value.resize(length, 0u8);
-            if let Err(e) = self.input.read_bytes(&mut self.value, 0, length) {
-                return Some(Err(e));
+            if let Err(e) = self.input.read_exact(&mut self.value) {
+                return Some(Err(e.into()));
             }
             match self.docs_with_field.get(self.upto) {
                 Err(e) => {

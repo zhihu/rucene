@@ -480,7 +480,7 @@ pub trait TermVectorsWriter {
                     let payload_length = pos.read_vint()? as usize;
 
                     payload.resize(payload_length, 0u8);
-                    pos.read_bytes(&mut payload, 0, payload_length)?;
+                    pos.read_exact(&mut payload)?;
                 }
             }
 

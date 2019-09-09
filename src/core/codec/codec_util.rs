@@ -190,7 +190,7 @@ fn check_index_header_id<T: DataInput + ?Sized>(
     expected_id: &[u8],
 ) -> Result<()> {
     let mut actual_id = [0u8; ID_LENGTH];
-    data_input.read_bytes(&mut actual_id, 0, ID_LENGTH)?;
+    data_input.read_exact(&mut actual_id)?;
     if actual_id != expected_id {
         bail!(CorruptIndex(format!(
             "file mismatch, expected_id={}, got={}",
@@ -208,7 +208,7 @@ pub fn check_index_header_suffix<T: DataInput + ?Sized>(
 ) -> Result<()> {
     let suffix_len = data_input.read_byte()? as usize;
     let mut suffix_bytes = vec![0u8; suffix_len];
-    data_input.read_bytes(&mut suffix_bytes, 0, suffix_len)?;
+    data_input.read_exact(&mut suffix_bytes)?;
     let suffix = ::std::str::from_utf8(&suffix_bytes)?;
     if suffix != expected_suffix {
         bail!(CorruptIndex(format!(
@@ -254,7 +254,7 @@ pub fn verify_and_copy_index_header<I: IndexInput + ?Sized, O: DataOutput + ?Siz
     // we can't verify extension either, so we pass-through
     let suffix_length = input.read_byte()? as usize & 0xff;
     let mut suffix_bytes = vec![0u8; suffix_length];
-    input.read_bytes(&mut suffix_bytes, 0, suffix_length)?;
+    input.read_exact(&mut suffix_bytes)?;
 
     // now write the header we just verified
     output.write_int(CODEC_MAGIC)?;

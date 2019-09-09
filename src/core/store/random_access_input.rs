@@ -18,8 +18,8 @@ use error::Result;
 /// Unlike `IndexInput`, this has no concept of file position, all reads
 /// are absolute. However, like IndexInput, it is only intended for use by a single thread.
 pub trait RandomAccessInput: Send + Sync {
-    fn read_byte(&self, pos: i64) -> Result<u8>;
-    fn read_short(&self, pos: i64) -> Result<i16>;
-    fn read_int(&self, pos: i64) -> Result<i32>;
-    fn read_long(&self, pos: i64) -> Result<i64>;
+    fn read_byte(&self, pos: u64) -> Result<u8>;
+    fn read_short(&self, pos: u64) -> Result<i16>;
+    fn read_int(&self, pos: u64) -> Result<i32>;
+    fn read_long(&self, pos: u64) -> Result<i64>;
 }

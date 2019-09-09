@@ -121,44 +121,27 @@ impl From<Arc<Mmap>> for ReadOnlySource {
     }
 }
 
+#[derive(Clone)]
 pub struct MmapIndexInput {
     source: ReadOnlySource,
-    start: u64,
-    end: u64,
-    position: u64,
+    position: usize,
     slice: &'static [u8],
-    cursor: &'static [u8],
     description: String,
 }
+
+unsafe impl Send for MmapIndexInput {}
+unsafe impl Sync for MmapIndexInput {}
 
 impl From<ReadOnlySource> for MmapIndexInput {
     fn from(source: ReadOnlySource) -> Self {
         let len = source.len();
-        let slice_ptr = source.as_slice().as_ptr();
-        let cursor = unsafe { slice::from_raw_parts(slice_ptr, len as usize) };
-        let slice = <&[u8]>::clone(&cursor);
+        let slice_ptr: *const u8 = source.as_slice().as_ptr();
+        let slice = unsafe { slice::from_raw_parts(slice_ptr, len as usize) };
         MmapIndexInput {
             source,
             slice,
-            cursor,
-            start: 0,
-            end: len,
             position: 0,
             description: String::from(""),
-        }
-    }
-}
-
-impl Clone for MmapIndexInput {
-    fn clone(&self) -> Self {
-        MmapIndexInput {
-            slice: <&[u8]>::clone(&self.slice),
-            cursor: <&[u8]>::clone(&self.cursor),
-            source: self.source.clone(),
-            start: self.start,
-            end: self.end,
-            position: self.position,
-            description: self.description.clone(),
         }
     }
 }
@@ -210,20 +193,26 @@ impl MmapIndexInput {
             )));
         };
 
-        let slice_ptr = self.source.as_slice().as_ptr();
-        let start = self.start + offset as u64;
-        let cursor =
-            unsafe { slice::from_raw_parts(slice_ptr.offset(start as isize), length as usize) };
-        let slice = <&[u8]>::clone(&cursor);
+        let slice = &self.slice[offset as usize..(offset + length) as usize];
         Ok(MmapIndexInput {
             slice,
-            cursor,
             source: self.source.clone(),
-            start,
-            end: start + length as u64,
             position: 0,
             description: description.to_string(),
         })
+    }
+
+    #[inline]
+    fn check_random_access(&self, from: u64, len: u64) -> Result<()> {
+        if from + len > self.len() {
+            let msg = format!(
+                "invalid position, expecting 0 < pos < {}, got: {}",
+                self.len(),
+                from
+            );
+            bail!(IllegalArgument(msg));
+        }
+        Ok(())
     }
 }
 
@@ -237,21 +226,13 @@ impl IndexInput for MmapIndexInput {
     }
 
     fn seek(&mut self, pos: i64) -> Result<()> {
-        if pos < 0 || pos as u64 > self.len() {
-            let msg = format!(
-                "invalid position, expecting 0 < pos < {}, got: {}",
-                self.len(),
-                pos
-            );
-            debug_assert!(false, msg);
-            bail!(IllegalArgument(msg));
-        };
-        self.position = pos as u64;
+        self.position = pos as usize;
         Ok(())
     }
 
+    #[inline]
     fn len(&self) -> u64 {
-        self.end - self.start
+        self.slice.len() as u64
     }
 
     fn random_access_slice(&self, offset: i64, length: i64) -> Result<Box<dyn RandomAccessInput>> {
@@ -269,49 +250,70 @@ impl IndexInput for MmapIndexInput {
     }
 }
 
-impl DataInput for MmapIndexInput {}
+impl DataInput for MmapIndexInput {
+    fn read_byte(&mut self) -> Result<u8> {
+        let b = self.slice[self.position];
+        self.position += 1;
+        Ok(b)
+    }
+
+    //    fn read_vint(&mut self) -> Result<i32> {
+    //        let mut slice = &self.slice[self.position..];
+    //        let start = slice.as_ptr() as usize;
+    //        let v = slice.read_vint()?;
+    //        self.position += slice.as_ptr() as usize - start;
+    //        Ok(v)
+    //    }
+    //
+    //    fn read_vlong(&mut self) -> Result<i64> {
+    //        let mut slice = &self.slice[self.position..];
+    //        let start = slice.as_ptr() as usize;
+    //        let v = slice.read_vlong()?;
+    //        self.position += slice.as_ptr() as usize - start;
+    //        Ok(v)
+    //    }
+
+    fn skip_bytes(&mut self, count: usize) -> Result<()> {
+        if self.position + count > self.slice.len() {
+            bail!(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "failed to fill whole buffer"
+            ));
+        }
+        self.position += count;
+        Ok(())
+    }
+}
 
 impl Read for MmapIndexInput {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let mut slice = &self.cursor[self.position as usize..];
-        let count = slice.read(buf)?;
-        self.position += count as u64;
+        let count = buf.len().min(self.slice.len() - self.position);
+        buf[..count].copy_from_slice(&self.slice[self.position..self.position + count]);
+
+        self.position += count;
         Ok(count)
     }
 }
 
 impl RandomAccessInput for MmapIndexInput {
-    fn read_byte(&self, pos: i64) -> Result<u8> {
-        if pos < 0 || pos as u64 >= self.len() {
-            let msg = format!(
-                "invalid position, expecting 0 < pos < {}, got: {}",
-                self.len(),
-                pos
-            );
-            bail!(IllegalArgument(msg));
-        };
+    fn read_byte(&self, pos: u64) -> Result<u8> {
+        self.check_random_access(pos as u64, 1)?;
         Ok(self.slice[pos as usize])
     }
 
-    fn read_short(&self, pos: i64) -> Result<i16> {
-        Ok(
-            ((i16::from(RandomAccessInput::read_byte(self, pos)?) & 0xff) << 8)
-                | (i16::from(RandomAccessInput::read_byte(self, pos + 1)?) & 0xff),
-        )
+    fn read_short(&self, pos: u64) -> Result<i16> {
+        self.check_random_access(pos, 2)?;
+        (&self.slice[pos as usize..]).read_short()
     }
 
-    fn read_int(&self, pos: i64) -> Result<i32> {
-        Ok(
-            ((i32::from(RandomAccessInput::read_byte(self, pos)?) & 0xff) << 24)
-                | ((i32::from(RandomAccessInput::read_byte(self, pos + 1)?) & 0xff) << 16)
-                | ((i32::from(RandomAccessInput::read_byte(self, pos + 2)?) & 0xff) << 8)
-                | (i32::from(RandomAccessInput::read_byte(self, pos + 3)?) & 0xff),
-        )
+    fn read_int(&self, pos: u64) -> Result<i32> {
+        self.check_random_access(pos, 4)?;
+        (&self.slice[pos as usize..]).read_int()
     }
 
-    fn read_long(&self, pos: i64) -> Result<i64> {
-        Ok((i64::from(RandomAccessInput::read_int(self, pos)?) << 32)
-            | (i64::from(RandomAccessInput::read_int(self, pos + 4)?) & 0xffff_ffff))
+    fn read_long(&self, pos: u64) -> Result<i64> {
+        self.check_random_access(pos, 8)?;
+        (&self.slice[pos as usize..]).read_long()
     }
 }
 

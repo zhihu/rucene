@@ -460,7 +460,7 @@ impl<D: Directory, C: Codec> SegmentInfos<D, C> {
         )?;
 
         let mut id = [0; ID_LENGTH];
-        input.read_bytes(&mut id, 0, ID_LENGTH)?;
+        input.read_exact(&mut id)?;
         codec_util::check_index_header_suffix(input, &to_base36(generation as u64))?;
         let lucene_version = if format >= SEGMENT_VERSION_53 {
             Some(Version::new(
@@ -496,7 +496,7 @@ impl<D: Directory, C: Codec> SegmentInfos<D, C> {
                 return Err(format!("invalid hasID byte, got: {}", has_id).into());
             }
             let mut segment_id = [0; ID_LENGTH];
-            input.read_bytes(&mut segment_id, 0, ID_LENGTH)?;
+            input.read_exact(&mut segment_id)?;
             let codec: Arc<C> = Arc::new(read_codec(input, format < SEGMENT_VERSION_53)?);
             let mut info = codec.segment_info_format().read(
                 directory,

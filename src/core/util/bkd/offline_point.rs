@@ -16,6 +16,7 @@ use core::store::{DataOutput, Directory, IOContext, IndexInput, IndexOutput, Ind
 use core::util::bkd::{LongBitSet, PointReader, PointReaderEnum, PointType, PointWriter};
 use core::util::DocId;
 use error::{Error, ErrorKind::UnexpectedEOF, Result};
+use std::io::Read;
 use std::sync::Arc;
 
 pub struct OfflinePointReader {
@@ -257,7 +258,7 @@ impl PointReader for OfflinePointReader {
             self.count_left -= count;
             let mut buffer = vec![0u8; bytes_per_doc];
             while count_start > 0 {
-                self.input.read_bytes(&mut buffer, 0, bytes_per_doc)?;
+                self.input.read_exact(&mut buffer)?;
                 let ord = if self.long_ords {
                     OfflinePointReader::read_long(&buffer, packed_bytes_length + INT_BYTES as usize)
                 } else if self.single_value_per_doc {

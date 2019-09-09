@@ -13,7 +13,9 @@
 
 use core::index::NumericDocValues;
 use core::store::RandomAccessInput;
+use core::util::bit_util::UnsignedShift;
 use core::util::LongValues;
+
 use error::ErrorKind::IllegalArgument;
 use error::ErrorKind::RuntimeError;
 use error::Result;
@@ -170,7 +172,7 @@ impl LongValues for DirectPackedReader1 {
         let shift = 7 - (index as i32 & 0x7);
         let byte_dance = self
             .random_access_input
-            .read_byte(self.offset + (index >> 3))?;
+            .read_byte((self.offset + (index >> 3)) as u64)?;
 
         Ok(i64::from((byte_dance >> shift) & 0x1))
     }
@@ -211,7 +213,7 @@ impl LongValues for DirectPackedReader2 {
 
         let byte_dance = self
             .random_access_input
-            .read_byte(self.offset + (index >> 2))?;
+            .read_byte((self.offset + (index >> 2)) as u64)?;
 
         Ok(i64::from((byte_dance >> shift) & 0x3))
     }
@@ -252,7 +254,7 @@ impl LongValues for DirectPackedReader4 {
 
         let byte_dance = match self
             .random_access_input
-            .read_byte(self.offset + (index >> 1))
+            .read_byte((self.offset + (index >> 1)) as u64)
         {
             Ok(byte_dance) => byte_dance,
             Err(ref e) => bail!(RuntimeError(format!("{:?}", e))),
@@ -286,19 +288,10 @@ impl DirectPackedReader8 {
 
 impl LongValues for DirectPackedReader8 {
     fn get64(&self, index: i64) -> Result<i64> {
-        if index < 0 {
-            bail!(IllegalArgument(format!(
-                "negative index encountered: {}",
-                index
-            )));
-        }
-
-        let byte_dance = match self.random_access_input.read_byte(self.offset + index) {
-            Ok(byte_dance) => byte_dance,
-            Err(ref e) => bail!(RuntimeError(format!("{:?}", e))),
-        };
-
-        Ok(i64::from(byte_dance))
+        debug_assert!(index >= 0);
+        self.random_access_input
+            .read_byte((self.offset + index) as u64)
+            .map(i64::from)
     }
 }
 
@@ -326,22 +319,14 @@ impl DirectPackedReader12 {
 
 impl LongValues for DirectPackedReader12 {
     fn get64(&self, index: i64) -> Result<i64> {
-        if index < 0 {
-            bail!(IllegalArgument(format!(
-                "negative index encountered: {}",
-                index
-            )));
-        }
+        debug_assert!(index >= 0);
 
         let offset = (index * 3) >> 1;
         let shift = ((index + 1) & 0x1) << 2;
 
-        let word = match self.random_access_input.read_short(self.offset + offset) {
-            Ok(w) => w as u16,
-            Err(ref e) => bail!(RuntimeError(format!("{:?}", e))),
-        };
-
-        Ok(i64::from((word >> shift) & 0xFFF))
+        self.random_access_input
+            .read_short((self.offset + offset) as u64)
+            .map(|w| i64::from((w >> shift) & 0xFFF))
     }
 }
 
@@ -369,22 +354,11 @@ impl DirectPackedReader16 {
 
 impl LongValues for DirectPackedReader16 {
     fn get64(&self, index: i64) -> Result<i64> {
-        if index < 0 {
-            bail!(IllegalArgument(format!(
-                "negative index encountered: {}",
-                index
-            )));
-        }
+        debug_assert!(index >= 0);
 
-        let word = match self
-            .random_access_input
-            .read_short(self.offset + (index << 1))
-        {
-            Ok(w) => w as u16,
-            Err(ref e) => bail!(RuntimeError(format!("{:?}", e))),
-        };
-
-        Ok(i64::from(word))
+        self.random_access_input
+            .read_short((self.offset + (index << 1)) as u64)
+            .map(|w| i64::from(w as u16))
     }
 }
 
@@ -412,23 +386,13 @@ impl DirectPackedReader20 {
 
 impl LongValues for DirectPackedReader20 {
     fn get64(&self, index: i64) -> Result<i64> {
-        if index < 0 {
-            bail!(IllegalArgument(format!(
-                "negative index encountered: {}",
-                index
-            )));
-        }
+        debug_assert!(index >= 0);
 
         let offset = (index * 5) >> 1;
-
-        let dword = match self.random_access_input.read_int(self.offset + offset) {
-            Ok(dw) => (dw as u32) >> 8,
-            Err(ref e) => bail!(RuntimeError(format!("{:?}", e))),
-        };
-
-        let shift = ((index + 1) & 0x1) << 2;
-
-        Ok(i64::from((dword >> shift) & 0xFFFFF))
+        let shift = (((index + 1) & 0x1) << 2) + 8;
+        self.random_access_input
+            .read_int((self.offset + offset) as u64)
+            .map(|dw| i64::from(((dw as u32) >> shift) & 0xFFFFF))
     }
 }
 
@@ -456,15 +420,10 @@ impl DirectPackedReader24 {
 
 impl LongValues for DirectPackedReader24 {
     fn get64(&self, index: i64) -> Result<i64> {
-        if index < 0 {
-            bail!(IllegalArgument(format!(
-                "negative index encountered: {}",
-                index
-            )));
-        }
+        debug_assert!(index >= 0);
 
         self.random_access_input
-            .read_int(self.offset + 3 * index)
+            .read_int((self.offset + 3 * index) as u64)
             .map(|v| i64::from(v as u32 >> 8))
     }
 }
@@ -493,19 +452,13 @@ impl DirectPackedReader28 {
 
 impl LongValues for DirectPackedReader28 {
     fn get64(&self, index: i64) -> Result<i64> {
-        if index < 0 {
-            bail!(IllegalArgument(format!(
-                "negative index encountered: {}",
-                index
-            )));
-        }
+        debug_assert!(index >= 0);
 
         let offset = (index * 7) >> 1;
         let shift = ((index + 1) & 0x1) << 2;
-        match self.random_access_input.read_int(self.offset + offset) {
-            Ok(v) => Ok(i64::from((v as u32 >> shift) & 0x0FFF_FFFF)),
-            Err(ref e) => bail!(RuntimeError(format!("{:?}", e))),
-        }
+        self.random_access_input
+            .read_int((self.offset + offset) as u64)
+            .map(|v| i64::from((v as u32 >> shift) & 0x0FFF_FFFF))
     }
 }
 
@@ -533,20 +486,10 @@ impl DirectPackedReader32 {
 
 impl LongValues for DirectPackedReader32 {
     fn get64(&self, index: i64) -> Result<i64> {
-        if index < 0 {
-            bail!(IllegalArgument(format!(
-                "negative index encountered: {}",
-                index
-            )));
-        }
-
-        match self
-            .random_access_input
-            .read_int(self.offset + (index << 2))
-        {
-            Ok(v) => Ok(i64::from(v as u32)),
-            Err(ref e) => bail!(RuntimeError(format!("{:?}", e))),
-        }
+        debug_assert!(index >= 0);
+        self.random_access_input
+            .read_int((self.offset + (index << 2)) as u64)
+            .map(|v| i64::from(v as u32))
     }
 }
 
@@ -574,17 +517,10 @@ impl DirectPackedReader40 {
 
 impl LongValues for DirectPackedReader40 {
     fn get64(&self, index: i64) -> Result<i64> {
-        if index < 0 {
-            bail!(IllegalArgument(format!(
-                "negative index encountered: {}",
-                index
-            )));
-        }
-
-        match self.random_access_input.read_long(self.offset + index * 5) {
-            Ok(w) => Ok(((w as u64) >> 24) as i64),
-            Err(ref e) => bail!(RuntimeError(format!("{:?}", e))),
-        }
+        debug_assert!(index >= 0);
+        self.random_access_input
+            .read_long((self.offset + index * 5) as u64)
+            .map(|w| w.unsigned_shift(24))
     }
 }
 
@@ -612,17 +548,11 @@ impl DirectPackedReader48 {
 
 impl LongValues for DirectPackedReader48 {
     fn get64(&self, index: i64) -> Result<i64> {
-        if index < 0 {
-            bail!(IllegalArgument(format!(
-                "negative index encountered: {}",
-                index
-            )));
-        }
+        debug_assert!(index >= 0);
 
-        match self.random_access_input.read_long(self.offset + index * 6) {
-            Ok(w) => Ok(((w as u64) >> 16) as i64),
-            Err(ref e) => bail!(RuntimeError(format!("{:?}", e))),
-        }
+        self.random_access_input
+            .read_long((self.offset + index * 6) as u64)
+            .map(|v| v.unsigned_shift(16))
     }
 }
 
@@ -650,17 +580,11 @@ impl DirectPackedReader56 {
 
 impl LongValues for DirectPackedReader56 {
     fn get64(&self, index: i64) -> Result<i64> {
-        if index < 0 {
-            bail!(IllegalArgument(format!(
-                "negative index encountered: {}",
-                index
-            )));
-        }
+        debug_assert!(index >= 0);
 
-        match self.random_access_input.read_long(self.offset + 7 * index) {
-            Ok(v) => Ok(((v as u64) >> 8) as i64),
-            Err(ref e) => bail!(RuntimeError(format!("{:?}", e))),
-        }
+        self.random_access_input
+            .read_long((self.offset + 7 * index) as u64)
+            .map(|v| v.unsigned_shift(8))
     }
 }
 
@@ -688,15 +612,10 @@ impl DirectPackedReader64 {
 
 impl LongValues for DirectPackedReader64 {
     fn get64(&self, index: i64) -> Result<i64> {
-        if index < 0 {
-            bail!(IllegalArgument(format!(
-                "negative index encountered: {}",
-                index
-            )));
-        }
+        debug_assert!(index >= 0);
 
         self.random_access_input
-            .read_long(self.offset + (index << 3))
+            .read_long((self.offset + (index << 3)) as u64)
     }
 }
 

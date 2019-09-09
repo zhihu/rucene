@@ -32,11 +32,13 @@ use core::util::bit_set::{BitSet, FixedBitSet};
 use core::util::byte_block_pool::{ByteBlockAllocator, ByteBlockPool};
 use core::util::int_block_pool::IntBlockPool;
 use core::util::{Bits, BytesRef, Counter, DocId};
+
 use error::{ErrorKind, Result};
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
+use std::io::Read;
 use std::ptr;
 use std::sync::Arc;
 
@@ -900,8 +902,7 @@ where
             // has a payload
             let payload_len = self.pos_reader.read_vint()? as usize;
             self.payload.resize(payload_len, 0u8);
-            self.pos_reader
-                .read_bytes(&mut self.payload, 0, payload_len)?;
+            self.pos_reader.read_exact(&mut self.payload)?;
         } else {
             self.has_payload = false;
         }

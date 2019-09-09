@@ -16,7 +16,8 @@ use error::ErrorKind::*;
 use error::Result;
 
 use std::collections::{HashMap, HashSet};
-use std::io::Read;
+use std::io::{self, Read};
+use std::mem;
 
 pub trait DataInput: Read {
     fn read_byte(&mut self) -> Result<u8> {
@@ -55,14 +56,23 @@ pub trait DataInput: Read {
     }
 
     fn read_short(&mut self) -> Result<i16> {
-        Ok(((i16::from(self.read_byte()?) & 0xff) << 8) | (i16::from(self.read_byte()?) & 0xff))
+        let mut r = 0i16;
+        let bytes: &mut [u8] = unsafe {
+            let p = &mut r as *mut i16 as *mut u8;
+            std::slice::from_raw_parts_mut(p, mem::size_of::<i16>())
+        };
+        self.read_exact(bytes)?;
+        Ok(r.to_be())
     }
 
     fn read_int(&mut self) -> Result<i32> {
-        Ok(((i32::from(self.read_byte()?) & 0xff) << 24)
-            | ((i32::from(self.read_byte()?) & 0xff) << 16)
-            | ((i32::from(self.read_byte()?) & 0xff) << 8)
-            | (i32::from(self.read_byte()?) & 0xff))
+        let mut r = 0i32;
+        let bytes: &mut [u8] = unsafe {
+            let p = &mut r as *mut i32 as *mut u8;
+            std::slice::from_raw_parts_mut(p, mem::size_of::<i32>())
+        };
+        self.read_exact(bytes)?;
+        Ok(r.to_be())
     }
 
     fn read_vint(&mut self) -> Result<i32> {
@@ -105,7 +115,13 @@ pub trait DataInput: Read {
     }
 
     fn read_long(&mut self) -> Result<i64> {
-        Ok((i64::from(self.read_int()?) << 32) | (i64::from(self.read_int()?) & 0xffff_ffff))
+        let mut r = 0i64;
+        let bytes: &mut [u8] = unsafe {
+            let p: *mut u8 = &mut r as *mut i64 as *mut u8;
+            std::slice::from_raw_parts_mut(p, mem::size_of::<i64>())
+        };
+        self.read_exact(bytes)?;
+        Ok(r.to_be())
     }
 
     fn read_vlong(&mut self) -> Result<i64> {
@@ -201,7 +217,7 @@ pub trait DataInput: Read {
             buffer.set_len(length);
         };
 
-        self.read_bytes(&mut buffer, 0, length)?;
+        self.read_exact(&mut buffer)?;
         Ok(String::from_utf8(buffer)?)
     }
 
@@ -253,4 +269,28 @@ pub trait DataInput: Read {
     }
 }
 
-impl<'a> DataInput for &'a [u8] {}
+impl<'a> DataInput for &'a [u8] {
+    fn read_byte(&mut self) -> Result<u8> {
+        if self.len() < 1 {
+            bail!(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "failed to fill whole buffer"
+            ));
+        }
+        let b = self[0];
+        *self = &self[1..];
+        Ok(b)
+    }
+
+    fn skip_bytes(&mut self, count: usize) -> Result<()> {
+        if self.len() < count {
+            bail!(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "failed to fill whole buffer"
+            ));
+        }
+
+        *self = &self[count..];
+        Ok(())
+    }
+}

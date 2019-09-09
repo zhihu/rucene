@@ -18,6 +18,7 @@ use error::Result;
 
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
+use std::mem;
 
 /// Trait for performing write operations of Lucene's low-level data types.
 pub trait DataOutput: Write {
@@ -27,26 +28,23 @@ pub trait DataOutput: Write {
         Ok(())
     }
 
+    #[inline]
     fn write_bytes(&mut self, b: &[u8], offset: usize, length: usize) -> Result<()> {
-        let end = offset + length;
-        if b.len() < end {
-            bail!(IllegalArgument("b.len() < end".to_owned()));
-        }
-        let blob = &b[offset..end];
-        self.write_all(blob)?;
+        debug_assert!(offset + length <= b.len());
+        self.write_all(&b[offset..offset + length])?;
         Ok(())
     }
 
     fn write_short(&mut self, i: i16) -> Result<()> {
-        self.write_byte((i >> 8) as u8)?;
-        self.write_byte(i as u8)
+        let bytes = unsafe { mem::transmute::<_, [u8; 2]>(i.to_be()) };
+        self.write_all(&bytes)?;
+        Ok(())
     }
 
     fn write_int(&mut self, i: i32) -> Result<()> {
-        self.write_byte((i >> 24) as u8)?;
-        self.write_byte((i >> 16) as u8)?;
-        self.write_byte((i >> 8) as u8)?;
-        self.write_byte(i as u8)
+        let bytes = unsafe { mem::transmute::<_, [u8; 4]>(i.to_be()) };
+        self.write_all(&bytes)?;
+        Ok(())
     }
 
     fn write_vint(&mut self, i: i32) -> Result<()> {
@@ -63,8 +61,9 @@ pub trait DataOutput: Write {
     }
 
     fn write_long(&mut self, i: i64) -> Result<()> {
-        self.write_int((i >> 32) as i32)?;
-        self.write_int(i as i32)
+        let bytes = unsafe { mem::transmute::<_, [u8; 8]>(i.to_be()) };
+        self.write_all(&bytes)?;
+        Ok(())
     }
 
     fn _write_signed_vlong(&mut self, i: i64) -> Result<()> {
@@ -90,7 +89,7 @@ pub trait DataOutput: Write {
     fn write_string(&mut self, s: &str) -> Result<()> {
         let s = s.as_bytes();
         self.write_vint(s.len() as i32)?;
-        self.write_bytes(s, 0, s.len())?;
+        self.write_all(s)?;
         Ok(())
     }
 
@@ -128,7 +127,7 @@ pub trait DataOutput: Write {
                 left as usize
             };
             from.read_bytes(&mut copy_buffer, 0, to_copy)?;
-            self.write_bytes(&copy_buffer, 0, to_copy)?;
+            self.write_all(&copy_buffer[..to_copy])?;
             left -= to_copy as i64;
         }
         Ok(())

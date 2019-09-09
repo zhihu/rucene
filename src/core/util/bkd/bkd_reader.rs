@@ -114,8 +114,8 @@ impl BKDReader {
 
         let mut min_packed_value = vec![0u8; packed_bytes_length];
         let mut max_packed_value = vec![0u8; packed_bytes_length];
-        reader.read_bytes(&mut min_packed_value, 0, packed_bytes_length)?;
-        reader.read_bytes(&mut max_packed_value, 0, packed_bytes_length)?;
+        reader.read_exact(&mut min_packed_value)?;
+        reader.read_exact(&mut max_packed_value)?;
 
         for dim in 0..num_dims {
             let start = dim * bytes_per_dim;
@@ -137,12 +137,12 @@ impl BKDReader {
         if version >= BKD_VERSION_PACKED_INDEX {
             let num_bytes = reader.read_vint()? as usize;
             packed_index.resize(num_bytes, 0u8);
-            reader.read_bytes(&mut packed_index, 0, num_bytes)?;
+            reader.read_exact(&mut packed_index)?;
         } else {
             // legacy un-packed index
             let length = bytes_per_index_entry * num_leaves;
             split_packed_values.resize(length, 0u8);
-            reader.read_bytes(&mut split_packed_values, 0, length)?;
+            reader.read_exact(&mut split_packed_values)?;
 
             // Read the file pointers to the start of each leaf block:
             leaf_block_fps.resize(num_leaves, 0i64);

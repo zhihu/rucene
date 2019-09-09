@@ -645,7 +645,7 @@ impl Decompress for DeflateDecompressor {
         let compressed_length = input.read_vint()? as usize;
         let mut compressed = vec![0u8; compressed_length];
         // compressed.resize(compressed_length, 0u8);
-        input.read_bytes(&mut compressed, 0, compressed_length)?;
+        input.read_exact(&mut compressed)?;
         let mut decompressor = DeflateDecoder::new(compressed[0..compressed_length].as_ref());
 
         bytes.clear();

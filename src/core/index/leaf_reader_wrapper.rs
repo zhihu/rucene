@@ -42,6 +42,7 @@ use error::{ErrorKind::IllegalArgument, Result};
 
 use core::util::bit_set::FixedBitSet;
 use std::any::Any;
+use std::io::Read;
 use std::mem;
 use std::ops::DerefMut;
 use std::sync::Arc;
@@ -837,8 +838,7 @@ impl<T: PostingIterator> PostingIterator for SortingPostingsIterator<T> {
         if token & 1 != 0 {
             let payload_len = self.posting_input.read_vint()? as usize;
             self.payload.resize(payload_len, 0);
-            self.posting_input
-                .read_bytes(&mut self.payload, 0, payload_len)?;
+            self.posting_input.read_exact(&mut self.payload)?;
         } else {
             self.payload.clear();
         }

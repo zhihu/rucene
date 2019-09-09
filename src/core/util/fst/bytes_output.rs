@@ -223,7 +223,7 @@ impl OutputFactory for ByteSequenceOutputFactory {
         if len != 0 {
             let len = len as usize;
             let mut buffer: Vec<u8> = vec![0u8; len];
-            data_in.read_bytes(&mut buffer, 0, len)?;
+            data_in.read_exact(&mut buffer)?;
 
             Ok(ByteSequenceOutput::new(buffer))
         } else {

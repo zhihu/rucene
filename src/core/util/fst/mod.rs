@@ -156,7 +156,7 @@ impl io::Read for DirectionalBytesReader {
             if available < len {
                 len = available;
             }
-            b[..len].clone_from_slice(&self.bytes_slice()[self.pos..len]);
+            b[..len].copy_from_slice(&self.bytes_slice()[self.pos..len]);
 
             self.pos += len;
         }
@@ -235,15 +235,12 @@ pub mod tests {
 
     impl Read for TestBufferedDataIO {
         fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
-            let left = b.len();
-
-            for b in b.iter_mut().take(left) {
-                if let Ok(byte) = self.read_byte() {
-                    *b = byte;
-                }
+            let len = b.len().min(self.bytes.len() - self.read);
+            if len > 0 {
+                b[..len].copy_from_slice(&self.bytes[self.read..self.read + len]);
+                self.read += len;
             }
-
-            Ok(b.len() - left)
+            Ok(len)
         }
     }
 }
