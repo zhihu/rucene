@@ -261,9 +261,9 @@ impl<O: IndexOutput> Lucene50PostingsWriter<O> {
         self.last_doc_id = 0;
         self.last_block_doc_id = -1;
         self.skip_writer.reset_skip(
-            self.doc_out.file_pointer(),
-            self.pos_out.as_ref().unwrap().file_pointer(),
-            self.pay_out.as_ref().unwrap().file_pointer(),
+            self.doc_start_fp,
+            self.pos_start_fp,
+            self.pay_start_fp,
         );
     }
 
