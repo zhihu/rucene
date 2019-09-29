@@ -579,7 +579,12 @@ impl Read for StoreBytesReader {
                 b = &mut b[len..];
                 left -= len;
                 if self.next_read < len {
-                    self.block_index -= 1;
+                    // XXX: compatible with current code, don't coredump when block_index=0
+                    if self.block_index == 0 {
+                        self.block_index = usize::max_value();
+                    } else {
+                        self.block_index -= 1;
+                    }
                     self.next_read = self.block_size - 1;
                 } else {
                     self.next_read -= len;
