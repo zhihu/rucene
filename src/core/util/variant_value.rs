@@ -130,7 +130,7 @@ impl fmt::Display for VariantValue {
             VariantValue::Char(c) => write!(f, "{}", c),
             VariantValue::Short(s) => write!(f, "{}s", s),
             VariantValue::Int(ival) => write!(f, "{}", ival),
-            VariantValue::Long(lval) => write!(f, "{}L", lval),
+            VariantValue::Long(lval) => write!(f, "{}", lval),
             VariantValue::Float(fval) => write!(f, "{:.3}", fval),
             VariantValue::Double(d) => write!(f, "{:.6}", d),
             VariantValue::VString(ref s) => write!(f, "{}", s),
