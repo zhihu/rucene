@@ -384,7 +384,7 @@ mod tests {
     fn variant_long_test() {
         let ival = VariantValue::Long(28_754_383);
         let expr = format!("{}", ival);
-        assert_eq!(expr, "28754383L");
+        assert_eq!(expr, "28754383");
     }
 
     #[test]
