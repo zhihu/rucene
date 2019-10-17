@@ -11,47 +11,43 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::analysis::TokenStream;
-use core::attribute::{BytesTermAttribute, PayloadAttribute, TermToBytesRefAttribute};
-use core::attribute::{CharTermAttribute, OffsetAttribute, PositionIncrementAttribute};
-use core::doc::FieldType;
-use core::index::{Fieldable, IndexOptions};
-use core::util::{numeric::Numeric, BytesRef, VariantValue};
+use core::analysis::{BinaryTokenStream, StringTokenStream, TokenStream};
+use core::doc::{DocValuesType, IndexOptions};
+use core::util::{BytesRef, Numeric, VariantValue};
 
+use error::ErrorKind::IllegalArgument;
 use error::{ErrorKind, Result};
-
-use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::fmt;
 
 #[derive(Debug)]
 pub struct Field {
-    name: String,
+    field_name: String,
     field_type: FieldType,
-    fields_data: Option<VariantValue>,
+    field_data: Option<VariantValue>,
     boost: f32,
     token_stream: Option<Box<dyn TokenStream>>,
 }
 
 impl Field {
     pub fn new(
-        name: String,
+        field_name: String,
         field_type: FieldType,
-        fields_data: Option<VariantValue>,
+        field_data: Option<VariantValue>,
         token_stream: Option<Box<dyn TokenStream>>,
     ) -> Field {
         Field {
             field_type,
-            name,
-            fields_data,
+            field_name,
+            field_data,
             boost: 1.0_f32,
             token_stream,
         }
     }
 
-    pub fn new_bytes(name: String, bytes: Vec<u8>, field_type: FieldType) -> Self {
+    pub fn new_bytes(field_name: String, bytes: Vec<u8>, field_type: FieldType) -> Self {
         Field {
-            name,
-            fields_data: Some(VariantValue::Binary(bytes)),
+            field_name,
+            field_data: Some(VariantValue::Binary(bytes)),
             field_type,
             token_stream: None,
             boost: 1.0,
@@ -62,14 +58,14 @@ impl Field {
         self.boost = boost;
     }
 
-    pub fn set_fields_data(&mut self, data: Option<VariantValue>) {
-        self.fields_data = data;
+    pub fn set_field_data(&mut self, data: Option<VariantValue>) {
+        self.field_data = data;
     }
 }
 
 impl Fieldable for Field {
     fn name(&self) -> &str {
-        &self.name
+        &self.field_name
     }
 
     fn field_type(&self) -> &FieldType {
@@ -80,8 +76,8 @@ impl Fieldable for Field {
         self.boost
     }
 
-    fn fields_data(&self) -> Option<&VariantValue> {
-        self.fields_data.as_ref()
+    fn field_data(&self) -> Option<&VariantValue> {
+        self.field_data.as_ref()
     }
 
     // TODO currently this function should only be called once per doc field
@@ -89,7 +85,7 @@ impl Fieldable for Field {
         debug_assert_ne!(self.field_type.index_options, IndexOptions::Null);
 
         if !self.field_type.tokenized {
-            if let Some(ref field_data) = self.fields_data {
+            if let Some(ref field_data) = self.field_data {
                 match field_data {
                     VariantValue::VString(s) => {
                         return Ok(Box::new(StringTokenStream::new(s.clone())));
@@ -115,15 +111,15 @@ impl Fieldable for Field {
     }
 
     fn binary_value(&self) -> Option<&[u8]> {
-        self.fields_data.as_ref().and_then(|f| f.get_binary())
+        self.field_data.as_ref().and_then(|f| f.get_binary())
     }
 
     fn string_value(&self) -> Option<&str> {
-        self.fields_data.as_ref().and_then(|f| f.get_string())
+        self.field_data.as_ref().and_then(|f| f.get_string())
     }
 
     fn numeric_value(&self) -> Option<Numeric> {
-        self.fields_data.as_ref().and_then(|f| f.get_numeric())
+        self.field_data.as_ref().and_then(|f| f.get_numeric())
     }
 }
 
@@ -131,9 +127,9 @@ impl Clone for Field {
     fn clone(&self) -> Self {
         assert!(self.token_stream.is_none());
         Field {
-            name: self.name.clone(),
+            field_name: self.field_name.clone(),
             field_type: self.field_type.clone(),
-            fields_data: self.fields_data.clone(),
+            field_data: self.field_data.clone(),
             boost: self.boost,
             token_stream: None,
             // TODO, no used
@@ -141,251 +137,304 @@ impl Clone for Field {
     }
 }
 
-#[derive(Debug)]
-struct StringTokenStream {
-    term_attribute: CharTermAttribute,
-    offset_attribute: OffsetAttribute,
-    position_attribute: PositionIncrementAttribute,
-    payload_attribute: PayloadAttribute,
-    used: bool,
-    value: String,
+/// Represents a single field for indexing.
+///
+/// `IndexWriter` consumes Vec<Fieldable> as a document.
+pub trait Fieldable {
+    fn name(&self) -> &str;
+    fn field_type(&self) -> &FieldType;
+    fn boost(&self) -> f32;
+    fn field_data(&self) -> Option<&VariantValue>;
+    fn token_stream(&mut self) -> Result<Box<dyn TokenStream>>;
+    fn binary_value(&self) -> Option<&[u8]>;
+    fn string_value(&self) -> Option<&str>;
+    fn numeric_value(&self) -> Option<Numeric>;
 }
 
-impl StringTokenStream {
-    fn new(value: String) -> Self {
-        StringTokenStream {
-            term_attribute: CharTermAttribute::new(),
-            offset_attribute: OffsetAttribute::new(),
-            position_attribute: PositionIncrementAttribute::new(),
-            payload_attribute: PayloadAttribute::new(Vec::with_capacity(0)),
-            used: true,
-            value,
+impl<T: Fieldable + ?Sized> Fieldable for Box<T> {
+    fn name(&self) -> &str {
+        (**self).name()
+    }
+    fn field_type(&self) -> &FieldType {
+        (**self).field_type()
+    }
+    fn boost(&self) -> f32 {
+        (**self).boost()
+    }
+    fn field_data(&self) -> Option<&VariantValue> {
+        (**self).field_data()
+    }
+    fn token_stream(&mut self) -> Result<Box<dyn TokenStream>> {
+        (**self).token_stream()
+    }
+    fn binary_value(&self) -> Option<&[u8]> {
+        (**self).binary_value()
+    }
+    fn string_value(&self) -> Option<&str> {
+        (**self).string_value()
+    }
+    fn numeric_value(&self) -> Option<Numeric> {
+        (**self).numeric_value()
+    }
+}
+
+#[derive(Clone, PartialEq, Hash, Serialize, Debug)]
+pub struct FieldType {
+    pub stored: bool,
+    pub tokenized: bool,
+    pub store_term_vectors: bool,
+    pub store_term_vector_offsets: bool,
+    pub store_term_vector_positions: bool,
+    pub store_term_vector_payloads: bool,
+    pub omit_norms: bool,
+    pub index_options: IndexOptions,
+    pub doc_values_type: DocValuesType,
+    pub dimension_count: u32,
+    pub dimension_num_bytes: u32,
+}
+
+impl Default for FieldType {
+    fn default() -> Self {
+        FieldType {
+            stored: false,
+            tokenized: true,
+            store_term_vectors: false,
+            store_term_vector_offsets: false,
+            store_term_vector_positions: false,
+            store_term_vector_payloads: false,
+            omit_norms: false,
+            index_options: IndexOptions::Null,
+            doc_values_type: DocValuesType::Null,
+            dimension_count: 0,
+            dimension_num_bytes: 0,
         }
     }
 }
 
-impl TokenStream for StringTokenStream {
-    fn increment_token(&mut self) -> Result<bool> {
-        if self.used {
-            return Ok(false);
+/// Maximum number of bytes for each dimension
+pub const POINT_MAX_NUM_BYTES: u32 = 16;
+/// Maximum number of dimensions
+pub const POINT_MAX_DIMENSIONS: u32 = 8; // TODO should be replaced by BKDWriter.MAX_DIMS
+
+impl FieldType {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        stored: bool,
+        tokenized: bool,
+        store_term_vectors: bool,
+        store_term_vector_offsets: bool,
+        store_term_vector_positions: bool,
+        store_term_vector_payloads: bool,
+        omit_norms: bool,
+        index_options: IndexOptions,
+        doc_values_type: DocValuesType,
+        dimension_count: u32,
+        dimension_num_bytes: u32,
+    ) -> FieldType {
+        FieldType {
+            stored,
+            tokenized,
+            store_term_vectors,
+            store_term_vector_offsets,
+            store_term_vector_positions,
+            store_term_vector_payloads,
+            omit_norms,
+            index_options,
+            doc_values_type,
+            dimension_count,
+            dimension_num_bytes,
         }
-        self.clear_attributes();
-
-        self.term_attribute.append(&self.value);
-        self.offset_attribute.set_offset(0, self.value.len())?;
-        self.used = true;
-        Ok(true)
     }
 
-    fn end(&mut self) -> Result<()> {
-        self.end_attributes();
-        let final_offset = self.value.len();
-        self.offset_attribute.set_offset(final_offset, final_offset)
+    pub fn stored(&self) -> bool {
+        self.stored
     }
 
-    fn reset(&mut self) -> Result<()> {
-        self.used = false;
+    pub fn store_term_vectors(&self) -> bool {
+        self.store_term_vectors
+    }
+
+    pub fn store_term_vector_offsets(&self) -> bool {
+        self.store_term_vector_offsets
+    }
+
+    pub fn set_store_term_vector_offsets(&mut self, v: bool) {
+        if v {
+            self.store_term_vectors = true;
+        }
+        self.store_term_vector_offsets = v;
+    }
+
+    pub fn store_term_vector_positions(&self) -> bool {
+        self.store_term_vector_positions
+    }
+
+    pub fn set_store_term_vector_positions(&mut self, v: bool) {
+        if v {
+            self.store_term_vectors = true;
+        }
+        self.store_term_vector_positions = v;
+    }
+
+    pub fn store_term_vector_payloads(&self) -> bool {
+        self.store_term_vector_payloads
+    }
+
+    pub fn set_store_term_vector_payloads(&mut self, v: bool) {
+        if v {
+            self.store_term_vectors = true;
+        }
+        self.store_term_vector_payloads = v;
+    }
+
+    pub fn omit_norms(&self) -> bool {
+        self.omit_norms
+    }
+
+    pub fn index_options(&self) -> IndexOptions {
+        self.index_options
+    }
+
+    pub fn doc_values_type(&self) -> DocValuesType {
+        self.doc_values_type
+    }
+
+    pub fn set_index_options(&mut self, value: IndexOptions) {
+        self.index_options = value;
+    }
+
+    pub fn set_doc_values_type(&mut self, value: DocValuesType) {
+        self.doc_values_type = value;
+    }
+
+    pub fn tokenized(&self) -> bool {
+        self.tokenized
+    }
+
+    pub fn set_dimensions(&mut self, dimension_count: u32, dimension_num_bytes: u32) -> Result<()> {
+        if dimension_count > POINT_MAX_DIMENSIONS {
+            bail!(IllegalArgument(format!(
+                "dimension_count must be <={}",
+                POINT_MAX_DIMENSIONS
+            )));
+        }
+
+        if dimension_num_bytes > POINT_MAX_NUM_BYTES {
+            bail!(IllegalArgument(format!(
+                "dimension_num_bytes must be <={}",
+                POINT_MAX_NUM_BYTES
+            )));
+        }
+
+        if dimension_count == 0 && dimension_num_bytes != 0 {
+            bail!(IllegalArgument(format!(
+                "when dimension_count is 0, dimension_num_bytes must be 0, got {}",
+                dimension_num_bytes
+            )));
+        } else if dimension_num_bytes == 0 && dimension_count != 0 {
+            bail!(IllegalArgument(format!(
+                "when dimension_num_bytes is 0, dimension_count must be 0, got {}",
+                dimension_count
+            )));
+        }
+
+        self.dimension_count = dimension_count;
+        self.dimension_num_bytes = dimension_num_bytes;
+
         Ok(())
     }
-
-    fn offset_attribute_mut(&mut self) -> &mut OffsetAttribute {
-        &mut self.offset_attribute
-    }
-
-    fn offset_attribute(&self) -> &OffsetAttribute {
-        &self.offset_attribute
-    }
-
-    fn position_attribute_mut(&mut self) -> &mut PositionIncrementAttribute {
-        &mut self.position_attribute
-    }
-
-    fn term_bytes_attribute_mut(&mut self) -> &mut dyn TermToBytesRefAttribute {
-        &mut self.term_attribute
-    }
-
-    fn term_bytes_attribute(&self) -> &dyn TermToBytesRefAttribute {
-        &self.term_attribute
-    }
 }
 
-#[derive(Debug)]
-pub struct BinaryTokenStream {
-    term_attribute: BytesTermAttribute,
-    offset_attribute: OffsetAttribute,
-    position_attribute: PositionIncrementAttribute,
-    payload_attribute: PayloadAttribute,
-    used: bool,
-    value: BytesRef,
-}
-
-impl BinaryTokenStream {
-    pub fn new(value: BytesRef) -> Self {
-        BinaryTokenStream {
-            term_attribute: BytesTermAttribute::new(),
-            offset_attribute: OffsetAttribute::new(),
-            position_attribute: PositionIncrementAttribute::new(),
-            payload_attribute: PayloadAttribute::new(Vec::with_capacity(0)),
-            used: true,
-            value,
+impl fmt::Display for FieldType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        if let Ok(s) = ::serde_json::to_string_pretty(self) {
+            write!(f, "{}", s)?;
         }
-    }
-}
 
-impl TokenStream for BinaryTokenStream {
-    fn increment_token(&mut self) -> Result<bool> {
-        if self.used {
-            return Ok(false);
-        }
-        self.clear_attributes();
-
-        self.term_attribute.set_bytes(self.value.bytes());
-        self.used = true;
-        Ok(true)
-    }
-
-    fn end(&mut self) -> Result<()> {
-        self.end_attributes();
         Ok(())
     }
-
-    fn reset(&mut self) -> Result<()> {
-        self.used = false;
-        Ok(())
-    }
-
-    fn offset_attribute_mut(&mut self) -> &mut OffsetAttribute {
-        &mut self.offset_attribute
-    }
-
-    fn offset_attribute(&self) -> &OffsetAttribute {
-        &self.offset_attribute
-    }
-
-    fn position_attribute_mut(&mut self) -> &mut PositionIncrementAttribute {
-        &mut self.position_attribute
-    }
-
-    fn term_bytes_attribute_mut(&mut self) -> &mut dyn TermToBytesRefAttribute {
-        &mut self.term_attribute
-    }
-
-    fn term_bytes_attribute(&self) -> &dyn TermToBytesRefAttribute {
-        &self.term_attribute
-    }
 }
 
-pub const MAX_WORD_LEN: usize = 128;
+pub const NUMERIC_DOC_VALUES_FIELD_TYPE: FieldType = FieldType {
+    stored: false,
+    tokenized: false,
+    store_term_vectors: false,
+    store_term_vector_offsets: false,
+    store_term_vector_positions: false,
+    store_term_vector_payloads: false,
+    omit_norms: false,
+    index_options: IndexOptions::Null,
+    doc_values_type: DocValuesType::Numeric,
+    dimension_count: 0,
+    dimension_num_bytes: 0,
+};
 
-#[derive(Debug, Eq, PartialEq, Hash)]
-pub struct Word {
-    value: String,
-    begin: usize,
-    length: usize,
-}
+pub const SORTED_NUMERIC_DOC_VALUES_FIELD_TYPE: FieldType = FieldType {
+    stored: false,
+    tokenized: false,
+    store_term_vectors: false,
+    store_term_vector_offsets: false,
+    store_term_vector_positions: false,
+    store_term_vector_payloads: false,
+    omit_norms: false,
+    index_options: IndexOptions::Null,
+    doc_values_type: DocValuesType::SortedNumeric,
+    dimension_count: 0,
+    dimension_num_bytes: 0,
+};
 
-impl Word {
-    pub fn new(value: &str, begin: usize, length: usize) -> Word {
-        let mut value = value.to_string();
-        let length = if length > MAX_WORD_LEN {
-            value = value.chars().take(MAX_WORD_LEN).collect();
-            MAX_WORD_LEN
-        } else {
-            length
-        };
+pub const BINARY_DOC_VALUES_FIELD_TYPE: FieldType = FieldType {
+    stored: false,
+    tokenized: false,
+    store_term_vectors: false,
+    store_term_vector_offsets: false,
+    store_term_vector_positions: false,
+    store_term_vector_payloads: false,
+    omit_norms: false,
+    index_options: IndexOptions::Null,
+    doc_values_type: DocValuesType::Binary,
+    dimension_count: 0,
+    dimension_num_bytes: 0,
+};
 
-        Word {
-            value,
-            begin,
-            length,
-        }
-    }
-}
+pub const SORTED_DOC_VALUES_FIELD_TYPE: FieldType = FieldType {
+    stored: false,
+    tokenized: false,
+    store_term_vectors: false,
+    store_term_vector_offsets: false,
+    store_term_vector_positions: false,
+    store_term_vector_payloads: false,
+    omit_norms: false,
+    index_options: IndexOptions::Null,
+    doc_values_type: DocValuesType::Sorted,
+    dimension_count: 0,
+    dimension_num_bytes: 0,
+};
 
-#[derive(Debug)]
-pub struct WordTokenStream {
-    term_attribute: CharTermAttribute,
-    offset_attribute: OffsetAttribute,
-    position_attribute: PositionIncrementAttribute,
-    payload_attribute: PayloadAttribute,
-    values: Vec<Word>,
-    current: usize,
-}
+pub const SORTED_SET_DOC_VALUES_FIELD_TYPE: FieldType = FieldType {
+    stored: false,
+    tokenized: false,
+    store_term_vectors: false,
+    store_term_vector_offsets: false,
+    store_term_vector_positions: false,
+    store_term_vector_payloads: false,
+    omit_norms: false,
+    index_options: IndexOptions::Null,
+    doc_values_type: DocValuesType::SortedSet,
+    dimension_count: 0,
+    dimension_num_bytes: 0,
+};
 
-impl WordTokenStream {
-    pub fn new(values: Vec<Word>) -> WordTokenStream {
-        let mut elements = values;
-        let set: HashSet<_> = elements.drain(..).collect();
-        elements.extend(set.into_iter());
-
-        elements.sort_by(|a, b| {
-            let cmp = a.begin.cmp(&b.begin);
-            if cmp == Ordering::Equal {
-                a.length.cmp(&b.length)
-            } else {
-                cmp
-            }
-        });
-
-        WordTokenStream {
-            term_attribute: CharTermAttribute::new(),
-            offset_attribute: OffsetAttribute::new(),
-            position_attribute: PositionIncrementAttribute::new(),
-            payload_attribute: PayloadAttribute::new(Vec::with_capacity(0)),
-            values: elements,
-            current: 0,
-        }
-    }
-}
-
-impl TokenStream for WordTokenStream {
-    fn increment_token(&mut self) -> Result<bool> {
-        if self.current == self.values.len() {
-            return Ok(false);
-        }
-
-        self.clear_attributes();
-
-        let word: &Word = &self.values[self.current];
-        self.term_attribute.append(&word.value);
-        self.offset_attribute
-            .set_offset(word.begin, word.begin + word.length)?;
-        self.current += 1;
-        Ok(true)
-    }
-
-    fn end(&mut self) -> Result<()> {
-        self.end_attributes();
-        if let Some(word) = self.values.last() {
-            let final_offset = word.begin + word.length;
-            self.offset_attribute.set_offset(final_offset, final_offset)
-        } else {
-            self.offset_attribute.set_offset(0, 0)
-        }
-    }
-
-    fn reset(&mut self) -> Result<()> {
-        self.current = 0;
-        Ok(())
-    }
-
-    fn offset_attribute_mut(&mut self) -> &mut OffsetAttribute {
-        &mut self.offset_attribute
-    }
-
-    fn offset_attribute(&self) -> &OffsetAttribute {
-        &self.offset_attribute
-    }
-
-    fn position_attribute_mut(&mut self) -> &mut PositionIncrementAttribute {
-        &mut self.position_attribute
-    }
-
-    fn term_bytes_attribute_mut(&mut self) -> &mut dyn TermToBytesRefAttribute {
-        &mut self.term_attribute
-    }
-
-    fn term_bytes_attribute(&self) -> &dyn TermToBytesRefAttribute {
-        &self.term_attribute
-    }
-}
+pub const STORE_FIELD_TYPE: FieldType = FieldType {
+    stored: true,
+    tokenized: false,
+    store_term_vectors: false,
+    store_term_vector_offsets: false,
+    store_term_vector_positions: false,
+    store_term_vector_payloads: false,
+    omit_norms: false,
+    index_options: IndexOptions::Null,
+    doc_values_type: DocValuesType::Null,
+    dimension_count: 0,
+    dimension_num_bytes: 0,
+};

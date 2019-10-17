@@ -45,13 +45,13 @@ pub trait ImmutableBitSet: Bits {
     }
 }
 
-pub(crate) struct BitSetIterator<'a, S> {
+pub struct BitSetIterator<'a, S> {
     bit_set: &'a S,
     current: i32,
 }
 
 impl<'a, S: ImmutableBitSet> BitSetIterator<'a, S> {
-    pub(crate) fn new(bit_set: &'a S) -> Self {
+    pub fn new(bit_set: &'a S) -> Self {
         Self {
             bit_set,
             current: -1,

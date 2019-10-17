@@ -11,8 +11,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::index::NumericDocValues;
-use core::store::DataOutput;
+use core::codec::doc_values::NumericDocValues;
+use core::store::io::DataOutput;
 use core::util::packed::packed_misc::{
     check_block_size, copy_by_buf, get_mutable_by_format, num_blocks, Format, FormatAndBits,
     GrowableWriter, Mutable, MutableEnum, Reader,

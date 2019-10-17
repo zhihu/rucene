@@ -11,10 +11,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::codec::{codec_util, INT_BYTES, LONG_BYTES};
-use core::store::{DataOutput, Directory, IOContext, IndexInput, IndexOutput, IndexOutputRef};
+use core::codec::{footer_length, write_footer, INT_BYTES, LONG_BYTES};
+use core::store::directory::Directory;
+use core::store::io::{DataOutput, IndexInput, IndexOutput, IndexOutputRef};
+use core::store::IOContext;
 use core::util::bkd::{LongBitSet, PointReader, PointReaderEnum, PointType, PointWriter};
 use core::util::DocId;
+
 use error::{Error, ErrorKind::UnexpectedEOF, Result};
 use std::io::Read;
 use std::sync::Arc;
@@ -53,7 +56,7 @@ impl OfflinePointReader {
             }
         }
 
-        let footer_length = codec_util::footer_length();
+        let footer_length = footer_length();
         let file_length = temp_dir.file_length(temp_file_name)?;
 
         if (start + length) * (bytes_per_doc as usize) + footer_length > file_length as usize {
@@ -290,7 +293,7 @@ impl PointReader for OfflinePointReader {
     }
 }
 
-pub(crate) struct OfflinePointWriter<D: Directory> {
+pub struct OfflinePointWriter<D: Directory> {
     temp_dir: Arc<D>,
     output: Option<D::TempOutput>,
     name: String,
@@ -472,7 +475,7 @@ impl<D: Directory> PointWriter for OfflinePointWriter<D> {
         if !self.closed {
             debug_assert!(self.shared_reader.is_none());
             let output = self.output.as_mut().unwrap();
-            codec_util::write_footer(output)?;
+            write_footer(output)?;
             self.closed = true;
         }
 

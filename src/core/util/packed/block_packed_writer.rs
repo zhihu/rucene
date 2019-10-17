@@ -11,7 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::store::DataOutput;
+use core::store::io::DataOutput;
 use core::util::bit_util::{BitsRequired, UnsignedShift, ZigZagEncoding};
 use core::util::packed::packed_misc::{
     check_block_size, get_encoder, max_value, Format, PackedIntEncoder, PackedIntMeta, BPV_SHIFT,

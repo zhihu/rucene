@@ -11,9 +11,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::store::DataOutput;
+use core::store::io::DataOutput;
 use core::util::bit_util::BitsRequired;
-use core::util::packed::monotonic_block_packed_reader::MonotonicBlockPackedReader;
+use core::util::packed::MonotonicBlockPackedReader;
 use core::util::packed::{AbstractBlockPackedWriter, BaseBlockPackedWriter};
 use error::Result;
 

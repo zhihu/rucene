@@ -14,8 +14,8 @@
 use std::cmp::max;
 use std::io;
 
-use core::codec::codec_util;
-use core::store::{ByteArrayDataOutput, DataInput, DataOutput};
+use core::codec::{check_header, write_header};
+use core::store::io::{ByteArrayDataOutput, DataInput, DataOutput};
 use core::util::fst::bytes_store::{BytesStore, StoreBytesReader};
 use core::util::fst::fst_builder::{FstBuilder, Node};
 use core::util::fst::DirectionalBytesReader;
@@ -209,8 +209,7 @@ impl<F: OutputFactory> FST<F> {
 
         // Only reads most recent format; we don't have
         // back-compat promise for FSTs (they are experimental):
-        let version =
-            codec_util::check_header(data_in, FILE_FORMAT_NAME, VERSION_PACKED, VERSION_CURRENT)?;
+        let version = check_header(data_in, FILE_FORMAT_NAME, VERSION_PACKED, VERSION_CURRENT)?;
 
         if version < VERSION_PACKED_REMOVED && data_in.read_byte()? == 1 {
             bail!(ErrorKind::CorruptIndex(
@@ -950,7 +949,7 @@ impl<F: OutputFactory> FST<F> {
         if self.start_node == -1 {
             bail!(ErrorKind::IllegalState("call finish first!".into()));
         }
-        codec_util::write_header(out, FILE_FORMAT_NAME, VERSION_CURRENT)?;
+        write_header(out, FILE_FORMAT_NAME, VERSION_CURRENT)?;
         if VERSION_CURRENT < VERSION_PACKED_REMOVED {
             out.write_byte(0)?;
         }

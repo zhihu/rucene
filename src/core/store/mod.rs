@@ -11,60 +11,38 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod data_input;
-pub use self::data_input::*;
-
-mod index_input;
-pub use self::index_input::*;
-
-mod random_access_input;
-
-pub use self::random_access_input::*;
-
-mod checksum_index_input;
-pub use self::checksum_index_input::*;
-
-mod buffered_checksum_index_input;
-pub use self::buffered_checksum_index_input::*;
-
-mod mmap_index_input;
-pub use self::mmap_index_input::*;
-
-mod data_output;
-pub use self::data_output::*;
-
-mod index_output;
-pub use self::index_output::*;
-
-mod fs_index_output;
-pub use self::fs_index_output::*;
-
-mod byte_array_data_input;
-pub use self::byte_array_data_input::*;
-
-mod directory;
-pub use self::directory::*;
-
-mod fs_directory;
-pub use self::fs_directory::*;
+pub mod directory;
+pub mod io;
 
 mod lock;
+
 pub use self::lock::*;
 
-mod mmap_directory;
-pub use self::mmap_directory::*;
+use error::Result;
 
-mod growable_byte_array_output;
-pub use self::growable_byte_array_output::*;
+use std::sync::Arc;
+use std::time::Duration;
 
-mod tracking_directory_wrapper;
-pub use self::tracking_directory_wrapper::*;
+/// IOContext holds additional details on the merge/search context and
+/// specifies the context in which the Directory is being used for.
+#[derive(PartialEq, Eq, Clone, Copy)]
+pub enum IOContext {
+    Read(bool),
+    Default,
+    Flush(FlushInfo),
+    Merge(MergeInfo),
+}
 
-mod ram_output;
-pub use self::ram_output::*;
-
-mod rate_limiter;
-pub use self::rate_limiter::*;
+impl IOContext {
+    pub const READ: IOContext = IOContext::Read(false);
+    pub const READ_ONCE: IOContext = IOContext::Read(true);
+    pub fn is_merge(&self) -> bool {
+        match self {
+            IOContext::Merge(_) => true,
+            _ => false,
+        }
+    }
+}
 
 /// A FlushInfo provides information required for a FLUSH context.
 ///
@@ -108,5 +86,47 @@ impl MergeInfo {
             is_external,
             merge_max_num_segments,
         }
+    }
+}
+
+/// Trait base class to rate limit IO.
+///
+/// Typically implementations are shared across multiple IndexInputs
+/// or IndexOutputs (for example those involved all merging).  Those IndexInputs and
+/// IndexOutputs would call {@link #pause} whenever the have read
+/// or written more than {@link #getMinPauseCheckBytes} bytes.
+
+pub trait RateLimiter: Sync + Send {
+    /// Sets an updated MB per second rate limit.
+    fn set_mb_per_sec(&self, mb_per_sec: f64);
+
+    /// The current MB per second rate limit.
+    fn mb_per_sec(&self) -> f64;
+
+    /// Pauses, if necessary, to keep the instantaneous IO rate
+    /// at or below the target
+    ///
+    /// Note: the implementation is thread-safe
+    fn pause(&self, bytes: u64) -> Result<Duration>;
+
+    /// how many bytes caller should add up isself before invoking `#pause`
+    fn min_pause_check_bytes(&self) -> u64;
+}
+
+impl RateLimiter for Arc<RateLimiter> {
+    fn set_mb_per_sec(&self, mb_per_sec: f64) {
+        (**self).set_mb_per_sec(mb_per_sec);
+    }
+
+    fn mb_per_sec(&self) -> f64 {
+        (**self).mb_per_sec()
+    }
+
+    fn pause(&self, bytes: u64) -> Result<Duration> {
+        (**self).pause(bytes)
+    }
+
+    fn min_pause_check_bytes(&self) -> u64 {
+        (**self).min_pause_check_bytes()
     }
 }

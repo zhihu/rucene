@@ -11,7 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::store::{DataInput, DataOutput, IndexInput, RandomAccessInput};
+use core::store::io::{DataInput, DataOutput, IndexInput, RandomAccessInput};
 use core::util::fst::BytesReader;
 
 use error::{ErrorKind, Result};

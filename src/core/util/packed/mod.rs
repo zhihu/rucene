@@ -28,13 +28,16 @@ mod direct_writer;
 pub use self::direct_writer::*;
 
 mod monotonic_block_packed_reader;
-pub(crate) use self::monotonic_block_packed_reader::*;
+
+pub use self::monotonic_block_packed_reader::*;
 
 mod monotonic_block_packed_writer;
 
 pub use self::monotonic_block_packed_writer::*;
 
-pub mod packed_misc;
+mod packed_misc;
+
+pub use self::packed_misc::*;
 
 mod packed_ints_null_reader;
 

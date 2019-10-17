@@ -13,14 +13,14 @@
 
 use error::Result;
 
-use core::store::{IndexOutputRef, InvalidIndexOutput};
+use core::store::io::{IndexOutputRef, InvalidIndexOutput};
 use core::util::bkd::{PointReader, PointWriter};
 use core::util::bkd::{PointReaderEnum, PointType};
 use core::util::DocId;
 
 use std::cell::RefCell;
 
-pub(crate) struct HeapPointReader {
+pub struct HeapPointReader {
     point_writer: *const HeapPointWriter,
     curr_read: isize,
     end: usize,
@@ -81,7 +81,7 @@ impl PointReader for HeapPointReader {
     }
 }
 
-pub(crate) struct HeapPointWriter {
+pub struct HeapPointWriter {
     pub doc_ids: Vec<DocId>,
     pub ords_long: Vec<i64>,
     pub ords: Vec<i32>,

@@ -19,8 +19,8 @@ use core::highlight::{
     FragmentsBuilder,
 };
 
-use core::index::{IndexReader, LeafReaderContext};
-use core::search::Query;
+use core::index::reader::{IndexReader, LeafReaderContext};
+use core::search::query::Query;
 use core::util::DocId;
 use error::Result;
 

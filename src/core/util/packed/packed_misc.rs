@@ -11,8 +11,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::codec::codec_util;
-use core::store::{DataInput, DataOutput, IndexInput};
+use core::codec::{check_header, write_header as codec_util_write_header};
+use core::store::io::{DataInput, DataOutput, IndexInput};
 use core::util::bit_util::{BitsRequired, UnsignedShift, ZigZagEncoding};
 use core::util::packed::packed_ints_null_reader::PackedIntsNullReader;
 
@@ -110,7 +110,7 @@ pub fn get_reader_no_header<T: DataInput + ?Sized>(
 }
 
 pub fn get_reader<T: DataInput + ?Sized>(input: &mut T) -> Result<ReaderEnum> {
-    let version = codec_util::check_header(input, CODEC_NAME, VERSION_START, VERSION_CURRENT)?;
+    let version = check_header(input, CODEC_NAME, VERSION_START, VERSION_CURRENT)?;
     let bits_per_value = input.read_vint()?;
     debug_assert!(
         bits_per_value > 0 && bits_per_value <= 64,
@@ -1361,7 +1361,8 @@ pub struct Packed64 {
 }
 
 const PACKED64_BLOCK_SIZE: i32 = 64;
-const PACKED64_BLOCK_BITS: usize = 6; // The #bits representing BLOCK_SIZE
+const PACKED64_BLOCK_BITS: usize = 6;
+// The #bits representing BLOCK_SIZE
 const PACKED64_BLOCK_MOD_MASK: i64 = (PACKED64_BLOCK_SIZE - 1) as i64; // x % BLOCK_SIZE
 
 impl Packed64 {
@@ -2327,7 +2328,7 @@ impl PackedWriter {
 impl Writer for PackedWriter {
     fn write_header<T: DataOutput + ?Sized>(&self, out: &mut T) -> Result<()> {
         debug_assert_ne!(self.value_count, -1);
-        codec_util::write_header(out, CODEC_NAME, VERSION_CURRENT)?;
+        codec_util_write_header(out, CODEC_NAME, VERSION_CURRENT)?;
         out.write_vint(self.bits_per_value)?;
         out.write_vint(self.value_count)?;
         out.write_vint(self.get_format().get_id())?;
@@ -2746,7 +2747,8 @@ impl BulkOperationPackedSingleBlock {
         values[values_offset] = (block & self.mask) as i32;
         values_offset += 1;
         for _i in 1..self.value_count {
-            block = block.unsigned_shift(self.bits_per_value);;
+            block = block.unsigned_shift(self.bits_per_value);
+            ;
             values[values_offset] = (block & self.mask) as i32;
             values_offset += 1;
         }

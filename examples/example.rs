@@ -1,20 +1,20 @@
 extern crate rucene;
 
 use rucene::core::analysis::WhitespaceTokenizer;
-use rucene::core::doc::{Field, FieldType, NumericDocValuesField};
-use rucene::core::index::index_writer_config::IndexWriterConfig;
-use rucene::core::index::{Fieldable, IndexOptions, IndexReader, IndexWriter, Term};
+use rucene::core::doc::{Field, FieldType, Fieldable, IndexOptions, NumericDocValuesField, Term};
+use rucene::core::index::reader::IndexReader;
+use rucene::core::index::writer::{IndexWriter, IndexWriterConfig};
 use rucene::core::search::collector::TopDocsCollector;
-use rucene::core::search::searcher::{DefaultIndexSearcher, IndexSearcher};
-use rucene::core::search::TermQuery;
-use rucene::core::store::FSDirectory;
+use rucene::core::search::query::TermQuery;
+use rucene::core::search::{DefaultIndexSearcher, IndexSearcher};
+use rucene::core::store::directory::FSDirectory;
 
 use std::fs;
 use std::io;
 use std::path::Path;
 use std::sync::Arc;
 
-use rucene::core::highlight::fvh_highlighter::FastVectorHighlighter;
+use rucene::core::highlight::FastVectorHighlighter;
 use rucene::core::highlight::FieldQuery;
 use rucene::core::util::VariantValue;
 use rucene::error::Result;
@@ -29,7 +29,7 @@ fn indexed_text_field_type() -> FieldType {
 }
 
 fn new_index_text_field(field_name: String, text: String) -> Field {
-    let token_stream = WhitespaceTokenizer::new(StringReader::new(text));
+    let token_stream = WhitespaceTokenizer::new(Box::new(StringReader::new(text)));
     Field::new(
         field_name,
         indexed_text_field_type(),
@@ -132,7 +132,7 @@ fn main() -> Result<()> {
                 println!(
                     "      field: {}, value: {}",
                     s.field.name(),
-                    s.field.fields_data().unwrap()
+                    s.field.field_data().unwrap()
                 );
             }
         }

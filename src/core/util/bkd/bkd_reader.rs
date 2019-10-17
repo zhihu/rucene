@@ -11,9 +11,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::codec::codec_util;
-use core::index::{DocMap, IntersectVisitor, LiveDocsDocMap, Relation};
-use core::store::{ByteArrayDataInput, ByteArrayRef, DataInput, IndexInput};
+use core::codec::check_header;
+use core::codec::points::{IntersectVisitor, Relation};
+use core::index::merge::{DocMap, LiveDocsDocMap};
+use core::store::io::{ByteArrayDataInput, ByteArrayRef, DataInput, IndexInput};
 use core::util::bkd::DocIdsWriter;
 use core::util::bkd::{
     BKD_CODEC_NAME, BKD_VERSION_COMPRESSED_DOC_IDS, BKD_VERSION_COMPRESSED_VALUES,
@@ -90,7 +91,7 @@ pub struct BKDReader {
 impl BKDReader {
     pub fn new(input: Arc<dyn IndexInput>) -> Result<BKDReader> {
         let mut reader: Box<dyn IndexInput> = input.as_ref().clone()?;
-        let version = codec_util::check_header(
+        let version = check_header(
             reader.as_mut(),
             BKD_CODEC_NAME,
             BKD_VERSION_START,
@@ -1299,7 +1300,7 @@ impl<'a, IV: IntersectVisitor + 'a> IntersectVisitor for MergeIntersectVisitor<'
 }
 
 #[derive(Default, Clone)]
-pub(crate) struct StubIntersectVisitor {}
+pub struct StubIntersectVisitor {}
 
 impl IntersectVisitor for StubIntersectVisitor {
     fn visit(&mut self, _doc_id: i32) -> Result<()> {

@@ -11,24 +11,28 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use error::Result;
+mod top_docs;
 
-use core::codec::Codec;
-use core::index::LeafReaderContext;
-use core::search::Scorer;
-use core::util::DocId;
-
-pub mod top_docs;
 pub use self::top_docs::*;
 
 mod early_terminating;
+
 pub use self::early_terminating::*;
 
 mod timeout;
+
 pub use self::timeout::*;
 
 mod chain;
+
 pub use self::chain::*;
+
+use error::Result;
+
+use core::codec::Codec;
+use core::index::reader::LeafReaderContext;
+use core::search::scorer::Scorer;
+use core::util::DocId;
 
 error_chain! {
     types {

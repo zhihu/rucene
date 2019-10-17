@@ -18,26 +18,105 @@ use std::sync::{Arc, RwLock};
 
 use crossbeam::channel::{unbounded, Receiver, Sender};
 
-use core::codec::{Codec, CodecTermState};
-use core::index::{
-    get_terms, IndexReader, LeafReaderContext, LeafReaderContextPtr, SearchLeafReader,
+use core::codec::postings::FieldsProducer;
+use core::codec::{get_terms, TermIterator, TermState};
+use core::codec::{Codec, CodecTermState, Terms};
+use core::doc::Term;
+use core::index::reader::{IndexReader, LeafReaderContext, LeafReaderContextPtr, SearchLeafReader};
+use core::search::cache::{
+    LRUQueryCache, QueryCache, QueryCachingPolicy, UsageTrackingQueryCachingPolicy,
 };
-use core::index::{Term, TermContext, Terms};
-use core::search::bulk_scorer::BulkScorer;
-use core::search::cache_policy::{QueryCachingPolicy, UsageTrackingQueryCachingPolicy};
 use core::search::collector::{self, Collector, ParallelLeafCollector, SearchCollector};
 use core::search::explanation::Explanation;
-use core::search::match_all::{ConstantScoreQuery, MatchAllDocsQuery};
-use core::search::query_cache::{LRUQueryCache, QueryCache};
+use core::search::query::{ConstantScoreQuery, MatchAllDocsQuery, Query, TermQuery, Weight};
+use core::search::scorer::{BulkScorer, Scorer};
+use core::search::similarity::{
+    BM25Similarity, SimScorer, SimWeight, Similarity, SimilarityProducer,
+};
 use core::search::statistics::{CollectionStatistics, TermStatistics};
-use core::search::BM25Similarity;
-use core::search::TermQuery;
-use core::search::{Query, Scorer, Weight, NO_MORE_DOCS};
-use core::search::{SimScorer, SimWeight, Similarity, SimilarityProducer};
-use core::util::thread_pool::{DefaultContext, ThreadPool, ThreadPoolBuilder};
+use core::search::NO_MORE_DOCS;
+use core::util::external::{DefaultContext, ThreadPool, ThreadPoolBuilder};
 use core::util::{Bits, DocId, KeyedContext};
 
 use error::{Error, ErrorKind, Result};
+
+pub struct TermContext<S: TermState> {
+    pub doc_freq: i32,
+    pub total_term_freq: i64,
+    pub states: Vec<(DocId, S)>,
+}
+
+impl<S: TermState> TermContext<S> {
+    pub fn new<TI, Tm, FP, C, IR>(reader: &IR) -> TermContext<S>
+    where
+        TI: TermIterator<TermState = S>,
+        Tm: Terms<Iterator = TI>,
+        FP: FieldsProducer<Terms = Tm> + Clone,
+        C: Codec<FieldsProducer = FP>,
+        IR: IndexReader<Codec = C> + ?Sized,
+    {
+        let doc_freq = 0;
+        let total_term_freq = 0;
+        let states = Vec::with_capacity(reader.leaves().len());
+        TermContext {
+            doc_freq,
+            total_term_freq,
+            states,
+        }
+    }
+
+    pub fn build<TI, Tm, FP, C, IR>(&mut self, reader: &IR, term: &Term) -> Result<()>
+    where
+        TI: TermIterator<TermState = S>,
+        Tm: Terms<Iterator = TI>,
+        FP: FieldsProducer<Terms = Tm> + Clone,
+        C: Codec<FieldsProducer = FP>,
+        IR: IndexReader<Codec = C> + ?Sized,
+    {
+        for reader in reader.leaves() {
+            if let Some(terms) = reader.reader.terms(&term.field)? {
+                let mut terms_enum = terms.iterator()?;
+                if terms_enum.seek_exact(&term.bytes)? {
+                    // TODO add TermStates if someone need it
+                    let doc_freq = terms_enum.doc_freq()?;
+                    let total_term_freq = terms_enum.total_term_freq()?;
+                    self.accumulate_statistics(doc_freq, total_term_freq as i64);
+                    self.states
+                        .push((reader.doc_base(), terms_enum.term_state()?));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn accumulate_statistics(&mut self, doc_freq: i32, total_term_freq: i64) {
+        self.doc_freq += doc_freq;
+        if self.total_term_freq >= 0 && total_term_freq >= 0 {
+            self.total_term_freq += total_term_freq
+        } else {
+            self.total_term_freq = -1
+        }
+    }
+
+    pub fn get_term_state<C: Codec>(&self, reader: &LeafReaderContext<'_, C>) -> Option<&S> {
+        for (doc_base, state) in &self.states {
+            if *doc_base == reader.doc_base {
+                return Some(state);
+            }
+        }
+        None
+    }
+
+    pub fn term_states(&self) -> HashMap<DocId, S> {
+        let mut term_states = HashMap::new();
+        for (doc_base, term_state) in &self.states {
+            term_states.insert(*doc_base, term_state.clone());
+        }
+
+        term_states
+    }
+}
 
 /// Implements search over a single IndexReader.
 ///
@@ -116,23 +195,6 @@ impl SimScorer for NonScoringSimScorer {
     }
 }
 
-pub trait IndexSearcher<C: Codec>: SearchPlanBuilder<C> {
-    type Reader: IndexReader<Codec = C> + ?Sized;
-    fn reader(&self) -> &Self::Reader;
-
-    fn search<S>(&self, query: &dyn Query<C>, collector: &mut S) -> Result<()>
-    where
-        S: SearchCollector;
-
-    fn search_parallel<S>(&self, query: &dyn Query<C>, collector: &mut S) -> Result<()>
-    where
-        S: SearchCollector;
-
-    fn count(&self, query: &dyn Query<C>) -> Result<i32>;
-
-    fn explain(&self, query: &dyn Query<C>, doc: DocId) -> Result<Explanation>;
-}
-
 /// trait that used for build `Weight` and `Similarity` for `Query`.
 pub trait SearchPlanBuilder<C: Codec> {
     /// num docs of the reader in searcher, same as IndexSearcher::reader()::num_docs()
@@ -167,6 +229,23 @@ pub trait SearchPlanBuilder<C: Codec> {
     ) -> TermStatistics;
 
     fn collections_statistics(&self, field: &str) -> Result<CollectionStatistics>;
+}
+
+pub trait IndexSearcher<C: Codec>: SearchPlanBuilder<C> {
+    type Reader: IndexReader<Codec = C> + ?Sized;
+    fn reader(&self) -> &Self::Reader;
+
+    fn search<S>(&self, query: &dyn Query<C>, collector: &mut S) -> Result<()>
+    where
+        S: SearchCollector;
+
+    fn search_parallel<S>(&self, query: &dyn Query<C>, collector: &mut S) -> Result<()>
+    where
+        S: SearchCollector;
+
+    fn count(&self, query: &dyn Query<C>) -> Result<i32>;
+
+    fn explain(&self, query: &dyn Query<C>, doc: DocId) -> Result<Explanation>;
 }
 
 ///  Implements search over a single IndexReader.
@@ -795,11 +874,9 @@ mod tests {
     use super::*;
     use core::codec::tests::TestCodec;
     use core::index::tests::*;
-    use core::search::collector::top_docs::*;
     use core::search::collector::*;
+    use core::search::query::TermQuery;
     use core::search::tests::*;
-    use core::search::TermQuery;
-    use core::search::*;
     use core::util::DocId;
 
     struct MockQuery {

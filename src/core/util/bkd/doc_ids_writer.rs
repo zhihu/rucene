@@ -13,8 +13,8 @@
 
 use error::{ErrorKind::UnsupportedOperation, Result};
 
-use core::index::IntersectVisitor;
-use core::store::{DataOutput, IndexInput};
+use core::codec::points::IntersectVisitor;
+use core::store::io::{DataOutput, IndexInput};
 use core::util::bit_util::UnsignedShift;
 use core::util::DocId;
 

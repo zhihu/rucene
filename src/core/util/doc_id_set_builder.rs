@@ -11,8 +11,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::index::PointValues;
-use core::index::Terms;
+use core::codec::points::PointValues;
+use core::codec::Terms;
 use core::search::{DocIterator, NO_MORE_DOCS};
 use core::util::bit_set::{BitSet, FixedBitSet};
 use core::util::bit_util::{BitsRequired, UnsignedShift};

@@ -11,8 +11,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::index::NumericDocValues;
-use core::store::RandomAccessInput;
+use core::codec::doc_values::NumericDocValues;
+use core::store::io::RandomAccessInput;
 use core::util::bit_util::UnsignedShift;
 use core::util::LongValues;
 
@@ -24,6 +24,7 @@ use core::util::DocId;
 use std::sync::Arc;
 
 pub struct DirectReader;
+
 impl DirectReader {
     pub fn get_instance(
         slice: Arc<dyn RandomAccessInput>,

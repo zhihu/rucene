@@ -18,10 +18,10 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::usize;
 
 use core::codec::Codec;
-use core::index::LeafReaderContext;
+use core::index::reader::LeafReaderContext;
 use core::search::collector::{Collector, ParallelLeafCollector, SearchCollector};
-use core::search::top_docs::{ScoreDoc, ScoreDocHit, TopDocs, TopScoreDocs};
-use core::search::Scorer;
+use core::search::scorer::Scorer;
+use core::search::sort_field::{ScoreDoc, ScoreDocHit, TopDocs, TopScoreDocs};
 use core::util::DocId;
 use error::{ErrorKind::IllegalState, Result, ResultExt};
 
@@ -233,8 +233,8 @@ mod tests {
     use super::*;
     use core::search::tests::*;
 
+    use core::index::reader::IndexReader;
     use core::index::tests::*;
-    use core::index::IndexReader;
     use core::search::*;
 
     #[test]

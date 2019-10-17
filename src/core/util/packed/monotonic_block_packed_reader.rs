@@ -11,10 +11,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::index::NumericDocValues;
-use core::store::IndexInput;
+use core::codec::doc_values::NumericDocValues;
+use core::store::io::IndexInput;
 use core::util::packed::PackedIntsNullReader;
-use core::util::packed_misc::{self, Reader, ReaderEnum};
+use core::util::packed::{self, Reader, ReaderEnum};
 use core::util::{DocId, LongValues};
 use error::ErrorKind::{CorruptIndex, IllegalArgument};
 use error::Result;
@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 /// Provides random access to a stream written with MonotonicBlockPackedWriter
 #[derive(Clone)]
-pub(crate) struct MonotonicBlockPackedReader {
+pub struct MonotonicBlockPackedReader {
     inner: Arc<MonotonicBlockPackedReaderInner>,
 }
 
@@ -50,13 +50,10 @@ impl MonotonicBlockPackedReader {
         value_count: usize,
         direct: bool,
     ) -> Result<MonotonicBlockPackedReader> {
-        let block_shift = packed_misc::check_block_size(
-            block_size,
-            packed_misc::MIN_BLOCK_SIZE,
-            packed_misc::MAX_BLOCK_SIZE,
-        );
+        let block_shift =
+            packed::check_block_size(block_size, packed::MIN_BLOCK_SIZE, packed::MAX_BLOCK_SIZE);
         let block_mask = block_size - 1;
-        let num_blocks = packed_misc::num_blocks(value_count, block_size);
+        let num_blocks = packed::num_blocks(value_count, block_size);
         let mut min_values = vec![0_i64; num_blocks];
         let mut averages = vec![0.0_f32; num_blocks];
         let mut sub_readers = Vec::new();
@@ -80,9 +77,9 @@ impl MonotonicBlockPackedReader {
                 if direct {
                     unimplemented!();
                 } else {
-                    let one_reader = packed_misc::get_reader_no_header(
+                    let one_reader = packed::get_reader_no_header(
                         input,
-                        packed_misc::Format::Packed,
+                        packed::Format::Packed,
                         packed_ints_version,
                         size,
                         bits_per_value,

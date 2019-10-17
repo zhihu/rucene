@@ -12,9 +12,9 @@
 // limitations under the License.
 
 use core::codec::Codec;
-use core::index::LeafReaderContext;
+use core::index::reader::LeafReaderContext;
 use core::search::collector::{Collector, ParallelLeafCollector, SearchCollector};
-use core::search::Scorer;
+use core::search::scorer::Scorer;
 use core::util::DocId;
 use error::Result;
 

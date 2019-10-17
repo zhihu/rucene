@@ -11,11 +11,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::analysis::char_buffer::CharacterBuffer;
-use core::analysis::TokenStream;
-use core::attribute::PositionIncrementAttribute;
-use core::attribute::TermToBytesRefAttribute;
-use core::attribute::{CharTermAttribute, OffsetAttribute};
+use core::analysis::{
+    CharTermAttribute, OffsetAttribute, PositionAttribute, TermToBytesRefAttribute,
+};
+use core::analysis::{CharacterBuffer, TokenStream};
 
 use error::Result;
 
@@ -31,19 +30,19 @@ const IO_BUFFER_SIZE: usize = 4096;
 ///
 /// Note: That definition explicitly excludes the non-breaking space.
 /// Adjacent sequences of non-Whitespace characters form tokens.
-pub struct WhitespaceTokenizer<R: Read> {
+pub struct WhitespaceTokenizer {
     offset: usize,
     buffer_index: usize,
     data_len: usize,
     final_offset: usize,
     term_attr: CharTermAttribute,
     offset_attr: OffsetAttribute,
-    position_attr: PositionIncrementAttribute,
+    position_attr: PositionAttribute,
     io_buffer: CharacterBuffer,
-    reader: R,
+    reader: Box<dyn Read>,
 }
 
-impl<R: Read> fmt::Debug for WhitespaceTokenizer<R> {
+impl fmt::Debug for WhitespaceTokenizer {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("WhitespaceTokenizer")
             .field("offset", &self.offset)
@@ -57,8 +56,8 @@ impl<R: Read> fmt::Debug for WhitespaceTokenizer<R> {
     }
 }
 
-impl<R: Read> WhitespaceTokenizer<R> {
-    pub fn new(reader: R) -> Self {
+impl WhitespaceTokenizer {
+    pub fn new(reader: Box<dyn Read>) -> Self {
         WhitespaceTokenizer {
             offset: 0,
             buffer_index: 0,
@@ -66,7 +65,7 @@ impl<R: Read> WhitespaceTokenizer<R> {
             final_offset: 0,
             term_attr: CharTermAttribute::new(),
             offset_attr: OffsetAttribute::new(),
-            position_attr: PositionIncrementAttribute::new(),
+            position_attr: PositionAttribute::new(),
             io_buffer: CharacterBuffer::new(IO_BUFFER_SIZE),
             reader,
         }
@@ -94,7 +93,7 @@ impl<R: Read> WhitespaceTokenizer<R> {
     }
 }
 
-impl<R: Read> TokenStream for WhitespaceTokenizer<R> {
+impl TokenStream for WhitespaceTokenizer {
     fn increment_token(&mut self) -> Result<bool> {
         self.clear_attributes();
         let mut length = 0;
@@ -167,7 +166,7 @@ impl<R: Read> TokenStream for WhitespaceTokenizer<R> {
         &self.offset_attr
     }
 
-    fn position_attribute_mut(&mut self) -> &mut PositionIncrementAttribute {
+    fn position_attribute_mut(&mut self) -> &mut PositionAttribute {
         &mut self.position_attr
     }
 
@@ -200,7 +199,7 @@ mod tests {
             (38, 41),
         ];
         let words: Vec<&str> = source.split(" ").collect();
-        let reader = BufReader::new(source.as_bytes());
+        let reader = Box::new(BufReader::new(source.as_bytes()));
 
         let mut tokenizer = WhitespaceTokenizer::new(reader);
 

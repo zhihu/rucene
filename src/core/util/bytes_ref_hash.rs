@@ -11,13 +11,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::util::array::fill_slice;
-use core::util::array::over_size;
 use core::util::byte_block_pool::ByteBlockPool;
 use core::util::counter::{Count, Counter};
 use core::util::math;
 use core::util::sorter::{MSBRadixSorter, MSBSorter, Sorter};
 use core::util::BytesRef;
+use core::util::{fill_slice, over_size};
 
 use fasthash::murmur3;
 

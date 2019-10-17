@@ -22,8 +22,8 @@ use core::util::fst::bytes_store::StoreBytesReader;
 use core::util::fst::fst_reader::{CompiledAddress, InputType};
 use core::util::fst::{BytesReader, Output, OutputFactory, FST};
 use core::util::ints_ref::{IntsRef, IntsRefBuilder};
+use core::util::packed::COMPACT;
 use core::util::packed::{PagedGrowableWriter, PagedMutableWriter};
-use core::util::packed_misc::COMPACT;
 use core::util::LongValues;
 
 use error::Result;
@@ -607,7 +607,8 @@ impl<F: OutputFactory> NodeHash<F> {
             if arc.target != 0 {
                 h = prime
                     .wrapping_mul(h)
-                    .wrapping_add((arc.target ^ (arc.target >> 32)) as u64);;
+                    .wrapping_add((arc.target ^ (arc.target >> 32)) as u64);
+                ;
             }
             if let Some(ref output) = arc.output {
                 h = prime.wrapping_mul(h).wrapping_add(self.hash_code(output));

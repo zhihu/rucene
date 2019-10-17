@@ -13,4 +13,18 @@
 
 // this package is use to place modules copy from external packages for some reason
 
-pub mod deferred;
+mod deferred;
+
+pub use self::deferred::*;
+
+mod volatile;
+
+pub use self::volatile::*;
+
+mod binary_heap;
+
+pub use self::binary_heap::*;
+
+mod thread_pool;
+
+pub use self::thread_pool::*;

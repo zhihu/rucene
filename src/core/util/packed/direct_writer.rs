@@ -11,8 +11,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::store::IndexOutput;
-use core::util::packed_misc::{
+use core::store::io::IndexOutput;
+use core::util::packed::{
     bulk_operation_of, max_value, BulkOperation, BulkOperationEnum, Format, PackedIntEncoder,
     PackedIntMeta, DEFAULT_BUFFER_SIZE, VERSION_CURRENT,
 };

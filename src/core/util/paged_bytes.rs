@@ -11,7 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::store::{DataInput, DataOutput, IndexInput};
+use core::store::io::{DataInput, DataOutput, IndexInput};
 use core::util::BytesRef;
 
 use error::{

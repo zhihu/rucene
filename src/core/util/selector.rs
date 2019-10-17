@@ -11,7 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::codec::MutablePointsReader;
+use core::codec::points::MutablePointsReader;
 use core::util::bit_util::UnsignedShift;
 
 use std::cmp::Ordering;
@@ -100,7 +100,7 @@ const HISTOGRAM_SIZE: usize = 257;
 // buckets below this size will be sorted with introsort
 const LENGTH_THRESHOLD: usize = 100;
 
-pub(crate) struct DefaultIntroSelector<'a, 'b, P: MutablePointsReader> {
+pub struct DefaultIntroSelector<'a, 'b, P: MutablePointsReader> {
     k: i32,
     num_bytes_to_compare: i32,
     offset: usize,

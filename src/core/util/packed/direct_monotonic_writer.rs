@@ -11,7 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::store::IndexOutput;
+use core::store::io::IndexOutput;
 use core::util::packed::DirectWriter;
 
 use error::{

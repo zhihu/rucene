@@ -12,11 +12,12 @@
 // limitations under the License.
 
 use core::codec::Codec;
-use core::index::LeafReaderContext;
+use core::index::reader::LeafReaderContext;
 use core::search::collector;
 use core::search::collector::{Collector, ParallelLeafCollector, SearchCollector};
-use core::search::Scorer;
-use core::util::{DocId, Volatile};
+use core::search::scorer::Scorer;
+use core::util::external::Volatile;
+use core::util::DocId;
 use error::{ErrorKind, Result};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};

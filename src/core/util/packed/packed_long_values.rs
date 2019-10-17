@@ -11,10 +11,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::index::NumericDocValues;
+use core::codec::doc_values::NumericDocValues;
 use core::util::bit_util::BitsRequired;
 use core::util::packed::MonotonicBlockPackedReader;
-use core::util::packed_misc::{
+use core::util::packed::{
     check_block_size, get_mutable_by_ratio, Mutable, MutableEnum, PackedIntsNullMutable, Reader,
 };
 use core::util::{DocId, LongValues, ReusableIterator};
@@ -22,11 +22,11 @@ use core::util::{DocId, LongValues, ReusableIterator};
 use error::Result;
 use std::mem;
 
-pub(crate) const DEFAULT_PAGE_SIZE: usize = 1024;
-pub(crate) const MIN_PAGE_SIZE: usize = 64;
+pub const DEFAULT_PAGE_SIZE: usize = 1024;
+pub const MIN_PAGE_SIZE: usize = 64;
 // More than 1M doesn't really makes sense with these appending buffers
 // since their goal is to try to have small numbers of bits per value
-pub(crate) const MAX_PAGE_SIZE: usize = 1 << 20;
+pub const MAX_PAGE_SIZE: usize = 1 << 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub enum PackedLongValuesBuilderType {

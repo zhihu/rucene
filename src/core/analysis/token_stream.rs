@@ -13,10 +13,15 @@
 
 use std::fmt::Debug;
 
-use core::attribute::TermToBytesRefAttribute;
-use core::attribute::{OffsetAttribute, PayloadAttribute, PositionIncrementAttribute};
+use core::analysis::{
+    BytesTermAttribute, CharTermAttribute, OffsetAttribute, PayloadAttribute, PositionAttribute,
+    TermToBytesRefAttribute,
+};
 
+use core::util::BytesRef;
 use error::Result;
+use std::cmp::Ordering;
+use std::collections::HashSet;
 
 /// A `TokenStream` enumerates the sequence of tokens, either from
 /// `Field`s of a `Document` or from query text.
@@ -105,7 +110,7 @@ pub trait TokenStream: Debug {
     fn clear_attributes(&mut self) {
         self.offset_attribute_mut().clear();
         self.position_attribute_mut().clear();
-        if let Some(ref mut attr) = self.payload_attribute_mut() {
+        if let Some(attr) = self.payload_attribute_mut() {
             attr.clear();
         }
         self.term_bytes_attribute_mut().clear();
@@ -116,7 +121,7 @@ pub trait TokenStream: Debug {
     fn end_attributes(&mut self) {
         self.offset_attribute_mut().end();
         self.position_attribute_mut().end();
-        if let Some(ref mut attr) = self.payload_attribute_mut() {
+        if let Some(attr) = self.payload_attribute_mut() {
             attr.end();
         }
         self.term_bytes_attribute_mut().end();
@@ -129,7 +134,7 @@ pub trait TokenStream: Debug {
     fn offset_attribute(&self) -> &OffsetAttribute;
 
     /// mutable access of the `PositionIncrementAttribute`
-    fn position_attribute_mut(&mut self) -> &mut PositionIncrementAttribute;
+    fn position_attribute_mut(&mut self) -> &mut PositionAttribute;
 
     /// mutable access of the `PayloadAttribute`, wound return None if not enabled
     fn payload_attribute_mut(&mut self) -> Option<&mut PayloadAttribute> {
@@ -146,4 +151,253 @@ pub trait TokenStream: Debug {
 
     /// access of the [`TermToBytesRefAttribute`
     fn term_bytes_attribute(&self) -> &dyn TermToBytesRefAttribute;
+}
+
+#[derive(Debug)]
+pub struct StringTokenStream {
+    term_attribute: CharTermAttribute,
+    offset_attribute: OffsetAttribute,
+    position_attribute: PositionAttribute,
+    payload_attribute: PayloadAttribute,
+    used: bool,
+    value: String,
+}
+
+impl StringTokenStream {
+    pub fn new(value: String) -> Self {
+        StringTokenStream {
+            term_attribute: CharTermAttribute::new(),
+            offset_attribute: OffsetAttribute::new(),
+            position_attribute: PositionAttribute::new(),
+            payload_attribute: PayloadAttribute::new(Vec::with_capacity(0)),
+            used: true,
+            value,
+        }
+    }
+}
+
+impl TokenStream for StringTokenStream {
+    fn increment_token(&mut self) -> Result<bool> {
+        if self.used {
+            return Ok(false);
+        }
+        self.clear_attributes();
+
+        self.term_attribute.append(&self.value);
+        self.offset_attribute.set_offset(0, self.value.len())?;
+        self.used = true;
+        Ok(true)
+    }
+
+    fn end(&mut self) -> Result<()> {
+        self.end_attributes();
+        let final_offset = self.value.len();
+        self.offset_attribute.set_offset(final_offset, final_offset)
+    }
+
+    fn reset(&mut self) -> Result<()> {
+        self.used = false;
+        Ok(())
+    }
+
+    fn offset_attribute_mut(&mut self) -> &mut OffsetAttribute {
+        &mut self.offset_attribute
+    }
+
+    fn offset_attribute(&self) -> &OffsetAttribute {
+        &self.offset_attribute
+    }
+
+    fn position_attribute_mut(&mut self) -> &mut PositionAttribute {
+        &mut self.position_attribute
+    }
+
+    fn term_bytes_attribute_mut(&mut self) -> &mut dyn TermToBytesRefAttribute {
+        &mut self.term_attribute
+    }
+
+    fn term_bytes_attribute(&self) -> &dyn TermToBytesRefAttribute {
+        &self.term_attribute
+    }
+}
+
+#[derive(Debug)]
+pub struct BinaryTokenStream {
+    term_attribute: BytesTermAttribute,
+    offset_attribute: OffsetAttribute,
+    position_attribute: PositionAttribute,
+    payload_attribute: PayloadAttribute,
+    used: bool,
+    value: BytesRef,
+}
+
+impl BinaryTokenStream {
+    pub fn new(value: BytesRef) -> Self {
+        BinaryTokenStream {
+            term_attribute: BytesTermAttribute::new(),
+            offset_attribute: OffsetAttribute::new(),
+            position_attribute: PositionAttribute::new(),
+            payload_attribute: PayloadAttribute::new(Vec::with_capacity(0)),
+            used: true,
+            value,
+        }
+    }
+}
+
+impl TokenStream for BinaryTokenStream {
+    fn increment_token(&mut self) -> Result<bool> {
+        if self.used {
+            return Ok(false);
+        }
+        self.clear_attributes();
+
+        self.term_attribute.set_bytes(self.value.bytes());
+        self.used = true;
+        Ok(true)
+    }
+
+    fn end(&mut self) -> Result<()> {
+        self.end_attributes();
+        Ok(())
+    }
+
+    fn reset(&mut self) -> Result<()> {
+        self.used = false;
+        Ok(())
+    }
+
+    fn offset_attribute_mut(&mut self) -> &mut OffsetAttribute {
+        &mut self.offset_attribute
+    }
+
+    fn offset_attribute(&self) -> &OffsetAttribute {
+        &self.offset_attribute
+    }
+
+    fn position_attribute_mut(&mut self) -> &mut PositionAttribute {
+        &mut self.position_attribute
+    }
+
+    fn term_bytes_attribute_mut(&mut self) -> &mut dyn TermToBytesRefAttribute {
+        &mut self.term_attribute
+    }
+
+    fn term_bytes_attribute(&self) -> &dyn TermToBytesRefAttribute {
+        &self.term_attribute
+    }
+}
+
+pub const MAX_WORD_LEN: usize = 128;
+
+#[derive(Debug, Eq, PartialEq, Hash)]
+pub struct Word {
+    value: String,
+    begin: usize,
+    length: usize,
+}
+
+impl Word {
+    pub fn new(value: &str, begin: usize, length: usize) -> Word {
+        let mut value = value.to_string();
+        let length = if length > MAX_WORD_LEN {
+            value = value.chars().take(MAX_WORD_LEN).collect();
+            MAX_WORD_LEN
+        } else {
+            length
+        };
+
+        Word {
+            value,
+            begin,
+            length,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct WordTokenStream {
+    term_attribute: CharTermAttribute,
+    offset_attribute: OffsetAttribute,
+    position_attribute: PositionAttribute,
+    payload_attribute: PayloadAttribute,
+    values: Vec<Word>,
+    current: usize,
+}
+
+impl WordTokenStream {
+    pub fn new(values: Vec<Word>) -> WordTokenStream {
+        let mut elements = values;
+        let set: HashSet<_> = elements.drain(..).collect();
+        elements.extend(set.into_iter());
+
+        elements.sort_by(|a, b| {
+            let cmp = a.begin.cmp(&b.begin);
+            if cmp == Ordering::Equal {
+                a.length.cmp(&b.length)
+            } else {
+                cmp
+            }
+        });
+
+        WordTokenStream {
+            term_attribute: CharTermAttribute::new(),
+            offset_attribute: OffsetAttribute::new(),
+            position_attribute: PositionAttribute::new(),
+            payload_attribute: PayloadAttribute::new(Vec::with_capacity(0)),
+            values: elements,
+            current: 0,
+        }
+    }
+}
+
+impl TokenStream for WordTokenStream {
+    fn increment_token(&mut self) -> Result<bool> {
+        if self.current == self.values.len() {
+            return Ok(false);
+        }
+
+        self.clear_attributes();
+
+        let word: &Word = &self.values[self.current];
+        self.term_attribute.append(&word.value);
+        self.offset_attribute
+            .set_offset(word.begin, word.begin + word.length)?;
+        self.current += 1;
+        Ok(true)
+    }
+
+    fn end(&mut self) -> Result<()> {
+        self.end_attributes();
+        if let Some(word) = self.values.last() {
+            let final_offset = word.begin + word.length;
+            self.offset_attribute.set_offset(final_offset, final_offset)
+        } else {
+            self.offset_attribute.set_offset(0, 0)
+        }
+    }
+
+    fn reset(&mut self) -> Result<()> {
+        self.current = 0;
+        Ok(())
+    }
+
+    fn offset_attribute_mut(&mut self) -> &mut OffsetAttribute {
+        &mut self.offset_attribute
+    }
+
+    fn offset_attribute(&self) -> &OffsetAttribute {
+        &self.offset_attribute
+    }
+
+    fn position_attribute_mut(&mut self) -> &mut PositionAttribute {
+        &mut self.position_attribute
+    }
+
+    fn term_bytes_attribute_mut(&mut self) -> &mut dyn TermToBytesRefAttribute {
+        &mut self.term_attribute
+    }
+
+    fn term_bytes_attribute(&self) -> &dyn TermToBytesRefAttribute {
+        &self.term_attribute
+    }
 }

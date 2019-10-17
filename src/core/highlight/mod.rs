@@ -11,23 +11,31 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::codec::Codec;
-use core::index::{Fields, IndexReader, LeafReaderContext, Term, TermIterator, Terms};
-use core::search::{
-    posting_iterator::{PostingIterator, PostingIteratorFlags},
-    DocIterator, Query, TermQuery,
-};
+mod frag_list_builder;
+
+pub use self::frag_list_builder::*;
+
+mod fragments_builder;
+
+pub use self::fragments_builder::*;
+
+mod fvh_highlighter;
+
+pub use self::fvh_highlighter::*;
+
+use core::codec::{Codec, Fields, PostingIterator, PostingIteratorFlags, TermIterator, Terms};
+use core::doc::Term;
+use core::index::reader::{IndexReader, LeafReaderContext};
+use core::search::query::{Query, TermQuery};
+use core::search::DocIterator;
 use core::util::DocId;
+
 use error::Result;
 
 use std::borrow::Cow;
 use std::cmp::{self, Ordering};
 use std::collections::HashMap;
 use std::f32::EPSILON;
-
-pub mod frag_list_builder;
-pub mod fragments_builder;
-pub mod fvh_highlighter;
 
 ///
 // Encodes original text. The Encoder works with the {@link Formatter} to generate output.

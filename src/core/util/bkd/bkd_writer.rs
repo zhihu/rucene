@@ -11,14 +11,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::codec::codec_util;
-use core::codec::MutablePointsReader;
+use core::codec::points::MutablePointsReader;
+use core::codec::points::{IntersectVisitor, Relation};
+use core::codec::write_header;
 use core::codec::{INT_BYTES, LONG_BYTES};
-use core::index::{IntersectVisitor, LiveDocsDocMap, Relation};
-use core::store::{
-    DataOutput, Directory, GrowableByteArrayDataOutput, IndexOutput, RAMOutputStream,
-    TrackingDirectoryWrapper,
-};
+use core::index::merge::LiveDocsDocMap;
+use core::store::directory::{Directory, TrackingDirectoryWrapper};
+use core::store::io::{DataOutput, GrowableByteArrayDataOutput, IndexOutput, RAMOutputStream};
 use core::util::bit_set::{BitSet, FixedBitSet, ImmutableBitSet};
 use core::util::bit_util::UnsignedShift;
 use core::util::bkd::{
@@ -26,7 +25,6 @@ use core::util::bkd::{
     BKDReader, DocIdsWriter, HeapPointWriter, LongBitSet, MutablePointsReaderUtils,
     OfflinePointWriter, PointReader, PointType, PointWriter, PointWriterEnum,
 };
-use core::util::offline_sorter::{BufferSize, MAX_TEMP_FILES};
 use core::util::sorter::{check_range, MSBRadixSorter, MSBSorter, Sorter};
 use core::util::string_util::bytes_subtract;
 use core::util::DocId;
@@ -159,7 +157,7 @@ impl<'a, D: Directory, O: IndexOutput> OneDimensionBKDWriter<'a, D, O> {
                 &self.last_packed_value,
                 packed_value,
                 doc_id,
-                self.last_doc_id
+                self.last_doc_id,
             )
             .is_ok());
 
@@ -342,8 +340,6 @@ pub struct BKDWriter<D: Directory> {
 
     single_value_per_doc: bool,
 
-    _offline_sorter_buffer_mb: BufferSize,
-    _offline_sorter_max_temp_files: i32,
     max_doc: i32,
 
     min_packed_value: Vec<u8>,
@@ -419,8 +415,6 @@ impl<D: Directory> BKDWriter<D> {
             single_value_per_doc,
         );
 
-        let _offline_sorter_buffer_mb =
-            BufferSize::megabytes(max_mb_sort_in_heap.max(1.0f64) as i32)?;
         Ok(BKDWriter {
             _bytes_per_doc: bytes_per_doc,
             num_dims,
@@ -443,8 +437,6 @@ impl<D: Directory> BKDWriter<D> {
             total_point_count,
             long_ords,
             single_value_per_doc,
-            _offline_sorter_buffer_mb,
-            _offline_sorter_max_temp_files: MAX_TEMP_FILES,
             max_doc,
             min_packed_value: vec![0u8; packed_bytes_length],
             max_packed_value: vec![0u8; packed_bytes_length],
@@ -1117,7 +1109,7 @@ impl<D: Directory> BKDWriter<D> {
         num_leaves: i32,
         packed_index: &[u8],
     ) -> Result<()> {
-        codec_util::write_header(out, CODEC_NAME, VERSION_CURRENT)?;
+        write_header(out, CODEC_NAME, VERSION_CURRENT)?;
 
         out.write_vint(self.num_dims as i32)?;
         out.write_vint(self.max_points_in_leaf_node)?;
@@ -1314,7 +1306,7 @@ impl<D: Directory> BKDWriter<D> {
                     &last_packed_value,
                     values[i],
                     docs[i],
-                    last_doc
+                    last_doc,
                 )
                 .is_ok());
 
@@ -1835,7 +1827,7 @@ impl<D: Directory> Drop for BKDWriter<D> {
     }
 }
 
-pub(crate) struct BKDWriterMSBIntroSorter<D: Directory> {
+pub struct BKDWriterMSBIntroSorter<D: Directory> {
     bkd_writer: *mut BKDWriter<D>,
     heap_writer: *mut HeapPointWriter,
     dim: i32,

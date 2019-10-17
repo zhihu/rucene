@@ -11,9 +11,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::index::NumericDocValues;
-use core::store::IndexInput;
-use core::store::RandomAccessInput;
+use core::codec::doc_values::NumericDocValues;
+use core::store::io::{IndexInput, RandomAccessInput};
 use core::util::{packed::DirectReader, DocId, LongValues};
 use error::Result;
 

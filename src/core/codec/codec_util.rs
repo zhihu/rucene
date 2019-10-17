@@ -16,11 +16,12 @@
 //! Writing codec headers is useful to ensure that a file is in
 //! the format you think it is.
 
-use core::store::{BufferedChecksumIndexInput, ChecksumIndexInput};
-use core::store::{DataInput, DataOutput, IndexInput, IndexOutput};
+use core::store::io::{
+    BufferedChecksumIndexInput, ChecksumIndexInput, DataInput, DataOutput, IndexInput, IndexOutput,
+};
 
-use core::util::string_util::id2str;
-use core::util::string_util::ID_LENGTH;
+use core::util::id2str;
+use core::util::ID_LENGTH;
 use error::ErrorKind::{CorruptIndex, IllegalArgument, IllegalState};
 use error::Result;
 use std::io::Read;

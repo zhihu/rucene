@@ -11,7 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::util::packed_misc::Reader;
+use core::util::packed::Reader;
 
 pub struct PackedIntsNullReader {
     value_count: usize,

@@ -12,8 +12,17 @@
 // limitations under the License.
 
 mod token_stream;
-pub use self::token_stream::TokenStream;
+
+pub use self::token_stream::*;
 
 mod char_buffer;
+
+pub use self::char_buffer::*;
+
 mod whitespace_tokenizer;
-pub use self::whitespace_tokenizer::WhitespaceTokenizer;
+
+pub use self::whitespace_tokenizer::*;
+
+mod token_attributes;
+
+pub use self::token_attributes::*;

@@ -12,27 +12,32 @@
 // limitations under the License.
 
 mod doc_ids_writer;
+
 pub use self::doc_ids_writer::*;
 
 mod bkd_reader;
+
 pub use self::bkd_reader::*;
 
 mod bkd_writer;
+
 pub use self::bkd_writer::*;
 
 mod heap_point;
+
 use self::heap_point::*;
 
 mod offline_point;
+
 use self::offline_point::*;
 
 use error::{ErrorKind::IllegalState, Result};
 
 use core::util::DocId;
 
-use core::codec::MutablePointsReader;
-use core::store::{DataOutput, Directory, IndexOutput, IndexOutputRef, InvalidIndexOutput};
-
+use core::codec::points::MutablePointsReader;
+use core::store::directory::Directory;
+use core::store::io::{DataOutput, IndexOutput, IndexOutputRef, InvalidIndexOutput};
 use core::util::bit_util::{pop_array, BitsRequired, UnsignedShift};
 use core::util::math;
 use core::util::selector::{DefaultIntroSelector, RadixSelector};
@@ -56,7 +61,7 @@ pub enum PointType {
     Other,
 }
 
-pub(crate) trait PointReader {
+pub trait PointReader {
     fn next(&mut self) -> Result<bool>;
     fn packed_value(&self) -> &[u8];
     fn ord(&self) -> i64;
@@ -106,7 +111,7 @@ pub(crate) trait PointReader {
     }
 }
 
-pub(crate) enum PointReaderEnum {
+pub enum PointReaderEnum {
     Heap(HeapPointReader),
     Offline(OfflinePointReader),
 }
@@ -157,7 +162,7 @@ impl PointReader for PointReaderEnum {
     }
 }
 
-pub(crate) trait PointWriter {
+pub trait PointWriter {
     // add lifetime here, this is a reference type
     type IndexOutput: IndexOutput;
     type PointReader: PointReader;
@@ -256,7 +261,7 @@ impl<D: Directory> PointWriter for PointWriterEnum<D> {
     }
 }
 
-pub(super) enum PointWriterOutput<D: Directory> {
+pub enum PointWriterOutput<D: Directory> {
     Heap(IndexOutputRef<InvalidIndexOutput>),
     Offline(IndexOutputRef<D::TempOutput>),
 }
@@ -364,7 +369,7 @@ impl LongBitSet {
     }
 }
 
-pub(crate) struct UtilMSBIntroSorter<P: MutablePointsReader> {
+pub struct UtilMSBIntroSorter<P: MutablePointsReader> {
     k: i32,
     packed_bytes_length: i32,
     pivot_doc: i32,

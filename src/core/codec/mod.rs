@@ -11,162 +11,79 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod per_field;
-pub use self::per_field::*;
+pub mod doc_values;
+pub mod field_infos;
+pub mod norms;
+pub mod points;
+pub mod postings;
+pub mod segment_infos;
+pub mod stored_fields;
+pub mod term_vectors;
 
-mod blocktree;
-pub use self::blocktree::*;
+mod codec_util;
 
-pub mod codec_util;
+pub use self::codec_util::*;
 
-mod compressing;
-pub use self::compressing::*;
+mod matching_reader;
 
-mod format;
-pub use self::format::*;
+pub use self::matching_reader::*;
 
-mod lucene50;
-pub use self::lucene50::*;
+mod live_docs;
 
-mod lucene53;
-pub use self::lucene53::*;
+pub use self::live_docs::*;
 
-mod lucene54;
-pub use self::lucene54::*;
+mod compound;
 
-mod lucene60;
-pub use self::lucene60::*;
+pub use self::compound::*;
 
-mod lucene62;
-pub use self::lucene62::*;
+mod multi_fields;
 
-mod reader;
-pub use self::reader::*;
+pub use self::multi_fields::*;
 
-mod writer;
-pub use self::writer::*;
+mod multi_terms;
 
-mod consumer;
-pub use self::consumer::*;
+pub use self::multi_terms::*;
 
-mod producer;
-pub use self::producer::*;
+mod terms;
 
-use core::index::{Fields, TermIterator, TermState, Terms};
-use error::ErrorKind::*;
+pub use self::terms::*;
+
+mod fields;
+
+pub use self::fields::*;
+
+mod sorter;
+
+pub use self::sorter::*;
+
+mod posting_iterator;
+
+pub use self::posting_iterator::*;
+
+use core::codec::doc_values::{DocValuesFormat, DocValuesFormatEnum, PerFieldDocValuesFormat};
+use core::codec::field_infos::{FieldInfosFormat, Lucene60FieldInfosFormat};
+use core::codec::norms::{Lucene53NormsFormat, NormsFormat};
+use core::codec::points::{Lucene60PointsFormat, PointsFormat};
+use core::codec::postings::{
+    FieldsProducer, PerFieldFieldsReader, PerFieldPostingsFormat, PostingsFormat,
+};
+use core::codec::stored_fields::{
+    Lucene50StoredFieldsFormat, StoredFieldCompressMode, StoredFieldsFormat,
+};
+use core::codec::term_vectors::{
+    term_vectors_format, CompressingTermVectorsFormat, TermVectorsFormat, TermVectorsReader,
+};
+
+use core::codec::segment_infos::{Lucene62SegmentInfoFormat, SegmentInfoFormat};
+use error::ErrorKind::{CorruptIndex, IllegalArgument};
 use error::{Error, Result};
 use std::convert::TryFrom;
 use std::sync::Arc;
 
 #[allow(dead_code)]
-pub(crate) const CHAR_BYTES: i32 = 2;
-pub(crate) const INT_BYTES: i32 = 4;
-pub(crate) const LONG_BYTES: i32 = 8;
-
-/// Holds all state required for `PostingsReaderBase` to produce a
-/// `PostingIterator` without re-seeking the term dict.
-#[derive(Clone, Debug)]
-pub struct BlockTermState {
-    /// Term ordinal, i.e. its position in the full list of
-    /// sorted terms.
-    ord: i64,
-    /// how many docs have this term
-    doc_freq: i32,
-
-    /// total number of occurrences of this term
-    total_term_freq: i64,
-
-    /// the term's ord in the current block
-    term_block_ord: i32,
-
-    /// fp into the terms dict primary file (_X.tim) that holds this term
-    // TODO: update BTR to nuke this
-    block_file_pointer: i64,
-
-    /// fields from IntBlockTermState
-    doc_start_fp: i64,
-    pos_start_fp: i64,
-    pay_start_fp: i64,
-    skip_offset: i64,
-    last_pos_block_offset: i64,
-    // docid when there is a single pulsed posting, otherwise -1
-    // freq is always implicitly totalTermFreq in this case.
-    singleton_doc_id: i32,
-}
-
-impl BlockTermState {
-    fn new() -> BlockTermState {
-        BlockTermState {
-            ord: 0,
-            doc_freq: 0,
-            total_term_freq: 0,
-            term_block_ord: 0,
-            block_file_pointer: 0,
-
-            doc_start_fp: 0,
-            pos_start_fp: 0,
-            pay_start_fp: 0,
-            skip_offset: -1,
-            last_pos_block_offset: -1,
-            singleton_doc_id: -1,
-        }
-    }
-
-    pub fn copy_from(&mut self, other: &BlockTermState) {
-        self.ord = other.ord;
-        self.doc_freq = other.doc_freq;
-        self.total_term_freq = other.total_term_freq;
-        self.term_block_ord = other.term_block_ord;
-        self.block_file_pointer = other.block_file_pointer;
-        self.doc_start_fp = other.doc_start_fp;
-        self.pos_start_fp = other.pos_start_fp;
-        self.pay_start_fp = other.pay_start_fp;
-        self.last_pos_block_offset = other.last_pos_block_offset;
-        self.skip_offset = other.skip_offset;
-        self.singleton_doc_id = other.singleton_doc_id;
-    }
-
-    pub fn ord(&self) -> i64 {
-        self.ord
-    }
-
-    pub fn doc_freq(&self) -> i32 {
-        self.doc_freq
-    }
-
-    pub fn total_term_freq(&self) -> i64 {
-        self.total_term_freq
-    }
-
-    pub fn term_block_ord(&self) -> i32 {
-        self.term_block_ord
-    }
-
-    pub fn block_file_pointer(&self) -> i64 {
-        self.block_file_pointer
-    }
-
-    pub fn doc_start_fp(&self) -> i64 {
-        self.doc_start_fp
-    }
-    pub fn pos_start_fp(&self) -> i64 {
-        self.pos_start_fp
-    }
-    pub fn pay_start_fp(&self) -> i64 {
-        self.pay_start_fp
-    }
-    pub fn skip_offset(&self) -> i64 {
-        self.skip_offset
-    }
-    pub fn last_pos_block_offset(&self) -> i64 {
-        self.last_pos_block_offset
-    }
-    pub fn singleton_doc_id(&self) -> i32 {
-        self.singleton_doc_id
-    }
-}
-
-impl TermState for BlockTermState {}
+pub const CHAR_BYTES: i32 = 2;
+pub const INT_BYTES: i32 = 4;
+pub const LONG_BYTES: i32 = 8;
 
 /// Encodes/decodes an inverted index segment.
 ///
@@ -293,9 +210,7 @@ impl TryFrom<String> for CodecEnum {
 
     fn try_from(value: String) -> Result<Self> {
         match value.as_str() {
-            "Lucene62" => Ok(CodecEnum::Lucene62(lucene62::Lucene62Codec::try_from(
-                value,
-            )?)),
+            "Lucene62" => Ok(CodecEnum::Lucene62(Lucene62Codec::try_from(value)?)),
             _ => bail!(IllegalArgument(format!("Invalid codec name: {}", value))),
         }
     }
@@ -304,10 +219,117 @@ impl TryFrom<String> for CodecEnum {
 /// looks up a codec by name
 pub fn codec_for_name(name: &str) -> Result<CodecEnum> {
     match name {
-        "Lucene62" => Ok(CodecEnum::Lucene62(lucene62::Lucene62Codec::try_from(
+        "Lucene62" => Ok(CodecEnum::Lucene62(Lucene62Codec::try_from(
             name.to_string(),
         )?)),
         _ => bail!(IllegalArgument(format!("Invalid codec name: {}", name))),
+    }
+}
+
+/// Implements the Lucene 6.2 index format, with configurable per-field postings
+/// and docvalues formats.
+pub struct Lucene62Codec {
+    postings_format: PerFieldPostingsFormat,
+    field_infos_format: Lucene60FieldInfosFormat,
+    segment_info_format: Lucene62SegmentInfoFormat,
+    compound_format: Lucene50CompoundFormat,
+    term_vector_format: CompressingTermVectorsFormat,
+    doc_values_format: PerFieldDocValuesFormat,
+    live_docs_format: Lucene50LiveDocsFormat,
+    stored_fields_format: Lucene50StoredFieldsFormat,
+    norms_format: Lucene53NormsFormat,
+    points_format: Lucene60PointsFormat,
+}
+
+impl Default for Lucene62Codec {
+    fn default() -> Lucene62Codec {
+        Lucene62Codec {
+            field_infos_format: Lucene60FieldInfosFormat::default(),
+            segment_info_format: Lucene62SegmentInfoFormat::default(),
+            postings_format: PerFieldPostingsFormat::default(),
+            compound_format: Lucene50CompoundFormat {},
+            term_vector_format: term_vectors_format(),
+            live_docs_format: Lucene50LiveDocsFormat {},
+            stored_fields_format: Lucene50StoredFieldsFormat::new(Some(
+                StoredFieldCompressMode::BestSpeed,
+            )),
+            doc_values_format: PerFieldDocValuesFormat::default(),
+            norms_format: Lucene53NormsFormat::default(),
+            points_format: Lucene60PointsFormat {},
+        }
+    }
+}
+
+impl Codec for Lucene62Codec {
+    type FieldsProducer = Arc<PerFieldFieldsReader>;
+    type PostingFmt = PerFieldPostingsFormat;
+    type DVFmt = PerFieldDocValuesFormat;
+    type StoredFmt = Lucene50StoredFieldsFormat;
+    type TVFmt = CompressingTermVectorsFormat;
+    type FieldFmt = Lucene60FieldInfosFormat;
+    type SegmentFmt = Lucene62SegmentInfoFormat;
+    type NormFmt = Lucene53NormsFormat;
+    type LiveDocFmt = Lucene50LiveDocsFormat;
+    type CompoundFmt = Lucene50CompoundFormat;
+    type PointFmt = Lucene60PointsFormat;
+
+    fn name(&self) -> &str {
+        "Lucene62"
+    }
+
+    fn postings_format(&self) -> Self::PostingFmt {
+        self.postings_format
+    }
+
+    fn doc_values_format(&self) -> Self::DVFmt {
+        self.doc_values_format
+    }
+
+    fn stored_fields_format(&self) -> Self::StoredFmt {
+        self.stored_fields_format
+    }
+
+    fn term_vectors_format(&self) -> Self::TVFmt {
+        self.term_vector_format.clone()
+    }
+
+    fn field_infos_format(&self) -> Self::FieldFmt {
+        self.field_infos_format
+    }
+
+    fn segment_info_format(&self) -> Self::SegmentFmt {
+        self.segment_info_format
+    }
+
+    fn norms_format(&self) -> Self::NormFmt {
+        self.norms_format
+    }
+
+    fn live_docs_format(&self) -> Self::LiveDocFmt {
+        self.live_docs_format
+    }
+
+    fn compound_format(&self) -> Self::CompoundFmt {
+        self.compound_format
+    }
+
+    fn points_format(&self) -> Self::PointFmt {
+        self.points_format
+    }
+}
+
+impl TryFrom<String> for Lucene62Codec {
+    type Error = Error;
+
+    fn try_from(value: String) -> Result<Self> {
+        if value.as_str() == "Lucene62" {
+            Ok(Self::default())
+        } else {
+            bail!(CorruptIndex(format!(
+                "unknown codec name, expected 'Lucene62' got {:?}",
+                value
+            )))
+        }
     }
 }
 
