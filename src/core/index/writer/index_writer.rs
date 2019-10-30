@@ -1119,12 +1119,8 @@ where
             write_all_deletes,
             &mut any_changes,
         )?;
-        {
-            if any_changes {
-                Self::maybe_merge(index_writer, MergerTrigger::FullFlush, None)?;
-                // TODO if this failed, we must close the reader
-            }
-        }
+
+        let _ = Self::maybe_merge(index_writer, MergerTrigger::FullFlush, None)?;
 
         debug!(
             "IW - get_reader took {} ms",
