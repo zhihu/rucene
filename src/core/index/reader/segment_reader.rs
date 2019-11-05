@@ -196,7 +196,6 @@ pub enum CfsDirectory<D: Directory> {
 }
 
 impl<D: Directory> Directory for CfsDirectory<D> {
-    type LK = D::LK;
     type IndexOutput = D::IndexOutput;
     type TempOutput = D::TempOutput;
 
@@ -236,13 +235,6 @@ impl<D: Directory> Directory for CfsDirectory<D> {
         match self {
             CfsDirectory::Raw(d) => d.open_checksum_input(name, ctx),
             CfsDirectory::Cfs(d) => d.open_checksum_input(name, ctx),
-        }
-    }
-
-    fn obtain_lock(&self, name: &str) -> Result<Self::LK> {
-        match self {
-            CfsDirectory::Raw(d) => d.obtain_lock(name),
-            CfsDirectory::Cfs(d) => d.obtain_lock(name),
         }
     }
 
@@ -990,8 +982,8 @@ where
     }
 }
 
-impl<D: Directory + 'static, C: Codec> AsRef<IndexReader<Codec = C>> for SegmentReader<D, C> {
-    fn as_ref(&self) -> &(IndexReader<Codec = C> + 'static) {
+impl<D: Directory + 'static, C: Codec> AsRef<dyn IndexReader<Codec = C>> for SegmentReader<D, C> {
+    fn as_ref(&self) -> &(dyn IndexReader<Codec = C> + 'static) {
         self
     }
 }

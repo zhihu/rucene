@@ -97,7 +97,7 @@ impl Counter {
         Counter { count }
     }
 
-    pub fn borrow(counter: &Count) -> Self {
+    pub fn borrow(counter: &dyn Count) -> Self {
         Counter {
             count: CounterEnum::Borrowed(counter as *const dyn Count as *mut dyn Count),
         }
@@ -114,8 +114,8 @@ impl Counter {
     pub unsafe fn shallow_copy(&self) -> Counter {
         match self.count {
             CounterEnum::Borrowed(b) => Counter::borrow_raw(b),
-            CounterEnum::Atomic(ref a) => Counter::borrow(a.as_ref() as &Count),
-            CounterEnum::Serial(ref s) => Counter::borrow(s.as_ref() as &Count),
+            CounterEnum::Atomic(ref a) => Counter::borrow(a.as_ref() as &dyn Count),
+            CounterEnum::Serial(ref s) => Counter::borrow(s.as_ref() as &dyn Count),
         }
     }
 

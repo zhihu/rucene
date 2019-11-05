@@ -86,7 +86,7 @@ fn main() -> Result<()> {
     let directory = Arc::new(FSDirectory::with_path(&dir_path)?);
     let writer = IndexWriter::new(directory, config)?;
 
-    let mut doc: Vec<Box<Fieldable>> = vec![];
+    let mut doc: Vec<Box<dyn Fieldable>> = vec![];
     // add indexed text field
     let text = "The quick brown fox jumps over a lazy dog";
     let text_field = new_index_text_field("title".into(), text.into());

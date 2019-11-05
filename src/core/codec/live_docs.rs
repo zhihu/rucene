@@ -77,7 +77,7 @@ impl LiveDocsFormat for Lucene50LiveDocsFormat {
         Ok(bits)
     }
 
-    fn new_live_docs_from_existing(&self, existing: &Bits) -> Result<BitsRef> {
+    fn new_live_docs_from_existing(&self, existing: &dyn Bits) -> Result<BitsRef> {
         // existing is type of FixedBitSet
         Ok(existing.clone_box())
     }

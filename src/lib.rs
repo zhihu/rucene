@@ -18,11 +18,13 @@
 #![feature(exact_size_is_empty)]
 #![feature(drain_filter)]
 #![feature(hashmap_internals)]
-#![feature(fnbox)]
 #![feature(integer_atomics)]
 #![feature(vec_remove_item)]
 #![feature(specialization)]
 #![allow(clippy::cast_lossless)]
+#![feature(fn_traits)]
+#![feature(maybe_uninit_ref)]
+#![feature(maybe_uninit_extra)]
 
 #[macro_use]
 extern crate error_chain;
@@ -37,6 +39,7 @@ extern crate serde;
 extern crate serde_derive;
 extern crate serde_json;
 
+extern crate alloc;
 extern crate byteorder;
 extern crate bytes;
 extern crate crc;

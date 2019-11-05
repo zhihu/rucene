@@ -746,7 +746,7 @@ impl<T: PostingIterator> SortingPostingsIterator<T> {
     }
 
     fn add_positions(
-        input: &mut PostingIterator,
+        input: &mut dyn PostingIterator,
         output: &mut impl IndexOutput,
         store_offsets: bool,
     ) -> Result<()> {
@@ -1114,7 +1114,7 @@ impl<T> SortingNumericDocValues<T> {
     }
 }
 
-impl<T: DerefMut<Target = NumericDocValues> + Send + Sync> NumericDocValues
+impl<T: DerefMut<Target = dyn NumericDocValues> + Send + Sync> NumericDocValues
     for SortingNumericDocValues<T>
 {
     fn get(&self, doc_id: DocId) -> Result<i64> {

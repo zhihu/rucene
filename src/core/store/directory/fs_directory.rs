@@ -21,7 +21,7 @@ use std::sync::RwLock;
 use core::codec::segment_infos::segment_file_name;
 use core::store::directory::Directory;
 use core::store::io::{FSIndexOutput, IndexInput, MmapIndexInput};
-use core::store::{IOContext, LockFactory, NativeFSLockFactory};
+use core::store::IOContext;
 use core::util::to_base36;
 use error::ErrorKind::IllegalState;
 use error::Result;
@@ -30,25 +30,21 @@ use error::Result;
 ///
 /// However, it has poor concurrent performance (multiple threads will bottleneck)
 /// as it synchronizes when multiple threads read from the same file.
-pub struct FSDirectory<LF: LockFactory> {
+pub struct FSDirectory {
     pub directory: PathBuf,
     pending_deletes: RwLock<BTreeSet<String>>,
     pub ops_since_last_delete: AtomicUsize,
     pub next_temp_file_counter: AtomicUsize,
-    lock_factory: LF,
 }
 
-impl FSDirectory<NativeFSLockFactory> {
-    pub fn with_path<T: AsRef<Path> + ?Sized>(direcoty: &T) -> Result<Self> {
-        Self::new(direcoty, NativeFSLockFactory::default())
+impl FSDirectory {
+    pub fn with_path<T: AsRef<Path> + ?Sized>(directory: &T) -> Result<Self> {
+        Self::new(directory)
     }
 }
 
-impl<LF: LockFactory> FSDirectory<LF> {
-    pub fn new<T: AsRef<Path> + ?Sized>(
-        directory: &T,
-        lock_factory: LF,
-    ) -> Result<FSDirectory<LF>> {
+impl FSDirectory {
+    pub fn new<T: AsRef<Path> + ?Sized>(directory: &T) -> Result<FSDirectory> {
         let directory = directory.as_ref();
         if !Path::exists(directory) {
             fs::create_dir_all(directory)?;
@@ -64,7 +60,6 @@ impl<LF: LockFactory> FSDirectory<LF> {
             pending_deletes: RwLock::new(BTreeSet::new()),
             ops_since_last_delete: AtomicUsize::new(0),
             next_temp_file_counter: AtomicUsize::new(0),
-            lock_factory,
         })
     }
 
@@ -129,8 +124,7 @@ fn list_all<T: AsRef<Path>>(path: &T) -> Result<Vec<String>> {
     Ok(result)
 }
 
-impl<LF: LockFactory> Directory for FSDirectory<LF> {
-    type LK = LF::LK;
+impl Directory for FSDirectory {
     type IndexOutput = FSIndexOutput;
     type TempOutput = FSIndexOutput;
 
@@ -168,10 +162,6 @@ impl<LF: LockFactory> Directory for FSDirectory<LF> {
         let path = self.directory.as_path().join(name);
         // hack logic, we don'e implement FsIndexInput yes, so just us MmapIndexInput instead
         Ok(Box::new(MmapIndexInput::new(path)?))
-    }
-
-    fn obtain_lock(&self, name: &str) -> Result<Self::LK> {
-        self.lock_factory.obtain_lock(self, name)
     }
 
     fn create_temp_output(
@@ -248,7 +238,7 @@ impl<LF: LockFactory> Directory for FSDirectory<LF> {
     }
 }
 
-impl<LF: LockFactory> fmt::Display for FSDirectory<LF> {
+impl fmt::Display for FSDirectory {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "FSDirectory({})", self.directory.display())
     }

@@ -100,59 +100,6 @@ pub trait FlushPolicy {
         C: Codec,
         MS: MergeScheduler,
         MP: MergePolicy;
-
-    /// Returns the current most RAM consuming non-pending `ThreadState` with
-    /// at least one indexed document.
-    ///
-    /// @Return: Arc<ThreadState>, the largest pending writer
-    ///          None: if the current is the largest
-    fn find_largest_non_pending_writer<D, C, MS, MP>(
-        &self,
-        control: &DocumentsWriterFlushControl<D, C, MS, MP>,
-        per_thread_state: &ThreadState<D, C, MS, MP>,
-    ) -> Option<Arc<ThreadState<D, C, MS, MP>>>
-    where
-        D: Directory + Send + Sync + 'static,
-        C: Codec,
-        MS: MergeScheduler,
-        MP: MergePolicy,
-    {
-        debug_assert!(per_thread_state.dwpt().num_docs_in_ram > 0);
-        let mut max_ram_so_far = per_thread_state.bytes_used;
-        // the dwpt which needs to be flushed eventually
-        debug_assert!(!per_thread_state.flush_pending());
-        let mut count = 0;
-        let mut max_thread_state_idx = usize::max_value();
-        let pool = control.per_thread_pool();
-        {
-            for idx in 0..control.per_thread_pool().active_thread_state_count() {
-                let state = pool.get_thread_state(idx);
-                if !state.flush_pending() {
-                    let next_ram = state.bytes_used();
-                    if next_ram > 0 && state.dwpt().num_docs_in_ram > 0 {
-                        debug!(
-                            "FP - thread state has {} bytes; doc_in_ram: {}",
-                            next_ram,
-                            state.dwpt().num_docs_in_ram
-                        );
-
-                        count += 1;
-                        if next_ram > max_ram_so_far {
-                            max_ram_so_far = next_ram;
-                            max_thread_state_idx = idx;
-                        }
-                    }
-                }
-            }
-        }
-        debug!("FP - {} in-use non-flushing threads states.", count);
-        debug!("FP - set largest ram consuming thread pending on lower watermark");
-        if max_thread_state_idx != usize::max_value() {
-            Some(control.per_thread_pool().locked_state(max_thread_state_idx))
-        } else {
-            None
-        }
-    }
 }
 
 /// Default `FlushPolicy` implementation that flushes new segments based on
@@ -190,37 +137,18 @@ pub trait FlushPolicy {
 /// largest ram consuming `DocumentsWriterPerThread` will be marked as
 /// pending iff the global active RAM consumption is {@code >=} the configured max RAM
 /// buffer.
-pub struct FlushByRamOrCountsPolicy<C: Codec, MS: MergeScheduler, MP: MergePolicy> {
+pub struct FlushByCountsPolicy<C: Codec, MS: MergeScheduler, MP: MergePolicy> {
     index_write_config: Arc<IndexWriterConfig<C, MS, MP>>,
 }
 
-impl<C: Codec, MS: MergeScheduler, MP: MergePolicy> FlushByRamOrCountsPolicy<C, MS, MP> {
+impl<C: Codec, MS: MergeScheduler, MP: MergePolicy> FlushByCountsPolicy<C, MS, MP> {
     pub fn new(index_write_config: Arc<IndexWriterConfig<C, MS, MP>>) -> Self {
-        FlushByRamOrCountsPolicy { index_write_config }
-    }
-
-    fn mark_largest_writer_pending<
-        D: Directory + Send + Sync + 'static,
-        C1: Codec,
-        MS1: MergeScheduler,
-        MP1: MergePolicy,
-    >(
-        &self,
-        control: &mut DocumentsWriterFlushControl<D, C1, MS1, MP1>,
-        lg: &MutexGuard<FlushControlLock>,
-        per_thread_state: &ThreadState<D, C1, MS1, MP1>,
-    ) {
-        if let Some(locked_state) = self.find_largest_non_pending_writer(control, per_thread_state)
-        {
-            control.set_flush_pending(&*locked_state, lg);
-        } else {
-            control.set_flush_pending(per_thread_state, lg);
-        }
+        FlushByCountsPolicy { index_write_config }
     }
 }
 
 impl<C1: Codec, MS1: MergeScheduler, MP1: MergePolicy> FlushPolicy
-    for FlushByRamOrCountsPolicy<C1, MS1, MP1>
+    for FlushByCountsPolicy<C1, MS1, MP1>
 {
     fn on_delete<D, C, MS, MP>(
         &self,
@@ -234,22 +162,11 @@ impl<C1: Codec, MS1: MergeScheduler, MP1: MergePolicy> FlushPolicy
     {
         if self.index_write_config.flush_on_delete_terms() {
             // flush this state by num del terms
-            if control.num_global_term_deletes()
+            if control.documents_writer().num_global_term_deletes()
                 >= self.index_write_config.max_buffered_delete_terms() as usize
             {
                 control.set_apply_all_deletes();
             }
-        }
-
-        if self.index_write_config.flush_on_ram()
-            && control.delete_bytes_used() > self.index_write_config.ram_buffer_size()
-        {
-            control.set_apply_all_deletes();
-            debug!(
-                "FP - force apply deletes bytes_used: {} vs ram_bufffer_mb={}",
-                control.delete_bytes_used(),
-                self.index_write_config.ram_buffer_size_mb()
-            );
         }
     }
 
@@ -269,18 +186,6 @@ impl<C1: Codec, MS1: MergeScheduler, MP1: MergePolicy> FlushPolicy
         {
             // Flush this state by num docs
             control.set_flush_pending(state, lg);
-        } else if self.index_write_config.flush_on_ram() {
-            let limit = self.index_write_config.ram_buffer_size();
-            let total_ram = control.active_bytes as usize + control.delete_bytes_used();
-            if total_ram >= limit {
-                debug!(
-                    "FP - trigger flush: active_bytes={}, delete_bytes={} vs limit={}",
-                    control.active_bytes,
-                    control.delete_bytes_used(),
-                    limit
-                );
-                self.mark_largest_writer_pending(control, lg, state);
-            }
         }
     }
 }

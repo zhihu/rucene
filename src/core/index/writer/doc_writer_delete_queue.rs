@@ -179,14 +179,6 @@ impl<C: Codec> DocumentsWriterDeleteQueue<C> {
             || !next_node.is_null()
     }
 
-    pub fn ram_bytes_used(&self) -> usize {
-        self.global_data
-            .lock()
-            .unwrap()
-            .global_buffered_updates
-            .bytes_used()
-    }
-
     pub fn next_sequence_number(&self) -> u64 {
         let no = self.next_seq_no.fetch_add(1, Ordering::AcqRel);
         debug_assert!(no < self.max_seq_no.get());

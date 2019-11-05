@@ -573,7 +573,9 @@ impl DocIterator for BlockDocIterator {
                 // Force to read next block
                 self.doc_buffer_upto = BLOCK_SIZE;
                 self.accum = skipper.doc(); // actually, this is just lastSkipEntry
-                self.doc_in.as_mut().unwrap().seek(skipper.doc_pointer())?; // now point to the block we want to search
+                self.doc_in.as_mut().unwrap().seek(skipper.doc_pointer())?; // now point to the
+                                                                            // block we want to
+                                                                            // search
             }
             // next time we call advance, this is used to
             // foresee whether skipper is necessary.

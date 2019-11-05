@@ -96,7 +96,7 @@ impl<C: Codec> Query<C> for DisjunctionMaxQuery<C> {
         queries
     }
 
-    fn as_any(&self) -> &::std::any::Any {
+    fn as_any(&self) -> &dyn (::std::any::Any) {
         self
     }
 }

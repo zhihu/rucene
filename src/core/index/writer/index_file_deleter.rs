@@ -17,17 +17,14 @@ use core::codec::segment_infos::{
     INDEX_FILE_SEGMENTS,
 };
 use core::codec::Codec;
-use core::index::writer::{
-    IndexCommit, IndexDeletionPolicy, KeepOnlyLastCommitDeletionPolicy, INDEX_WRITE_LOCK_NAME,
-};
+use core::index::writer::KeepOnlyLastCommitDeletionPolicy;
 use core::store::directory::{Directory, LockValidatingDirectoryWrapper};
 
 use regex::Regex;
-use std::cmp::{max, Ordering};
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::mem;
-use std::ptr;
 use std::sync::{Arc, RwLock};
 
 use error::{ErrorKind, Result};
@@ -66,7 +63,7 @@ use error::{ErrorKind, Result};
 /// Note that you must hold the write.lock before
 /// instantiating this class.  It opens segments_N file(s)
 /// directly with no retry logic.
-pub struct IndexFileDeleter<D: Directory, C: Codec> {
+pub struct IndexFileDeleter<D: Directory> {
     /// Reference count for all files in the index. Counts
     /// how many existing commits reference a file.
     ref_counts: Arc<RwLock<HashMap<String, RefCount>>>,
@@ -75,56 +72,41 @@ pub struct IndexFileDeleter<D: Directory, C: Codec> {
     /// delete policy (KeepOnlyLastCommitDeletionPolicy). Other policies
     /// may leave commit points live for longer in which case this list
     /// would be longer than 1.
-    commits: Vec<CommitPoint<D>>,
+    commits: Vec<CommitPoint>,
     /// Holds files we had inc_ref'd from the previous non-commit checkpoint:
-    last_files: Vec<String>,
-    /// Commits that the IndexDeletionPolicy have decided to delete:
-    commits_to_delete: Vec<CommitPoint<D>>,
-    directory_orig: Arc<D>,
-    directory: Arc<LockValidatingDirectoryWrapper<D>>,
+    last_files: HashSet<String>,
     policy: KeepOnlyLastCommitDeletionPolicy,
-    pub starting_commit_deleted: bool,
-    last_segment_infos: Option<SegmentInfos<D, C>>,
+
+    directory: Arc<LockValidatingDirectoryWrapper<D>>,
     inited: bool,
 }
 
-impl<D: Directory, C: Codec> IndexFileDeleter<D, C> {
-    pub fn new(
-        directory_orig: Arc<D>,
-        directory: Arc<LockValidatingDirectoryWrapper<D>>,
-        // policy: Box<IndexDeletionPolicy>,
-    ) -> Self {
+impl<D: Directory> IndexFileDeleter<D> {
+    pub fn new(directory: Arc<LockValidatingDirectoryWrapper<D>>) -> Self {
         IndexFileDeleter {
             ref_counts: Arc::new(RwLock::new(HashMap::new())),
             commits: vec![],
-            last_files: vec![],
-            commits_to_delete: vec![],
-            directory_orig,
-            directory,
+            last_files: HashSet::new(),
             policy: KeepOnlyLastCommitDeletionPolicy {},
-            starting_commit_deleted: false,
-            last_segment_infos: None,
+            directory,
             inited: false,
         }
     }
 
-    pub fn init(
+    pub fn init<C: Codec>(
         &mut self,
+        directory_orig: Arc<D>,
         files: &[String],
         segment_infos: &mut SegmentInfos<D, C>,
         initial_index_exists: bool,
-        is_reader_init: bool,
-    ) -> Result<()> {
-        let current_segments_file = segment_infos.segment_file_name();
-
+    ) -> Result<bool> {
         let mut current_commit_point_idx: Option<usize> = None;
-        if current_segments_file.is_some() {
+        if let Some(ref current_segments_file) = segment_infos.segment_file_name() {
             let pattern = Regex::new(CODEC_FILE_PATTERN).unwrap();
             for filename in files {
-                if !filename.ends_with("write.lock")
-                    && (pattern.is_match(filename)
-                        || filename.starts_with(INDEX_FILE_SEGMENTS)
-                        || filename.starts_with(INDEX_FILE_PENDING_SEGMENTS))
+                if pattern.is_match(filename)
+                    || filename.starts_with(INDEX_FILE_SEGMENTS)
+                    || filename.starts_with(INDEX_FILE_PENDING_SEGMENTS)
                 {
                     // Add this file to ref_counts with initial count 0.
                     {
@@ -141,29 +123,22 @@ impl<D: Directory, C: Codec> IndexFileDeleter<D, C> {
                         // This is a commit (segments or segments_N), and
                         // it's valid (<= the max gen).  Load it, then
                         // incref all files it refers to:
-                        let sis = SegmentInfos::read_commit(&self.directory_orig, filename)?;
+                        let sis: SegmentInfos<D, C> =
+                            SegmentInfos::read_commit(&directory_orig, filename)?;
                         let commit_point = CommitPoint::new(
-                            &mut self.commits_to_delete,
-                            Arc::clone(&self.directory_orig),
-                            &sis,
+                            sis.generation,
+                            sis.segment_file_name().unwrap_or("".to_string()),
+                            sis.files(true),
                         );
                         self.commits.push(commit_point);
                         if sis.generation == segment_infos.generation {
                             current_commit_point_idx = Some(self.commits.len() - 1);
                         }
-                        self.inc_ref_by_segment(&sis, true);
-
-                        if self.last_segment_infos.is_none()
-                            || sis.generation > self.last_segment_infos.as_ref().unwrap().generation
-                        {
-                            self.last_segment_infos = Some(sis);
-                        }
+                        self.inc_ref_files(&sis.files(true));
                     }
                 }
             }
-        }
 
-        if let Some(ref current_segments_file) = current_segments_file {
             if current_commit_point_idx.is_none() && initial_index_exists {
                 // We did not in fact see the segments_N file
                 // corresponding to the segmentInfos that was passed
@@ -172,22 +147,17 @@ impl<D: Directory, C: Codec> IndexFileDeleter<D, C> {
                 // listing was stale (eg when index accessed via NFS
                 // client with stale directory listing cache).  So we
                 // try now to explicitly open this commit point:
-                let sis = SegmentInfos::read_commit(&self.directory_orig, current_segments_file)?;
+                let sis: SegmentInfos<D, C> =
+                    SegmentInfos::read_commit(&directory_orig, current_segments_file)?;
                 let commit_point = CommitPoint::new(
-                    &mut self.commits_to_delete,
-                    Arc::clone(&self.directory_orig),
-                    &sis,
+                    sis.generation,
+                    sis.segment_file_name().unwrap_or("".to_string()),
+                    sis.files(true),
                 );
                 self.commits.push(commit_point);
                 current_commit_point_idx = Some(self.commits.len() - 1);
-                self.inc_ref_by_segment(&sis, true);
+                self.inc_ref_files(&sis.files(true));
             }
-        }
-
-        if is_reader_init {
-            // Incoming SegmentInfos may have NRT changes not yet visible
-            // in the latest commit, so we have to protect its files from deletion too:
-            self.checkpoint(segment_infos, false)?;
         }
 
         // We keep commits list in sorted order (oldest to newest):
@@ -223,7 +193,7 @@ impl<D: Directory, C: Codec> IndexFileDeleter<D, C> {
         // Finally, give policy a chance to remove things on
         // startup:
         {
-            let mut commits: Vec<&mut dyn IndexCommit<D>> = Vec::with_capacity(self.commits.len());
+            let mut commits: Vec<&mut CommitPoint> = Vec::with_capacity(self.commits.len());
             for i in &mut self.commits {
                 commits.push(i);
             }
@@ -234,18 +204,23 @@ impl<D: Directory, C: Codec> IndexFileDeleter<D, C> {
         // sometime it may not be the most recent commit
         self.checkpoint(segment_infos, false)?;
 
-        self.starting_commit_deleted =
-            current_commit_point_idx.map_or(false, |idx| self.commits[idx].deleted);
+        let mut starting_commit_deleted = false;
+        if let Some(idx) = current_commit_point_idx {
+            if self.commits[idx].deleted {
+                starting_commit_deleted = true;
+            }
+        }
 
         self.delete_commits()?;
         self.inited = true;
-        Ok(())
+
+        Ok(starting_commit_deleted)
     }
 
     /// Set all gens beyond what we currently see in the directory, to avoid double-write
     /// in cases where the previous IndexWriter did not gracefully close/rollback (e.g.
     /// os/machine crashed or lost power).
-    fn inflate_gens(infos: &mut SegmentInfos<D, C>, files: Vec<&str>) -> Result<()> {
+    fn inflate_gens<C: Codec>(infos: &mut SegmentInfos<D, C>, files: Vec<&str>) -> Result<()> {
         let mut max_segment_gen = i64::min_value();
         let mut max_segment_name = i32::min_value();
 
@@ -257,18 +232,18 @@ impl<D: Directory, C: Codec> IndexFileDeleter<D, C> {
         let mut max_per_segment_gen = HashMap::new();
 
         for filename in files {
-            if filename == INDEX_FILE_OLD_SEGMENT_GEN || filename == INDEX_WRITE_LOCK_NAME {
+            if filename == INDEX_FILE_OLD_SEGMENT_GEN {
                 // do nothing
             } else if filename.starts_with(INDEX_FILE_SEGMENTS) {
                 // trash file: we have to handle this since we allow anything
                 // starting with 'segments' here
                 if let Ok(gen) = generation_from_segments_file_name(filename) {
-                    max_segment_gen = max(gen, max_segment_gen);
+                    max_segment_gen = max_segment_gen.max(gen);
                 }
             } else if filename.starts_with(INDEX_FILE_PENDING_SEGMENTS) {
                 // the first 8 bytes is "pending_", so the slice operation is safe
                 if let Ok(gen) = generation_from_segments_file_name(&filename[8..]) {
-                    max_segment_gen = max(gen, max_segment_gen);
+                    max_segment_gen = max_segment_gen.max(gen);
                 }
             } else {
                 let segment_name = parse_segment_name(filename);
@@ -279,21 +254,19 @@ impl<D: Directory, C: Codec> IndexFileDeleter<D, C> {
                     continue;
                 }
 
-                max_segment_name = max(
-                    max_segment_name,
-                    i32::from_str_radix(&segment_name[1..], 36)?,
-                );
+                max_segment_name =
+                    max_segment_name.max(i32::from_str_radix(&segment_name[1..], 36)?);
 
                 let mut cur_gen = max_per_segment_gen.get(segment_name).map_or(0, |x| *x);
                 if let Ok(gen) = parse_generation(filename) {
-                    cur_gen = max(cur_gen, gen);
+                    cur_gen = cur_gen.max(gen);
                 }
                 max_per_segment_gen.insert(segment_name.to_string(), cur_gen);
             }
         }
 
         // Generation is advanced before write:
-        let next_write_gen = max(infos.generation, max_segment_gen);
+        let next_write_gen = max_segment_gen.max(infos.generation);
         infos.set_next_write_generation(next_write_gen)?;
         if infos.counter < max_segment_name + 1 {
             infos.counter = max_segment_name
@@ -333,29 +306,27 @@ impl<D: Directory, C: Codec> IndexFileDeleter<D, C> {
     /// If this is a commit, we also call the policy to give it
     /// a chance to remove other commits.  If any commits are
     /// removed, we decref their files as well.
-    pub fn checkpoint(
+    pub fn checkpoint<C: Codec>(
         &mut self,
         segment_infos: &SegmentInfos<D, C>,
         is_commit: bool,
     ) -> Result<()> {
         // incref the files:
-        self.inc_ref_by_segment(segment_infos, is_commit);
+        self.inc_ref_files(&segment_infos.files(is_commit));
 
         if is_commit {
             // Append to our commits list:
             let p = CommitPoint::new(
-                &mut self.commits_to_delete,
-                Arc::clone(&self.directory_orig),
-                segment_infos,
+                segment_infos.generation,
+                segment_infos.segment_file_name().unwrap_or("".to_string()),
+                segment_infos.files(true),
             );
             self.commits.push(p);
 
             // Tell policy so it can remove commits:
             {
-                let mut commits: Vec<&mut dyn IndexCommit<D>> =
-                    Vec::with_capacity(self.commits.len());
+                let mut commits: Vec<&mut CommitPoint> = Vec::with_capacity(self.commits.len());
                 for i in &mut self.commits {
-                    i.commits_to_delete = &mut self.commits_to_delete;
                     commits.push(i);
                 }
                 self.policy.on_commit(commits)?;
@@ -364,7 +335,7 @@ impl<D: Directory, C: Codec> IndexFileDeleter<D, C> {
             // DecRef file for commits that were deleted by the policy
             self.delete_commits()
         } else {
-            let res = self.dec_ref_batch(&self.last_files);
+            let res = self.dec_ref_files(&self.last_files);
             self.last_files.clear();
             res?;
             // Save files so we can decr on next checkpoint/commit:
@@ -389,50 +360,32 @@ impl<D: Directory, C: Codec> IndexFileDeleter<D, C> {
         }
     }
 
-    pub fn inc_ref_by_segment(&self, segment_infos: &SegmentInfos<D, C>, is_commit: bool) {
-        // If this is a commit point, also incRef the
-        // segments_N file:
-        self.inc_ref_files(&segment_infos.files(is_commit));
-    }
-
     pub fn inc_ref_files(&self, files: &HashSet<String>) {
-        for f in files {
-            self.inc_ref(f);
+        for file in files {
+            self.ensure_ref_count(file);
+            self.ref_counts
+                .write()
+                .unwrap()
+                .get_mut(file)
+                .unwrap()
+                .inc_ref();
         }
-    }
-
-    fn inc_ref(&self, filename: &str) {
-        self.ensure_ref_count(filename);
-        self.ref_counts
-            .write()
-            .unwrap()
-            .get_mut(filename)
-            .unwrap()
-            .inc_ref();
-    }
-
-    pub fn dec_ref_by_segment(&self, segment_infos: &SegmentInfos<D, C>) -> Result<()> {
-        self.dec_ref_batch((&segment_infos.files(false)).iter())
     }
 
     /// Decrefs all provided files, even on exception; throws first exception hit, if any.
-    pub fn dec_ref_batch<'a, I, T>(&self, files: T) -> Result<()>
-    where
-        I: Iterator<Item = &'a String>,
-        T: IntoIterator<Item = &'a String, IntoIter = I>,
-    {
+    pub fn dec_ref_files(&self, files: &HashSet<String>) -> Result<()> {
         let mut to_delete = HashSet::new();
         for f in files {
             if self.dec_ref(f) {
-                to_delete.insert(f);
+                to_delete.insert(f.clone());
             }
         }
-        self.delete_files(to_delete)
+        self.delete_files(&to_delete)
     }
 
-    pub fn dec_ref_without_error(&self, files: &HashSet<String>) {
-        if let Err(e) = self.dec_ref_batch(files.iter()) {
-            warn!("dec_ref_without_error failed with '{:?}'", e);
+    pub fn dec_ref_files_no_error(&self, files: &HashSet<String>) {
+        if let Err(e) = self.dec_ref_files(files) {
+            warn!("dec_ref_files_no_error failed with '{:?}'", e);
         }
     }
 
@@ -453,66 +406,57 @@ impl<D: Directory, C: Codec> IndexFileDeleter<D, C> {
     /// Remove the CommitPoints in the commitsToDelete List by
     /// DecRef'ing all files from each SegmentInfos.
     fn delete_commits(&mut self) -> Result<()> {
-        let size = self.commits_to_delete.len();
-
         let mut res = Ok(());
-        if size > 0 {
-            // First decref all files that had been referred to by
-            // the now-deleted commits:
-            for commit in &self.commits_to_delete {
-                let r = self.dec_ref_batch(&commit.files);
-                if r.is_err() {
-                    res = r;
-                }
+        // First decref all files that had been referred to by
+        // the now-deleted commits:
+        for commit in &self.commits {
+            if commit.deleted {
+                res = self.dec_ref_files(&commit.files);
             }
-            self.commits_to_delete.clear();
-
-            // NOTE: does nothing if not err
-            if res.is_err() {
-                return res;
-            }
-
-            // Now compact commits to remove deleted ones (preserving the sort):
-            let size = self.commits.len();
-            let mut read_from = 0;
-            let mut write_to = 0;
-            while read_from < size {
-                if !self.commits[read_from].deleted {
-                    if write_to != read_from {
-                        self.commits.swap(read_from, write_to);
-                    }
-                    write_to += 1;
-                }
-                read_from += 1;
-            }
-            self.commits.truncate(write_to);
         }
+
+        // NOTE: does nothing if not err
+        if res.is_err() {
+            return res;
+        }
+
+        // Now compact commits to remove deleted ones (preserving the sort):
+        let size = self.commits.len();
+        let mut read_from = 0;
+        let mut write_to = 0;
+        while read_from < size {
+            if !self.commits[read_from].deleted {
+                if write_to != read_from {
+                    self.commits.swap(read_from, write_to);
+                }
+                write_to += 1;
+            }
+            read_from += 1;
+        }
+        self.commits.truncate(write_to);
+
         Ok(())
     }
 
-    fn delete_files<'a, I, T>(&self, names: T) -> Result<()>
-    where
-        I: Iterator<Item = &'a String>,
-        T: IntoIterator<Item = &'a String, IntoIter = I>,
-    {
+    fn delete_files(&self, files: &HashSet<String>) -> Result<()> {
         // We make two passes, first deleting any segments_N files, second
         // deleting the rest.  We do this so that if we throw exc or JVM
         // crashes during deletions, even when not on Windows, we don't
         // leave the index in an "apparently corrupt" state:
         let mut copys = vec![];
-        for name in names {
-            copys.push(name);
-            if !name.starts_with(INDEX_FILE_SEGMENTS) {
+        for file in files {
+            copys.push(file);
+            if !file.starts_with(INDEX_FILE_SEGMENTS) {
                 continue;
             }
-            self.delete_file(name)?;
+            self.delete_file(file)?;
         }
 
-        for name in copys {
-            if name.starts_with(INDEX_FILE_SEGMENTS) {
+        for file in copys {
+            if file.starts_with(INDEX_FILE_SEGMENTS) {
                 continue;
             }
-            self.delete_file(name)?;
+            self.delete_file(file)?;
         }
         Ok(())
     }
@@ -524,23 +468,22 @@ impl<D: Directory, C: Codec> IndexFileDeleter<D, C> {
 
     /// Deletes the specified files, but only if they are new
     /// (have not yes been incref'd).
-    pub fn delete_new_files<'a, I, T>(&self, files: T) -> Result<()>
-    where
-        I: Iterator<Item = &'a String>,
-        T: IntoIterator<Item = &'a String, IntoIter = I>,
-    {
-        // NOTE: it's very unusual yet possible for the
-        // refCount to be present and 0: it can happen if you
-        // open IW on a crashed index, and it removes a bunch
-        // of unref'd files, and then you add new docs / do
-        // merging, and it reuses that segment name.
-        // TestCrash.testCrashAfterReopen can hit this:
-        let filtered = files.into_iter().filter(|f: &&String| {
-            let ref_counts = self.ref_counts.read().unwrap();
-            !ref_counts.contains_key(*f) || ref_counts[*f].count == 0
-        });
+    pub fn delete_new_files(&self, files: &HashSet<String>) -> Result<()> {
+        let mut filtered = HashSet::with_capacity(files.len());
+        let ref_counts = self.ref_counts.read().unwrap();
+        for file in files {
+            // NOTE: it's very unusual yet possible for the
+            // refCount to be present and 0: it can happen if you
+            // open IW on a crashed index, and it removes a bunch
+            // of unref'd files, and then you add new docs / do
+            // merging, and it reuses that segment name.
+            // TestCrash.testCrashAfterReopen can hit this:
+            if !ref_counts.contains_key(file) || ref_counts[file].count == 0 {
+                filtered.insert(file.clone());
+            }
+        }
 
-        self.delete_files(filtered)
+        self.delete_files(&filtered)
     }
 
     /// Writer calls this when it has hit an error and had to
@@ -556,26 +499,23 @@ impl<D: Directory, C: Codec> IndexFileDeleter<D, C> {
         let mut to_delete = HashSet::new();
         let pattern = Regex::new(CODEC_FILE_PATTERN).unwrap();
         for filename in &files {
-            if !filename.ends_with("write.lock")
-                && !self.ref_counts.read()?.contains_key(filename)
-                && (pattern.is_match(filename) || filename.starts_with(INDEX_FILE_SEGMENTS) ||
-                // we only try to clear out pending_segments_N during rollback(), because we don't ref-count it
-                // TODO: this is sneaky, should we do this, or change TestIWExceptions? rollback closes anyway, and
-                // any leftover file will be deleted/retried on next IW bootup anyway...
-                filename.starts_with(INDEX_FILE_PENDING_SEGMENTS))
+            if !self.ref_counts.read()?.contains_key(filename)
+                && (pattern.is_match(filename)
+                    || filename.starts_with(INDEX_FILE_SEGMENTS)
+                    || filename.starts_with(INDEX_FILE_PENDING_SEGMENTS))
             {
                 // Unreferenced file, so remove it
-                to_delete.insert(filename);
+                to_delete.insert(filename.clone());
             }
         }
 
-        self.delete_files(to_delete)
+        self.delete_files(&to_delete)
     }
 
     pub fn close(&mut self) -> Result<()> {
         if !self.last_files.is_empty() {
-            let files = mem::replace(&mut self.last_files, Vec::with_capacity(0));
-            self.dec_ref_batch(&files)?;
+            let files = mem::replace(&mut self.last_files, HashSet::new());
+            self.dec_ref_files(&files)?;
         }
         Ok(())
     }
@@ -625,118 +565,78 @@ impl fmt::Debug for RefCount {
     }
 }
 
+/// Expert: represents a single commit into an index as seen by the
+/// {@link IndexDeletionPolicy} or {@link IndexReader}.
+///
+/// Changes to the content of an index are made visible
+/// only after the writer who made that change commits by
+/// writing a new segments file
+/// (`segments_N</code`). This point in time, when the
+/// action of writing of a new segments file to the directory
+/// is completed, is an index commit.
+///
+/// Each index commit point has a unique segments file
+/// associated with it. The segments file associated with a
+/// later index commit point would have a larger N.
+///
 /// Holds details for each commit point. This class is also passed to
 /// the deletion policy. Note: this class has a natural ordering that
 /// is inconsistent with equals.
-struct CommitPoint<D: Directory> {
-    files: HashSet<String>,
-    segments_file_name: String,
-    deleted: bool,
-    directory_orig: Arc<D>,
-    // refer the commit_to_delete in IndexFileDeleter
-    commits_to_delete: *mut Vec<CommitPoint<D>>,
+pub struct CommitPoint {
     generation: i64,
-    user_data: HashMap<String, String>,
-    segment_count: usize,
+    segment_file_name: String,
+    files: HashSet<String>,
+    deleted: bool,
 }
 
-impl<D: Directory> CommitPoint<D> {
-    fn new<C: Codec>(
-        commits_to_delete: *mut Vec<CommitPoint<D>>,
-        directory_orig: Arc<D>,
-        segment_infos: &SegmentInfos<D, C>,
-    ) -> Self {
+impl CommitPoint {
+    fn new(generation: i64, segment_file_name: String, files: HashSet<String>) -> Self {
         CommitPoint {
-            files: segment_infos.files(true),
-            segments_file_name: segment_infos.segment_file_name().unwrap(),
+            generation,
+            segment_file_name,
+            files,
             deleted: false,
-            directory_orig,
-            commits_to_delete,
-            generation: segment_infos.generation,
-            user_data: HashMap::new(),
-            segment_count: segment_infos.len(),
         }
     }
-}
 
-impl<D: Directory> IndexCommit<D> for CommitPoint<D> {
-    fn segments_file_name(&self) -> &str {
-        &self.segments_file_name
+    /// Get the segments file (`segments_N`) associated with this commit point
+    pub fn segments_file_name(&self) -> &str {
+        &self.segment_file_name
     }
 
-    fn file_names(&self) -> Result<&HashSet<String>> {
-        Ok(&self.files)
-    }
-
-    fn directory(&self) -> &D {
-        self.directory_orig.as_ref()
-    }
-
-    fn delete(&mut self) -> Result<()> {
-        if !self.deleted {
-            self.deleted = true;
-            let commit_point = self.clone();
-            unsafe {
-                (*self.commits_to_delete).push(commit_point);
-            }
-        }
+    /// Delete this commit point.  This only applies when using
+    /// the commit point in the context of IndexWriter's
+    /// IndexDeletionPolicy.
+    ///
+    /// Upon calling this, the writer is notified that this commit
+    /// point should be deleted.
+    ///
+    /// Decision that a commit-point should be deleted is taken by the
+    /// `IndexDeletionPolicy` in effect and therefore this should only
+    /// be called by its `IndexDeletionPolicy#onInit on_init()` or
+    /// `IndexDeletionPolicy#onCommit on_commit()` methods.
+    pub fn delete(&mut self) -> Result<()> {
+        self.deleted = true;
         Ok(())
     }
-
-    fn is_deleted(&self) -> bool {
-        self.deleted
-    }
-
-    fn segment_count(&self) -> usize {
-        self.segment_count
-    }
-
-    fn generation(&self) -> i64 {
-        self.generation
-    }
-
-    fn user_data(&self) -> &HashMap<String, String> {
-        &self.user_data
-    }
 }
 
-impl<D: Directory> Clone for CommitPoint<D> {
-    fn clone(&self) -> Self {
-        CommitPoint {
-            files: self.files.clone(),
-            segments_file_name: self.segments_file_name.clone(),
-            deleted: self.deleted,
-            directory_orig: Arc::clone(&self.directory_orig),
-            commits_to_delete: self.commits_to_delete,
-            generation: self.generation,
-            user_data: self.user_data.clone(),
-            segment_count: self.segment_count,
-        }
-    }
-}
-
-impl<D: Directory> Ord for CommitPoint<D> {
+impl Ord for CommitPoint {
     fn cmp(&self, other: &Self) -> Ordering {
-        debug_assert!(ptr::eq(
-            self.directory_orig.as_ref(),
-            other.directory_orig.as_ref(),
-        ));
-
         self.generation.cmp(&other.generation)
     }
 }
 
-impl<D: Directory> PartialOrd for CommitPoint<D> {
+impl PartialOrd for CommitPoint {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl<D: Directory> Eq for CommitPoint<D> {}
+impl Eq for CommitPoint {}
 
-impl<D: Directory> PartialEq for CommitPoint<D> {
+impl PartialEq for CommitPoint {
     fn eq(&self, other: &Self) -> bool {
-        ptr::eq(self.directory_orig.as_ref(), other.directory_orig.as_ref())
-            && self.generation == other.generation
+        self.segment_file_name == other.segment_file_name && self.generation == other.generation
     }
 }

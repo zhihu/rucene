@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use core::store::io::{BufferedChecksumIndexInput, DataOutput, IndexInput, IndexOutput};
-use core::store::{IOContext, Lock};
+use core::store::IOContext;
 use error::Result;
 
 /// A Directory is a flat list of files.
@@ -25,7 +25,6 @@ use error::Result;
 /// Files may be written once, when they are created.  Once a file is created it may only
 /// be opened for read, or deleted.  Random access is permitted both when reading and writing.
 pub trait Directory: fmt::Display {
-    type LK: Lock;
     type IndexOutput: IndexOutput;
     type TempOutput: IndexOutput;
     /// Returns an array of strings, one for each entry in the directory, in sorted (UTF16,
@@ -50,13 +49,6 @@ pub trait Directory: fmt::Display {
         let input = self.open_input(name, ctx)?;
         Ok(BufferedChecksumIndexInput::new(input))
     }
-
-    /// Returns an obtained {@link Lock}.
-    /// @param name the name of the lock file
-    /// @throws LockObtainFailedException (optional specific exception) if the lock could
-    ///         not be obtained because it is currently held elsewhere.
-    /// @throws IOException if any i/o error occurs attempting to gain the lock
-    fn obtain_lock(&self, name: &str) -> Result<Self::LK>;
 
     fn create_temp_output(
         &self,
@@ -90,18 +82,11 @@ pub trait Directory: fmt::Display {
         dest: &str,
         ctx: &IOContext,
     ) -> Result<()> {
-        let mut _success = false;
         let mut is = from.open_input(src, ctx)?;
         let mut os = self.create_output(dest, ctx)?;
 
         let length = is.len();
         os.copy_bytes(is.as_mut(), length as usize)?;
-
-        _success = true;
-
-        //        if (!_success) {
-        //            IOUtils.deleteFilesIgnoringExceptions(this, dest);
-        //        }
 
         Ok(())
     }
@@ -119,12 +104,11 @@ pub trait Directory: fmt::Display {
 /// `Lock` is valid before any destructive filesystem operation.
 pub struct LockValidatingDirectoryWrapper<D: Directory> {
     dir: Arc<D>,
-    write_lock: Arc<D::LK>,
 }
 
 impl<D: Directory> LockValidatingDirectoryWrapper<D> {
-    pub fn new(dir: Arc<D>, write_lock: Arc<D::LK>) -> Self {
-        LockValidatingDirectoryWrapper { dir, write_lock }
+    pub fn new(dir: Arc<D>) -> Self {
+        LockValidatingDirectoryWrapper { dir }
     }
 }
 
@@ -138,21 +122,15 @@ impl<D: Directory> FilterDirectory for LockValidatingDirectoryWrapper<D> {
 }
 
 impl<D: Directory> Directory for LockValidatingDirectoryWrapper<D> {
-    type LK = D::LK;
     type IndexOutput = D::IndexOutput;
     type TempOutput = D::TempOutput;
 
     fn create_output(&self, name: &str, context: &IOContext) -> Result<Self::IndexOutput> {
-        self.write_lock.ensure_valid()?;
         self.dir.create_output(name, context)
     }
 
     fn open_input(&self, name: &str, ctx: &IOContext) -> Result<Box<dyn IndexInput>> {
         self.dir.open_input(name, ctx)
-    }
-
-    fn obtain_lock(&self, name: &str) -> Result<Self::LK> {
-        self.dir.obtain_lock(name)
     }
 
     fn create_temp_output(
@@ -165,22 +143,18 @@ impl<D: Directory> Directory for LockValidatingDirectoryWrapper<D> {
     }
 
     fn delete_file(&self, name: &str) -> Result<()> {
-        self.write_lock.ensure_valid()?;
         self.dir.delete_file(name)
     }
 
     fn sync(&self, name: &HashSet<String>) -> Result<()> {
-        self.write_lock.ensure_valid()?;
         self.dir.sync(name)
     }
 
     fn sync_meta_data(&self) -> Result<()> {
-        self.write_lock.ensure_valid()?;
         self.dir.sync_meta_data()
     }
 
     fn rename(&self, source: &str, dest: &str) -> Result<()> {
-        self.write_lock.ensure_valid()?;
         self.dir.rename(source, dest)
     }
 
@@ -191,7 +165,6 @@ impl<D: Directory> Directory for LockValidatingDirectoryWrapper<D> {
         dest: &str,
         ctx: &IOContext,
     ) -> Result<()> {
-        self.write_lock.ensure_valid()?;
         self.dir.copy_from(from, src, dest, ctx)
     }
 }
@@ -209,7 +182,6 @@ pub trait FilterDirectory {
 }
 
 default impl<T: FilterDirectory> Directory for T {
-    type LK = <T::Dir as Directory>::LK;
     type IndexOutput = <T::Dir as Directory>::IndexOutput;
     type TempOutput = <T::Dir as Directory>::TempOutput;
 

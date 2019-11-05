@@ -20,8 +20,7 @@ use core::index::merge::MergeScheduler;
 use core::index::reader::{
     IndexReader, LeafReader, LeafReaderContext, SearchLeafReader, SegmentReader,
 };
-use core::index::writer::IndexCommit;
-use core::index::writer::IndexWriter;
+use core::index::writer::{CommitPoint, IndexWriter};
 use core::store::directory::Directory;
 use core::store::IOContext;
 use core::util::DocId;
@@ -124,14 +123,14 @@ where
             // IndexWriter's segmentInfos:
             let rld = writer.reader_pool().get_or_create(&infos.segments[i])?;
             let reader = rld.get_readonly_clone(&IOContext::READ)?;
-            if reader.num_docs() > 0 || writer.keep_fully_deleted_segments() {
+            if reader.num_docs() > 0 {
                 // Steal the ref:
                 readers.push(Arc::new(reader));
                 infos_upto += 1;
             } else {
                 segment_infos.segments.remove(infos_upto);
             }
-            writer.reader_pool().release(&rld, true)?;
+            writer.reader_pool().release(&rld)?;
         }
         writer.inc_ref_deleter(&segment_infos)?;
         let dir = Arc::clone(writer.directory());
@@ -254,7 +253,7 @@ where
         self.segment_infos.version
     }
 
-    pub fn open_if_changed(&self, commit: Option<&dyn IndexCommit<D>>) -> Result<Option<Self>> {
+    pub fn open_if_changed(&self, commit: Option<&CommitPoint>) -> Result<Option<Self>> {
         // If we were obtained by writer.getReader(), re-ask the
         // writer to get a new reader.
         if self.writer.is_some() {
@@ -264,7 +263,7 @@ where
         }
     }
 
-    fn open_from_writer(&self, commit: Option<&dyn IndexCommit<D>>) -> Result<Option<Self>> {
+    fn open_from_writer(&self, commit: Option<&CommitPoint>) -> Result<Option<Self>> {
         if commit.is_some() {
             Ok(Some(self.open_from_commit(commit)?))
         } else {
@@ -282,14 +281,14 @@ where
         }
     }
 
-    fn open_from_commit(&self, commit: Option<&dyn IndexCommit<D>>) -> Result<Self> {
+    fn open_from_commit(&self, commit: Option<&CommitPoint>) -> Result<Self> {
         run_with_find_segment_file(&self.directory, commit, |(dir, file_name)| {
             let infos = SegmentInfos::read_commit(dir, file_name)?;
             Self::open_by_readers(Arc::clone(dir), infos, &self.readers)
         })
     }
 
-    fn do_open_no_writer(&self, commit: Option<&dyn IndexCommit<D>>) -> Result<Option<Self>> {
+    fn do_open_no_writer(&self, commit: Option<&CommitPoint>) -> Result<Option<Self>> {
         if let Some(commit) = commit {
             if let Some(name) = self.segment_infos.segment_file_name() {
                 if commit.segments_file_name() == name {
@@ -409,14 +408,14 @@ where
     }
 }
 
-impl<D, C, MS, MP> AsRef<IndexReader<Codec = C>> for StandardDirectoryReader<D, C, MS, MP>
+impl<D, C, MS, MP> AsRef<dyn IndexReader<Codec = C>> for StandardDirectoryReader<D, C, MS, MP>
 where
     D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
 {
-    fn as_ref(&self) -> &(IndexReader<Codec = C> + 'static) {
+    fn as_ref(&self) -> &(dyn IndexReader<Codec = C> + 'static) {
         self
     }
 }

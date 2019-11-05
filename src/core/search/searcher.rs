@@ -424,11 +424,9 @@ where
         for ctx in &leaves {
             let max_doc = ctx.reader.max_doc();
             if max_doc >= max_docs_per_slice {
-                debug_assert!(ords.is_empty());
                 slices.push(LeafOrdSlice(vec![ctx.ord]));
             } else {
                 if doc_sum + max_doc > max_docs_per_slice || ords.len() >= max_segments_per_slice {
-                    debug_assert!(!ords.is_empty());
                     ords.sort();
                     slices.push(LeafOrdSlice(ords));
                     ords = vec![];
@@ -902,7 +900,7 @@ mod tests {
             unimplemented!()
         }
 
-        fn as_any(&self) -> &::std::any::Any {
+        fn as_any(&self) -> &dyn (::std::any::Any) {
             unreachable!()
         }
     }

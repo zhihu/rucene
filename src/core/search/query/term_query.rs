@@ -95,7 +95,7 @@ impl<C: Codec> Query<C> for TermQuery {
         vec![self.clone()]
     }
 
-    fn as_any(&self) -> &::std::any::Any {
+    fn as_any(&self) -> &dyn (::std::any::Any) {
         self
     }
 }

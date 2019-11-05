@@ -59,7 +59,6 @@ where
     D: Directory,
     T: Deref<Target = D>,
 {
-    type LK = D::LK;
     type IndexOutput = D::IndexOutput;
     type TempOutput = D::TempOutput;
 
@@ -71,10 +70,6 @@ where
 
     fn open_input(&self, name: &str, ctx: &IOContext) -> Result<Box<dyn IndexInput>> {
         self.directory.open_input(name, ctx)
-    }
-
-    fn obtain_lock(&self, name: &str) -> Result<Self::LK> {
-        self.directory.obtain_lock(name)
     }
 
     fn create_temp_output(

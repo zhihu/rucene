@@ -94,8 +94,8 @@ impl<D: Directory + Send + Sync + 'static, C: Codec> DocumentsWriterFlushQueue<D
         &self,
         writer: &IndexWriter<D, C, MS, MP>,
     ) -> Result<u32> {
-        let queue = self.queue.lock()?;
-        self.inner_purge(writer, queue)
+        let _lock = self.purge_lock.lock()?;
+        self.inner_purge(writer)
     }
 
     pub fn try_purge<MS: MergeScheduler, MP: MergePolicy>(
@@ -104,10 +104,7 @@ impl<D: Directory + Send + Sync + 'static, C: Codec> DocumentsWriterFlushQueue<D
     ) -> Result<u32> {
         let lock_res = self.purge_lock.try_lock();
         match lock_res {
-            Ok(_l) => {
-                let queue = self.queue.lock()?;
-                self.inner_purge(writer, queue)
-            }
+            Ok(_l) => self.inner_purge(writer),
             _ => Ok(0),
         }
     }
@@ -115,9 +112,9 @@ impl<D: Directory + Send + Sync + 'static, C: Codec> DocumentsWriterFlushQueue<D
     fn inner_purge<MS: MergeScheduler, MP: MergePolicy>(
         &self,
         writer: &IndexWriter<D, C, MS, MP>,
-        mut queue: MutexGuard<VecDeque<FlushTicket<D, C>>>,
     ) -> Result<u32> {
         let mut num_purged = 0u32;
+        let mut queue: MutexGuard<VecDeque<FlushTicket<D, C>>> = self.queue.lock()?;
         loop {
             let can_publish = if let Some(ref ft) = queue.front_mut() {
                 ft.can_publish()
@@ -152,31 +149,6 @@ trait IFlushTicket<D: Directory + Send + Sync + 'static, C: Codec> {
 
     fn can_publish(&self) -> bool;
 
-    /// Publishes the flushed segment, segment private deletes (if any) and its
-    /// associated global delete (if present) to IndexWriter.  The actual
-    /// publishing operation is synced on {@code IW -> BDS} so that the {@link SegmentInfo}'s
-    /// delete generation is always GlobalPacket_deleteGeneration + 1
-    fn publish_flushed_segment<MS: MergeScheduler, MP: MergePolicy>(
-        &self,
-        index_writer: &IndexWriter<D, C, MS, MP>,
-        new_segment: FlushedSegment<D, C>,
-        global_packet: Option<FrozenBufferedUpdates<C>>,
-    ) -> Result<()> {
-        debug!(
-            "publish_flush_segment seg-private update={:?}",
-            new_segment
-                .segment_updates
-                .as_ref()
-                .map(|su| format!("{}", su))
-        );
-
-        if let Some(ref updates) = new_segment.segment_updates {
-            debug!("flush: push buffered seg private updates: {}", updates);
-        }
-        // now publish!
-        index_writer.publish_flushed_segment(new_segment, global_packet)
-    }
-
     fn finish_flush<MS: MergeScheduler, MP: MergePolicy>(
         &self,
         index_writer: &IndexWriter<D, C, MS, MP>,
@@ -185,7 +157,16 @@ trait IFlushTicket<D: Directory + Send + Sync + 'static, C: Codec> {
     ) -> Result<()> {
         // Finish the flushed segment and publish it to IndexWriter
         if let Some(segment) = new_segment {
-            self.publish_flushed_segment(index_writer, segment, buffered_update)?;
+            debug!(
+                "publish_flush_segment seg-private update={:?}",
+                segment.segment_updates.as_ref().map(|su| format!("{}", su))
+            );
+
+            // Publishes the flushed segment, segment private deletes (if any) and its
+            // associated global delete (if present) to IndexWriter.  The actual
+            // publishing operation is synced on {@code IW -> BDS} so that the {@link
+            // SegmentInfo}'s delete generation is always GlobalPacket_deleteGeneration + 1
+            index_writer.publish_flushed_segment(segment, buffered_update)?;
         } else {
             debug_assert!(buffered_update.is_some());
             let update = buffered_update.unwrap();

@@ -32,7 +32,7 @@ use core::index::merge::MergePolicy;
 use core::index::writer::{index_writer, DocState, DocumentsWriterPerThread};
 use core::store::directory::Directory;
 use core::store::IOContext;
-use core::util::{BytesRef, Counter, DocId, VariantValue};
+use core::util::{BytesRef, DocId, VariantValue};
 
 use core::search::similarity::BM25Similarity;
 
@@ -50,30 +50,12 @@ use std::sync::Arc;
 
 const MAX_FIELD_COUNT: usize = 65536;
 
-pub trait DocConsumer<D: Directory, C: Codec> {
-    fn process_document<F: Fieldable>(
-        &mut self,
-        doc_state: &mut DocState,
-        doc: &mut [F],
-    ) -> Result<()>;
-
-    fn flush<DW>(
-        &mut self,
-        state: &mut SegmentWriteState<D, DW, C>,
-    ) -> Result<Option<Arc<PackedLongDocMap>>>
-    where
-        DW: Directory + 'static;
-
-    fn abort(&mut self) -> Result<()>;
-}
-
-pub struct DefaultIndexingChain<
+pub struct DocConsumer<
     D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
 > {
-    pub bytes_used: Counter,
     pub field_infos: FieldInfosBuilder<FieldNumbersRef>,
     // Writes postings and term vectors
     pub terms_hash: FreqProxTermsWriter<D, C, MS, MP>,
@@ -95,7 +77,7 @@ pub struct DefaultIndexingChain<
     finished_doc_values: HashSet<String>,
 }
 
-impl<D, C, MS, MP> DefaultIndexingChain<D, C, MS, MP>
+impl<D, C, MS, MP> DocConsumer<D, C, MS, MP>
 where
     D: Directory + Send + Sync + 'static,
     C: Codec,
@@ -118,10 +100,8 @@ where
             )
         };
         let terms_hash = FreqProxTermsWriter::new(doc_writer, tv_writer);
-        let bytes_used = unsafe { doc_writer.bytes_used.shallow_copy() };
 
-        DefaultIndexingChain {
-            bytes_used,
+        DocConsumer {
             field_infos,
             terms_hash,
             stored_fields_consumer: stored_writer,
@@ -131,7 +111,6 @@ where
             inited: false,
             fields: vec![],
             parent: doc_writer,
-
             finished_doc_values: HashSet::new(),
         }
     }
@@ -293,7 +272,7 @@ where
             let idx = self.get_or_add_field(field.name(), field.field_type(), true)?;
             let first = self.field_hash[idx].field_gen != field_gen;
 
-            let ptr = self as *mut DefaultIndexingChain<D, C, MS, MP>;
+            let ptr = self as *mut DocConsumer<D, C, MS, MP>;
             self.field_hash[idx].invert(field, doc_state, first, &mut *ptr)?;
 
             if first {
@@ -483,9 +462,7 @@ where
             DocValuesType::Sorted => {
                 if per_field.doc_values_writer.is_none() {
                     per_field.doc_values_writer = Some(DocValuesWriterEnum::Sorted(
-                        SortedDocValuesWriter::new(per_field.field_info(), unsafe {
-                            self.bytes_used.shallow_copy()
-                        }),
+                        SortedDocValuesWriter::new(per_field.field_info()),
                     ))
                 };
                 let doc_value_writer = per_field.doc_values_writer.as_mut().unwrap();
@@ -511,14 +488,9 @@ where
             }
             DocValuesType::SortedSet => {
                 if per_field.doc_values_writer.is_none() {
-                    per_field.doc_values_writer = unsafe {
-                        Some(DocValuesWriterEnum::SortedSet(
-                            SortedSetDocValuesWriter::new(
-                                per_field.field_info(),
-                                self.bytes_used.shallow_copy(),
-                            ),
-                        ))
-                    };
+                    per_field.doc_values_writer = Some(DocValuesWriterEnum::SortedSet(
+                        SortedSetDocValuesWriter::new(per_field.field_info()),
+                    ));
                 }
                 let doc_value_writer = per_field.doc_values_writer.as_mut().unwrap();
                 debug_assert_eq!(doc_value_writer.doc_values_type(), DocValuesType::SortedSet);
@@ -624,14 +596,14 @@ where
     }
 }
 
-impl<D, C, MS, MP> DocConsumer<D, C> for DefaultIndexingChain<D, C, MS, MP>
+impl<D, C, MS, MP> DocConsumer<D, C, MS, MP>
 where
     D: Directory + Send + Sync + 'static,
     C: Codec,
     MS: MergeScheduler,
     MP: MergePolicy,
 {
-    fn process_document<F: Fieldable>(
+    pub fn process_document<F: Fieldable>(
         &mut self,
         doc_state: &mut DocState,
         doc: &mut [F],
@@ -667,7 +639,7 @@ where
         self.terms_hash.finish_document(&mut self.field_infos)
     }
 
-    fn flush<DW>(
+    pub fn flush<DW>(
         &mut self,
         state: &mut SegmentWriteState<D, DW, C>,
     ) -> Result<Option<Arc<PackedLongDocMap>>>
@@ -755,7 +727,7 @@ where
         Ok(sort_map)
     }
 
-    fn abort(&mut self) -> Result<()> {
+    pub fn abort(&mut self) -> Result<()> {
         let res = self.terms_hash.abort();
         self.field_hash.clear();
         self.stored_fields_consumer.abort();
@@ -867,7 +839,7 @@ impl<T: TermsHashPerField> PerField<T> {
         field: &mut impl Fieldable,
         doc_state: &DocState,
         first: bool,
-        index_chain: &mut DefaultIndexingChain<D, C, MS, MP>,
+        consumer: &mut DocConsumer<D, C, MS, MP>,
     ) -> Result<()>
     where
         D: Directory + Send + Sync + 'static,
@@ -882,7 +854,7 @@ impl<T: TermsHashPerField> PerField<T> {
         }
 
         let index_options = field.field_type().index_options;
-        index_chain
+        consumer
             .field_infos
             .by_name
             .get_mut(&self.field_info().name)
@@ -890,7 +862,7 @@ impl<T: TermsHashPerField> PerField<T> {
             .index_options = index_options;
 
         if field.field_type().omit_norms {
-            index_chain
+            consumer
                 .field_infos
                 .by_name
                 .get_mut(&self.field_info().name)

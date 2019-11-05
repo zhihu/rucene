@@ -51,10 +51,6 @@ mod flush_policy;
 
 pub use self::flush_policy::*;
 
-mod index_commit;
-
-pub use self::index_commit::*;
-
 mod index_file_deleter;
 
 pub use self::index_file_deleter::*;
@@ -63,9 +59,9 @@ mod index_writer_config;
 
 pub use self::index_writer_config::*;
 
-mod thread_doc_writer;
+mod doc_writer_per_thread;
 
-pub use self::thread_doc_writer::*;
+pub use self::doc_writer_per_thread::*;
 
 mod prefix_code_terms;
 

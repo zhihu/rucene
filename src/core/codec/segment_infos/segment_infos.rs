@@ -13,7 +13,6 @@
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
-use std::ptr;
 use std::sync::Arc;
 
 use core::codec::segment_infos::{
@@ -27,13 +26,13 @@ use core::codec::{
     write_footer, write_index_header,
 };
 use core::index::merge::OneMerge;
-use core::index::writer::IndexCommit;
+use core::index::writer::CommitPoint;
 use core::store::directory::Directory;
 use core::store::io::{BufferedChecksumIndexInput, ChecksumIndexInput, IndexInput, IndexOutput};
 use core::store::IOContext;
 use core::util::{random_id, ID_LENGTH};
 use core::util::{to_base36, Version, VERSION_LATEST};
-use error::ErrorKind::{IOError, IllegalState, NumError};
+use error::ErrorKind::{IllegalState, NumError};
 use error::Result;
 
 /// The file format version for the segments_N codec header, since 5.0+
@@ -681,18 +680,13 @@ pub fn get_segment_file_name<D: Directory>(directory: &D) -> Result<String> {
 /// commit finishing.
 pub fn run_with_find_segment_file<T, Output, D: Directory>(
     directory: &Arc<D>,
-    commit: Option<&dyn IndexCommit<D>>,
+    commit: Option<&CommitPoint>,
     do_body: T,
 ) -> Result<Output>
 where
     T: Fn((&Arc<D>, &str)) -> Result<Output>,
 {
     if let Some(commit) = commit {
-        if !ptr::eq(directory.as_ref(), commit.directory()) {
-            bail!(IOError(
-                "the specified commit does not match the specified Directory".into()
-            ));
-        }
         return do_body((directory, commit.segments_file_name()));
     }
 

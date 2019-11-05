@@ -86,7 +86,7 @@ impl MergeRateLimiter {
         }
 
         // CMS can wake us up here if it changes our target rate:
-        self.cond.wait_timeout(l, cur_pause_dur)?;
+        let _ = self.cond.wait_timeout(l, cur_pause_dur)?;
 
         let rate = self.mb_per_sec.read();
         if rate == 0.0 {

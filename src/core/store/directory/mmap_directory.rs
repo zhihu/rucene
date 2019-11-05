@@ -21,7 +21,7 @@ use memmap::Mmap;
 
 use core::store::directory::{Directory, FSDirectory, FilterDirectory};
 use core::store::io::{FSIndexOutput, IndexInput, MmapIndexInput, ReadOnlySource};
-use core::store::{IOContext, LockFactory};
+use core::store::IOContext;
 use error::Result;
 
 #[derive(Default, Clone, Debug)]
@@ -145,19 +145,15 @@ impl MmapCache {
 /// from the Lucene `misc` module in favor of `MMapDirectory`.
 ///
 /// See [Blog post about MMapDirectory](http://blog.thetaphi.de/2012/07/use-lucenes-mmapdirectory-on-64bit.html)
-pub struct MmapDirectory<LF: LockFactory> {
-    directory: FSDirectory<LF>,
+pub struct MmapDirectory {
+    directory: FSDirectory,
     pub preload: bool,
     mmap_cache: Arc<Mutex<MmapCache>>,
 }
 
-impl<LF: LockFactory> MmapDirectory<LF> {
-    pub fn new<T: AsRef<Path>>(
-        directory: &T,
-        lock_factory: LF,
-        _max_chunk_size: u32,
-    ) -> Result<MmapDirectory<LF>> {
-        let directory = FSDirectory::new(directory, lock_factory)?;
+impl MmapDirectory {
+    pub fn new<T: AsRef<Path>>(directory: &T) -> Result<MmapDirectory> {
+        let directory = FSDirectory::new(directory)?;
         Ok(MmapDirectory {
             directory,
             preload: false,
@@ -166,8 +162,8 @@ impl<LF: LockFactory> MmapDirectory<LF> {
     }
 }
 
-impl<LF: LockFactory> FilterDirectory for MmapDirectory<LF> {
-    type Dir = FSDirectory<LF>;
+impl FilterDirectory for MmapDirectory {
+    type Dir = FSDirectory;
 
     #[inline]
     fn dir(&self) -> &Self::Dir {
@@ -175,8 +171,7 @@ impl<LF: LockFactory> FilterDirectory for MmapDirectory<LF> {
     }
 }
 
-impl<LF: LockFactory> Directory for MmapDirectory<LF> {
-    type LK = LF::LK;
+impl Directory for MmapDirectory {
     type IndexOutput = FSIndexOutput;
     type TempOutput = FSIndexOutput;
 
@@ -195,10 +190,6 @@ impl<LF: LockFactory> Directory for MmapDirectory<LF> {
         Ok(Box::new(boxed))
     }
 
-    fn obtain_lock(&self, name: &str) -> Result<Self::LK> {
-        self.directory.obtain_lock(name)
-    }
-
     fn create_temp_output(
         &self,
         prefix: &str,
@@ -209,7 +200,7 @@ impl<LF: LockFactory> Directory for MmapDirectory<LF> {
     }
 }
 
-impl<LF: LockFactory> fmt::Display for MmapDirectory<LF> {
+impl fmt::Display for MmapDirectory {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "MmapDirectory({})", self.directory)
     }

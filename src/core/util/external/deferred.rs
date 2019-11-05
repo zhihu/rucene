@@ -14,6 +14,7 @@
 // TODO: copy from package `crossbeam-epoch` from it's not a public module
 // we use this to manage callback functions
 
+use std::mem::MaybeUninit;
 use std::{fmt, mem, ptr};
 
 /// Number of words a piece of `Data` can hold.
@@ -30,7 +31,7 @@ type Data = [usize; DATA_WORDS];
 /// This is a handy way of keeping an unsized `FnOnce()` within a sized structure.
 pub struct Deferred {
     call: unsafe fn(*mut u8),
-    data: Data,
+    data: MaybeUninit<Data>,
 }
 
 impl fmt::Debug for Deferred {
@@ -48,8 +49,8 @@ impl Deferred {
 
         unsafe {
             if size <= mem::size_of::<Data>() && align <= mem::align_of::<Data>() {
-                let mut data: Data = mem::uninitialized();
-                ptr::write(&mut data as *mut Data as *mut F, f);
+                let mut data = MaybeUninit::<Data>::uninit();
+                ptr::write(data.as_mut_ptr() as *mut F, f);
 
                 unsafe fn call<F: FnOnce()>(raw: *mut u8) {
                     let f: F = ptr::read(raw as *mut F);
@@ -62,8 +63,8 @@ impl Deferred {
                 }
             } else {
                 let b: Box<F> = Box::new(f);
-                let mut data: Data = mem::uninitialized();
-                ptr::write(&mut data as *mut Data as *mut Box<F>, b);
+                let mut data = MaybeUninit::<Data>::uninit();
+                ptr::write(data.as_mut_ptr() as *mut Box<F>, b);
 
                 unsafe fn call<F: FnOnce()>(raw: *mut u8) {
                     let b: Box<F> = ptr::read(raw as *mut Box<F>);
@@ -82,6 +83,6 @@ impl Deferred {
     #[inline]
     pub fn call(mut self) {
         let call = self.call;
-        unsafe { call(&mut self.data as *mut Data as *mut u8) };
+        unsafe { call(self.data.as_mut_ptr() as *mut u8) };
     }
 }

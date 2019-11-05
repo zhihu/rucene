@@ -250,7 +250,7 @@ impl SortedNumericDocValuesProvider for TabledSortedNumericDocValues {
 }
 
 /// ################ SortedDocValuesProvider
-impl<T: Deref<Target = SortedDocValuesProvider> + Send + Sync> SortedDocValuesProvider for T {
+impl<T: Deref<Target = dyn SortedDocValuesProvider> + Send + Sync> SortedDocValuesProvider for T {
     fn get(&self) -> Result<Box<dyn SortedDocValues>> {
         (**self).get()
     }

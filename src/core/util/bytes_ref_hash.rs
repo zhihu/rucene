@@ -12,7 +12,6 @@
 // limitations under the License.
 
 use core::util::byte_block_pool::ByteBlockPool;
-use core::util::counter::{Count, Counter};
 use core::util::math;
 use core::util::sorter::{MSBRadixSorter, MSBSorter, Sorter};
 use core::util::BytesRef;
@@ -44,8 +43,6 @@ pub struct BytesRefHash {
     last_count: isize,
     pub ids: Vec<i32>,
     pub bytes_start_array: Box<dyn BytesStartArray>,
-    /* bytes_start: Vec<usize>,  // bytes_start_array.bytes()
-     * bytes_used: Counter,     // bytes_start_array.bytes_used() */
 }
 
 impl BytesRefHash {
@@ -141,9 +138,6 @@ impl BytesRefHash {
         }
 
         if new_size != self.hash_size {
-            self.bytes_start_array
-                .bytes_used_mut()
-                .add_get(-4 * (self.hash_size - new_size) as i64);
             self.hash_size = new_size;
             self.ids.truncate(new_size);
             fill_slice(&mut self.ids, -1);
@@ -173,9 +167,6 @@ impl BytesRefHash {
     pub fn close(&mut self) {
         self.clear(true);
         self.ids = Vec::with_capacity(0);
-        self.bytes_start_array
-            .bytes_used_mut()
-            .add_get(-4 * self.hash_size as i64);
     }
 
     pub fn add(&mut self, bytes: &BytesRef) -> i32 {
@@ -308,9 +299,6 @@ impl BytesRefHash {
 
     fn rehash(&mut self, new_size: usize, hash_on_data: bool) {
         let new_mask = new_size - 1;
-        self.bytes_start_array
-            .bytes_used_mut()
-            .add_get(4 * new_size as i64);
         let mut new_hash = vec![-1i32; new_size];
         for i in 0..self.hash_size {
             let e0 = self.ids[i];
@@ -355,9 +343,6 @@ impl BytesRefHash {
         }
 
         self.hash_mask = new_mask;
-        self.bytes_start_array
-            .bytes_used_mut()
-            .add_get(-4 * self.ids.len() as i64);
         self.ids = new_hash;
         self.hash_size = new_size;
         self.hash_half_size = new_size >> 1;
@@ -370,9 +355,6 @@ impl BytesRefHash {
 
         if self.ids.is_empty() {
             self.ids = vec![0i32; self.hash_size];
-            self.bytes_start_array
-                .bytes_used_mut()
-                .add_get(4 * self.hash_size as i64);
         }
     }
 
@@ -480,8 +462,6 @@ pub trait BytesStartArray {
     fn grow(&mut self);
 
     fn clear(&mut self);
-
-    fn bytes_used_mut(&mut self) -> &mut Counter;
 }
 
 /// A simple BytesStartArray that tracks memory allocation
@@ -489,20 +469,18 @@ pub trait BytesStartArray {
 pub struct DirectByteStartArray {
     init_size: usize,
     pub bytes_start: Vec<u32>,
-    bytes_used: Counter,
 }
 
 impl DirectByteStartArray {
-    pub fn new(init_size: usize, counter: Counter) -> Self {
+    pub fn new(init_size: usize) -> Self {
         DirectByteStartArray {
             init_size,
             bytes_start: Vec::with_capacity(0),
-            bytes_used: counter,
         }
     }
 
     pub fn with_size(init_size: usize) -> Self {
-        Self::new(init_size, Counter::default())
+        Self::new(init_size)
     }
 }
 
@@ -526,9 +504,5 @@ impl BytesStartArray for DirectByteStartArray {
 
     fn clear(&mut self) {
         self.bytes_start = Vec::with_capacity(0);
-    }
-
-    fn bytes_used_mut(&mut self) -> &mut Counter {
-        &mut self.bytes_used
     }
 }

@@ -181,7 +181,7 @@ pub trait LeafReader {
     fn postings_reader(&self) -> Result<Self::FieldsProducer>;
 }
 
-pub type SearchLeafReader<C> = LeafReader<
+pub type SearchLeafReader<C> = dyn LeafReader<
         Codec = C,
         FieldsProducer = CodecFieldsProducer<C>,
         TVReader = Arc<CodecTVReader<C>>,
@@ -198,12 +198,12 @@ pub struct LeafReaderContext<'a, C: Codec> {
     /// doc base in parent
     pub doc_base: DocId,
     pub reader: &'a SearchLeafReader<C>,
-    pub parent: &'a IndexReader<Codec = C>,
+    pub parent: &'a dyn IndexReader<Codec = C>,
 }
 
 impl<'a, C: Codec> LeafReaderContext<'a, C> {
     pub fn new(
-        parent: &'a IndexReader<Codec = C>,
+        parent: &'a dyn IndexReader<Codec = C>,
         reader: &'a SearchLeafReader<C>,
         ord: usize,
         doc_base: DocId,
@@ -239,7 +239,7 @@ pub struct LeafReaderContextPtr<C: Codec> {
     /// doc base in parent
     pub doc_base: DocId,
     pub reader: *const SearchLeafReader<C>,
-    pub parent: *const IndexReader<Codec = C>,
+    pub parent: *const dyn IndexReader<Codec = C>,
 }
 
 impl<C: Codec> LeafReaderContextPtr<C> {
@@ -247,7 +247,7 @@ impl<C: Codec> LeafReaderContextPtr<C> {
         ord: usize,
         doc_base: DocId,
         reader: *const SearchLeafReader<C>,
-        parent: *const IndexReader<Codec = C>,
+        parent: *const dyn IndexReader<Codec = C>,
     ) -> LeafReaderContextPtr<C> {
         LeafReaderContextPtr {
             ord,

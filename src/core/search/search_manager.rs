@@ -132,7 +132,7 @@ where
 pub trait SearcherFactory<C: Codec> {
     type Searcher: IndexSearcher<C>;
     /// Returns a new IndexSearcher over the given reader.
-    fn new_searcher(&self, reader: Arc<IndexReader<Codec = C>>) -> Result<Self::Searcher>;
+    fn new_searcher(&self, reader: Arc<dyn IndexReader<Codec = C>>) -> Result<Self::Searcher>;
 }
 
 pub struct ReferenceManagerBase<T: ?Sized> {

@@ -27,10 +27,6 @@ mod segment_reader;
 
 pub use self::segment_reader::*;
 
-mod byte_slice_reader;
-
-pub use self::byte_slice_reader::*;
-
 mod index_lookup;
 
 pub use self::index_lookup::*;

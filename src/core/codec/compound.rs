@@ -250,7 +250,6 @@ impl<D: Directory> Lucene50CompoundReader<D> {
 }
 
 impl<D: Directory> Directory for Lucene50CompoundReader<D> {
-    type LK = D::LK;
     type IndexOutput = D::IndexOutput;
     type TempOutput = D::TempOutput;
 
@@ -289,10 +288,6 @@ impl<D: Directory> Directory for Lucene50CompoundReader<D> {
             )
         })?;
         self.input.slice(name, entry.0, entry.1)
-    }
-
-    fn obtain_lock(&self, _name: &str) -> Result<Self::LK> {
-        bail!(ErrorKind::UnsupportedOperation(Cow::Borrowed("")))
     }
 
     fn create_temp_output(

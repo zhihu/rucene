@@ -137,7 +137,7 @@ impl QueryRescorer {
         hits: &mut [ScoreDocHit],
         weight: &dyn Weight<C>,
         score_field_index: i32,
-        batch_scorer: &BatchScorer,
+        batch_scorer: &dyn BatchScorer,
     ) -> Result<()> {
         let mut hit_upto = 0usize;
         let mut end_doc = 0;

@@ -14,10 +14,6 @@
 pub mod directory;
 pub mod io;
 
-mod lock;
-
-pub use self::lock::*;
-
 use error::Result;
 
 use std::sync::Arc;
@@ -50,15 +46,11 @@ impl IOContext {
 #[derive(PartialEq, Eq, Hash, Clone, Copy)]
 pub struct FlushInfo {
     num_docs: u32,
-    estimated_segment_size: u64,
 }
 
 impl FlushInfo {
-    pub fn new(num_docs: u32, estimated_segment_size: u64) -> Self {
-        FlushInfo {
-            num_docs,
-            estimated_segment_size,
-        }
+    pub fn new(num_docs: u32) -> Self {
+        FlushInfo { num_docs }
     }
 }
 
@@ -113,7 +105,7 @@ pub trait RateLimiter: Sync + Send {
     fn min_pause_check_bytes(&self) -> u64;
 }
 
-impl RateLimiter for Arc<RateLimiter> {
+impl RateLimiter for Arc<dyn RateLimiter> {
     fn set_mb_per_sec(&self, mb_per_sec: f64) {
         (**self).set_mb_per_sec(mb_per_sec);
     }

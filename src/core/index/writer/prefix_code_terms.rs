@@ -53,10 +53,6 @@ impl PrefixCodedTerms {
         }
     }
 
-    pub fn ram_bytes_used(&self) -> usize {
-        self.buffer.len() + 2 * 8
-    }
-
     /// Records del gen for this packet.
     pub fn set_del_gen(&self, del_gen: u64) {
         self.del_gen.store(del_gen, AtomicOrdering::Release);
@@ -242,8 +238,7 @@ impl Ord for TermsIteratorByTerm {
         if cmp != Ordering::Equal {
             cmp
         } else {
-            // iter with higher del gen first process
-            self.iter.del_gen.cmp(&other.iter.del_gen)
+            other.iter.del_gen.cmp(&self.iter.del_gen)
         }
     }
 }

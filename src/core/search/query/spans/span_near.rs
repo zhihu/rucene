@@ -35,8 +35,7 @@ use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::collections::HashMap;
 use std::fmt;
-use std::mem;
-use std::ptr;
+use std::mem::MaybeUninit;
 use std::sync::Arc;
 
 pub struct SpanNearQueryBuilder {
@@ -195,7 +194,7 @@ impl<C: Codec> Query<C> for SpanNearQuery {
             .collect()
     }
 
-    fn as_any(&self) -> &::std::any::Any {
+    fn as_any(&self) -> &dyn (::std::any::Any) {
         self
     }
 }
@@ -336,7 +335,7 @@ impl<C: Codec> fmt::Display for SpanNearWeight<C> {
 }
 
 pub struct NearSpansUnordered<P: PostingIterator> {
-    conjunction_span: ConjunctionSpanBase<P>,
+    conjunction_span: MaybeUninit<ConjunctionSpanBase<P>>,
     sub_span_cells: Vec<SpansCell<P>>,
     allowed_slop: i32,
     span_position_queue: BinaryHeap<SpansCellElement<P>>,
@@ -352,7 +351,7 @@ impl<P: PostingIterator> NearSpansUnordered<P> {
         sub_spans: Vec<SpansEnum<P>>,
     ) -> Result<Box<NearSpansUnordered<P>>> {
         let mut res = Box::new(NearSpansUnordered {
-            conjunction_span: unsafe { mem::uninitialized() },
+            conjunction_span: MaybeUninit::<ConjunctionSpanBase<P>>::uninit(),
             sub_span_cells: Vec::with_capacity(sub_spans.len()),
             allowed_slop,
             span_position_queue: BinaryHeap::with_capacity(sub_spans.len()),
@@ -374,9 +373,8 @@ impl<P: PostingIterator> NearSpansUnordered<P> {
                 .collect();
             ConjunctionSpanBase::new(spans)?
         };
-        unsafe {
-            ptr::write(&mut res.conjunction_span, conjunction_span);
-        }
+
+        res.conjunction_span.write(conjunction_span);
         res.single_cell_to_positions_queue();
         Ok(res)
     }
@@ -416,11 +414,11 @@ impl<P: PostingIterator> NearSpansUnordered<P> {
 
 impl<P: PostingIterator> ConjunctionSpans<P> for NearSpansUnordered<P> {
     fn conjunction_span_base(&self) -> &ConjunctionSpanBase<P> {
-        &self.conjunction_span
+        unsafe { self.conjunction_span.get_ref() }
     }
 
     fn conjunction_span_base_mut(&mut self) -> &mut ConjunctionSpanBase<P> {
-        &mut self.conjunction_span
+        unsafe { self.conjunction_span.get_mut() }
     }
 
     fn two_phase_current_doc_matches(&mut self) -> Result<bool> {
@@ -428,8 +426,10 @@ impl<P: PostingIterator> ConjunctionSpans<P> for NearSpansUnordered<P> {
         self.sub_span_cells_to_positions_queue()?;
         loop {
             if self.at_match() {
-                self.conjunction_span.first_in_current_doc = true;
-                self.conjunction_span.one_exhausted_in_current_doc = false;
+                unsafe {
+                    self.conjunction_span.get_mut().first_in_current_doc = true;
+                    self.conjunction_span.get_mut().one_exhausted_in_current_doc = false;
+                }
                 return Ok(true);
             }
             let mut min_cell = self.span_position_queue.peek_mut().unwrap();
@@ -445,9 +445,11 @@ impl<P: PostingIterator> ConjunctionSpans<P> for NearSpansUnordered<P> {
 
 impl<P: PostingIterator> Spans for NearSpansUnordered<P> {
     fn next_start_position(&mut self) -> Result<i32> {
-        if self.conjunction_span.first_in_current_doc {
-            self.conjunction_span.first_in_current_doc = false;
-            return Ok(self.min_cell().start_position());
+        unsafe {
+            if self.conjunction_span.get_ref().first_in_current_doc {
+                self.conjunction_span.get_mut().first_in_current_doc = false;
+                return Ok(self.min_cell().start_position());
+            }
         }
         // initially at current doc
         while self.min_cell().start_position() == -1 {
@@ -468,7 +470,9 @@ impl<P: PostingIterator> Spans for NearSpansUnordered<P> {
                 .next_start_position()?
                 == NO_MORE_POSITIONS
             {
-                self.conjunction_span.one_exhausted_in_current_doc = true;
+                unsafe {
+                    self.conjunction_span.get_mut().one_exhausted_in_current_doc = true;
+                }
                 return Ok(NO_MORE_POSITIONS);
             }
             if self.at_match() {
@@ -478,22 +482,26 @@ impl<P: PostingIterator> Spans for NearSpansUnordered<P> {
     }
 
     fn start_position(&self) -> i32 {
-        if self.conjunction_span.first_in_current_doc {
-            -1
-        } else if self.conjunction_span.one_exhausted_in_current_doc {
-            NO_MORE_POSITIONS
-        } else {
-            self.min_cell().start_position()
+        unsafe {
+            if self.conjunction_span.get_ref().first_in_current_doc {
+                -1
+            } else if self.conjunction_span.get_ref().one_exhausted_in_current_doc {
+                NO_MORE_POSITIONS
+            } else {
+                self.min_cell().start_position()
+            }
         }
     }
 
     fn end_position(&self) -> i32 {
-        if self.conjunction_span.first_in_current_doc {
-            -1
-        } else if self.conjunction_span.one_exhausted_in_current_doc {
-            NO_MORE_POSITIONS
-        } else {
-            self.sub_span_cells[self.max_end_position_cell_idx].end_position()
+        unsafe {
+            if self.conjunction_span.get_ref().first_in_current_doc {
+                -1
+            } else if self.conjunction_span.get_ref().one_exhausted_in_current_doc {
+                NO_MORE_POSITIONS
+            } else {
+                self.sub_span_cells[self.max_end_position_cell_idx].end_position()
+            }
         }
     }
 
@@ -868,7 +876,7 @@ impl<C: Codec> Query<C> for SpanGapQuery {
         vec![]
     }
 
-    fn as_any(&self) -> &::std::any::Any {
+    fn as_any(&self) -> &dyn (::std::any::Any) {
         self
     }
 }

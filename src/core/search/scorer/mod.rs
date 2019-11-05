@@ -159,9 +159,9 @@ pub fn two_phase_next(scorer: &mut dyn Scorer) -> Result<DocId> {
     }
 }
 
-impl Eq for Scorer {}
+impl Eq for dyn Scorer {}
 
-impl PartialEq for Scorer {
+impl PartialEq for dyn Scorer {
     fn eq(&self, other: &Self) -> bool {
         self == other
     }

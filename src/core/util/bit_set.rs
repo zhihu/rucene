@@ -11,7 +11,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::mem::size_of;
 use std::sync::Arc;
 
 use core::search::{DocIterator, NO_MORE_DOCS};
@@ -257,10 +256,6 @@ impl FixedBitSet {
         for i in 0..other_num_words {
             this_arr[i] |= other_arr[i];
         }
-    }
-
-    pub fn bytes_used(&self) -> usize {
-        4 * size_of::<usize>() + 8 + self.bits.capacity() * 8
     }
 }
 

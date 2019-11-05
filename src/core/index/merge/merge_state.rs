@@ -42,6 +42,7 @@ use error::ErrorKind::IllegalArgument;
 use error::Result;
 
 use core::store::directory::Directory;
+use std::any::Any;
 use std::sync::Arc;
 
 /// Holds common state used during segment merging.
@@ -575,7 +576,7 @@ impl<R: StoredFieldsReader + 'static, L: LeafReader + 'static> StoredFieldsReade
         }
     }
 
-    fn as_any(&self) -> &::std::any::Any {
+    fn as_any(&self) -> &dyn Any {
         match self {
             MergeStoredReaderEnum::Raw(s) => s.as_any(),
             MergeStoredReaderEnum::LeafReader(s) => s.as_any(),
@@ -602,7 +603,7 @@ where
         }
     }
 
-    fn as_any(&self) -> &::std::any::Any {
+    fn as_any(&self) -> &dyn Any {
         match self {
             MergeTVReaderEnum::Raw(tr) => tr.as_any(),
             MergeTVReaderEnum::LeafReader(tr) => tr.as_any(),
@@ -707,7 +708,7 @@ impl<P: PointValues + Clone + 'static> PointValues for MergePointValuesEnum<P> {
         }
     }
 
-    fn as_any(&self) -> &::std::any::Any {
+    fn as_any(&self) -> &dyn Any {
         match self {
             MergePointValuesEnum::Raw(p) => p.as_any(),
             MergePointValuesEnum::Sorting(p) => p.as_any(),

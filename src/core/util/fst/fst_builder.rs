@@ -608,7 +608,6 @@ impl<F: OutputFactory> NodeHash<F> {
                 h = prime
                     .wrapping_mul(h)
                     .wrapping_add((arc.target ^ (arc.target >> 32)) as u64);
-                ;
             }
             if let Some(ref output) = arc.output {
                 h = prime.wrapping_mul(h).wrapping_add(self.hash_code(output));

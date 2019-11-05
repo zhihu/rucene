@@ -19,21 +19,16 @@ use core::codec::Codec;
 use core::doc::Fieldable;
 use core::doc::IndexOptions;
 use core::index::merge::{MergePolicy, MergeScheduler};
-use core::index::reader::ByteSliceReader;
 use core::store::directory::Directory;
-use core::util::ByteBlockPool;
-use core::util::IntBlockPool;
+use core::util::DocId;
 use core::util::UnsignedShift;
-use core::util::{BytesRefHash, BytesStartArray};
-use core::util::{Count, Counter, DocId};
+use core::util::{ByteBlockPool, ByteSliceReader, BytesRefHash, BytesStartArray, IntBlockPool};
 use core::util::{INT_BLOCK_MASK, INT_BLOCK_SHIFT, INT_BLOCK_SIZE};
 
-use std::{
-    cmp::{max, Ordering},
-    mem, ptr,
-};
+use std::cmp::{max, Ordering};
 
 use error::Result;
+use std::mem::MaybeUninit;
 
 const HASH_INIT_SIZE: usize = 4;
 
@@ -42,14 +37,12 @@ pub struct TermsHashPerFieldBase<T: PostingsArray> {
     pub int_pool: *mut IntBlockPool,
     pub byte_pool: *mut ByteBlockPool,
     pub term_byte_pool: *mut ByteBlockPool,
-    pub bytes_used: Counter,
 
     stream_count: usize,
     num_posting_int: usize,
     pub field_info: FieldInfo,
-    pub bytes_hash: BytesRefHash,
+    pub bytes_hash: MaybeUninit<BytesRefHash>,
     pub postings_array: T,
-    // bytes_used: Counter,    // term_hash.bytes_used
     // sorted_term_ids: Vec<u32>,  bytes_hash.ids after sort
     int_upto_idx: usize,
     // cur int_uptos index for int_pool.buffer
@@ -72,11 +65,10 @@ impl<T: PostingsArray + 'static> TermsHashPerFieldBase<T> {
             int_pool: &mut parent.int_pool,
             byte_pool: &mut parent.byte_pool,
             term_byte_pool: parent.term_byte_pool,
-            bytes_used: unsafe { parent.bytes_used.shallow_copy() },
             stream_count,
             num_posting_int: 2 * stream_count,
             field_info,
-            bytes_hash: unsafe { mem::uninitialized() },
+            bytes_hash: MaybeUninit::<BytesRefHash>::uninit(),
             postings_array,
             int_upto_idx: 0,
             int_upto_start: 0,
@@ -86,16 +78,13 @@ impl<T: PostingsArray + 'static> TermsHashPerFieldBase<T> {
     }
 
     pub fn init(&mut self) {
-        let bytes_starts: Box<dyn BytesStartArray> = {
-            let mut counter = unsafe { self.bytes_used.shallow_copy() };
-            Box::new(PostingsBytesStartArray::new(self, &mut counter))
-        };
-        unsafe {
-            ptr::write(
-                &mut self.bytes_hash,
-                BytesRefHash::new(&mut *self.term_byte_pool, HASH_INIT_SIZE, bytes_starts),
-            );
-        }
+        let bytes_starts: Box<dyn BytesStartArray> =
+            { Box::new(PostingsBytesStartArray::new(self)) };
+
+        let bytes_hash =
+            unsafe { BytesRefHash::new(&mut *self.term_byte_pool, HASH_INIT_SIZE, bytes_starts) };
+        self.bytes_hash.write(bytes_hash);
+
         self.inited = true;
     }
 
@@ -103,7 +92,9 @@ impl<T: PostingsArray + 'static> TermsHashPerFieldBase<T> {
         self.int_pool = &mut parent.int_pool;
         self.byte_pool = &mut parent.byte_pool;
         self.term_byte_pool = parent.term_byte_pool;
-        self.bytes_hash.pool = parent.term_byte_pool;
+        unsafe {
+            self.bytes_hash.get_mut().pool = parent.term_byte_pool;
+        }
     }
 
     fn int_block_pool(&self) -> &IntBlockPool {
@@ -209,7 +200,9 @@ impl<T: PostingsArray + 'static> TermsHashPerFieldBase<T> {
     /// this.sortedTermIDs to the results
     pub fn sort_postings(&mut self) {
         debug_assert!(self.inited);
-        self.bytes_hash.sort();
+        unsafe {
+            self.bytes_hash.get_mut().sort();
+        }
     }
 }
 
@@ -224,7 +217,9 @@ pub trait TermsHashPerField: Ord + PartialOrd + Eq + PartialEq {
     fn reset_ptr(&mut self, parent: &mut TermsHashBase);
 
     fn reset(&mut self) {
-        self.base_mut().bytes_hash.clear(false);
+        unsafe {
+            self.base_mut().bytes_hash.get_mut().clear(false);
+        }
     }
 
     fn init_reader(&self, reader: &mut ByteSliceReader, term_id: usize, stream: usize) {
@@ -253,7 +248,12 @@ pub trait TermsHashPerField: Ord + PartialOrd + Eq + PartialEq {
         doc_id: DocId,
         text_start: usize,
     ) -> Result<()> {
-        let term_id = self.base_mut().bytes_hash.add_by_pool_offset(text_start);
+        let term_id = unsafe {
+            self.base_mut()
+                .bytes_hash
+                .get_mut()
+                .add_by_pool_offset(text_start)
+        };
         self.base_mut().add(term_id);
         if term_id >= 0 {
             self.new_term(term_id as usize, state, token_stream, doc_id)
@@ -274,9 +274,15 @@ pub trait TermsHashPerField: Ord + PartialOrd + Eq + PartialEq {
         // We are first in the chain so we must "insert" the
         // term text into text_start address
         let bytes_ref = token_stream.term_bytes_attribute().get_bytes_ref();
-        let term_id = self.base_mut().bytes_hash.add(&bytes_ref);
+
+        let term_id = unsafe { self.base_mut().bytes_hash.get_mut().add(&bytes_ref) };
         if term_id >= 0 {
-            self.base_mut().bytes_hash.byte_start(term_id as usize);
+            unsafe {
+                self.base_mut()
+                    .bytes_hash
+                    .get_ref()
+                    .byte_start(term_id as usize);
+            }
         }
 
         self.base_mut().add(term_id);
@@ -339,16 +345,11 @@ pub trait TermsHashPerField: Ord + PartialOrd + Eq + PartialEq {
 
 struct PostingsBytesStartArray<T: PostingsArray + 'static> {
     per_field: *mut TermsHashPerFieldBase<T>,
-    bytes_used: Counter,
 }
 
 impl<T: PostingsArray + 'static> PostingsBytesStartArray<T> {
-    fn new(per_field: *mut TermsHashPerFieldBase<T>, bytes_used: &mut Counter) -> Self {
-        let bytes_used = unsafe { bytes_used.shallow_copy() };
-        PostingsBytesStartArray {
-            per_field,
-            bytes_used,
-        }
+    fn new(per_field: *mut TermsHashPerFieldBase<T>) -> Self {
+        PostingsBytesStartArray { per_field }
     }
 }
 
@@ -376,26 +377,15 @@ impl<T: PostingsArray + 'static> BytesStartArray for PostingsBytesStartArray<T> 
     fn grow(&mut self) {
         unsafe {
             let postings_array = &mut (*self.per_field).postings_array;
-            let old_size = postings_array.parallel_array().size;
             postings_array.grow();
-            self.bytes_used.add_get(
-                postings_array.bytes_per_posting() as i64
-                    * (postings_array.parallel_array().size - old_size) as i64,
-            );
         }
     }
 
     fn clear(&mut self) {
         unsafe {
             let postings_array = &mut (*self.per_field).postings_array;
-            let size = postings_array.parallel_array().size * postings_array.bytes_per_posting();
-            self.bytes_used.add_get(-(size as i64));
             postings_array.clear();
         }
-    }
-
-    fn bytes_used_mut(&mut self) -> &mut Counter {
-        &mut self.bytes_used
     }
 }
 

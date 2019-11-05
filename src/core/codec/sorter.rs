@@ -52,7 +52,7 @@ impl Sorter {
 
     #[allow(dead_code)]
     /// Check consistency of a `SorterDocMap`, useful for assertions.
-    fn is_consistent(doc_map: &SorterDocMap) -> bool {
+    fn is_consistent(doc_map: &dyn SorterDocMap) -> bool {
         let max_doc = doc_map.len() as i32;
         for i in 0..max_doc {
             let new_id = doc_map.old_to_new(i);

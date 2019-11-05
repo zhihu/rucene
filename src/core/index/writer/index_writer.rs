@@ -32,11 +32,8 @@ use core::index::writer::{
     IndexFileDeleter, IndexWriterConfig, OpenMode,
 };
 use core::search::query::{MatchAllDocsQuery, Query};
-use core::store::directory::{
-    Directory, FilterDirectory, LockValidatingDirectoryWrapper, TrackingDirectoryWrapper,
-};
-use core::store::io::{IndexInput, RateLimitIndexOutput};
-use core::store::{FlushInfo, IOContext, Lock, RateLimiter};
+use core::store::directory::{Directory, LockValidatingDirectoryWrapper, TrackingDirectoryWrapper};
+use core::store::{FlushInfo, IOContext};
 use core::util::random_id;
 use core::util::to_base36;
 use core::util::{BitsRef, DerefWrapper, DocId, VERSION_LATEST};
@@ -46,7 +43,6 @@ use error::ErrorKind::{AlreadyClosed, IllegalArgument, IllegalState, Index, Runt
 use error::{Error, Result};
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::fmt;
 use std::mem;
 use std::ops::Deref;
 use std::ptr;
@@ -54,6 +50,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::time::{Duration, SystemTime};
 
+use core::index::writer::dir_wrapper::RateLimitFilterDirectory;
 use thread_local::ThreadLocal;
 
 /// Hard limit on maximum number of documents that may be added to the index
@@ -62,9 +59,6 @@ pub const INDEX_MAX_DOCS: i32 = i32::max_value() - 128;
 
 /// Maximum value of the token position in an indexed field.
 pub const INDEX_MAX_POSITION: i32 = i32::max_value() - 128;
-
-/// Name of the write lock in the index.
-pub const INDEX_WRITE_LOCK_NAME: &str = "write.lock";
 
 /// An `IndexWriter` creates and maintains an index.
 ///
@@ -640,7 +634,6 @@ where
     }
 }
 
-// crate public field accesser
 impl<D, C, MS, MP> IndexWriter<D, C, MS, MP>
 where
     D: Directory + Send + Sync + 'static,
@@ -652,6 +645,7 @@ where
         unsafe {
             let w1 = Arc::downgrade(&self.writer);
             let w2 = Arc::downgrade(&self.writer);
+
             let writer = self.writer.as_ref() as *const IndexWriterInner<D, C, MS, MP>
                 as *mut IndexWriterInner<D, C, MS, MP>;
             let doc_writer = &mut (*writer).doc_writer as *mut DocumentsWriter<D, C, MS, MP>;
@@ -660,30 +654,6 @@ where
             (*doc_writer).init(w1);
             (*reader_pool).init(w2);
         }
-    }
-
-    pub fn with_inner(writer: Arc<IndexWriterInner<D, C, MS, MP>>) -> Self {
-        Self { writer }
-    }
-
-    #[inline]
-    pub fn reader_pool(&self) -> &ReaderPool<D, C, MS, MP> {
-        &self.writer.reader_pool
-    }
-
-    #[inline]
-    pub fn merging_segments(&self) -> &HashSet<String> {
-        &self.writer.merging_segments
-    }
-
-    #[inline]
-    pub fn keep_fully_deleted_segments(&self) -> bool {
-        self.writer.keep_fully_deleted_segments
-    }
-
-    #[inline]
-    pub fn next_merge_id(&self) -> u32 {
-        self.writer.next_merge_id()
     }
 
     /// Atomically adds the segment private delete packet and publishes the flushed
@@ -699,6 +669,10 @@ where
 
     pub fn publish_frozen_updates(&self, packet: FrozenBufferedUpdates<C>) -> Result<()> {
         self.writer.publish_frozen_updates(packet)
+    }
+
+    pub fn with_inner(writer: Arc<IndexWriterInner<D, C, MS, MP>>) -> Self {
+        Self { writer }
     }
 
     pub fn apply_deletes_and_purge(&self, force_purge: bool) -> Result<()> {
@@ -724,12 +698,8 @@ where
 
     // Tries to delete the given files if unreferenced
     pub fn delete_new_files(&self, files: &HashSet<String>) -> Result<()> {
+        let _l = self.writer.lock.lock()?;
         self.writer.delete_new_files(files)
-    }
-
-    /// Merges the indicated segments, replacing them in the stack with a single segment.
-    pub fn merge(&self, merge: &mut OneMerge<D, C>) -> Result<()> {
-        IndexWriterInner::merge(self, merge)
     }
 
     pub fn num_deleted_docs(&self, info: &SegmentCommitInfo<D, C>) -> u32 {
@@ -743,6 +713,26 @@ where
 
     pub fn dec_ref_deleter(&self, segment_infos: &SegmentInfos<D, C>) -> Result<()> {
         self.writer.dec_ref_deleter(segment_infos)
+    }
+
+    #[inline]
+    pub fn reader_pool(&self) -> &ReaderPool<D, C, MS, MP> {
+        &self.writer.reader_pool
+    }
+
+    /// Merges the indicated segments, replacing them in the stack with a single segment.
+    pub fn merge(&self, merge: &mut OneMerge<D, C>) -> Result<()> {
+        IndexWriterInner::merge(self, merge)
+    }
+
+    #[inline]
+    pub fn merging_segments(&self) -> &HashSet<String> {
+        &self.writer.merging_segments
+    }
+
+    #[inline]
+    pub fn next_merge_id(&self) -> u32 {
+        self.writer.next_merge_id()
     }
 
     pub fn next_merge(&self) -> Option<OneMerge<D, C>> {
@@ -785,39 +775,47 @@ pub struct IndexWriterInner<
     MS: MergeScheduler,
     MP: MergePolicy,
 > {
-    lock: Arc<Mutex<()>>,
-    cond: Condvar,
+    pub config: Arc<IndexWriterConfig<C, MS, MP>>,
     // original use directory
     directory_orig: Arc<D>,
     // wrapped with additional checks
     directory: Arc<LockValidatingDirectoryWrapper<D>>,
-    merge_directory: RateLimitFilterDirectory<LockValidatingDirectoryWrapper<D>, MergeRateLimiter>,
+
+    lock: Arc<Mutex<()>>,
+    closed: AtomicBool,
+    closing: AtomicBool,
+    cond: Condvar,
+
+    global_field_numbers: Arc<FieldNumbers>,
+
+    /// How many documents are in the index, or are in the process of being added (reserved).
+    pub pending_num_docs: Arc<AtomicI64>,
+    pub doc_writer: DocumentsWriter<D, C, MS, MP>,
+    pub deleter: IndexFileDeleter<D>,
+
+    // when unrecoverable disaster strikes, we populate this
+    // with the reason that we had to close IndexWriter
+    tragedy: Option<Error>,
+
+    segment_infos: SegmentInfos<D, C>,
+    segment_infos_lock: Mutex<()>,
     change_count: AtomicU64,
-    // last change_count that was committed
     last_commit_change_count: AtomicU64,
-    // list of segmentInfo we will fallback to if the commit fails
     rollback_segments: Vec<Arc<SegmentCommitInfo<D, C>>>,
 
+    // Used only by commit and prepareCommit, below; lock order is commit_lock -> IW
+    commit_lock: Mutex<()>,
     // set when a commit is pending (after prepareCommit() & before commit())
     pending_commit: Option<SegmentInfos<D, C>>,
     pending_seq_no: AtomicI64,
     pending_commit_change_count: AtomicU64,
     files_to_commit: HashSet<String>,
 
-    segment_infos: SegmentInfos<D, C>,
-    segment_infos_lock: Mutex<()>,
-    global_field_numbers: Arc<FieldNumbers>,
+    rate_limiters: Arc<ThreadLocal<Arc<MergeRateLimiter>>>,
+    merge_directory: RateLimitFilterDirectory<LockValidatingDirectoryWrapper<D>, MergeRateLimiter>,
 
-    doc_writer: DocumentsWriter<D, C, MS, MP>,
-    // event_queue: MsQueue<WriterEvent>, self.doc_writer.events
-    deleter: IndexFileDeleter<D, C>,
     segments_to_merge: HashMap<Arc<SegmentCommitInfo<D, C>>, bool>,
     merge_max_num_segments: u32,
-
-    write_lock: Arc<dyn Lock>,
-
-    closed: AtomicBool,
-    closing: AtomicBool,
 
     merging_segments: HashSet<String>,
     merge_scheduler: MS,
@@ -829,8 +827,11 @@ pub struct IndexWriterInner<
     merge_gen: u64,
     stop_merges: bool,
 
+    // Ensures only one flush() in actually flushing segments at a time.
+    full_flush_lock: Arc<Mutex<()>>,
     flush_count: AtomicU32,
     flush_deletes_count: AtomicU32,
+
     reader_pool: ReaderPool<D, C, MS, MP>,
     updates_stream_lock: Mutex<()>,
     buffered_updates_stream: BufferedUpdatesStream<C>,
@@ -845,28 +846,6 @@ pub struct IndexWriterInner<
     // deletes, doing merges, and reopening near real-time
     // readers.
     pool_readers: AtomicBool,
-
-    // The instance that was passed to the constructor. It is saved only in order
-    // to allow users to query an IndexWriter settings.
-    pub config: Arc<IndexWriterConfig<C, MS, MP>>,
-
-    /// How many documents are in the index, or are in the process of being
-    /// added (reserved).  E.g., operations like addIndexes will first reserve
-    /// the right to add N docs, before they actually change the index,
-    /// much like how hotels place an "authorization hold" on your credit
-    /// card to make sure they can later charge you when you check out.
-    pub pending_num_docs: Arc<AtomicI64>,
-    keep_fully_deleted_segments: bool,
-
-    // Ensures only one flush() in actually flushing segments at a time.
-    full_flush_lock: Arc<Mutex<()>>,
-
-    // Used only by commit and prepareCommit, below; lock order is commit_lock -> IW
-    commit_lock: Mutex<()>,
-    rate_limiters: Arc<ThreadLocal<Arc<MergeRateLimiter>>>,
-    // when unrecoverable disaster strikes, we populate this
-    // with the reason that we had to close IndexWriter
-    tragedy: Option<Error>,
 }
 
 unsafe impl<D, C, MS, MP> Send for IndexWriterInner<D, C, MS, MP>
@@ -911,12 +890,7 @@ where
     ///           <code>OpenMode.APPEND</code> or if there is any other low-level
     ///           IO error
     fn new(d: Arc<D>, conf: Arc<IndexWriterConfig<C, MS, MP>>) -> Result<Self> {
-        let write_lock = Arc::from(d.obtain_lock(INDEX_WRITE_LOCK_NAME)?);
-
-        let directory = Arc::new(LockValidatingDirectoryWrapper::new(
-            Arc::clone(&d),
-            Arc::clone(&write_lock),
-        ));
+        let directory = Arc::new(LockValidatingDirectoryWrapper::new(Arc::clone(&d)));
 
         let rate_limiters = Arc::new(ThreadLocal::default());
 
@@ -1011,14 +985,11 @@ where
         // Default deleter (for backwards compatibility) is
         // KeepOnlyLastCommitDeleter:
 
-        let mut deleter = IndexFileDeleter::new(
-            Arc::clone(&d),
-            Arc::clone(&directory),
-            // conf.index_deletion_policy(),
-        );
-        deleter.init(&files, &mut segment_infos, initial_index_exists, false)?;
+        let mut deleter = IndexFileDeleter::new(directory.clone());
+        let starting_commit_deleted =
+            deleter.init(d.clone(), &files, &mut segment_infos, initial_index_exists)?;
 
-        if deleter.starting_commit_deleted {
+        if starting_commit_deleted {
             // Deletion policy deleted the "head" commit point.
             // We have to mark ourself as changed so that if we
             // are closed w/o any further changes we write a new
@@ -1049,7 +1020,6 @@ where
             deleter,
             segments_to_merge: HashMap::new(),
             merge_max_num_segments: 0,
-            write_lock,
             closed: AtomicBool::new(false),
             closing: AtomicBool::new(false),
             merging_segments: HashSet::new(),
@@ -1068,7 +1038,6 @@ where
             pool_readers: AtomicBool::new(pool_readers),
             config: conf,
             pending_num_docs: Arc::new(pending_num_docs),
-            keep_fully_deleted_segments: false,
             full_flush_lock: Arc::new(Mutex::new(())),
             commit_lock: Mutex::new(()),
             rate_limiters,
@@ -1120,7 +1089,7 @@ where
             &mut any_changes,
         )?;
 
-        let _ = Self::maybe_merge(index_writer, MergerTrigger::FullFlush, None)?;
+        let _ = Self::maybe_merge(index_writer, MergerTrigger::FullFlush, None);
 
         debug!(
             "IW - get_reader took {} ms",
@@ -1235,11 +1204,6 @@ where
     #[inline]
     fn next_merge_id(&self) -> u32 {
         self.merge_id_gen.fetch_add(1, Ordering::AcqRel)
-    }
-
-    #[inline]
-    fn pool_readers(&self) -> bool {
-        self.pool_readers.load(Ordering::Acquire)
     }
 
     #[inline]
@@ -1443,7 +1407,7 @@ where
                         .rollback_commit(self.directory.as_ref());
                     if let Err(e) = self
                         .deleter
-                        .dec_ref_by_segment(self.pending_commit.as_ref().unwrap())
+                        .dec_ref_files(&self.pending_commit.as_ref().unwrap().files(false))
                     {
                         warn!(
                             "index write deleter dec ref by segment failed when rollback with '{}'",
@@ -1496,7 +1460,7 @@ where
                     .rollback_commit(self.directory.as_ref());
                 let res = self
                     .deleter
-                    .dec_ref_by_segment(self.pending_commit.as_ref().unwrap());
+                    .dec_ref_files(&self.pending_commit.as_ref().unwrap().files(false));
                 self.pending_commit = None;
                 self.cond.notify_all();
                 res?;
@@ -1529,8 +1493,6 @@ where
             // concurrent threads may try to sneak a flush in, after we leave this sync block
             // and before we enter the sync block in the finally clause below that sets closed:
             self.closed.store(true, Ordering::Release);
-
-            self.write_lock.close()?;
         }
         Ok(())
     }
@@ -1600,100 +1562,6 @@ where
         self.deleter.checkpoint(&self.segment_infos, false)
     }
 
-    /// Wait for any currently outstanding merges to finish.
-    ///
-    /// It is guaranteed that any merges started prior to calling this method
-    /// will have completed once this method completes.
-    fn wait_for_merges(index_writer: &IndexWriter<D, C, MS, MP>) -> Result<()> {
-        // Give merge scheduler last chance to run, in case
-        // any pending merges are waiting. We can't hold IW's lock
-        // when going into merge because it can lead to deadlock.
-        index_writer
-            .writer
-            .merge_scheduler
-            .merge(index_writer, MergerTrigger::Closing, false)?;
-
-        {
-            let mut l = index_writer.writer.lock.lock()?;
-            index_writer.writer.ensure_open(false)?;
-            debug!("IW - wait for merges");
-
-            while !index_writer.writer.pending_merges.is_empty()
-                || !index_writer.writer.running_merges.is_empty()
-            {
-                let (loc, _) = index_writer
-                    .writer
-                    .cond
-                    .wait_timeout(l, Duration::from_millis(1000))?;
-                l = loc;
-            }
-
-            // sanity check
-            debug_assert!(index_writer.writer.merging_segments.is_empty());
-            debug!("IW - wait for merges done");
-        }
-        Ok(())
-    }
-
-    /// Aborts running merges.  Be careful when using this method: when you
-    /// abort a long-running merge, you lose a lot of work that must later be redone.
-    fn abort_merges<'a>(&mut self, mut lock: MutexGuard<'a, ()>) -> Result<MutexGuard<'a, ()>> {
-        self.stop_merges = true;
-        // Abort all pending & running merge:
-        let pending_merges = mem::replace(&mut self.pending_merges, VecDeque::new());
-        for mut merge in pending_merges {
-            merge.rate_limiter.set_abort();
-            self.merge_finish(&lock, &mut merge);
-        }
-
-        for merge in self.running_merges.values() {
-            merge.rate_limiter.set_abort();
-        }
-
-        // We wait here to make all merges stop.  It should not
-        // take very long because they periodically check if
-        // they are aborted.
-        while !self.running_merges.is_empty() {
-            let (loc, _) = self.cond.wait_timeout(lock, Duration::from_millis(1000))?;
-            warn!(
-                "IW - abort merges, waiting for running_merges to be empty, current size: {}",
-                self.running_merges.len()
-            );
-            lock = loc;
-        }
-
-        self.cond.notify_all();
-
-        debug!(
-            "debug abort_merges {} {} {}",
-            self.pending_merges.len(),
-            self.running_merges.len(),
-            self.merging_segments.len()
-        );
-
-        debug_assert!(self.merging_segments.is_empty());
-        trace!("IW - all running merges have aborted");
-        Ok(lock)
-    }
-
-    /// Does finishing for a merge, which is fast but holds the
-    /// synchronized lock on IndexWriter instance.
-    fn merge_finish(&mut self, _lock: &MutexGuard<()>, merge: &mut OneMerge<D, C>) {
-        // forceMerge, addIndexes or waitForMerges may be waiting
-        // on merges to finish.
-        self.cond.notify_all();
-
-        // It's possible we are called twice, eg if there was an
-        // exception inside mergeInit
-        if merge.register_done {
-            for info in &merge.segments {
-                self.merging_segments.remove(&info.info.name);
-            }
-            merge.register_done = false;
-        }
-        self.running_merges.remove(&merge.id);
-    }
-
     fn changed(&mut self, _lock: &MutexGuard<()>) {
         self.change_count.fetch_add(1, Ordering::AcqRel);
         self.segment_infos.changed();
@@ -1738,15 +1606,10 @@ where
         force_purge: bool,
     ) -> Result<()> {
         let res = Self::purge(index_writer, force_purge);
-        let any_changes = {
+        let _any_changes = {
             let l = index_writer.writer.lock.lock()?;
             index_writer.writer.apply_all_deletes_and_update(&l)?
         };
-        if any_changes {
-            if let Err(e) = Self::maybe_merge(index_writer, MergerTrigger::SegmentFlush, None) {
-                error!("IW: try merge failed with: '{:?}'", e);
-            }
-        }
         index_writer
             .writer
             .flush_count
@@ -1759,15 +1622,10 @@ where
 
     fn do_after_segment_flushed(
         index_writer: &IndexWriter<D, C, MS, MP>,
-        trigger_merge: bool,
+        _trigger_merge: bool,
         force_purge: bool,
     ) -> Result<()> {
         let res = Self::purge(index_writer, force_purge);
-        if trigger_merge {
-            if let Err(e) = Self::maybe_merge(index_writer, MergerTrigger::SegmentFlush, None) {
-                error!("IW: try merge failed with: '{:?}'", e);
-            }
-        }
         match res {
             Ok(_) => Ok(()),
             Err(e) => Err(e),
@@ -1777,13 +1635,13 @@ where
     /// Record that the files referenced by this `SegmentInfos` are still in use.
     fn inc_ref_deleter(&self, segment_infos: &SegmentInfos<D, C>) -> Result<()> {
         self.ensure_open(true)?;
-        self.deleter.inc_ref_by_segment(segment_infos, false);
+        self.deleter.inc_ref_files(&segment_infos.files(false));
         Ok(())
     }
 
     fn dec_ref_deleter(&self, segment_infos: &SegmentInfos<D, C>) -> Result<()> {
         self.ensure_open(true)?;
-        self.deleter.dec_ref_by_segment(segment_infos)
+        self.deleter.dec_ref_files(&segment_infos.files(false))
     }
 
     fn process_events(
@@ -1807,93 +1665,6 @@ where
             .writer
             .doc_writer
             .purge_buffer(index_writer, forced)
-    }
-
-    fn maybe_merge(
-        index_writer: &IndexWriter<D, C, MS, MP>,
-        trigger: MergerTrigger,
-        max_num_segments: Option<u32>,
-    ) -> Result<()> {
-        index_writer.writer.ensure_open(false)?;
-
-        let new_merges_found = {
-            let l = index_writer.writer.lock.lock()?;
-            let writer = unsafe { index_writer.writer.writer_mut(&l) };
-            writer.update_pending_merges(trigger, max_num_segments, index_writer, &l)?
-        };
-        index_writer
-            .writer
-            .merge_scheduler
-            .merge(index_writer, trigger, new_merges_found)
-    }
-
-    fn update_pending_merges(
-        &mut self,
-        trigger: MergerTrigger,
-        max_num_segments: Option<u32>,
-        index_writer: &IndexWriter<D, C, MS, MP>,
-        l: &MutexGuard<()>,
-    ) -> Result<bool> {
-        // In case infoStream was disabled on init, but then enabled at some
-        // point, try again to log the config here:
-        // self.message_state();
-
-        debug_assert!(max_num_segments.is_none() || *max_num_segments.as_ref().unwrap() > 0);
-        if self.stop_merges {
-            return Ok(false);
-        }
-
-        // Do not start new merges if disaster struck
-        if self.tragedy.is_some() {
-            return Ok(false);
-        }
-
-        let mut spec: Option<MergeSpecification<D, C>>;
-        if let Some(max_num_segments) = max_num_segments {
-            debug_assert!(
-                trigger == MergerTrigger::Explicit || trigger == MergerTrigger::MergeFinished
-            );
-            spec = self.config.merge_policy().find_forced_merges(
-                &self.segment_infos,
-                max_num_segments,
-                &self.segments_to_merge,
-                index_writer,
-            )?;
-            if let Some(ref mut spec) = spec {
-                for merge in &mut spec.merges {
-                    merge.max_num_segments.set(Some(max_num_segments));
-                }
-            }
-        } else {
-            spec = self.config.merge_policy().find_merges(
-                trigger,
-                &self.segment_infos,
-                index_writer,
-            )?;
-        }
-        let new_merges_found = spec.is_some();
-        if let Some(ref mut spec) = spec {
-            let merges = mem::replace(&mut spec.merges, vec![]);
-            for merge in merges {
-                self.register_merge(merge, &l)?;
-            }
-        }
-
-        Ok(new_merges_found)
-    }
-
-    fn next_merge(&self) -> Option<OneMerge<D, C>> {
-        let l = self.lock.lock().unwrap();
-        let writer_mut = unsafe { self.writer_mut(&l) };
-        if let Some(one_merge) = writer_mut.pending_merges.pop_front() {
-            // Advance the merge from pending to running
-            writer_mut
-                .running_merges
-                .insert(one_merge.id, one_merge.running_info());
-            Some(one_merge)
-        } else {
-            None
-        }
     }
 
     fn has_uncommitted_changes(&self) -> bool {
@@ -1926,9 +1697,6 @@ where
             writer.finish_commit()?;
         }
 
-        if do_maybe_merge {
-            Self::maybe_merge(index_writer, MergerTrigger::FullFlush, None)?;
-        }
         Ok(seq_no)
     }
 
@@ -1999,7 +1767,7 @@ where
             let lock = Arc::clone(&self.lock);
             let _l = lock.lock().unwrap();
             if !self.files_to_commit.is_empty() {
-                self.deleter.dec_ref_without_error(&self.files_to_commit);
+                self.deleter.dec_ref_files_no_error(&self.files_to_commit);
                 self.files_to_commit.clear();
             }
         }
@@ -2096,7 +1864,7 @@ where
 
             if self.pending_commit_change_count.load(Ordering::Acquire) > self.change_count() {
                 debug!("IW - skip start_commit(): no changes pending");
-                let res = self.deleter.dec_ref_batch((&self.files_to_commit).iter());
+                let res = self.deleter.dec_ref_files(&self.files_to_commit);
                 self.files_to_commit.clear();
                 return res;
             }
@@ -2122,12 +1890,12 @@ where
                 debug!("IW - hit error committing segments file");
 
                 // hit error
-                self.deleter.dec_ref_without_error(&self.files_to_commit);
+                self.deleter.dec_ref_files_no_error(&self.files_to_commit);
                 self.files_to_commit.clear();
             }
         }
-        if let Err(err) = err {
-            self.tragic_event(err, "start_commit")?;
+        if let Err(e) = err {
+            self.tragic_event(e, "start_commit")?;
         }
         Ok(())
     }
@@ -2208,10 +1976,10 @@ where
             self.cond.notify_all();
             if res.is_ok() {
                 // all is good
-                res = self.deleter.dec_ref_batch(self.files_to_commit.iter());
+                res = self.deleter.dec_ref_files(&self.files_to_commit);
             } else {
                 // exc happened in finishCommit: not a tragedy
-                self.deleter.dec_ref_without_error(&self.files_to_commit);
+                self.deleter.dec_ref_files_no_error(&self.files_to_commit);
             }
             self.pending_commit = None;
             self.files_to_commit.clear();
@@ -2354,9 +2122,8 @@ where
             return self.apply_all_deletes_and_update(l);
         }
         debug!(
-            "IW - don't apply deletes now del_term_count={}, bytes_used={}",
+            "IW - don't apply deletes now del_term_count={}",
             self.buffered_updates_stream.num_terms(),
-            self.buffered_updates_stream.ram_bytes_used()
         );
         Ok(false)
     }
@@ -2378,7 +2145,7 @@ where
             writer_mut.check_point(l)?;
         }
 
-        if !self.keep_fully_deleted_segments && !result.all_deleted.is_empty() {
+        if !result.all_deleted.is_empty() {
             debug!("IW: drop 100% deleted segments.");
 
             for info in result.all_deleted {
@@ -2405,9 +2172,9 @@ where
     fn flush_failed(&self, info: &SegmentInfo<D, C>) -> Result<()> {
         let mut files = HashSet::new();
         for f in info.files() {
-            files.insert(f);
+            files.insert(f.clone());
         }
-        self.deleter.delete_new_files(files)
+        self.deleter.delete_new_files(&files)
     }
 
     fn update_documents<F: Fieldable>(
@@ -2705,7 +2472,11 @@ where
     /// are now participating in a merge, and true is
     /// returned.  Else (the merge conflicts) false is
     /// returned.
-    fn register_merge(&mut self, mut merge: OneMerge<D, C>, lock: &MutexGuard<()>) -> Result<bool> {
+    fn register_merge(
+        &mut self,
+        mut merge: OneMerge<D, C>,
+        _lock: &MutexGuard<()>,
+    ) -> Result<bool> {
         if merge.register_done {
             return Ok(true);
         }
@@ -2735,7 +2506,15 @@ where
             }
         }
 
-        self.ensure_valid_merge(&merge, lock)?;
+        for info in &merge.segments {
+            if !self.segment_infos.segments.contains(info) {
+                bail!(
+                    "MergeError: MergePolicy selected a segment '{}' that is not in the current \
+                     index",
+                    &info.info.name
+                );
+            }
+        }
 
         merge.merge_gen = self.merge_gen;
         merge.is_external = is_external;
@@ -2769,6 +2548,93 @@ where
         self.pending_merges.push_back(merge);
 
         Ok(true)
+    }
+
+    fn next_merge(&self) -> Option<OneMerge<D, C>> {
+        let l = self.lock.lock().unwrap();
+        let writer_mut = unsafe { self.writer_mut(&l) };
+        if let Some(one_merge) = writer_mut.pending_merges.pop_front() {
+            // Advance the merge from pending to running
+            writer_mut
+                .running_merges
+                .insert(one_merge.id, one_merge.running_info());
+            Some(one_merge)
+        } else {
+            None
+        }
+    }
+
+    pub fn maybe_merge(
+        index_writer: &IndexWriter<D, C, MS, MP>,
+        trigger: MergerTrigger,
+        max_num_segments: Option<u32>,
+    ) -> Result<()> {
+        index_writer.writer.ensure_open(false)?;
+
+        let new_merges_found = {
+            let l = index_writer.writer.lock.lock()?;
+            let writer = unsafe { index_writer.writer.writer_mut(&l) };
+            writer.update_pending_merges(trigger, max_num_segments, index_writer, &l)?
+        };
+        index_writer
+            .writer
+            .merge_scheduler
+            .merge(index_writer, trigger, new_merges_found)
+    }
+
+    fn update_pending_merges(
+        &mut self,
+        trigger: MergerTrigger,
+        max_num_segments: Option<u32>,
+        index_writer: &IndexWriter<D, C, MS, MP>,
+        l: &MutexGuard<()>,
+    ) -> Result<bool> {
+        // In case infoStream was disabled on init, but then enabled at some
+        // point, try again to log the config here:
+        // self.message_state();
+
+        debug_assert!(max_num_segments.is_none() || *max_num_segments.as_ref().unwrap() > 0);
+        if self.stop_merges {
+            return Ok(false);
+        }
+
+        // Do not start new merges if disaster struck
+        if self.tragedy.is_some() {
+            return Ok(false);
+        }
+
+        let mut spec: Option<MergeSpecification<D, C>>;
+        if let Some(max_num_segments) = max_num_segments {
+            debug_assert!(
+                trigger == MergerTrigger::Explicit || trigger == MergerTrigger::MergeFinished
+            );
+            spec = self.config.merge_policy().find_forced_merges(
+                &self.segment_infos,
+                max_num_segments,
+                &self.segments_to_merge,
+                index_writer,
+            )?;
+            if let Some(ref mut spec) = spec {
+                for merge in &mut spec.merges {
+                    merge.max_num_segments.set(Some(max_num_segments));
+                }
+            }
+        } else {
+            spec = self.config.merge_policy().find_merges(
+                trigger,
+                &self.segment_infos,
+                index_writer,
+            )?;
+        }
+        let new_merges_found = spec.is_some();
+        if let Some(ref mut spec) = spec {
+            let merges = mem::replace(&mut spec.merges, vec![]);
+            for merge in merges {
+                self.register_merge(merge, &l)?;
+            }
+        }
+
+        Ok(new_merges_found)
     }
 
     /// Merges the indicated segments, replacing them in the stack with a single segment.
@@ -2890,7 +2756,7 @@ where
             self.check_point(&l)?;
         }
 
-        if !self.keep_fully_deleted_segments && !result.all_deleted.is_empty() {
+        if !result.all_deleted.is_empty() {
             trace!(
                 "IW - drop 100% deleted {} segments",
                 result.all_deleted.len()
@@ -3159,6 +3025,100 @@ where
         Ok(merge.info.as_ref().unwrap().info.max_doc)
     }
 
+    /// Does finishing for a merge, which is fast but holds the
+    /// synchronized lock on IndexWriter instance.
+    fn merge_finish(&mut self, _lock: &MutexGuard<()>, merge: &mut OneMerge<D, C>) {
+        // forceMerge, addIndexes or waitForMerges may be waiting
+        // on merges to finish.
+        self.cond.notify_all();
+
+        // It's possible we are called twice, eg if there was an
+        // exception inside mergeInit
+        if merge.register_done {
+            for info in &merge.segments {
+                self.merging_segments.remove(&info.info.name);
+            }
+            merge.register_done = false;
+        }
+        self.running_merges.remove(&merge.id);
+    }
+
+    /// Wait for any currently outstanding merges to finish.
+    ///
+    /// It is guaranteed that any merges started prior to calling this method
+    /// will have completed once this method completes.
+    fn wait_for_merges(index_writer: &IndexWriter<D, C, MS, MP>) -> Result<()> {
+        // Give merge scheduler last chance to run, in case
+        // any pending merges are waiting. We can't hold IW's lock
+        // when going into merge because it can lead to deadlock.
+        index_writer
+            .writer
+            .merge_scheduler
+            .merge(index_writer, MergerTrigger::Closing, false)?;
+
+        {
+            let mut l = index_writer.writer.lock.lock()?;
+            index_writer.writer.ensure_open(false)?;
+            debug!("IW - wait for merges");
+
+            while !index_writer.writer.pending_merges.is_empty()
+                || !index_writer.writer.running_merges.is_empty()
+            {
+                let (loc, _) = index_writer
+                    .writer
+                    .cond
+                    .wait_timeout(l, Duration::from_millis(1000))?;
+                l = loc;
+            }
+
+            // sanity check
+            debug_assert!(index_writer.writer.merging_segments.is_empty());
+            debug!("IW - wait for merges done");
+        }
+        Ok(())
+    }
+
+    /// Aborts running merges.  Be careful when using this method: when you
+    /// abort a long-running merge, you lose a lot of work that must later be redone.
+    fn abort_merges<'a>(&mut self, mut lock: MutexGuard<'a, ()>) -> Result<MutexGuard<'a, ()>> {
+        self.stop_merges = true;
+        // Abort all pending & running merge:
+        let pending_merges = mem::replace(&mut self.pending_merges, VecDeque::new());
+        for mut merge in pending_merges {
+            merge.rate_limiter.set_abort();
+            self.merge_finish(&lock, &mut merge);
+        }
+
+        for merge in self.running_merges.values() {
+            merge.rate_limiter.set_abort();
+        }
+
+        // We wait here to make all merges stop.  It should not
+        // take very long because they periodically check if
+        // they are aborted.
+        while !self.running_merges.is_empty() {
+            let (loc, _) = self.cond.wait_timeout(lock, Duration::from_millis(1000))?;
+            warn!(
+                "IW - abort merges, waiting for running_merges to be empty, current size: {}",
+                self.running_merges.len()
+            );
+            lock = loc;
+        }
+
+        self.cond.notify_all();
+
+        debug!(
+            "debug abort_merges {} {} {}",
+            self.pending_merges.len(),
+            self.running_merges.len(),
+            self.merging_segments.len()
+        );
+
+        debug_assert!(self.merging_segments.is_empty());
+        trace!("IW - all running merges have aborted");
+        Ok(lock)
+    }
+
     /// Carefully merges deletes and updates for the segments we just merged. This
     /// is tricky because, although merging will clear all deletes (compacts the
     /// documents) and compact all the updates, new deletes and updates may have
@@ -3320,20 +3280,15 @@ where
             .segments
             .contains(merge.info.as_ref().unwrap()));
 
-        let all_deleted = merge.segments.is_empty()
+        let drop_segment = merge.segments.is_empty()
             || merge.info.as_ref().unwrap().info.max_doc == 0
             || (merge_updates.is_some()
                 && merge_updates.as_ref().unwrap().pending_delete_count()
                     == merge.info.as_ref().unwrap().info.max_doc as u32);
-        let drop_segment = all_deleted && !self.keep_fully_deleted_segments;
 
         // If we merged no segments then we better be dropping the new segment:
         debug_assert!(!merge.segments.is_empty() || drop_segment);
-        debug_assert!(
-            merge.info.as_ref().unwrap().info.max_doc > 0
-                || self.keep_fully_deleted_segments
-                || drop_segment
-        );
+        debug_assert!(merge.info.as_ref().unwrap().info.max_doc > 0 || drop_segment);
 
         if let Some(merged_updates) = merge_updates {
             if drop_segment {
@@ -3342,7 +3297,7 @@ where
             // Pass false for assertInfoLive because the merged
             // segment is not yet live (only below do we commit it
             // to the segmentInfos):
-            if let Err(e) = self.reader_pool.release(&merged_updates, false) {
+            if let Err(e) = self.reader_pool.release(&merged_updates) {
                 merged_updates.drop_changes();
                 if let Err(e) = self.reader_pool.drop(merge.info.as_ref().unwrap().as_ref()) {
                     warn!("IndexWriter: drop segment failed with error: {:?}", e);
@@ -3418,7 +3373,18 @@ where
             // We still hold a ref so it should not have been removed:
             debug_assert!(rld.is_some());
             let rld = rld.unwrap();
-            if let Err(e) = self.release_reader_and_updates(rld, drop) {
+            if drop {
+                rld.drop_changes();
+            }
+
+            let mut res_drop = self.reader_pool.release(&rld);
+            if res_drop.is_ok() {
+                if drop {
+                    res_drop = self.reader_pool.drop(rld.info.as_ref());
+                }
+            }
+
+            if let Err(e) = res_drop {
                 if res.is_ok() {
                     res = Err(e);
                 }
@@ -3431,38 +3397,6 @@ where
 
         if !suppress_errors {
             return res;
-        }
-        Ok(())
-    }
-
-    fn release_reader_and_updates(
-        &self,
-        rld: Arc<ReadersAndUpdates<D, C, MS, MP>>,
-        drop: bool,
-    ) -> Result<()> {
-        if drop {
-            rld.drop_changes();
-        }
-        //            else {
-        //                rld.drop_merging_updates();
-        //            }
-        // rld.release(reader);
-        self.reader_pool.release(&rld, true)?;
-        if drop {
-            self.reader_pool.drop(rld.info.as_ref())?;
-        }
-        Ok(())
-    }
-
-    fn ensure_valid_merge(&self, merge: &OneMerge<D, C>, _lock: &MutexGuard<()>) -> Result<()> {
-        for info in &merge.segments {
-            if !self.segment_infos.segments.contains(info) {
-                bail!(
-                    "MergeError: MergePolicy selected a segment '{}' that is not in the current \
-                     index",
-                    &info.info.name
-                );
-            }
         }
         Ok(())
     }
@@ -3628,36 +3562,13 @@ where
             .any(|rld| rld.pending_delete_count() > 0)
     }
 
-    pub fn release(
-        &self,
-        rld: &Arc<ReadersAndUpdates<D, C, MS, MP>>,
-        _assert_info_live: bool,
-    ) -> Result<()> {
-        let lock = self.lock.lock().unwrap();
+    pub fn release(&self, rld: &Arc<ReadersAndUpdates<D, C, MS, MP>>) -> Result<()> {
+        let _lock = self.lock.lock().unwrap();
         // Matches inc_ref in get:
         rld.dec_ref();
-
         // Pool still holds a ref:
         debug_assert!(rld.ref_count() >= 1);
 
-        let writer = self.writer();
-        if !writer.pool_readers() && rld.ref_count() == 1 {
-            // This is the last ref to this RLD, and we're not
-            // pooling, so remove it:
-            if rld.write_live_docs(&writer.directory)? {
-                // Must checkpoint because we just
-                // created new _X_N.del and field updates files;
-                // don't call IW.checkpoint because that also
-                // increments SIS.version, which we do not want to
-                // do here: it was done previously (after we
-                // invoked BDS.applyDeletes), whereas here all we
-                // did was move the state to disk:
-                self.check_point_no_sis(&lock)?;
-            }
-
-            rld.drop_readers()?;
-            self.reader_map.lock()?.remove(&rld.info.info.name);
-        }
         Ok(())
     }
 
@@ -4220,11 +4131,7 @@ where
         // we write approximately that many bytes (based on Lucene46DVF):
         // HEADER + FOOTER: 40
         // 90 bytes per-field (over estimating long name and attributes map)
-        let est_infos_size = 40 + 90 * field_infos.len();
-        let infos_context = IOContext::Flush(FlushInfo::new(
-            info.info.max_doc() as u32,
-            est_infos_size as u64,
-        ));
+        let infos_context = IOContext::Flush(FlushInfo::new(info.info.max_doc() as u32));
         // separately also track which files were created for this gen
         let tracking_dir = TrackingDirectoryWrapper::new(dir.as_ref());
         infos_format.write(
@@ -4241,93 +4148,6 @@ where
     // Writes field updates (new _X_N updates files) to the directory
     pub fn write_field_updates<DW: Directory>(&self, _dir: &DW) -> Result<()> {
         unreachable!()
-    }
-}
-
-struct RateLimitFilterDirectory<D: Directory, RL: RateLimiter + ?Sized> {
-    dir: Arc<D>,
-    // reference to IndexWriter.rate_limiter
-    rate_limiter: Arc<ThreadLocal<Arc<RL>>>,
-}
-
-impl<D, RL> RateLimitFilterDirectory<D, RL>
-where
-    D: Directory,
-    RL: RateLimiter + ?Sized,
-{
-    pub fn new(dir: Arc<D>, rate_limiter: Arc<ThreadLocal<Arc<RL>>>) -> Self {
-        RateLimitFilterDirectory { dir, rate_limiter }
-    }
-}
-
-impl<D, RL> FilterDirectory for RateLimitFilterDirectory<D, RL>
-where
-    D: Directory,
-    RL: RateLimiter + ?Sized,
-{
-    type Dir = D;
-
-    #[inline]
-    fn dir(&self) -> &Self::Dir {
-        &*self.dir
-    }
-}
-
-impl<D, RL> Directory for RateLimitFilterDirectory<D, RL>
-where
-    D: Directory,
-    RL: RateLimiter + ?Sized,
-{
-    type LK = D::LK;
-    type IndexOutput = RateLimitIndexOutput<D::IndexOutput, RL>;
-    type TempOutput = D::TempOutput;
-
-    fn create_output(&self, name: &str, context: &IOContext) -> Result<Self::IndexOutput> {
-        debug_assert!(context.is_merge());
-        let rate_limiter = Arc::clone(&self.rate_limiter.get().unwrap());
-        let index_output = self.dir.create_output(name, context)?;
-
-        Ok(RateLimitIndexOutput::new(rate_limiter, index_output))
-    }
-
-    fn open_input(&self, name: &str, ctx: &IOContext) -> Result<Box<dyn IndexInput>> {
-        self.dir.open_input(name, ctx)
-    }
-
-    fn obtain_lock(&self, name: &str) -> Result<Self::LK> {
-        self.dir.obtain_lock(name)
-    }
-
-    fn create_temp_output(
-        &self,
-        prefix: &str,
-        suffix: &str,
-        ctx: &IOContext,
-    ) -> Result<Self::TempOutput> {
-        self.dir.create_temp_output(prefix, suffix, ctx)
-    }
-}
-
-impl<D, RL> Clone for RateLimitFilterDirectory<D, RL>
-where
-    D: Directory,
-    RL: RateLimiter + ?Sized,
-{
-    fn clone(&self) -> Self {
-        RateLimitFilterDirectory {
-            dir: Arc::clone(&self.dir),
-            rate_limiter: Arc::clone(&self.rate_limiter),
-        }
-    }
-}
-
-impl<D, RL> fmt::Display for RateLimitFilterDirectory<D, RL>
-where
-    D: Directory,
-    RL: RateLimiter + ?Sized,
-{
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "RateLimitFilterDirectory({})", self.dir.as_ref())
     }
 }
 

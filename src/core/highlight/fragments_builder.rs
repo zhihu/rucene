@@ -105,7 +105,7 @@ impl BaseFragmentsBuilder {
                 }
 
                 if frag_info.start_offset >= field_end
-                    || frag_info.sub_infos[0].terms_offsets[0].start_offset >= field_end
+                    || frag_info.sub_infos[0].term_offsets[0].start_offset >= field_end
                 {
                     continue;
                 }
@@ -130,7 +130,7 @@ impl BaseFragmentsBuilder {
                 for sub_info in &mut frag_info.sub_infos {
                     let mut toffs_list: Vec<Toffs> = vec![];
 
-                    for toffs in &mut sub_info.terms_offsets {
+                    for toffs in &mut sub_info.term_offsets {
                         if toffs.start_offset >= field_end {
                             // We've gone past this value so its not worth iterating any more.
                             break;
@@ -176,12 +176,12 @@ impl BaseFragmentsBuilder {
                         boost += sub_info.boost;
                     }
 
-                    let mut i = sub_info.terms_offsets.len();
+                    let mut i = sub_info.term_offsets.len();
                     while i > 0 {
-                        if sub_info.terms_offsets[i - 1].start_offset - 1
-                            == sub_info.terms_offsets[i - 1].end_offset
+                        if sub_info.term_offsets[i - 1].start_offset - 1
+                            == sub_info.term_offsets[i - 1].end_offset
                         {
-                            sub_info.terms_offsets.remove(i - 1);
+                            sub_info.term_offsets.remove(i - 1);
                         }
 
                         i -= 1;
@@ -190,7 +190,7 @@ impl BaseFragmentsBuilder {
 
                 let mut i = frag_info.sub_infos.len();
                 while i > 0 {
-                    if frag_info.sub_infos[i - 1].terms_offsets.is_empty() {
+                    if frag_info.sub_infos[i - 1].term_offsets.is_empty() {
                         frag_info.sub_infos.remove(i - 1);
                     }
 
@@ -246,7 +246,7 @@ impl BaseFragmentsBuilder {
         let mut original: String;
         let mut src_index = 0;
         for sub_info in &frag_info.sub_infos {
-            for to in &sub_info.terms_offsets {
+            for to in &sub_info.term_offsets {
                 let offset_delta = if to.end_offset - modified_start_offset[0] > src_len {
                     to.end_offset - modified_start_offset[0] - src_len
                 } else {
@@ -310,7 +310,12 @@ impl BaseFragmentsBuilder {
             buffer_len -= 1;
         }
 
+        let mut start_offset = start_offset;
         let eo = if buffer_len < end_offset {
+            if start_offset - (end_offset - buffer_len - 1) <= 0 {
+                start_offset = 0;
+            }
+
             buffer_len
         } else {
             self.boundary_scanner.find_end_offset(buffer, end_offset)

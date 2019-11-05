@@ -31,17 +31,14 @@ use core::codec::{PostingIterator, PostingIteratorFlags};
 use core::doc::Fieldable;
 use core::doc::IndexOptions;
 use core::index::merge::{MergePolicy, MergeScheduler};
-use core::index::reader::ByteSliceReader;
 use core::index::writer::{
     DocumentsWriterPerThread, TrackingTmpDirectory, TrackingTmpOutputDirectoryWrapper,
     TrackingValidDirectory,
 };
-use core::search::DocIterator;
-use core::search::NO_MORE_DOCS;
+use core::search::{DocIterator, NO_MORE_DOCS};
 use core::store::directory::Directory;
 use core::store::{FlushInfo, IOContext};
-use core::util::ByteBlockPool;
-use core::util::{BytesRef, DocId};
+use core::util::{ByteBlockPool, ByteSliceReader, BytesRef, DocId};
 
 use error::{ErrorKind, Result};
 
@@ -81,7 +78,7 @@ where
     DW: Directory + Send + Sync + 'static,
 {
     pub fn new(doc_writer: &mut DocumentsWriterPerThread<D, C, MS, MP>, out_dir: Arc<DW>) -> Self {
-        let base = TermsHashBase::new(doc_writer, false);
+        let base = TermsHashBase::new(doc_writer);
         TermVectorsConsumerImpl {
             base,
             writer: None,
@@ -106,10 +103,7 @@ where
         debug_assert!(self.inited);
         if self.writer.is_none() {
             let doc_writer = unsafe { &*self.doc_writer };
-            let context = IOContext::Flush(FlushInfo::new(
-                doc_writer.num_docs_in_ram,
-                doc_writer.bytes_used() as u64,
-            ));
+            let context = IOContext::Flush(FlushInfo::new(doc_writer.num_docs_in_ram));
             self.writer = Some(doc_writer.codec().term_vectors_format().tv_writer(
                 self.out_dir.as_ref(),
                 &doc_writer.segment_info,
@@ -647,12 +641,14 @@ where
         }
 
         self.do_vectors = false;
-        let num_postings = self.base.bytes_hash.len();
+        let num_postings = unsafe { self.base.bytes_hash.get_ref().len() };
 
         // This is called once, after inverting all occurrences
         // of a given field in the doc.  At this point we flush
         // our hash into the DocWriter.
-        self.base.bytes_hash.sort();
+        unsafe {
+            self.base.bytes_hash.get_mut().sort();
+        }
         match &mut self.term_vectors_writer().0 {
             TermVectorsConsumerEnum::Raw(r) => {
                 r.terms_writer().start_field(
@@ -674,7 +670,7 @@ where
             }
         }
         for j in 0..num_postings {
-            let term_id = self.base.bytes_hash.ids[j] as usize;
+            let term_id = unsafe { self.base.bytes_hash.get_ref().ids[j] as usize };
             let freq = self.base.postings_array.freqs[term_id];
 
             // Get BytesPtr
@@ -705,7 +701,9 @@ where
     }
 
     fn reset(&mut self) {
-        self.base.bytes_hash.clear(false);
+        unsafe {
+            self.base.bytes_hash.get_mut().clear(false);
+        }
     }
 
     fn write_prox(
@@ -778,14 +776,16 @@ where
         debug_assert!(self.inited);
         debug_assert_ne!(field.field_type().index_options(), IndexOptions::Null);
         if first {
-            if !self.base.bytes_hash.is_empty() {
-                // Only necessary if previous doc hit a
-                // non-aborting exception while writing vectors in
-                // this field:
-                self.reset();
-            }
+            unsafe {
+                if !self.base.bytes_hash.get_ref().is_empty() {
+                    // Only necessary if previous doc hit a
+                    // non-aborting exception while writing vectors in
+                    // this field:
+                    self.reset();
+                }
 
-            self.base.bytes_hash.reinit();
+                self.base.bytes_hash.get_mut().reinit();
+            }
             self.has_payloads = false;
             self.do_vectors = field.field_type().store_term_vectors();
             if self.do_vectors {
@@ -865,7 +865,7 @@ where
     /// RAMOutputStream, which is then quickly flushed to
     /// the real term vectors files in the Directory.
     fn finish(&mut self, _field_state: &FieldInvertState) -> Result<()> {
-        if self.do_vectors && !self.base.bytes_hash.is_empty() {
+        if self.do_vectors && unsafe { !self.base.bytes_hash.get_ref().is_empty() } {
             self.term_vectors_writer().add_field_to_flush(self);
         }
         Ok(())

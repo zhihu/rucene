@@ -73,7 +73,7 @@ impl<C: Codec> Query<C> for SpanTermQuery {
         )]
     }
 
-    fn as_any(&self) -> &::std::any::Any {
+    fn as_any(&self) -> &dyn (::std::any::Any) {
         self
     }
 }

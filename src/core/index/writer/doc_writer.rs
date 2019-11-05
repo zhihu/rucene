@@ -17,24 +17,26 @@ use core::doc::Fieldable;
 use core::doc::Term;
 use core::index::writer::{
     DocumentsWriterDeleteQueue, DocumentsWriterFlushControl, DocumentsWriterFlushQueue,
-    DocumentsWriterPerThread, DocumentsWriterPerThreadPool, FlushByRamOrCountsPolicy, IndexWriter,
+    DocumentsWriterPerThread, DocumentsWriterPerThreadPool, FlushByCountsPolicy, IndexWriter,
     IndexWriterConfig, IndexWriterInner, ThreadState,
 };
 use core::search::query::Query;
 use core::store::directory::{Directory, LockValidatingDirectoryWrapper};
 use core::util::external::Volatile;
-use error::{ErrorKind::AlreadyClosed, Result};
+use error::{ErrorKind::AlreadyClosed, ErrorKind::IllegalState, Result};
 
 use crossbeam::queue::SegQueue;
 
 use core::index::merge::MergePolicy;
 use core::index::merge::MergeScheduler;
+use core::index::writer::doc_writer_flush_queue::FlushTicket;
 use std::cmp::max;
 use std::collections::HashSet;
 use std::mem;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::thread;
+use std::time::Duration;
 
 ///
 // This class accepts multiple added documents and directly
@@ -93,6 +95,9 @@ use std::thread;
 // deleted so that the document is always atomically ("all
 // or none") added to the index.
 //
+
+const DEFAULT_FLUSH_THREADS: usize = 5;
+
 pub struct DocumentsWriter<
     D: Directory + Send + Sync + 'static,
     C: Codec,
@@ -114,14 +119,14 @@ pub struct DocumentsWriter<
     // committed. See also self.any_change() & self.flush_all_threads.
     pending_changes_in_current_full_flush: Volatile<bool>,
     pub per_thread_pool: DocumentsWriterPerThreadPool<D, C, MS, MP>,
-    pub flush_policy: Arc<FlushByRamOrCountsPolicy<C, MS, MP>>,
+    pub flush_policy: Arc<FlushByCountsPolicy<C, MS, MP>>,
     flush_control: DocumentsWriterFlushControl<D, C, MS, MP>,
     config: Arc<IndexWriterConfig<C, MS, MP>>,
-    writer: Weak<IndexWriterInner<D, C, MS, MP>>,
+    index_writer: Weak<IndexWriterInner<D, C, MS, MP>>,
     pub events: SegQueue<WriterEvent<D, C>>,
     pub last_seq_no: u64,
-    inited: bool,
     // must init flush_control after new
+    inited: bool,
 }
 
 impl<D, C, MS, MP> DocumentsWriter<D, C, MS, MP>
@@ -136,9 +141,8 @@ where
         directory_orig: Arc<D>,
         directory: Arc<LockValidatingDirectoryWrapper<D>>,
     ) -> Self {
-        let flush_policy = Arc::new(FlushByRamOrCountsPolicy::new(Arc::clone(&config)));
-        let flush_control =
-            DocumentsWriterFlushControl::new(Arc::clone(&config), Arc::clone(&flush_policy));
+        let flush_policy = Arc::new(FlushByCountsPolicy::new(Arc::clone(&config)));
+        let flush_control = DocumentsWriterFlushControl::new(Arc::clone(&flush_policy));
         DocumentsWriter {
             lock: Arc::new(Mutex::new(())),
             directory_orig,
@@ -152,29 +156,28 @@ where
             flush_policy,
             flush_control,
             config,
-            writer: Weak::new(),
+            index_writer: Weak::new(),
             events: SegQueue::new(),
             last_seq_no: 0,
             inited: false,
         }
     }
 
-    pub fn init(&mut self, writer: Weak<IndexWriterInner<D, C, MS, MP>>) {
-        self.writer = writer;
+    pub fn init(&mut self, index_writer: Weak<IndexWriterInner<D, C, MS, MP>>) {
+        self.index_writer = index_writer;
         unsafe {
             let flush_control =
                 &mut self.flush_control as *mut DocumentsWriterFlushControl<D, C, MS, MP>;
-            (*flush_control).init(
-                self,
-                self.writer.upgrade().unwrap().buffered_updates_stream(),
-            );
+            (*flush_control).init(self);
         }
         self.inited = true;
+
+        self.start_flush_daemon();
     }
 
-    fn writer(&self) -> Arc<IndexWriterInner<D, C, MS, MP>> {
+    fn index_writer(&self) -> Arc<IndexWriterInner<D, C, MS, MP>> {
         debug_assert!(self.inited);
-        self.writer.upgrade().unwrap()
+        self.index_writer.upgrade().unwrap()
     }
 
     #[allow(clippy::mut_from_ref)]
@@ -184,9 +187,6 @@ where
     }
 
     pub fn set_delete_queue(&self, delete_queue: Arc<DocumentsWriterDeleteQueue<C>>) {
-        // let l = self.lock.lock().unwrap();
-        // let doc_writer_mut = unsafe { self.doc_writer_mut(&l) };
-
         // already locked
         let w = self as *const DocumentsWriter<D, C, MS, MP> as *mut DocumentsWriter<D, C, MS, MP>;
         unsafe {
@@ -197,14 +197,12 @@ where
     pub fn update_documents<F: Fieldable>(
         &self,
         docs: Vec<Vec<F>>,
-        // analyzer: Analyzer,
         del_term: Option<Term>,
     ) -> Result<(u64, bool)> {
-        debug_assert!(self.inited);
-        let has_events = self.pre_update()?;
+        let mut has_event = self.pre_update()?;
 
-        let per_thread = self.flush_control.obtain_and_lock()?;
-        let (seq_no, flush_dwpt) = {
+        let per_thread: Arc<ThreadState<D, C, MS, MP>> = self.obtain_and_lock()?;
+        let seq_no = {
             let l = match per_thread.lock.try_lock() {
                 Ok(g) => g,
                 Err(e) => {
@@ -220,7 +218,8 @@ where
 
         self.per_thread_pool.release(per_thread);
 
-        let has_event = self.post_update(flush_dwpt, has_events)?;
+        has_event = self.post_update(has_event)?;
+
         Ok((seq_no, has_event))
     }
 
@@ -230,7 +229,7 @@ where
         docs: Vec<Vec<F>>,
         // analyzer: Analyzer,
         del_term: Option<Term>,
-    ) -> Result<(u64, Option<DocumentsWriterPerThread<D, C, MS, MP>>)> {
+    ) -> Result<u64> {
         let is_update = del_term.is_some();
 
         // This must happen after we've pulled the ThreadState because IW.close
@@ -264,26 +263,24 @@ where
             }
         };
 
-        let flush_dwpt = self
-            .flush_control
+        self.flush_control
             .do_after_document(per_thread, is_update)?;
 
         debug_assert!(seq_no > per_thread.last_seq_no());
         per_thread.set_last_seq_no(seq_no);
-        Ok((seq_no, flush_dwpt))
+
+        Ok(seq_no)
     }
 
     pub fn update_document<F: Fieldable>(
         &self,
         doc: Vec<F>,
-        // analyzer: Analyzer,
         del_term: Option<Term>,
     ) -> Result<(u64, bool)> {
-        debug_assert!(self.inited);
         let mut has_event = self.pre_update()?;
 
-        let per_thread = self.flush_control.obtain_and_lock()?;
-        let (seq_no, flush_dwpt) = {
+        let per_thread: Arc<ThreadState<D, C, MS, MP>> = self.obtain_and_lock()?;
+        let seq_no = {
             let guard = match per_thread.lock.try_lock() {
                 Ok(g) => g,
                 Err(e) => {
@@ -296,9 +293,10 @@ where
             let per_thread_mut = per_thread.thread_state_mut(&guard);
             self.do_update_document(per_thread_mut, doc, del_term)?
         };
+
         self.per_thread_pool.release(per_thread);
 
-        has_event = self.post_update(flush_dwpt, has_event)?;
+        has_event = self.post_update(has_event)?;
 
         Ok((seq_no, has_event))
     }
@@ -309,7 +307,7 @@ where
         doc: Vec<F>,
         // analyzer: Analyzer,
         del_term: Option<Term>,
-    ) -> Result<(u64, Option<DocumentsWriterPerThread<D, C, MS, MP>>)> {
+    ) -> Result<u64> {
         let is_update = del_term.is_some();
 
         // This must happen after we've pulled the ThreadState because IW.close
@@ -344,57 +342,35 @@ where
             }
         };
 
-        let flush_dwpt = self
-            .flush_control
+        self.flush_control
             .do_after_document(per_thread, is_update)?;
 
         debug_assert!(seq_no > per_thread.last_seq_no());
         per_thread.set_last_seq_no(seq_no);
-        Ok((seq_no, flush_dwpt))
+
+        Ok(seq_no)
     }
 
     fn pre_update(&self) -> Result<bool> {
+        debug_assert!(self.inited);
         self.ensure_open()?;
-        let mut has_events = false;
-        if self.flush_control.any_stalled_threads() || self.flush_control.num_queued_flushes() > 0 {
-            // Help out flushing any queued DWPTs so we can un-stall:
-            loop {
-                // Try pick up pending threads here if possible
-                while let Some(dwpt) = self.flush_control.next_pending_flush() {
-                    // Don't push the delete here since the update could fail!
-                    has_events |= self.do_flush(dwpt)?;
-                }
-                self.flush_control.wait_if_stalled()?; // block is stalled
-                if self.flush_control.num_queued_flushes() == 0 {
-                    break;
-                }
-            }
-        }
-        Ok(has_events)
+
+        Ok(false)
     }
 
-    fn post_update(
-        &self,
-        flushing_dwpt: Option<DocumentsWriterPerThread<D, C, MS, MP>>,
-        mut has_events: bool,
-    ) -> Result<bool> {
-        has_events |= self.apply_all_deletes_local();
-        if let Some(dwpt) = flushing_dwpt {
-            has_events |= self.do_flush(dwpt)?;
-        } else if let Some(next_pending_flush) = self.flush_control.next_pending_flush() {
-            has_events |= self.do_flush(next_pending_flush)?;
-        }
+    fn post_update(&self, mut has_event: bool) -> Result<bool> {
+        has_event |= self.apply_all_deletes_local();
 
-        Ok(has_events)
+        Ok(has_event)
     }
 
     fn ensure_inited(&self, state: &mut ThreadState<D, C, MS, MP>) -> Result<()> {
-        let writer = self.writer();
+        let index_writer = self.index_writer();
         if state.dwpt.is_none() {
-            let segment_name = writer.new_segment_name();
-            let pending_num_docs = Arc::clone(&writer.pending_num_docs);
+            let segment_name = index_writer.new_segment_name();
+            let pending_num_docs = Arc::clone(&index_writer.pending_num_docs);
             let dwpt = DocumentsWriterPerThread::new(
-                self.writer.clone(),
+                self.index_writer.clone(),
                 segment_name,
                 Arc::clone(&self.directory_orig),
                 Arc::clone(&self.directory),
@@ -408,9 +384,37 @@ where
                 .dwpt
                 .as_mut()
                 .unwrap()
-                .init(Arc::clone(&writer.global_field_numbers()));
+                .init(Arc::clone(&index_writer.global_field_numbers()));
         }
         Ok(())
+    }
+
+    fn obtain_and_lock(&self) -> Result<Arc<ThreadState<D, C, MS, MP>>> {
+        let per_thread: Arc<ThreadState<D, C, MS, MP>> = self.per_thread_pool.get_and_lock()?;
+        {
+            let guard = match per_thread.lock.try_lock() {
+                Ok(g) => g,
+                Err(e) => {
+                    bail!(IllegalState(format!(
+                        "obtain_and_lock try lock per_thread.state failed: {:?}",
+                        e
+                    )));
+                }
+            };
+
+            let per_thread_mut = per_thread.thread_state_mut(&guard);
+
+            if per_thread_mut.inited()
+                && per_thread_mut.dwpt().delete_queue.generation != self.delete_queue.generation
+            {
+                // There is a flush-all in process and this DWPT is
+                // now stale -- enroll it for flush and try for
+                // another DWPT:
+                self.flush_control.add_flushable_state(per_thread_mut);
+            }
+        }
+        // simply return the ThreadState even in a flush all case sine we already hold the lock
+        Ok(per_thread)
     }
 
     pub fn delete_queries(&self, queries: Vec<Arc<dyn Query<C>>>) -> (u64, bool) {
@@ -443,6 +447,16 @@ where
         self.num_docs_in_ram.load(Ordering::Acquire)
     }
 
+    pub fn num_global_term_deletes(&self) -> usize {
+        self.delete_queue.num_global_term_deletes()
+            + self
+                .index_writer
+                .upgrade()
+                .unwrap()
+                .buffered_updates_stream()
+                .num_terms()
+    }
+
     fn apply_all_deletes_local(&self) -> bool {
         if self.flush_control.get_and_reset_apply_all_deletes() {
             if !self.flush_control.is_full_flush() {
@@ -459,11 +473,15 @@ where
         self.events.push(event);
     }
 
-    pub fn purge_buffer(&self, writer: &IndexWriter<D, C, MS, MP>, forced: bool) -> Result<u32> {
+    pub fn purge_buffer(
+        &self,
+        index_writer: &IndexWriter<D, C, MS, MP>,
+        forced: bool,
+    ) -> Result<u32> {
         if forced {
-            self.ticket_queue.force_purge(writer)
+            self.ticket_queue.force_purge(index_writer)
         } else {
-            self.ticket_queue.try_purge(writer)
+            self.ticket_queue.try_purge(index_writer)
         }
     }
 
@@ -535,6 +553,26 @@ where
         }
     }
 
+    fn start_flush_daemon(&self) {
+        for _i in 0..DEFAULT_FLUSH_THREADS {
+            let index_writer_inner = self.index_writer();
+            thread::spawn(move || -> Result<()> {
+                let doc_writer = &index_writer_inner.doc_writer;
+
+                loop {
+                    thread::sleep(Duration::from_millis(3000));
+
+                    if let Some(next_pending_flush) = doc_writer.flush_control.next_pending_flush()
+                    {
+                        if let Err(e) = doc_writer.do_flush(next_pending_flush) {
+                            error!("flush err:{:?}", e);
+                        }
+                    }
+                }
+            });
+        }
+    }
+
     fn do_flush(&self, mut dwpt: DocumentsWriterPerThread<D, C, MS, MP>) -> Result<bool> {
         let mut has_events = false;
         loop {
@@ -574,9 +612,7 @@ where
         // buffer, force them all to apply now. This is to
         // prevent too-frequent flushing of a long tail of
         // tiny segments:
-        if self.config.flush_on_ram()
-            && self.flush_control.delete_bytes_used() > self.config.ram_buffer_size() / 2
-        {
+        if self.num_global_term_deletes() > self.num_docs() as usize / 2 {
             has_events = true;
             if !self.apply_all_deletes_local() {
                 debug!("DW: force apply deletes");
@@ -608,7 +644,7 @@ where
         // Each flush is assigned a ticket in the order they acquire the
         // ticket_queue lock
         let res = {
-            let ticket = self.ticket_queue.add_flush_ticket(dwpt)?;
+            let ticket: *mut FlushTicket<D, C> = self.ticket_queue.add_flush_ticket(dwpt)?;
 
             match dwpt.flush() {
                 Ok(seg) => {
@@ -690,7 +726,7 @@ where
 
             self.ticket_queue.add_deletes(flushing_queue.as_ref());
         }
-        let index_writer = IndexWriter::with_inner(self.writer());
+        let index_writer = IndexWriter::with_inner(self.index_writer());
         self.ticket_queue.force_purge(&index_writer)?;
         debug_assert!(!flushing_queue.any_changes() && !self.ticket_queue.has_tickets());
 
@@ -757,21 +793,21 @@ pub enum WriterEvent<D: Directory, C: Codec> {
 impl<D: Directory + Send + Sync + 'static, C: Codec> Event<D, C> for WriterEvent<D, C> {
     fn process<MS: MergeScheduler, MP: MergePolicy>(
         &self,
-        writer: &IndexWriter<D, C, MS, MP>,
+        index_writer: &IndexWriter<D, C, MS, MP>,
         trigger_merge: bool,
         clear_buffer: bool,
     ) -> Result<()> {
         match self {
-            WriterEvent::ApplyDeletes => writer.apply_deletes_and_purge(true),
+            WriterEvent::ApplyDeletes => index_writer.apply_deletes_and_purge(true),
             WriterEvent::MergePending => {
-                writer.do_after_segment_flushed(trigger_merge, clear_buffer)
+                index_writer.do_after_segment_flushed(trigger_merge, clear_buffer)
             }
             WriterEvent::ForcedPurge => {
-                writer.purge(true)?;
+                index_writer.purge(true)?;
                 Ok(())
             }
-            WriterEvent::FlushFailed(s) => writer.flush_failed(s),
-            WriterEvent::DeleteNewFiles(files) => writer.delete_new_files(files),
+            WriterEvent::FlushFailed(s) => index_writer.flush_failed(s),
+            WriterEvent::DeleteNewFiles(files) => index_writer.delete_new_files(files),
         }
     }
 }

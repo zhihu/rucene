@@ -17,15 +17,14 @@ use core::{
     codec::{Codec, LiveDocsFormat},
     doc::{Fieldable, Term},
     index::writer::{
-        BufferedUpdates, DefaultIndexingChain, DeleteSlice, DocConsumer,
-        DocumentsWriterDeleteQueue, FrozenBufferedUpdates, IndexWriterConfig, IndexWriterInner,
-        BYTES_PER_DEL_DOCID, INDEX_MAX_DOCS,
+        BufferedUpdates, DeleteSlice, DocConsumer, DocumentsWriterDeleteQueue,
+        FrozenBufferedUpdates, IndexWriterConfig, IndexWriterInner, INDEX_MAX_DOCS,
     },
     index::{merge::MergePolicy, merge::MergeScheduler},
     store::directory::{Directory, LockValidatingDirectoryWrapper, TrackingDirectoryWrapper},
     store::{FlushInfo, IOContext},
     util::{
-        random_id, BitSet, BitsRef, Count, Counter, DirectTrackingAllocator, DocId, VERSION_LATEST,
+        random_id, BitSet, BitsRef, DirectTrackingAllocator, DocId, VERSION_LATEST,
         {IntAllocator, INT_BLOCK_SIZE},
     },
 };
@@ -34,7 +33,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::SystemTime;
-use std::{mem, ptr};
 
 use crossbeam::queue::ArrayQueue;
 use crossbeam::sync::{ShardedLock, ShardedLockWriteGuard};
@@ -45,6 +43,7 @@ use core::util::Bits;
 use core::util::FixedBitSet;
 use error::ErrorKind::IllegalArgument;
 use error::Result;
+use std::mem::MaybeUninit;
 
 #[derive(Default)]
 pub struct DocState {
@@ -78,8 +77,7 @@ pub struct DocumentsWriterPerThread<
     pub directory: Arc<TrackingValidDirectory<D>>,
     pub directory_orig: Arc<D>,
     pub doc_state: DocState,
-    pub consumer: DefaultIndexingChain<D, C, MS, MP>,
-    pub bytes_used: Counter,
+    pub consumer: MaybeUninit<DocConsumer<D, C, MS, MP>>,
     pending_updates: BufferedUpdates<C>,
     pub segment_info: SegmentInfo<D, C>,
     // current segment we are working on
@@ -136,17 +134,15 @@ where
             directory,
             directory_orig,
             doc_state,
-            consumer: unsafe { mem::uninitialized() },
-            bytes_used: Counter::new(false),
+            consumer: MaybeUninit::<DocConsumer<D, C, MS, MP>>::uninit(),
             pending_updates: BufferedUpdates::new(segment_name),
             segment_info,
             aborted: false,
             num_docs_in_ram: 0,
             delete_queue,
             delete_slice,
-            // this to init are just stub, the inner count should share with self.bytes_used
-            byte_block_allocator: DirectTrackingAllocator::new(Counter::new(false)),
-            int_block_allocator: Box::new(IntBlockAllocator::new(Counter::new(false))),
+            byte_block_allocator: DirectTrackingAllocator::new(),
+            int_block_allocator: Box::new(IntBlockAllocator::new()),
             pending_num_docs,
             index_writer_config,
             index_writer,
@@ -157,18 +153,15 @@ where
 
     pub fn init(&mut self, field_numbers: Arc<FieldNumbers>) {
         let field_infos = FieldInfosBuilder::new(FieldNumbersRef::new(field_numbers));
-        self.byte_block_allocator =
-            DirectTrackingAllocator::new(unsafe { self.bytes_used.shallow_copy() });
-        self.int_block_allocator = Box::new(IntBlockAllocator::new(unsafe {
-            self.bytes_used.shallow_copy()
-        }));
+        self.byte_block_allocator = DirectTrackingAllocator::new();
+        self.int_block_allocator = Box::new(IntBlockAllocator::new());
+
+        let consumer = DocConsumer::new(self, field_infos);
+        self.consumer.write(consumer);
         unsafe {
-            ptr::write(
-                &mut self.consumer,
-                DefaultIndexingChain::new(self, field_infos),
-            );
+            self.consumer.get_mut().init();
         }
-        self.consumer.init();
+
         self.inited = true;
     }
 
@@ -178,10 +171,6 @@ where
 
     pub fn codec(&self) -> &C {
         self.index_writer_config.codec()
-    }
-
-    pub fn bytes_used(&self) -> i64 {
-        self.bytes_used.get() // + self.pending_updates.bytes_used.get()
     }
 
     // Anything that will add N docs to the index should reserve first to make sure it's allowed
@@ -214,9 +203,11 @@ where
         // document, so the counter will be "wrong" in that case, but
         // it's very hard to fix (we can't easily distinguish aborting
         // vs non-aborting exceptions):
-        let res = self
-            .consumer
-            .process_document(&mut self.doc_state, &mut doc);
+        let res = unsafe {
+            self.consumer
+                .get_mut()
+                .process_document(&mut self.doc_state, &mut doc)
+        };
         self.doc_state.clear();
         if res.is_err() {
             // mark document as deleted
@@ -272,9 +263,11 @@ where
             self.doc_state.doc_id = self.num_docs_in_ram as i32;
             *doc_count += 1;
 
-            let res = self
-                .consumer
-                .process_document(&mut self.doc_state, &mut doc);
+            let res = unsafe {
+                self.consumer
+                    .get_mut()
+                    .process_document(&mut self.doc_state, &mut doc)
+            };
             if res.is_err() {
                 // Incr here because finishDocument will not
                 // be called (because an exc is being thrown):
@@ -382,19 +375,15 @@ where
         debug_assert!(self.delete_slice.is_empty());
 
         self.segment_info.max_doc = self.num_docs_in_ram as i32;
-        let ctx = IOContext::Flush(FlushInfo::new(
-            self.num_docs_in_ram,
-            self.bytes_used() as u64,
-        ));
+        let ctx = IOContext::Flush(FlushInfo::new(self.num_docs_in_ram));
         let mut flush_state = SegmentWriteState::new(
             Arc::clone(&self.directory),
             self.segment_info.clone(),
-            self.consumer.field_infos.finish()?,
+            unsafe { self.consumer.get_ref().field_infos.finish()? },
             Some(&self.pending_updates),
             ctx,
             "".into(),
         );
-        let _start_mb_used = self.bytes_used() as f64 / 1024.0 / 1024.0;
 
         // Apply delete-by-docID now (delete-byDocID only
         // happens when an exception is hit processing that
@@ -409,9 +398,6 @@ where
                 flush_state.live_docs.clear(del_doc_id as usize);
             }
             flush_state.del_count_on_flush = docs_len as u32;
-            self.pending_updates
-                .bytes_used
-                .fetch_sub(docs_len * BYTES_PER_DEL_DOCID, Ordering::AcqRel);
         }
 
         if self.aborted {
@@ -442,10 +428,12 @@ where
         let doc_writer = self as *mut DocumentsWriterPerThread<D, C, MS, MP>;
 
         // re-init
-        self.consumer.reset_doc_writer(doc_writer);
-        self.consumer.init();
+        unsafe {
+            self.consumer.get_mut().reset_doc_writer(doc_writer);
+            self.consumer.get_mut().init();
+        }
 
-        let sort_map = self.consumer.flush(&mut flush_state)?;
+        let sort_map = unsafe { self.consumer.get_mut().flush(&mut flush_state)? };
         self.pending_updates.deleted_terms.clear();
         self.segment_info
             .set_files(&self.directory.create_files())?;
@@ -483,7 +471,11 @@ where
         Ok(Some(fs))
     }
 
-    fn sort_live_docs(&self, live_docs: &Bits, sort_map: &PackedLongDocMap) -> Result<FixedBitSet> {
+    fn sort_live_docs(
+        &self,
+        live_docs: &dyn Bits,
+        sort_map: &PackedLongDocMap,
+    ) -> Result<FixedBitSet> {
         let mut sorted_live_docs = FixedBitSet::new(live_docs.len());
         sorted_live_docs.batch_set(0, live_docs.len());
         for i in 0..live_docs.len() {
@@ -501,10 +493,7 @@ where
     ) -> Result<()> {
         // set_diagnostics(&mut flushed_segment.segment_info.info, index_writer::SOURCE_FLUSH);
 
-        let flush_info = FlushInfo::new(
-            flushed_segment.segment_info.info.max_doc() as u32,
-            flushed_segment.segment_info.size_in_bytes() as u64,
-        );
+        let flush_info = FlushInfo::new(flushed_segment.segment_info.info.max_doc() as u32);
         let ctx = &IOContext::Flush(flush_info);
 
         if self.index_writer_config.use_compound_file {
@@ -587,8 +576,10 @@ where
         self.aborted = true;
         debug!("DWPT: now abort");
 
-        if let Err(e) = self.consumer.abort() {
-            error!("DefaultIndexChain abort failed by error: '{:?}'", e);
+        unsafe {
+            if let Err(e) = self.consumer.get_mut().abort() {
+                error!("DefaultIndexChain abort failed by error: '{:?}'", e);
+            }
         }
 
         self.pending_updates.clear();
@@ -736,38 +727,6 @@ where
         self.new_thread_state(guard)
     }
 
-    /// this method is used by DocumentsWriter/FlushControl to obtain a ThreadState
-    /// to do an indexing operation (add/update_document).
-    //    pub fn get_and_lock2(&self) -> Result<Arc<ThreadState<D, C, MS, MP>>> {
-    //        let mut guard = self.inner.read().unwrap();
-    //        if let Some(mut idx) = guard.free_list.pop() {
-    //            if guard.thread_states[idx].dwpt.is_none() {
-    //                // This thread-state is not initialized, e.g. it
-    //                // was just flushed. See if we can instead find
-    //                // another free thread state that already has docs
-    //                // indexed. This way if incoming thread concurrency
-    //                // has decreased, we don't leave docs
-    //                // indefinitely buffered, tying up RAM.  This
-    //                // will instead get those thread states flushed,
-    //                // freeing up RAM for larger segment flushes:
-    //                for i in 0..guard.free_list.len() {
-    //                    let new_idx = guard.free_list[i];
-    //                    if guard.thread_states[new_idx].dwpt.is_some() {
-    //                        // Use this one instead, and swap it with
-    //                        // the un-initialized one:
-    //                        guard.free_list[i] = idx;
-    //                        idx = new_idx;
-    //                        break;
-    //                    }
-    //                }
-    //            }
-    //
-    //            Ok(Arc::clone(&guard.thread_states[idx]))
-    //        } else {
-    //            self.new_thread_state(guard)
-    //        }
-    //    }
-
     pub fn release(&self, state: Arc<ThreadState<D, C, MS, MP>>) {
         let guard = self.inner.read().unwrap();
         // this shouldn't fail
@@ -808,7 +767,6 @@ pub struct ThreadState<
     pub flush_pending: AtomicBool,
     // TODO this should really be part of DocumentsWriterFlushControl
     // write access guarded by DocumentsWriterFlushControl
-    pub bytes_used: u64,
     // set by DocumentsWriter after each indexing op finishes
     last_seq_no: AtomicU64,
     // index in DocumentsWriterPerThreadPool
@@ -827,7 +785,6 @@ where
             lock: Mutex::new(ThreadStateLock),
             dwpt,
             flush_pending: AtomicBool::new(false),
-            bytes_used: 0,
             last_seq_no: AtomicU64::new(0),
             index,
         }
@@ -852,17 +809,12 @@ where
         self.dwpt.as_mut().unwrap()
     }
 
-    pub fn bytes_used(&self) -> u64 {
-        self.bytes_used
-    }
-
     pub fn flush_pending(&self) -> bool {
         self.flush_pending.load(Ordering::Acquire)
     }
 
     fn reset(&mut self) -> Option<DocumentsWriterPerThread<D, C, MS, MP>> {
         let dwpt = self.dwpt.take();
-        self.bytes_used = 0;
         self.flush_pending.store(false, Ordering::Release);
         dwpt
     }
@@ -882,14 +834,12 @@ where
 
 struct IntBlockAllocator {
     block_size: usize,
-    pub bytes_used: Counter,
 }
 
 impl IntBlockAllocator {
-    fn new(bytes_used: Counter) -> Self {
+    fn new() -> Self {
         IntBlockAllocator {
             block_size: INT_BLOCK_SIZE,
-            bytes_used,
         }
     }
 }
@@ -899,20 +849,14 @@ impl IntAllocator for IntBlockAllocator {
         self.block_size
     }
 
-    fn recycle_int_blocks(&mut self, _blocks: &mut [Vec<i32>], _start: usize, end: usize) {
-        self.bytes_used
-            .add_get(-((end * self.block_size * 4) as i64));
-    }
+    fn recycle_int_blocks(&mut self, _blocks: &mut [Vec<i32>], _start: usize, _end: usize) {}
 
     fn int_block(&mut self) -> Vec<i32> {
         let b = vec![0; self.block_size];
-        self.bytes_used.add_get((self.block_size * 4) as i64);
         b
     }
 
     fn shallow_copy(&mut self) -> Box<dyn IntAllocator> {
-        Box::new(IntBlockAllocator::new(unsafe {
-            self.bytes_used.shallow_copy()
-        }))
+        Box::new(IntBlockAllocator::new())
     }
 }

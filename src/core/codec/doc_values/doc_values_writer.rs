@@ -31,8 +31,7 @@ use core::util::packed::{COMPACT, FAST};
 use core::util::BitsRequired;
 use core::util::{BitSet, BitSetIterator, FixedBitSet};
 use core::util::{
-    Bits, BytesRef, Count, Counter, DocId, Numeric, PagedBytes, PagedBytesDataInput,
-    ReusableIterator, VariantValue,
+    Bits, BytesRef, DocId, Numeric, PagedBytes, PagedBytesDataInput, ReusableIterator, VariantValue,
 };
 use core::util::{ByteBlockPool, DirectTrackingAllocator};
 use core::util::{BytesRefHash, DirectByteStartArray, DEFAULT_CAPACITY};
@@ -198,7 +197,7 @@ impl BinaryDocValuesWriter {
     fn sort_doc_values(
         &self,
         max_doc: i32,
-        sort_map: &SorterDocMap,
+        sort_map: &dyn SorterDocMap,
         mut iter: BinaryBytesIterator,
     ) -> Result<CachedBinaryDVs> {
         let mut docs_with_fields = FixedBitSet::new(max_doc as usize);
@@ -804,7 +803,6 @@ pub struct SortedDocValuesWriter {
     pending: PackedLongValuesBuilder,
     field_info: FieldInfo,
     docs_with_field: FixedBitSet,
-    counter: Counter,
     hash: BytesRefHash,
     // the hash.pool is pointed to this, so it must be boxed
     _bytes_block_pool: Box<ByteBlockPool>,
@@ -814,18 +812,13 @@ pub struct SortedDocValuesWriter {
 }
 
 impl SortedDocValuesWriter {
-    pub fn new(field_info: &FieldInfo, iw_bytes_used: Counter) -> SortedDocValuesWriter {
-        let mut bytes_block_pool = unsafe {
-            Box::new(ByteBlockPool::new(Box::new(DirectTrackingAllocator::new(
-                iw_bytes_used.shallow_copy(),
-            ))))
-        };
+    pub fn new(field_info: &FieldInfo) -> SortedDocValuesWriter {
+        let mut bytes_block_pool =
+            Box::new(ByteBlockPool::new(Box::new(DirectTrackingAllocator::new())));
         let hash = BytesRefHash::new(
             bytes_block_pool.as_mut(),
             DEFAULT_CAPACITY,
-            Box::new(DirectByteStartArray::new(DEFAULT_CAPACITY, unsafe {
-                iw_bytes_used.shallow_copy()
-            })),
+            Box::new(DirectByteStartArray::new(DEFAULT_CAPACITY)),
         );
         SortedDocValuesWriter {
             pending: PackedLongValuesBuilder::new(
@@ -836,7 +829,6 @@ impl SortedDocValuesWriter {
             field_info: field_info.clone(),
             docs_with_field: FixedBitSet::new(64),
             hash,
-            counter: iw_bytes_used,
             _bytes_block_pool: bytes_block_pool,
             final_ords: None,
             final_ord_map: vec![],
@@ -903,10 +895,7 @@ impl SortedDocValuesWriter {
 }
 
 impl DocValuesWriter for SortedDocValuesWriter {
-    fn finish(&mut self, _num_doc: i32) {
-        self.counter
-            .add_get(self.docs_with_field.bytes_used() as i64);
-    }
+    fn finish(&mut self, _num_doc: i32) {}
 
     fn flush<D: Directory, DW: Directory, C: Codec, W: DocValuesConsumer>(
         &mut self,
@@ -1117,16 +1106,13 @@ pub struct SortedSetDocValuesWriter {
 }
 
 impl SortedSetDocValuesWriter {
-    pub fn new(field_info: &FieldInfo, iw_bytes_used: Counter) -> SortedSetDocValuesWriter {
-        let mut bytes_block_pool = unsafe {
-            Box::new(ByteBlockPool::new(Box::new(DirectTrackingAllocator::new(
-                iw_bytes_used.shallow_copy(),
-            ))))
-        };
+    pub fn new(field_info: &FieldInfo) -> SortedSetDocValuesWriter {
+        let mut bytes_block_pool =
+            Box::new(ByteBlockPool::new(Box::new(DirectTrackingAllocator::new())));
         let hash = BytesRefHash::new(
             bytes_block_pool.as_mut(),
             DEFAULT_CAPACITY,
-            Box::new(DirectByteStartArray::new(DEFAULT_CAPACITY, iw_bytes_used)),
+            Box::new(DirectByteStartArray::new(DEFAULT_CAPACITY)),
         );
         SortedSetDocValuesWriter {
             pending: PackedLongValuesBuilder::new(

@@ -42,11 +42,11 @@ pub trait LeafFilterFunction: Send + Sync {
 /// a `Query` wrapper that do extra filters for matched docs
 pub struct FilterQuery<C: Codec> {
     query: Box<dyn Query<C>>,
-    filters: Vec<Arc<FilterFunction<C>>>,
+    filters: Vec<Arc<dyn FilterFunction<C>>>,
 }
 
 impl<C: Codec> FilterQuery<C> {
-    pub fn new(query: Box<dyn Query<C>>, filters: Vec<Arc<FilterFunction<C>>>) -> Self {
+    pub fn new(query: Box<dyn Query<C>>, filters: Vec<Arc<dyn FilterFunction<C>>>) -> Self {
         FilterQuery { query, filters }
     }
 }
@@ -71,7 +71,7 @@ impl<C: Codec> Query<C> for FilterQuery<C> {
         self.query.extract_terms()
     }
 
-    fn as_any(&self) -> &::std::any::Any {
+    fn as_any(&self) -> &dyn (::std::any::Any) {
         self
     }
 }
@@ -95,7 +95,7 @@ impl<C: Codec> fmt::Display for FilterQuery<C> {
 
 struct FilterWeight<C: Codec> {
     weight: Box<dyn Weight<C>>,
-    filters: Vec<Arc<FilterFunction<C>>>,
+    filters: Vec<Arc<dyn FilterFunction<C>>>,
 }
 
 impl<C: Codec> Weight<C> for FilterWeight<C> {

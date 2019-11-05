@@ -40,7 +40,7 @@ impl<C: Codec> Query<C> for MatchAllDocsQuery {
         unimplemented!()
     }
 
-    fn as_any(&self) -> &::std::any::Any {
+    fn as_any(&self) -> &dyn (::std::any::Any) {
         self
     }
 }
@@ -210,7 +210,7 @@ impl<C: Codec> Query<C> for ConstantScoreQuery<C> {
         vec![]
     }
 
-    fn as_any(&self) -> &::std::any::Any {
+    fn as_any(&self) -> &dyn (::std::any::Any) {
         self
     }
 }

@@ -121,6 +121,71 @@ impl BaseFragListBuilder {
         Ok(())
     }
 
+    pub fn get_best_field_frag_list(
+        &self,
+        field_frag_list: &mut dyn FieldFragList,
+        field_phrase_list: &FieldPhraseList,
+        frag_char_size: i32,
+    ) -> Result<()> {
+        if frag_char_size < self.min_frag_char_size {
+            panic!(
+                "fragCharSize({}) is too small. It must be {} or higher.",
+                frag_char_size, self.min_frag_char_size
+            );
+        }
+
+        let phrase_len = field_phrase_list.phrase_list.len();
+        if phrase_len > 0 {
+            let frag_window_size = (frag_char_size - self.margin).max(self.min_frag_char_size);
+            let mut score_map = vec![vec![0.0f32; phrase_len]; phrase_len];
+            let mut best_first = 0;
+            let mut best_last = 0;
+            let mut best_score = field_phrase_list.phrase_list[0].boost;
+
+            for i in 0..phrase_len {
+                score_map[i][i] = field_phrase_list.phrase_list[i].boost;
+
+                let mut j = i - 1;
+                while j as i32 >= 0 {
+                    let phrase_i = &field_phrase_list.phrase_list[i];
+                    let phrase_j = &field_phrase_list.phrase_list[j];
+                    score_map[i][j] = phrase_i.boost + score_map[i - 1][j];
+                    if phrase_i.end_offset() - phrase_j.start_offset() > frag_window_size {
+                        break;
+                    }
+
+                    if score_map[i][j] > best_score {
+                        best_score = score_map[i][j];
+                        best_first = j;
+                        best_last = i;
+                    }
+
+                    j -= 1;
+                }
+            }
+
+            let mut wpil: Vec<WeightedPhraseInfo> = vec![];
+            for i in best_first..best_last + 1 {
+                wpil.push(field_phrase_list.phrase_list[i].clone());
+            }
+
+            let wpil_len = wpil.len();
+            if wpil_len > 0 {
+                let mut start = wpil[0].start_offset();
+                let mut end = wpil[wpil_len - 1].end_offset();
+
+                if end - start < frag_char_size {
+                    start = 0.max(start - (frag_char_size - (end - start)) / 2);
+                    end = start + frag_char_size;
+                }
+
+                field_frag_list.add(start, end, &wpil);
+            }
+        }
+
+        Ok(())
+    }
+
     #[inline]
     fn accept_phrase(info: &WeightedPhraseInfo, match_length: i32, frag_char_size: i32) -> bool {
         info.terms_offsets.len() <= 1 || match_length <= frag_char_size
@@ -146,7 +211,7 @@ impl FragListBuilder for SimpleFragListBuilder {
         frag_char_size: i32,
     ) -> Result<Box<dyn FieldFragList>> {
         let mut field_frag_list = SimpleFieldFragList::default();
-        self.base_builder.create_field_frag_list(
+        self.base_builder.get_best_field_frag_list(
             &mut field_frag_list,
             field_phrase_list,
             frag_char_size,

@@ -66,6 +66,10 @@ mod byte_block_pool;
 
 pub use self::byte_block_pool::*;
 
+mod byte_slice_reader;
+
+pub use self::byte_slice_reader::*;
+
 mod bytes_ref_hash;
 
 pub use self::bytes_ref_hash::*;

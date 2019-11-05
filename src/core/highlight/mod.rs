@@ -115,16 +115,16 @@ impl Toffs {
 #[derive(Clone, PartialEq)]
 pub struct SubInfo {
     pub text: String,
-    pub terms_offsets: Vec<Toffs>,
+    pub term_offsets: Vec<Toffs>,
     pub seqnum: i32,
     pub boost: f32,
 }
 
 impl SubInfo {
-    pub fn new(text: String, terms_offsets: Vec<Toffs>, seqnum: i32, boost: f32) -> SubInfo {
+    pub fn new(text: String, term_offsets: Vec<Toffs>, seqnum: i32, boost: f32) -> SubInfo {
         SubInfo {
             text,
-            terms_offsets,
+            term_offsets,
             seqnum,
             boost,
         }
@@ -291,21 +291,20 @@ impl WeightedPhraseInfo {
 
         let seqnum = seqnum.unwrap_or(0);
         let mut terms_offsets: Vec<Toffs> = Vec::with_capacity(terms_infos.len());
-        {
-            let ti = &terms_infos[0];
-            terms_offsets.push(Toffs::new(ti.start_offset, ti.end_offset));
-            if terms_infos.len() > 1 {
-                let mut pos = ti.position;
-                for ti in terms_infos.iter().skip(1) {
-                    if ti.position - pos == 1 {
-                        let pos = terms_offsets.len() - 1;
-                        terms_offsets[pos].end_offset = ti.end_offset;
-                    } else {
-                        terms_offsets.push(Toffs::new(ti.start_offset, ti.end_offset));
-                    }
 
-                    pos = ti.position;
+        let ti = &terms_infos[0];
+        terms_offsets.push(Toffs::new(ti.start_offset, ti.end_offset));
+        if terms_infos.len() > 1 {
+            let mut pos = ti.position;
+            for ti in terms_infos.iter().skip(1) {
+                if ti.position - pos == 1 {
+                    let last = terms_offsets.len() - 1;
+                    terms_offsets[last].end_offset = ti.end_offset;
+                } else {
+                    terms_offsets.push(Toffs::new(ti.start_offset, ti.end_offset));
                 }
+
+                pos = ti.position;
             }
         }
 
@@ -748,31 +747,51 @@ impl FieldTermStack {
                 }
 
                 // now look for dups at the same position, linking them together
-                term_list.sort_by(|o1, o2| o2.position.cmp(&o1.position));
+                term_list.sort_by(|o1, o2| {
+                    if o1.end_offset != o2.end_offset {
+                        o1.end_offset.cmp(&o2.end_offset).reverse()
+                    } else {
+                        o1.start_offset.cmp(&o2.start_offset)
+                    }
+                });
 
-                let num_terms = term_list.len();
-                let mut i = 0usize;
-                while i < num_terms {
-                    for j in (i + 1)..num_terms {
-                        if term_list[j].position == term_list[i].position {
-                            let term_info = term_list[j].clone();
-                            term_list[i].next.push(term_info);
-                            term_list[j].position = -1;
-                        } else {
-                            break;
+                let mut start_offset = -1;
+                let mut end_offset = -1;
+                let mut terms_count = HashMap::new();
+                let mut total_count = 0;
+                for term_info in term_list.iter_mut() {
+                    if !(term_info.start_offset >= start_offset
+                        && term_info.end_offset <= end_offset)
+                    {
+                        if !terms_count.contains_key(&term_info.text) {
+                            terms_count.insert(term_info.text.clone(), 1);
                         }
+                        *(terms_count.get_mut(&term_info.text).unwrap()) += 1;
+
+                        total_count += 1;
+                    } else {
+                        term_info.position = -1;
+                        continue;
                     }
 
-                    i += term_list[i].next.len() + 1;
+                    start_offset = term_info.start_offset;
+                    end_offset = term_info.end_offset;
                 }
 
-                i = term_list.len();
+                let mut i = term_list.len();
                 while i > 0 {
                     if term_list[i - 1].position == -1 {
                         term_list.remove(i - 1);
                     }
 
                     i -= 1;
+                }
+
+                let avg_count = (total_count as f32) / (terms_count.len() as f32 + 1.0);
+                for term_info in term_list.iter_mut() {
+                    if let Some(count) = terms_count.get(&term_info.text) {
+                        term_info.weight *= 1.0 + avg_count / (*count as f32 + 1.0);
+                    }
                 }
 
                 return Ok(FieldTermStack {

@@ -89,7 +89,6 @@ pub struct BufferedUpdates<C: Codec> {
     // used to update the same field multiple times (so we later traverse it
     // only once).
     // binary_update: HashMap<String, HashMap<Term, BinaryDocValuesUpdate>>,
-    pub bytes_used: AtomicUsize,
     // gen: i64,
     pub segment_name: String,
 }
@@ -101,32 +100,17 @@ impl<C: Codec> BufferedUpdates<C> {
             deleted_terms: HashMap::new(),
             deleted_queries: HashMap::new(),
             deleted_doc_ids: vec![],
-            bytes_used: AtomicUsize::new(0),
             segment_name: name,
         }
     }
 
-    pub fn bytes_used(&self) -> usize {
-        self.bytes_used.load(Ordering::Acquire)
-    }
-
     pub fn add_doc_id(&mut self, doc_id: DocId) {
         self.deleted_doc_ids.push(doc_id);
-        self.bytes_used
-            .fetch_add(BYTES_PER_DEL_TERM, Ordering::AcqRel);
     }
 
     pub fn add_query(&mut self, query: Arc<dyn Query<C>>, doc_id_upto: DocId) {
         let query_str = format!("{}", &query);
-        let query_str_cost = query_str.capacity();
-        if self
-            .deleted_queries
-            .insert(query_str, (query, doc_id_upto))
-            .is_none()
-        {
-            let cost = BYTES_PER_DEL_QUERY_IN_HASH + query_str_cost;
-            self.bytes_used.fetch_add(cost, Ordering::AcqRel);
-        }
+        self.deleted_queries.insert(query_str, (query, doc_id_upto));
     }
 
     pub fn add_term(&mut self, term: Term, doc_id_upto: DocId) {
@@ -143,15 +127,8 @@ impl<C: Codec> BufferedUpdates<C> {
             }
         }
 
-        let cost = BYTES_PER_DEL_TERM + term.field.capacity() + term.bytes.capacity();
-        let current = self.deleted_terms.insert(term, doc_id_upto);
+        self.deleted_terms.insert(term, doc_id_upto);
         self.num_term_deletes.fetch_add(1, Ordering::AcqRel);
-        // note that if current.is_some() then it means there's already a buffered
-        // delete on that term, therefore we seem to over-count. this over-counting
-        // is done to respect IndexWriterConfig.setMaxBufferedDeleteTerms.
-        if current.is_none() {
-            self.bytes_used.fetch_add(cost, Ordering::AcqRel);
-        }
     }
 
     pub fn clear(&mut self) {
@@ -159,7 +136,6 @@ impl<C: Codec> BufferedUpdates<C> {
         self.deleted_queries.clear();
         self.deleted_doc_ids.clear();
         self.num_term_deletes.store(0, Ordering::Release);
-        self.bytes_used.store(0, Ordering::Release);
     }
 
     pub fn any(&self) -> bool {
@@ -169,9 +145,6 @@ impl<C: Codec> BufferedUpdates<C> {
     }
 }
 
-/// query we often undercount (say 24 bytes), plus int
-const BYTES_PER_DEL_QUERY: usize = 24 + mem::size_of::<i32>();
-
 /// Holds buffered deletes and updates by term or query, once pushed. Pushed
 /// deletes/updates are write-once, so we shift to more memory efficient data
 /// structure to hold them. We don't hold docIDs because these are applied on
@@ -180,7 +153,6 @@ pub struct FrozenBufferedUpdates<C: Codec> {
     terms: Arc<PrefixCodedTerms>,
     // Parallel array of deleted query, and the doc_id_upto for each
     query_and_limits: Vec<(Arc<dyn Query<C>>, DocId)>,
-    pub bytes_used: usize,
     pub num_term_deletes: usize,
     pub gen: u64,
     // assigned by BufferedUpdatesStream once pushed
@@ -200,9 +172,6 @@ impl<C: Codec> fmt::Display for FrozenBufferedUpdates<C> {
         }
         if !self.query_and_limits.is_empty() {
             write!(f, " {} deleted queries", self.query_and_limits.len())?;
-        }
-        if self.bytes_used > 0 {
-            write!(f, " bytes_used={}", self.bytes_used)?;
         }
         Ok(())
     }
@@ -234,11 +203,9 @@ impl<C: Codec> FrozenBufferedUpdates<C> {
         // so that it maps to all fields it affects, sorted by their docUpto, and traverse
         // that Term only once, applying the update to all fields that still need to be
         // updated.
-        let bytes_used = terms.ram_bytes_used() + query_and_limits.len() * BYTES_PER_DEL_QUERY;
         FrozenBufferedUpdates {
             terms: Arc::new(terms),
             query_and_limits,
-            bytes_used,
             num_term_deletes: deletes.num_term_deletes.load(Ordering::Acquire),
             gen: u64::max_value(),
             // used as a sentinel of invalid
@@ -280,7 +247,6 @@ pub struct BufferedUpdatesStream<C: Codec> {
     next_gen: AtomicU64,
     // used only by assert:
     last_delete_term: Vec<u8>,
-    bytes_used: AtomicUsize,
     num_terms: AtomicUsize,
 }
 
@@ -291,7 +257,6 @@ impl<C: Codec> Default for BufferedUpdatesStream<C> {
             updates: Mutex::new(vec![]),
             next_gen: AtomicU64::new(1),
             last_delete_term: Vec::with_capacity(0),
-            bytes_used: AtomicUsize::new(0),
             num_terms: AtomicUsize::new(0),
         }
     }
@@ -315,8 +280,6 @@ impl<C: Codec> BufferedUpdatesStream<C> {
         let del_gen = packet.gen;
         self.num_terms
             .fetch_add(packet.num_term_deletes, Ordering::AcqRel);
-        self.bytes_used
-            .fetch_add(packet.bytes_used, Ordering::AcqRel);
         updates.push(packet);
         debug_assert!(self.check_delete_stats(&updates));
         Ok(del_gen)
@@ -326,20 +289,15 @@ impl<C: Codec> BufferedUpdatesStream<C> {
         self.updates.lock()?.clear();
         self.next_gen.store(1, Ordering::Release);
         self.num_terms.store(0, Ordering::Release);
-        self.bytes_used.store(0, Ordering::Release);
         Ok(())
     }
 
     pub fn any(&self) -> bool {
-        self.bytes_used.load(Ordering::Acquire) > 0
+        self.num_terms.load(Ordering::Acquire) > 0
     }
 
     pub fn num_terms(&self) -> usize {
         self.num_terms.load(Ordering::Acquire)
-    }
-
-    pub fn ram_bytes_used(&self) -> usize {
-        self.bytes_used.load(Ordering::Acquire)
     }
 
     pub fn apply_deletes_and_updates<D, MS, MP>(
@@ -822,13 +780,10 @@ impl<C: Codec> BufferedUpdatesStream<C> {
     // only used for assert
     fn check_delete_stats(&self, updates: &[FrozenBufferedUpdates<C>]) -> bool {
         let mut num_terms2 = 0;
-        let mut bytes_used2 = 0;
         for update in updates {
             num_terms2 += update.num_term_deletes;
-            bytes_used2 += update.bytes_used;
         }
         assert_eq!(num_terms2, self.num_terms.load(Ordering::Acquire));
-        assert_eq!(bytes_used2, self.bytes_used.load(Ordering::Acquire));
         true
     }
 
@@ -875,9 +830,6 @@ impl<C: Codec> BufferedUpdatesStream<C> {
             debug_assert!(self.num_terms.load(Ordering::Acquire) >= updates[i].num_term_deletes);
             self.num_terms
                 .fetch_sub(updates[i].num_term_deletes, Ordering::AcqRel);
-            debug_assert!(self.bytes_used.load(Ordering::Acquire) >= updates[i].bytes_used);
-            self.bytes_used
-                .fetch_sub(updates[i].bytes_used, Ordering::AcqRel);
         }
         updates.drain(..idx);
     }
@@ -942,7 +894,7 @@ where
     }
 
     fn finish(&mut self, pool: &ReaderPool<D, C, MS, MP>) -> Result<()> {
-        pool.release(&self.rld, true)
+        pool.release(&self.rld)
     }
 }
 

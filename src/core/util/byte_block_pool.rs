@@ -11,7 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::util::{fill_slice, BytesRef, Count, Counter};
+use core::util::{fill_slice, BytesRef};
 
 /// Class that Posting and PostingVector use to write byte
 /// streams into shared fixed-size bytes arrays.  The idea
@@ -337,14 +337,12 @@ impl ByteBlockAllocator for DirectAllocator {
 /// A simple `Allocator` that never recycles, but tracks how much total RAM is in use.
 pub struct DirectTrackingAllocator {
     block_size: usize,
-    pub bytes_used: Counter,
 }
 
 impl DirectTrackingAllocator {
-    pub fn new(bytes_used: Counter) -> Self {
+    pub fn new() -> Self {
         DirectTrackingAllocator {
             block_size: ByteBlockPool::BYTE_BLOCK_SIZE,
-            bytes_used,
         }
     }
 }
@@ -355,22 +353,18 @@ impl ByteBlockAllocator for DirectTrackingAllocator {
     }
 
     fn recycle_byte_blocks(&mut self, blocks: &mut [Vec<u8>], start: usize, end: usize) {
-        self.bytes_used
-            .add_get(-(((end - start) * self.block_size) as i64));
         for i in start..end {
             blocks[i] = vec![];
         }
     }
 
     fn byte_block(&mut self) -> Vec<u8> {
-        self.bytes_used.add_get(self.block_size as i64);
         vec![0u8; self.block_size]
     }
 
     unsafe fn copy_unsafe(&self) -> Box<dyn ByteBlockAllocator> {
         Box::new(DirectTrackingAllocator {
             block_size: self.block_size,
-            bytes_used: self.bytes_used.shallow_copy(),
         })
     }
 }

@@ -24,7 +24,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::boxed::FnBox;
 use std::collections::VecDeque;
 use std::fmt::Write;
 use std::marker::PhantomData;
@@ -64,7 +63,7 @@ impl<C: Context + Default> ContextFactory<C> for DefaultContextFactory {
 }
 
 pub struct Task<C> {
-    task: Box<FnBox(&mut C) + Send>,
+    task: Box<dyn FnOnce(&mut C) + Send>,
 }
 
 impl<C: Context> Task<C> {
@@ -332,7 +331,7 @@ where
             };
 
             self.ctx.on_task_started();
-            (task.task).call_box((&mut self.ctx,));
+            (task.task).call_once((&mut self.ctx,));
             self.ctx.on_task_finished();
             self.task_count.fetch_sub(1, AtomicOrdering::SeqCst);
             if self.task_counter == self.tasks_per_tick {

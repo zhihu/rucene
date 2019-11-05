@@ -113,5 +113,4 @@ pub mod tests {
             assert!((f1 - f2) < ::std::f32::EPSILON);
         }
     }
-
 }

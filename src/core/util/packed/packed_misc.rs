@@ -2748,7 +2748,6 @@ impl BulkOperationPackedSingleBlock {
         values_offset += 1;
         for _i in 1..self.value_count {
             block = block.unsigned_shift(self.bits_per_value);
-            ;
             values[values_offset] = (block & self.mask) as i32;
             values_offset += 1;
         }

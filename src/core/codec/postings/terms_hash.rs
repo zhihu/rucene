@@ -23,7 +23,6 @@ use core::codec::{Fields, SeekStatus, TermIterator, Terms};
 use core::codec::{PostingIterator, PostingIteratorFlags};
 use core::doc::IndexOptions;
 use core::index::merge::{MergePolicy, MergeScheduler};
-use core::index::reader::ByteSliceReader;
 use core::index::reader::SortingFields;
 use core::index::writer::DocumentsWriterPerThread;
 use core::search::{DocIterator, Payload, NO_MORE_DOCS};
@@ -31,8 +30,8 @@ use core::store::directory::Directory;
 use core::store::io::DataInput;
 use core::util::IntBlockPool;
 use core::util::{BitSet, FixedBitSet};
-use core::util::{Bits, BytesRef, Counter, DocId};
-use core::util::{ByteBlockAllocator, ByteBlockPool};
+use core::util::{Bits, BytesRef, DocId};
+use core::util::{ByteBlockAllocator, ByteBlockPool, ByteSliceReader};
 
 use error::{ErrorKind, Result};
 
@@ -54,8 +53,6 @@ pub struct TermsHashBase {
     pub int_pool: IntBlockPool,
     pub byte_pool: ByteBlockPool,
     pub term_byte_pool: *mut ByteBlockPool,
-    pub bytes_used: Counter,
-    _track_allocations: bool,
 }
 
 impl Default for TermsHashBase {
@@ -64,28 +61,18 @@ impl Default for TermsHashBase {
             int_pool: IntBlockPool::default(),
             byte_pool: ByteBlockPool::default(),
             term_byte_pool: ptr::null_mut(),
-            bytes_used: Counter::default(),
-            _track_allocations: false,
         }
     }
 }
 
 impl TermsHashBase {
-    pub fn new<D, C, MS, MP>(
-        doc_writer: &mut DocumentsWriterPerThread<D, C, MS, MP>,
-        track_allocations: bool,
-    ) -> Self
+    pub fn new<D, C, MS, MP>(doc_writer: &mut DocumentsWriterPerThread<D, C, MS, MP>) -> Self
     where
         D: Directory + Send + Sync + 'static,
         C: Codec,
         MS: MergeScheduler,
         MP: MergePolicy,
     {
-        let bytes_used = if track_allocations {
-            Counter::borrow(&doc_writer.bytes_used)
-        } else {
-            Counter::new(false)
-        };
         let byte_pool =
             unsafe { ByteBlockPool::new(doc_writer.byte_block_allocator.copy_unsafe()) };
 
@@ -93,8 +80,6 @@ impl TermsHashBase {
             int_pool: IntBlockPool::new(doc_writer.int_block_allocator.shallow_copy()),
             byte_pool,
             term_byte_pool: ptr::null_mut(),
-            bytes_used,
-            _track_allocations: track_allocations,
         }
     }
 
@@ -159,7 +144,7 @@ where
         doc_writer: &mut DocumentsWriterPerThread<D, C, MS, MP>,
         term_vectors: TermVectorsConsumer<D, C, MS, MP>,
     ) -> Self {
-        let base = TermsHashBase::new(doc_writer, true);
+        let base = TermsHashBase::new(doc_writer);
         FreqProxTermsWriter {
             base,
             next_terms_hash: term_vectors,
@@ -271,18 +256,18 @@ where
         // Gather all fields that saw any positions:
         let mut all_fields = Vec::with_capacity(field_to_flush.len());
         for (_, f) in field_to_flush {
-            if !f.base().bytes_hash.is_empty() {
-                // TODO: Hack logic, it's because it's hard to gain param `field_to_flush` as
-                // `HashMap<&str, &mut FreqProxTermsWriterPerField>`
-                // this should be fixed later
-                unsafe {
+            unsafe {
+                if !f.base().bytes_hash.get_ref().is_empty() {
+                    // TODO: Hack logic, it's because it's hard to gain param `field_to_flush` as
+                    // `HashMap<&str, &mut FreqProxTermsWriterPerField>`
+                    // this should be fixed later
                     let pf_ptr = f as *const FreqProxTermsWriterPerField<D, C, MS, MP>
                         as *mut FreqProxTermsWriterPerField<D, C, MS, MP>;
                     (*pf_ptr).base_mut().sort_postings();
-                }
 
-                debug_assert_ne!(f.base().field_info.index_options, IndexOptions::Null);
-                all_fields.push(f);
+                    debug_assert_ne!(f.base().field_info.index_options, IndexOptions::Null);
+                    all_fields.push(f);
+                }
             }
         }
 
@@ -482,7 +467,7 @@ where
     fn new(terms_writer: &FreqProxTermsWriterPerField<D, C, MS, MP>) -> Self {
         FreqProxTermsIterator {
             terms_writer,
-            num_terms: terms_writer.base.bytes_hash.len(),
+            num_terms: unsafe { terms_writer.base.bytes_hash.get_ref().len() },
             ord: -1,
             scratch: BytesRef::default(),
         }
@@ -497,7 +482,7 @@ where
     }
 
     fn set_bytes(&mut self, term_id: usize) {
-        let idx = self.terms().base.bytes_hash.ids[term_id] as usize;
+        let idx = unsafe { self.terms().base.bytes_hash.get_ref().ids[term_id] as usize };
         let text_start = self.terms().base.postings_array.base.text_starts[idx];
         self.scratch = self
             .terms()
@@ -597,7 +582,10 @@ where
             }
 
             let mut pos_iter = FreqProxPostingsIterator::new(self.terms());
-            pos_iter.reset(self.terms().base.bytes_hash.ids[self.ord as usize] as usize);
+            unsafe {
+                pos_iter
+                    .reset(self.terms().base.bytes_hash.get_ref().ids[self.ord as usize] as usize);
+            }
             Ok(FreqProxPostingIterEnum::Postings(pos_iter))
         } else {
             if !self.terms().has_freq
@@ -609,7 +597,10 @@ where
             }
 
             let mut pos_iter = FreqProxDocsIterator::new(self.terms());
-            pos_iter.reset(self.terms().base.bytes_hash.ids[self.ord as usize] as usize);
+            unsafe {
+                pos_iter
+                    .reset(self.terms().base.bytes_hash.get_ref().ids[self.ord as usize] as usize);
+            }
             Ok(FreqProxPostingIterEnum::Docs(pos_iter))
         }
     }

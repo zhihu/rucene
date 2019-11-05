@@ -137,7 +137,7 @@ impl<C: Codec> Query<C> for SpanQueryEnum {
         }
     }
 
-    fn as_any(&self) -> &::std::any::Any {
+    fn as_any(&self) -> &dyn (::std::any::Any) {
         match self {
             SpanQueryEnum::Term(q) => Query::<C>::as_any(q),
             SpanQueryEnum::Gap(q) => Query::<C>::as_any(q),
