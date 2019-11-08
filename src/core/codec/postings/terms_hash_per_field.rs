@@ -29,6 +29,7 @@ use std::cmp::{max, Ordering};
 
 use error::Result;
 use std::mem::MaybeUninit;
+use std::ptr;
 
 const HASH_INIT_SIZE: usize = 4;
 
@@ -50,6 +51,14 @@ pub struct TermsHashPerFieldBase<T: PostingsArray> {
     do_next_call: bool,
     inited: bool,
     // must init before use
+}
+
+impl<T: PostingsArray> Drop for TermsHashPerFieldBase<T> {
+    fn drop(&mut self) {
+        unsafe {
+            ptr::drop_in_place(self.bytes_hash.as_mut_ptr());
+        }
+    }
 }
 
 impl<T: PostingsArray + 'static> TermsHashPerFieldBase<T> {

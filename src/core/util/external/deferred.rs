@@ -40,6 +40,14 @@ impl fmt::Debug for Deferred {
     }
 }
 
+impl Drop for Deferred {
+    fn drop(&mut self) {
+        unsafe {
+            ptr::drop_in_place(self.data.as_mut_ptr());
+        }
+    }
+}
+
 impl Deferred {
     /// Constructs a new `Deferred` from a `FnOnce()`.
     #[allow(clippy::cast_ptr_alignment)]

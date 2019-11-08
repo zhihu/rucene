@@ -38,6 +38,8 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::thread;
 use std::time::Duration;
 
+use num_cpus;
+
 ///
 // This class accepts multiple added documents and directly
 // writes segment files.
@@ -95,8 +97,6 @@ use std::time::Duration;
 // deleted so that the document is always atomically ("all
 // or none") added to the index.
 //
-
-const DEFAULT_FLUSH_THREADS: usize = 5;
 
 pub struct DocumentsWriter<
     D: Directory + Send + Sync + 'static,
@@ -554,7 +554,9 @@ where
     }
 
     fn start_flush_daemon(&self) {
-        for _i in 0..DEFAULT_FLUSH_THREADS {
+        let thread_num = 3.max(5.min(num_cpus::get() / 2));
+
+        for _i in 0..thread_num {
             let index_writer_inner = self.index_writer();
             thread::spawn(move || -> Result<()> {
                 let doc_writer = &index_writer_inner.doc_writer;

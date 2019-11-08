@@ -21,6 +21,7 @@ use core::util::BitsRequired;
 
 use error::Result;
 use std::mem::MaybeUninit;
+use std::ptr;
 
 /// Special number of bits per value used whenever all values to encode are equal.
 const ALL_VALUES_EQUAL: i32 = 0;
@@ -93,6 +94,15 @@ struct ForUtilInstance {
     decoders: MaybeUninit<[BulkOperationEnum; 32]>,
     encoders: MaybeUninit<[BulkOperationEnum; 32]>,
     iterations: [i32; 32],
+}
+
+impl Drop for ForUtilInstance {
+    fn drop(&mut self) {
+        unsafe {
+            ptr::drop_in_place(self.decoders.as_mut_ptr());
+            ptr::drop_in_place(self.encoders.as_mut_ptr());
+        }
+    }
 }
 
 impl ForUtilInstance {

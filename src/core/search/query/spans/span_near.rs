@@ -36,6 +36,7 @@ use std::collections::BinaryHeap;
 use std::collections::HashMap;
 use std::fmt;
 use std::mem::MaybeUninit;
+use std::ptr;
 use std::sync::Arc;
 
 pub struct SpanNearQueryBuilder {
@@ -341,6 +342,14 @@ pub struct NearSpansUnordered<P: PostingIterator> {
     span_position_queue: BinaryHeap<SpansCellElement<P>>,
     total_span_length: i32,
     max_end_position_cell_idx: usize,
+}
+
+impl<P: PostingIterator> Drop for NearSpansUnordered<P> {
+    fn drop(&mut self) {
+        unsafe {
+            ptr::drop_in_place(self.conjunction_span.as_mut_ptr());
+        }
+    }
 }
 
 impl<P: PostingIterator> NearSpansUnordered<P> {

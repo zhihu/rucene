@@ -140,7 +140,7 @@ pub struct ConcurrentMergeScheduler {
 
 impl Default for ConcurrentMergeScheduler {
     fn default() -> Self {
-        let max_thread_count = 1.max(4.min(num_cpus::get() / 2));
+        let max_thread_count = 3.max(5.min(num_cpus::get() / 2));
         Self::new(max_thread_count)
     }
 }

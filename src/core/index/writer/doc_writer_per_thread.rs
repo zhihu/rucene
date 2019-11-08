@@ -44,6 +44,7 @@ use core::util::FixedBitSet;
 use error::ErrorKind::IllegalArgument;
 use error::Result;
 use std::mem::MaybeUninit;
+use std::ptr;
 
 #[derive(Default)]
 pub struct DocState {
@@ -95,6 +96,16 @@ pub struct DocumentsWriterPerThread<
     index_writer: Weak<IndexWriterInner<D, C, MS, MP>>,
     pub files_to_delete: HashSet<String>,
     inited: bool,
+}
+
+impl<D: Directory + Send + Sync + 'static, C: Codec, MS: MergeScheduler, MP: MergePolicy> Drop
+    for DocumentsWriterPerThread<D, C, MS, MP>
+{
+    fn drop(&mut self) {
+        unsafe {
+            ptr::drop_in_place(self.consumer.as_mut_ptr());
+        }
+    }
 }
 
 impl<D, C, MS, MP> DocumentsWriterPerThread<D, C, MS, MP>
