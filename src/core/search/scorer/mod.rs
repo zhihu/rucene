@@ -19,10 +19,6 @@ mod conjunction_scorer;
 
 pub use self::conjunction_scorer::*;
 
-mod disi;
-
-pub use self::disi::*;
-
 mod disjunction_scorer;
 
 pub use self::disjunction_scorer::*;

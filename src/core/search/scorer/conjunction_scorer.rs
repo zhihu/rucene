@@ -11,7 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::search::scorer::{two_phase_next, Scorer};
+use core::search::scorer::Scorer;
 use core::search::{DocIterator, NO_MORE_DOCS};
 use core::util::DocId;
 use error::Result;
@@ -21,22 +21,12 @@ pub struct ConjunctionScorer<T: Scorer> {
     lead1: T,
     lead2: T,
     others: Vec<T>,
-    support_two_phase: bool,
-    two_phase_match_cost: f32,
 }
 
 impl<T: Scorer> ConjunctionScorer<T> {
     pub fn new(mut children: Vec<T>) -> ConjunctionScorer<T> {
         assert!(children.len() >= 2);
 
-        // Sort the scores the first time to allow the least cost DocIterator to
-        // lead the matching.
-        let support_two_phase = children.iter().any(|scorer| scorer.support_two_phase());
-        let two_phase_match_cost = if support_two_phase {
-            children.iter().map(|s| s.match_cost()).sum()
-        } else {
-            0f32
-        };
         children.sort_by(|a, b| a.cost().cmp(&b.cost()));
 
         let others = children.drain(2..).collect();
@@ -48,8 +38,6 @@ impl<T: Scorer> ConjunctionScorer<T> {
             lead1,
             lead2,
             others,
-            support_two_phase,
-            two_phase_match_cost,
         }
     }
 
@@ -113,13 +101,11 @@ impl<T: Scorer> DocIterator for ConjunctionScorer<T> {
     }
 
     fn next(&mut self) -> Result<DocId> {
-        self.approximate_next()?;
-        two_phase_next(self)
+        self.approximate_next()
     }
 
     fn advance(&mut self, target: DocId) -> Result<DocId> {
-        self.approximate_advance(target)?;
-        two_phase_next(self)
+        self.approximate_advance(target)
     }
 
     fn cost(&self) -> usize {
@@ -127,26 +113,7 @@ impl<T: Scorer> DocIterator for ConjunctionScorer<T> {
     }
 
     fn matches(&mut self) -> Result<bool> {
-        if !self.support_two_phase {
-            Ok(true)
-        } else if !self.lead1.matches()? || !self.lead2.matches()? {
-            Ok(false)
-        } else {
-            for s in &mut self.others {
-                if !s.matches()? {
-                    return Ok(false);
-                }
-            }
-            Ok(true)
-        }
-    }
-
-    fn match_cost(&self) -> f32 {
-        self.two_phase_match_cost
-    }
-
-    fn support_two_phase(&self) -> bool {
-        self.support_two_phase
+        Ok(true)
     }
 
     fn approximate_next(&mut self) -> Result<DocId> {

@@ -66,16 +66,9 @@ impl DocIterator for ReqOptScorer {
     fn cost(&self) -> usize {
         self.req_scorer.cost()
     }
+
     fn matches(&mut self) -> Result<bool> {
         self.req_scorer.matches()
-    }
-
-    fn match_cost(&self) -> f32 {
-        self.req_scorer.match_cost()
-    }
-
-    fn support_two_phase(&self) -> bool {
-        self.req_scorer.support_two_phase()
     }
 
     fn approximate_next(&mut self) -> Result<DocId> {

@@ -110,6 +110,10 @@ mod compression;
 
 pub use self::compression::*;
 
+mod disi;
+
+pub use self::disi::*;
+
 use std::ops::Deref;
 
 use core::codec::doc_values::NumericDocValues;

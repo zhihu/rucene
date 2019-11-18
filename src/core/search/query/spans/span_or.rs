@@ -20,13 +20,13 @@ use core::search::query::spans::{
     NO_MORE_POSITIONS,
 };
 use core::search::query::spans::{SpanCollector, SpanQuery, SpanWeight, Spans};
-use core::search::scorer::DisiPriorityQueue;
 use core::search::searcher::SearchPlanBuilder;
 use core::search::TermContext;
 use core::search::{
     query::Query, query::TermQuery, query::Weight, scorer::Scorer, similarity::SimWeight,
     DocIterator,
 };
+use core::util::DisiPriorityQueue;
 use core::util::DocId;
 
 use error::{ErrorKind, Result};

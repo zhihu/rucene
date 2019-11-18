@@ -13,7 +13,7 @@
 
 use error::Result;
 
-use core::search::scorer::{two_phase_next, Scorer};
+use core::search::scorer::Scorer;
 use core::search::DocIterator;
 use core::util::DocId;
 
@@ -54,13 +54,11 @@ impl<S: Scorer> DocIterator for MinScoreScorer<S> {
     }
 
     fn next(&mut self) -> Result<DocId> {
-        self.approximate_next()?;
-        two_phase_next(self)
+        self.approximate_next()
     }
 
     fn advance(&mut self, target: DocId) -> Result<DocId> {
-        self.approximate_advance(target)?;
-        two_phase_next(self)
+        self.approximate_advance(target)
     }
 
     fn cost(&self) -> usize {
@@ -69,15 +67,6 @@ impl<S: Scorer> DocIterator for MinScoreScorer<S> {
 
     fn matches(&mut self) -> Result<bool> {
         Ok(self.origin.matches()? && self.score()? > self.min_score)
-    }
-
-    fn match_cost(&self) -> f32 {
-        // 1000 for random constant for the score computation
-        1000f32 + self.origin.match_cost()
-    }
-
-    fn support_two_phase(&self) -> bool {
-        self.origin.support_two_phase()
     }
 
     fn approximate_next(&mut self) -> Result<DocId> {
