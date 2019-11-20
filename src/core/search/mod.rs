@@ -208,7 +208,6 @@ pub trait DocIdSet: Send + Sync {
 #[cfg(test)]
 pub mod tests {
     use super::query::Weight;
-    use super::scorer::two_phase_next;
     use super::scorer::Scorer;
     use super::*;
     use core::codec::Codec;
@@ -364,112 +363,5 @@ pub mod tests {
 
     pub fn create_mock_doc_iterator(docs: Vec<DocId>) -> MockDocIterator {
         MockDocIterator::new(docs)
-    }
-
-    pub struct MockTwoPhaseScorer {
-        all_doc_ids: Vec<DocId>,
-        invalid_doc_ids: Vec<DocId>,
-        current_doc_id: DocId,
-        offset: i32,
-    }
-
-    impl Scorer for MockTwoPhaseScorer {
-        fn score(&mut self) -> Result<f32> {
-            Ok(self.doc_id() as f32)
-        }
-    }
-
-    impl DocIterator for MockTwoPhaseScorer {
-        fn doc_id(&self) -> DocId {
-            self.current_doc_id
-        }
-
-        fn next(&mut self) -> Result<DocId> {
-            self.approximate_next()?;
-            two_phase_next(self)
-        }
-
-        fn advance(&mut self, target: DocId) -> Result<DocId> {
-            self.approximate_advance(target)?;
-            two_phase_next(self)
-        }
-
-        fn cost(&self) -> usize {
-            self.all_doc_ids.len()
-        }
-
-        fn matches(&mut self) -> Result<bool> {
-            Ok(self.offset >= 0
-                && self.current_doc_id != NO_MORE_DOCS
-                && !self.invalid_doc_ids.contains(&self.current_doc_id))
-        }
-
-        fn match_cost(&self) -> f32 {
-            1f32
-        }
-
-        fn support_two_phase(&self) -> bool {
-            true
-        }
-
-        fn approximate_next(&mut self) -> Result<DocId> {
-            self.offset += 1;
-
-            if (self.offset as usize) >= self.all_doc_ids.len() {
-                self.current_doc_id = NO_MORE_DOCS;
-            } else {
-                self.current_doc_id = self.all_doc_ids[self.offset as usize];
-            }
-
-            Ok(self.doc_id())
-        }
-
-        fn approximate_advance(&mut self, target: DocId) -> Result<DocId> {
-            loop {
-                let doc_id = self.approximate_next()?;
-                if doc_id >= target {
-                    return Ok(doc_id);
-                }
-            }
-        }
-    }
-
-    impl MockTwoPhaseScorer {
-        pub fn new(all_docs: Vec<DocId>, invalid_docs: Vec<DocId>) -> MockTwoPhaseScorer {
-            MockTwoPhaseScorer {
-                all_doc_ids: all_docs,
-                invalid_doc_ids: invalid_docs,
-                current_doc_id: -1,
-                offset: -1,
-            }
-        }
-    }
-
-    pub fn create_mock_two_phase_scorer(
-        all_docs: Vec<DocId>,
-        invalid_docs: Vec<DocId>,
-    ) -> MockTwoPhaseScorer {
-        MockTwoPhaseScorer::new(all_docs, invalid_docs)
-    }
-
-    #[test]
-    fn test_mock_two_phase_scorer() {
-        let mut scorer =
-            create_mock_two_phase_scorer(vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10], vec![2, 4, 5, 7, 9]);
-        assert_eq!(scorer.approximate_next().unwrap(), 1);
-        assert!(scorer.matches().unwrap());
-
-        assert_eq!(scorer.approximate_next().unwrap(), 2);
-        assert!(!scorer.matches().unwrap());
-
-        assert_eq!(scorer.next().unwrap(), 3);
-        assert_eq!(scorer.next().unwrap(), 6);
-        assert!(scorer.matches().unwrap());
-
-        assert_eq!(scorer.approximate_advance(7).unwrap(), 7);
-        assert!(!scorer.matches().unwrap());
-
-        assert_eq!(scorer.advance(9).unwrap(), 10);
-        assert!(scorer.matches().unwrap());
     }
 }

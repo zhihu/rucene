@@ -16,11 +16,15 @@ use core::search::DocIterator;
 use core::util::DocId;
 use error::Result;
 
+const OPT_SCORE_THRESHOLD: usize = 100;
+
 /// A Scorer for queries with a required part and an optional part.
 /// Delays `advance()` on the optional part until a `score()` is needed.
 pub struct ReqOptScorer {
     req_scorer: Box<dyn Scorer>,
     opt_scorer: Box<dyn Scorer>,
+    scores_sum: f32,
+    scores_num: usize,
 }
 
 impl ReqOptScorer {
@@ -28,6 +32,8 @@ impl ReqOptScorer {
         ReqOptScorer {
             req_scorer,
             opt_scorer,
+            scores_sum: 0f32,
+            scores_num: 0usize,
         }
     }
 }
@@ -36,6 +42,15 @@ impl Scorer for ReqOptScorer {
     fn score(&mut self) -> Result<f32> {
         let current_doc = self.req_scorer.doc_id();
         let mut score = self.req_scorer.score()?;
+
+        if self.scores_num > OPT_SCORE_THRESHOLD {
+            if score < self.scores_sum / self.scores_num as f32 {
+                return Ok(score);
+            }
+        }
+
+        self.scores_sum += score;
+        self.scores_num += 1;
 
         let mut opt_doc = self.opt_scorer.doc_id();
         if opt_doc < current_doc {

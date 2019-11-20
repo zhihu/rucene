@@ -171,19 +171,6 @@ mod tests {
 
         assert_eq!(iterator.next().unwrap(), NO_MORE_DOCS);
         assert_eq!(iterator.doc_id(), NO_MORE_DOCS);
-
-        let mut two_phase = create_conjunction_two_phase_scorer();
-        assert_eq!(two_phase.approximate_next().unwrap(), 2);
-        assert_eq!(two_phase.doc_id(), 2);
-        assert!(!two_phase.matches().unwrap());
-
-        assert_eq!(two_phase.approximate_next().unwrap(), 3);
-        assert_eq!(two_phase.doc_id(), 3);
-        assert!(two_phase.matches().unwrap());
-
-        assert_eq!(two_phase.next().unwrap(), 7);
-        assert_eq!(two_phase.doc_id(), 7);
-        assert!(two_phase.matches().unwrap());
     }
 
     #[test]
@@ -205,33 +192,6 @@ mod tests {
 
             assert_eq!(iterator.advance(7).unwrap(), NO_MORE_DOCS);
             assert_eq!(iterator.doc_id(), NO_MORE_DOCS);
-        }
-        {
-            let mut two_phase = create_conjunction_two_phase_scorer();
-            assert!(two_phase.support_two_phase());
-            assert_eq!(two_phase.approximate_advance(2).unwrap(), 2);
-            assert_eq!(two_phase.doc_id(), 2);
-            assert!(!two_phase.matches().unwrap());
-
-            assert_eq!(two_phase.approximate_advance(5).unwrap(), 5);
-            assert_eq!(two_phase.doc_id(), 5);
-            assert!(!two_phase.matches().unwrap());
-        }
-        {
-            let mut two_phase = create_conjunction_two_phase_scorer();
-            assert_eq!(two_phase.advance(2).unwrap(), 3);
-            assert_eq!(two_phase.doc_id(), 3);
-            assert!(two_phase.matches().unwrap());
-
-            assert_eq!(two_phase.advance(5).unwrap(), 7);
-            assert_eq!(two_phase.doc_id(), 7);
-            assert!(two_phase.matches().unwrap());
-        }
-        {
-            let mut two_phase = create_conjunction_two_phase_scorer();
-            assert_eq!(two_phase.advance(7).unwrap(), 7);
-            assert_eq!(two_phase.doc_id(), 7);
-            assert!(two_phase.matches().unwrap());
         }
     }
 
@@ -259,16 +219,5 @@ mod tests {
         let s3 = create_mock_scorer(vec![2, 3, 4, 5]);
 
         ConjunctionScorer::new(vec![s1, s2, s3])
-    }
-
-    fn create_conjunction_two_phase_scorer() -> ConjunctionScorer<Box<dyn Scorer>> {
-        let s1 = create_mock_scorer(vec![1, 2, 3, 4, 5, 6, 7, 8]);
-        let s2 = create_mock_scorer(vec![2, 3, 5, 7, 8]);
-        let s3 = create_mock_two_phase_scorer(vec![1, 2, 3, 4, 5, 6, 7], vec![1, 4, 5]);
-        let s4 = create_mock_two_phase_scorer(vec![1, 2, 3, 4, 5, 6, 7], vec![2, 4]);
-
-        let scorers: Vec<Box<dyn Scorer>> =
-            vec![Box::new(s1), Box::new(s2), Box::new(s3), Box::new(s4)];
-        ConjunctionScorer::new(scorers)
     }
 }
