@@ -1247,7 +1247,8 @@ where
 
             if let Err(e) = Self::do_shutdown(index_writer) {
                 // Be certain to close the index on any error
-                if let Err(err) = index_writer.writer.rollback_internal() {
+                let commit_lock = index_writer.writer.commit_lock.lock()?;
+                if let Err(err) = index_writer.writer.rollback_internal(&commit_lock) {
                     warn!("rollback internal failed when shutdown by '{:?}'", err);
                 }
                 return Err(e);
@@ -1260,7 +1261,8 @@ where
         IndexWriterInner::flush(index_writer, true, true)?;
         Self::wait_for_merges(index_writer)?;
         Self::commit(index_writer)?;
-        index_writer.writer.rollback_internal() // ie close, since we just committed
+        let commit_lock = index_writer.writer.commit_lock.lock()?;
+        index_writer.writer.rollback_internal(&commit_lock) // ie close, since we just committed
     }
 
     // Returns true if this thread should attempt to close, or
@@ -1364,17 +1366,17 @@ where
         // Ensure that only one thread actually gets to do the
         // closing, and make sure no commit is also in progress:
         if self.should_close(true) {
-            self.rollback_internal()
+            let commit_lock = self.commit_lock.lock()?;
+            self.rollback_internal(&commit_lock)
         } else {
             Ok(())
         }
     }
 
-    fn rollback_internal(&self) -> Result<()> {
+    fn rollback_internal(&self, commit_lock: &MutexGuard<()>) -> Result<()> {
         // Make sure no commit is running, else e.g. we can close while
         // another thread is still fsync'ing:
-        let l = self.commit_lock.lock()?;
-        let writer_mut = unsafe { self.writer_mut(&l) };
+        let writer_mut = unsafe { self.writer_mut(commit_lock) };
         writer_mut.rollback_internal_no_commit()
     }
 
@@ -1694,7 +1696,7 @@ where
                 index_writer.writer.pending_seq_no.load(Ordering::Acquire)
             };
 
-            writer.finish_commit()?;
+            writer.finish_commit(&l)?;
         }
 
         Ok(seq_no)
@@ -1942,14 +1944,34 @@ where
         Ok(())
     }
 
-    fn finish_commit(&mut self) -> Result<()> {
+    fn finish_commit(&mut self, commit_lock: &MutexGuard<()>) -> Result<()> {
         let mut commit_completed = false;
 
         let res = self.try_finish_commit(&mut commit_completed);
 
         if let Err(e) = res {
             if commit_completed {
-                self.tragic_event(e, "finish_commit")?;
+                {
+                    let l = self.lock.lock()?;
+
+                    // It's possible you could have a really bad day
+                    if self.tragedy.is_some() {
+                        bail!(e);
+                    }
+
+                    let writer = unsafe { self.writer_mut(&l) };
+                    writer.tragedy = Some(e);
+                }
+
+                // if we are already closed (e.g. called by rollback), this will be a no-op.
+                if self.should_close(false) {
+                    self.rollback_internal(commit_lock)?;
+                }
+
+                bail!(IllegalState(format!(
+                    "this writer hit an unrecoverable error; {:?}",
+                    &self.tragedy
+                )))
             } else {
                 return Err(e);
             }
@@ -3418,7 +3440,8 @@ where
 
         // if we are already closed (e.g. called by rollback), this will be a no-op.
         if self.should_close(false) {
-            self.rollback_internal()?;
+            let commit_lock = self.commit_lock.lock()?;
+            self.rollback_internal(&commit_lock)?;
         }
 
         bail!(IllegalState(format!(
