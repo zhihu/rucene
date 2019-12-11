@@ -1,6 +1,6 @@
 [package]
 name = "rucene"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Zhihu Search Team"]
 repository = "https://github.com/zhihu/rucene"
 license-file = "LICENSE"
