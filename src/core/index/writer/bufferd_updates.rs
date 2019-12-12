@@ -15,11 +15,12 @@ use core::codec::segment_infos::{SegmentCommitInfo, SegmentInfos};
 use core::codec::PostingIteratorFlags;
 use core::codec::{Codec, CodecPostingIterator, CodecTermIterator};
 use core::codec::{Fields, SeekStatus, TermIterator, Terms};
-use core::doc::Term;
+use core::doc::{DocValuesType, Term};
 use core::index::merge::MergePolicy;
 use core::index::reader::{IndexReader, LeafReader};
 use core::index::writer::{
-    FieldTermIter, FieldTermIterator, PrefixCodedTerms, PrefixCodedTermsBuilder,
+    DocValuesUpdate, FieldTermIter, FieldTermIterator, MergedDocValuesUpdatesIterator,
+    NumericDocValuesUpdate, PrefixCodedTerms, PrefixCodedTermsBuilder,
 };
 use core::index::writer::{ReaderPool, ReadersAndUpdates};
 use core::search::cache::{NoCacheQueryCache, QueryCache};
@@ -72,7 +73,8 @@ pub struct BufferedUpdates<C: Codec> {
     // the key is string represent of query, query is share by multi-thread
     pub deleted_queries: HashMap<String, (Arc<dyn Query<C>>, DocId)>,
     pub deleted_doc_ids: Vec<i32>,
-    // Map<dvField,Map<updateTerm,NumericUpdate>>
+
+    pub doc_values_updates: HashMap<String, HashMap<Vec<u8>, Arc<dyn DocValuesUpdate>>>,
     // For each field we keep an ordered list of NumericUpdates, key'd by the
     // update Term. LinkedHashMap guarantees we will later traverse the map in
     // insertion order (so that if two terms affect the same document, the last
@@ -100,6 +102,7 @@ impl<C: Codec> BufferedUpdates<C> {
             deleted_terms: HashMap::new(),
             deleted_queries: HashMap::new(),
             deleted_doc_ids: vec![],
+            doc_values_updates: HashMap::new(),
             segment_name: name,
         }
     }
@@ -131,10 +134,37 @@ impl<C: Codec> BufferedUpdates<C> {
         self.num_term_deletes.fetch_add(1, Ordering::AcqRel);
     }
 
+    pub fn add_doc_values_update(&mut self, update: Arc<dyn DocValuesUpdate>, docid_up_to: DocId) {
+        let mut upd = update.clone();
+        if docid_up_to < NO_MORE_DOCS {
+            // segment private update
+            upd = match update.dv_type() {
+                DocValuesType::Numeric | DocValuesType::SortedNumeric => {
+                    Arc::new(NumericDocValuesUpdate::new(
+                        update.term(),
+                        update.field(),
+                        update.dv_type(),
+                        update.numeric(),
+                        Some(docid_up_to),
+                    ))
+                }
+                _ => unimplemented!(),
+            };
+        }
+        if let Some(m) = self.doc_values_updates.get_mut(&update.field()) {
+            m.insert(update.term().bytes, upd);
+        } else {
+            let mut m = HashMap::new();
+            m.insert(update.term().bytes, upd);
+            self.doc_values_updates.insert(update.field(), m);
+        }
+    }
+
     pub fn clear(&mut self) {
         self.deleted_terms.clear();
         self.deleted_queries.clear();
         self.deleted_doc_ids.clear();
+        self.doc_values_updates.clear();
         self.num_term_deletes.store(0, Ordering::Release);
     }
 
@@ -142,6 +172,7 @@ impl<C: Codec> BufferedUpdates<C> {
         !self.deleted_terms.is_empty()
             || !self.deleted_doc_ids.is_empty()
             || !self.deleted_queries.is_empty()
+            || !self.doc_values_updates.is_empty()
     }
 }
 
@@ -153,7 +184,9 @@ pub struct FrozenBufferedUpdates<C: Codec> {
     terms: Arc<PrefixCodedTerms>,
     // Parallel array of deleted query, and the doc_id_upto for each
     query_and_limits: Vec<(Arc<dyn Query<C>>, DocId)>,
+    doc_values_updates: HashMap<String, Vec<Arc<dyn DocValuesUpdate>>>,
     pub num_term_deletes: usize,
+    pub num_updates: usize,
     pub gen: u64,
     // assigned by BufferedUpdatesStream once pushed
     // set to true iff this frozen packet represents a segment private delete.
@@ -199,6 +232,15 @@ impl<C: Codec> FrozenBufferedUpdates<C> {
             .map(|(_key, value)| value)
             .collect();
 
+        let mut num_updates: usize = 0;
+        let mut dv_updates = HashMap::new();
+        for (field, updates) in &mut deletes.doc_values_updates {
+            let upds: Vec<_> = updates.drain().map(|(_key, value)| value).collect();
+            num_updates += upds.len();
+            dv_updates.insert(field.clone(), upds);
+        }
+        deletes.doc_values_updates.clear();
+
         // TODO if a Term affects multiple fields, we could keep the updates key'd by Term
         // so that it maps to all fields it affects, sorted by their docUpto, and traverse
         // that Term only once, applying the update to all fields that still need to be
@@ -206,7 +248,9 @@ impl<C: Codec> FrozenBufferedUpdates<C> {
         FrozenBufferedUpdates {
             terms: Arc::new(terms),
             query_and_limits,
+            doc_values_updates: dv_updates,
             num_term_deletes: deletes.num_term_deletes.load(Ordering::Acquire),
+            num_updates,
             gen: u64::max_value(),
             // used as a sentinel of invalid
             is_segment_private,
@@ -220,7 +264,9 @@ impl<C: Codec> FrozenBufferedUpdates<C> {
     }
 
     pub fn any(&self) -> bool {
-        self.terms.size > 0 || !self.query_and_limits.is_empty()
+        self.terms.size > 0
+            || !self.query_and_limits.is_empty()
+            || !self.doc_values_updates.is_empty()
     }
 }
 
@@ -248,6 +294,7 @@ pub struct BufferedUpdatesStream<C: Codec> {
     // used only by assert:
     last_delete_term: Vec<u8>,
     num_terms: AtomicUsize,
+    num_updates: AtomicUsize,
 }
 
 impl<C: Codec> Default for BufferedUpdatesStream<C> {
@@ -258,6 +305,7 @@ impl<C: Codec> Default for BufferedUpdatesStream<C> {
             next_gen: AtomicU64::new(1),
             last_delete_term: Vec::with_capacity(0),
             num_terms: AtomicUsize::new(0),
+            num_updates: AtomicUsize::new(0),
         }
     }
 }
@@ -280,6 +328,8 @@ impl<C: Codec> BufferedUpdatesStream<C> {
         let del_gen = packet.gen;
         self.num_terms
             .fetch_add(packet.num_term_deletes, Ordering::AcqRel);
+        self.num_updates
+            .fetch_add(packet.num_updates, Ordering::AcqRel);
         updates.push(packet);
         debug_assert!(self.check_delete_stats(&updates));
         Ok(del_gen)
@@ -289,11 +339,12 @@ impl<C: Codec> BufferedUpdatesStream<C> {
         self.updates.lock()?.clear();
         self.next_gen.store(1, Ordering::Release);
         self.num_terms.store(0, Ordering::Release);
+        self.num_updates.store(0, Ordering::Release);
         Ok(())
     }
 
     pub fn any(&self) -> bool {
-        self.num_terms.load(Ordering::Acquire) > 0
+        self.num_terms.load(Ordering::Acquire) > 0 || self.num_updates.load(Ordering::Acquire) > 0
     }
 
     pub fn num_terms(&self) -> usize {
@@ -402,6 +453,8 @@ impl<C: Codec> BufferedUpdatesStream<C> {
                         // younger than its segPrivate packet (higher delGen) have been
                         // applied, the segPrivate packet has not been removed.
                         coalesce_updates.update(&mut updates[del_idx - 1]);
+                        // global updates
+                        coalesce_updates.collect_doc_values_updates(&mut updates[del_idx - 1]);
                     }
                     del_idx -= 1;
                 } else if del_idx > 0 && seg_gen == updates[del_idx - 1].gen as i64 {
@@ -420,6 +473,9 @@ impl<C: Codec> BufferedUpdatesStream<C> {
                         updates[del_idx - 1].query_and_limits.iter(),
                         seg_state,
                     )?;
+
+                    // private updates
+                    coalesce_updates.collect_doc_values_updates(&mut updates[del_idx - 1]);
 
                     // ... then coalesced deletes/updates, so that if there is an update
                     // that appears in both, the coalesced updates (carried from
@@ -471,6 +527,16 @@ impl<C: Codec> BufferedUpdatesStream<C> {
             total_term_visited_count +=
                 self.apply_term_deletes(&coalesce_updates, seg_states.as_mut())?;
         }
+
+        // Now apply doc values updates
+        if coalesce_updates.has_updates() {
+            if seg_states.is_empty() {
+                self.open_segment_states(pool, infos, seg_states)?;
+            }
+            self.apply_doc_values_updates(&coalesce_updates, seg_states.as_mut())?;
+        }
+
+        self.num_updates.store(0, Ordering::Release);
 
         debug!(
             "BD - apply_deletes took {:?} for {} segments, {} newly deleted docs (query deletes), \
@@ -687,6 +753,45 @@ impl<C: Codec> BufferedUpdatesStream<C> {
         );
 
         Ok(del_term_visited_count)
+    }
+
+    fn apply_doc_values_updates<D, MS, MP>(
+        &mut self,
+        updates: &CoalescedUpdates<C>,
+        seg_states: &mut [SegmentState<D, C, MS, MP>],
+    ) -> Result<u64>
+    where
+        D: Directory + Send + Sync + 'static,
+        MS: MergeScheduler,
+        MP: MergePolicy,
+    {
+        for seg_state in seg_states {
+            for (field, updates) in &updates.updates {
+                // INFO: apply updates in one field of a segment
+                let mut need_updates: Vec<(u64, Vec<Arc<dyn DocValuesUpdate>>)> = vec![];
+                for upds in updates {
+                    if upds.2 && seg_state.del_gen != upds.0 as i64 {
+                        // skip other segment's private
+                        continue;
+                    }
+                    if seg_state.del_gen <= upds.0 as i64 {
+                        need_updates.push((upds.0, upds.1.clone()));
+                    }
+                }
+                if need_updates.is_empty() {
+                    continue;
+                }
+                let it = MergedDocValuesUpdatesIterator::new(need_updates);
+
+                seg_state
+                    .rld
+                    .inner
+                    .lock()?
+                    .add_field_updates(field.clone(), it);
+            }
+            seg_state.rld.inner.lock()?.write_field_updates()?;
+        }
+        Ok(0)
     }
 
     /// Opens SegmentReader and inits SegmentState for each segment.
@@ -984,6 +1089,7 @@ where
 struct CoalescedUpdates<C: Codec> {
     queries: HashMap<String, (Arc<dyn Query<C>>, DocId)>,
     terms: Vec<Arc<PrefixCodedTerms>>,
+    updates: HashMap<String, Vec<(u64, Vec<Arc<dyn DocValuesUpdate>>, bool)>>,
     total_term_count: usize,
 }
 
@@ -992,6 +1098,7 @@ impl<C: Codec> Default for CoalescedUpdates<C> {
         CoalescedUpdates {
             queries: HashMap::new(),
             terms: vec![],
+            updates: HashMap::new(),
             total_term_count: 0,
         }
     }
@@ -1008,6 +1115,21 @@ impl<C: Codec> CoalescedUpdates<C> {
         }
     }
 
+    fn collect_doc_values_updates(&mut self, up: &mut FrozenBufferedUpdates<C>) {
+        for (field, updates) in &mut up.doc_values_updates {
+            // used for merge
+            updates.sort_by(|a, b| a.term().bytes.cmp(&b.term().bytes));
+            if let Some(v) = self.updates.get_mut(field) {
+                v.push((up.gen, updates.clone(), up.is_segment_private));
+            } else {
+                self.updates.insert(
+                    field.clone(),
+                    vec![(up.gen, updates.clone(), up.is_segment_private)],
+                );
+            }
+        }
+    }
+
     fn term_iterator(&self) -> Result<FieldTermIterator> {
         debug_assert!(!self.terms.is_empty());
         FieldTermIterator::build(&self.terms)
@@ -1021,7 +1143,11 @@ impl<C: Codec> CoalescedUpdates<C> {
         !self.queries.is_empty()
     }
 
+    pub fn has_updates(&self) -> bool {
+        !self.updates.is_empty()
+    }
+
     pub fn any(&self) -> bool {
-        !self.queries.is_empty() || !self.terms.is_empty()
+        !self.queries.is_empty() || !self.terms.is_empty() || !self.updates.is_empty()
     }
 }

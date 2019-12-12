@@ -16,9 +16,9 @@ use core::codec::Codec;
 use core::doc::Fieldable;
 use core::doc::Term;
 use core::index::writer::{
-    DocumentsWriterDeleteQueue, DocumentsWriterFlushControl, DocumentsWriterFlushQueue,
-    DocumentsWriterPerThread, DocumentsWriterPerThreadPool, FlushByCountsPolicy, IndexWriter,
-    IndexWriterConfig, IndexWriterInner, ThreadState,
+    DocValuesUpdate, DocumentsWriterDeleteQueue, DocumentsWriterFlushControl,
+    DocumentsWriterFlushQueue, DocumentsWriterPerThread, DocumentsWriterPerThreadPool,
+    FlushByCountsPolicy, IndexWriter, IndexWriterConfig, IndexWriterInner, ThreadState,
 };
 use core::search::query::Query;
 use core::store::directory::{Directory, LockValidatingDirectoryWrapper};
@@ -270,6 +270,18 @@ where
         per_thread.set_last_seq_no(seq_no);
 
         Ok(seq_no)
+    }
+
+    pub fn update_doc_values(&self, update: Arc<dyn DocValuesUpdate>) -> Result<(u64, bool)> {
+        debug_assert!(self.inited);
+        let l = self.lock.lock().unwrap();
+        let doc_writer_mut = unsafe { self.doc_writer_mut(&l) };
+        let seq_no = self.delete_queue.add_doc_values_update(update);
+        doc_writer_mut.flush_control.do_on_delete();
+
+        let applied = self.apply_all_deletes_local();
+        doc_writer_mut.last_seq_no = max(self.last_seq_no, seq_no);
+        Ok((seq_no, applied))
     }
 
     pub fn update_document<F: Fieldable>(

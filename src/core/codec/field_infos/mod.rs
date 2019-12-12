@@ -186,6 +186,12 @@ impl FieldInfo {
         Ok(())
     }
 
+    pub fn set_doc_values_gen(&mut self, gen: i64) -> i64 {
+        let old_gen = self.dv_gen;
+        self.dv_gen = gen;
+        old_gen
+    }
+
     pub fn set_store_payloads(&mut self) {
         if self.index_options != IndexOptions::Null
             && self.index_options >= IndexOptions::DocsAndFreqsAndPositions
@@ -367,7 +373,7 @@ impl FieldInvertState {
 }
 
 /// Collection of `FieldInfo`s (accessible by number or by name).
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct FieldInfos {
     pub has_freq: bool,
     pub has_prox: bool,
@@ -729,6 +735,14 @@ impl FieldNumbers {
     fn verify_consistent(&self, number: u32, name: &str, dv_type: DocValuesType) -> Result<()> {
         self.inner.lock()?.verify_consistent(number, name, dv_type)
     }
+
+    pub fn contains(&self, field: &str, dv_type: DocValuesType) -> Result<bool> {
+        Ok(self.inner.lock()?.contains(field, dv_type))
+    }
+
+    pub fn get_doc_values_type(&self, field: &str) -> Result<Option<DocValuesType>> {
+        Ok(self.inner.lock()?.get_doc_values_type(field))
+    }
 }
 
 impl Default for FieldNumbers {
@@ -937,6 +951,14 @@ impl FieldNumbersInner {
         self.verify_consistent(number, name, dv_type)?;
         self.doc_values_type.insert(name.to_string(), dv_type);
         Ok(())
+    }
+
+    pub fn get_doc_values_type(&self, field_name: &str) -> Option<DocValuesType> {
+        if self.name_to_number.contains_key(field_name) {
+            Some(self.doc_values_type[field_name])
+        } else {
+            None
+        }
     }
 
     pub fn set_dimensions(

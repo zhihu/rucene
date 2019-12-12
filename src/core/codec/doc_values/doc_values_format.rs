@@ -532,12 +532,14 @@ impl<D: Directory, DW: Directory, C: Codec> DocValuesFieldsWriter<D, DW, C> {
             suffix
         };
 
-        if let Some(p) =
-            field.put_attribute(PER_FIELD_VALUE_SUFFIX_KEY.to_string(), suffix.to_string())
-        {
+        let prev = field.put_attribute(PER_FIELD_VALUE_SUFFIX_KEY.to_string(), suffix.to_string());
+        if field.dv_gen == -1 && prev.is_some() {
             bail!(IllegalState(format!(
                 "found existing value for {}, field={}, old={}, new={}",
-                PER_FIELD_VALUE_SUFFIX_KEY, field.name, p, suffix
+                PER_FIELD_VALUE_SUFFIX_KEY,
+                field.name,
+                prev.unwrap(),
+                suffix
             )));
         }
 

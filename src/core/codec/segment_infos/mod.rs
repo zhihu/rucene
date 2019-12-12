@@ -52,6 +52,8 @@ pub const INDEX_FILE_PENDING_SEGMENTS: &str = "pending_segments";
 pub const INDEX_FILE_OLD_SEGMENT_GEN: &str = "segments.gen";
 
 pub const CODEC_FILE_PATTERN: &str = r"_[a-z0-9]+(_.*)?\..*";
+pub const CODEC_UPDATE_FNM_PATTERN: &str = r"(_[a-z0-9]+){2}\.fnm";
+pub const CODEC_UPDATE_DV_PATTERN: &str = r"(_[a-z0-9]+){2}(_.*)*\.dv[md]";
 
 #[allow(dead_code)]
 fn matches_extension(filename: &str, ext: &str) -> bool {
@@ -364,7 +366,7 @@ pub struct SegmentCommitInfo<D: Directory, C: Codec> {
     /// write
     pub next_write_field_infos_gen: AtomicI64,
     /// Generation number of the DocValues (-1 if there are no updates)
-    pub doc_values_gen: i64,
+    pub doc_values_gen: AtomicI64,
     /// Normally 1+dvGen, unless an exception was hit on last attempt to
     /// write
     pub next_write_doc_values_gen: AtomicI64,
@@ -409,7 +411,7 @@ impl<D: Directory, C: Codec> SegmentCommitInfo<D, C> {
             next_write_del_gen: AtomicI64::new(if del_gen == -1 { 1i64 } else { del_gen + 1 }),
             field_infos_gen: AtomicI64::new(field_infos_gen),
             next_write_field_infos_gen: AtomicI64::new(field_info_gen),
-            doc_values_gen,
+            doc_values_gen: AtomicI64::new(doc_values_gen),
             next_write_doc_values_gen: AtomicI64::new(if doc_values_gen == -1 {
                 1
             } else {
@@ -469,6 +471,21 @@ impl<D: Directory, C: Codec> SegmentCommitInfo<D, C> {
         self.field_infos_gen() != -1
     }
 
+    pub fn set_field_infos_files(&mut self, field_infos_files: HashSet<String>) {
+        self.field_infos_files = field_infos_files;
+    }
+
+    pub fn get_doc_values_updates_files(&self) -> &HashMap<i32, HashSet<String>> {
+        &self.dv_updates_files
+    }
+
+    pub fn set_doc_values_updates_files(
+        &mut self,
+        dv_updates_files: HashMap<i32, HashSet<String>>,
+    ) {
+        self.dv_updates_files = dv_updates_files;
+    }
+
     pub fn field_infos_gen(&self) -> i64 {
         self.field_infos_gen.load(AtomicOrdering::Acquire)
     }
@@ -487,6 +504,10 @@ impl<D: Directory, C: Codec> SegmentCommitInfo<D, C> {
         self.next_write_doc_values_gen.load(AtomicOrdering::Acquire)
     }
 
+    pub fn doc_values_gen(&self) -> i64 {
+        self.doc_values_gen.load(AtomicOrdering::Acquire)
+    }
+
     pub fn set_next_write_doc_values_gen(&self, gen: i64) {
         self.next_write_doc_values_gen
             .store(gen, AtomicOrdering::Release);
@@ -497,6 +518,14 @@ impl<D: Directory, C: Codec> SegmentCommitInfo<D, C> {
             .store(self.next_field_infos_gen(), AtomicOrdering::Release);
         self.next_write_field_infos_gen
             .store(self.field_infos_gen() + 1, AtomicOrdering::Release);
+        self.size_in_bytes.store(-1, AtomicOrdering::Release);
+    }
+
+    pub fn advance_doc_values_gen(&self) {
+        self.doc_values_gen
+            .store(self.next_write_doc_values_gen(), AtomicOrdering::Release);
+        self.next_write_doc_values_gen
+            .store(self.doc_values_gen() + 1, AtomicOrdering::Release);
         self.size_in_bytes.store(-1, AtomicOrdering::Release);
     }
 
@@ -568,7 +597,7 @@ impl<D: Directory, C: Codec> Clone for SegmentCommitInfo<D, C> {
             self.del_count(),
             self.del_gen(),
             self.field_infos_gen(),
-            self.doc_values_gen,
+            self.doc_values_gen(),
             self.dv_updates_files.clone(),
             self.field_infos_files.clone(),
         );
@@ -613,7 +642,7 @@ impl<D: Directory, C: Codec> Serialize for SegmentCommitInfo<D, C> {
                 .next_write_field_infos_gen
                 .load(AtomicOrdering::Acquire),
         )?;
-        s.serialize_field("doc_values_gen", &self.doc_values_gen)?;
+        s.serialize_field("doc_values_gen", &self.doc_values_gen())?;
         s.serialize_field(
             "next_write_doc_values_gen",
             &self.next_write_doc_values_gen(),
@@ -728,7 +757,7 @@ impl<D: Directory, DW: Directory, C: Codec> SegmentWriteState<D, DW, C> {
             if parts.len() == 2 {
                 true
             } else if parts.len() == 1 {
-                segment_suffix.parse::<i64>().is_ok()
+                i64::from_str_radix(segment_suffix, 36).is_ok()
             } else {
                 false // invalid
             }

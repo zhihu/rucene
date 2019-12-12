@@ -135,6 +135,17 @@ impl<D: Directory, C: Codec> SegmentInfos<D, C> {
         self.generation = gen;
     }
 
+    pub fn has_dv_updates(&self) -> bool {
+        let mut has_dv_updates = false;
+        for si in &self.segments {
+            if si.has_field_updates() {
+                has_dv_updates = true;
+                break;
+            }
+        }
+        has_dv_updates
+    }
+
     /// Get the segments_N filename in use by this segment infos.
     pub fn segment_file_name(&self) -> Option<String> {
         if self.last_generation < 0 {
@@ -277,10 +288,14 @@ impl<D: Directory, C: Codec> SegmentInfos<D, C> {
             }
             output.write_int(del_count)?;
             output.write_long(commit.field_infos_gen())?;
-            output.write_long(commit.doc_values_gen)?;
+            output.write_long(commit.doc_values_gen())?;
             output.write_set_of_strings(&commit.field_infos_files)?;
-            // TODO add doc_values_updates_files
-            output.write_int(0)?;
+            let dv_files = commit.get_doc_values_updates_files();
+            output.write_int(dv_files.len() as i32)?;
+            for (gen, files) in dv_files {
+                output.write_int(*gen)?;
+                output.write_set_of_strings(files)?;
+            }
         }
         output.write_map_of_strings(&HashMap::with_capacity(0))?;
         write_footer(output)

@@ -44,7 +44,7 @@ mod multi_terms;
 
 pub use self::multi_terms::*;
 
-mod terms;
+pub(crate) mod terms;
 
 pub use self::terms::*;
 

@@ -22,8 +22,10 @@ use error::{ErrorKind::IllegalArgument, ErrorKind::IllegalState, Result};
 use thread_local::{CachedThreadLocal, ThreadLocal};
 
 use core::codec::doc_values::{
-    BinaryDocValues, DocValuesFormat, DocValuesProducer, DocValuesProviderEnum, NumericDocValues,
-    SortedDocValues, SortedNumericDocValues, SortedSetDocValues,
+    BinaryDocValues, BinaryDocValuesProvider, DocValuesFormat, DocValuesProducer,
+    DocValuesProviderEnum, NumericDocValues, NumericDocValuesProvider, SortedDocValues,
+    SortedDocValuesProvider, SortedNumericDocValues, SortedNumericDocValuesProvider,
+    SortedSetDocValues, SortedSetDocValuesProvider,
 };
 
 use core::codec::field_infos::{FieldInfo, FieldInfos, FieldInfosFormat};
@@ -316,9 +318,71 @@ impl<D: Directory> fmt::Display for CfsDirectory<D> {
 }
 
 /// Manage the `DocValuesProducer` held by `SegmentReader`.
-pub struct SegmentDocValues;
+#[derive(Clone)]
+pub struct SegmentDocValues {
+    dv_producers_by_field: HashMap<String, Arc<dyn DocValuesProducer>>,
+    dv_producers: Vec<Arc<dyn DocValuesProducer>>,
+    dv_gens: Vec<i64>,
+}
 
 impl SegmentDocValues {
+    pub fn new<D: Directory, DW: Directory, C: Codec>(
+        si: &SegmentCommitInfo<D, C>,
+        dir: Arc<DW>,
+        infos: Arc<FieldInfos>,
+    ) -> Self {
+        let mut dv_producers_by_field: HashMap<String, Arc<dyn DocValuesProducer>> = HashMap::new();
+        let mut dv_producers: Vec<Arc<dyn DocValuesProducer>> = Vec::new();
+        let mut dv_gens: Vec<i64> = Vec::new();
+
+        let mut base_doc_values_producer: Option<Arc<dyn DocValuesProducer>> = None;
+        for (field, fi) in &infos.by_name {
+            if fi.doc_values_type == DocValuesType::Null {
+                continue;
+            }
+            let doc_values_gen = fi.dv_gen;
+            if doc_values_gen == -1 {
+                // no updated field
+                if base_doc_values_producer.is_none() {
+                    base_doc_values_producer = Some(Arc::from(
+                        Self::get_doc_values_producer(
+                            doc_values_gen,
+                            si,
+                            dir.clone(),
+                            infos.clone(),
+                        )
+                        .unwrap(),
+                    ));
+                    dv_gens.push(doc_values_gen);
+                    dv_producers.push(base_doc_values_producer.as_ref().unwrap().clone());
+                }
+                dv_producers_by_field.insert(
+                    field.clone(),
+                    base_doc_values_producer.as_ref().unwrap().clone(),
+                );
+            } else {
+                // updated field
+                let dvp: Arc<dyn DocValuesProducer> = Arc::from(
+                    Self::get_doc_values_producer(
+                        doc_values_gen,
+                        si,
+                        dir.clone(),
+                        Arc::new(FieldInfos::new(vec![fi.as_ref().clone()]).unwrap()),
+                    )
+                    .unwrap(),
+                );
+                dv_gens.push(doc_values_gen);
+                dv_producers.push(dvp.clone());
+                dv_producers_by_field.insert(fi.name.clone(), dvp.clone());
+            }
+        }
+        Self {
+            dv_producers_by_field,
+            dv_producers,
+            dv_gens,
+        }
+    }
+
     pub fn get_doc_values_producer<D: Directory, DW: Directory, C: Codec>(
         gen: i64,
         si: &SegmentCommitInfo<D, C>,
@@ -359,6 +423,52 @@ impl SegmentDocValues {
                 Ok(dv_producer)
             }
         }
+    }
+}
+
+impl DocValuesProducer for SegmentDocValues {
+    fn get_numeric(&self, field_info: &FieldInfo) -> Result<Arc<dyn NumericDocValuesProvider>> {
+        let dv_producer = self.dv_producers_by_field.get(&field_info.name).unwrap();
+        dv_producer.get_numeric(field_info)
+    }
+
+    fn get_binary(&self, field_info: &FieldInfo) -> Result<Arc<dyn BinaryDocValuesProvider>> {
+        let dv_producer = self.dv_producers_by_field.get(&field_info.name).unwrap();
+        dv_producer.get_binary(field_info)
+    }
+
+    fn get_sorted(&self, field_info: &FieldInfo) -> Result<Arc<dyn SortedDocValuesProvider>> {
+        let dv_producer = self.dv_producers_by_field.get(&field_info.name).unwrap();
+        dv_producer.get_sorted(field_info)
+    }
+
+    fn get_sorted_numeric(
+        &self,
+        field_info: &FieldInfo,
+    ) -> Result<Arc<dyn SortedNumericDocValuesProvider>> {
+        let dv_producer = self.dv_producers_by_field.get(&field_info.name).unwrap();
+        dv_producer.get_sorted_numeric(field_info)
+    }
+
+    fn get_sorted_set(
+        &self,
+        field_info: &FieldInfo,
+    ) -> Result<Arc<dyn SortedSetDocValuesProvider>> {
+        let dv_producer = self.dv_producers_by_field.get(&field_info.name).unwrap();
+        dv_producer.get_sorted_set(field_info)
+    }
+
+    fn get_docs_with_field(&self, field_info: &FieldInfo) -> Result<Box<dyn BitsMut>> {
+        let dv_producer = self.dv_producers_by_field.get(&field_info.name).unwrap();
+        dv_producer.get_docs_with_field(field_info)
+    }
+
+    fn check_integrity(&self) -> Result<()> {
+        Ok(())
+    }
+
+    fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
+        Ok(Box::new(self.clone()))
     }
 }
 
@@ -517,7 +627,7 @@ impl<D: Directory + 'static, C: Codec> SegmentReader<D, C> {
             Arc::clone(&core.core_field_infos)
         } else {
             let fis_format = codec.field_infos_format();
-            let segment_suffix = format!("{}", si.field_infos_gen());
+            let segment_suffix = to_base36(si.field_infos_gen() as u64);
             let field_infos = fis_format.read(
                 si.info.directory.as_ref(),
                 &si.info,
@@ -579,7 +689,12 @@ impl<D: Directory + 'static, C: Codec> SegmentReader<D, C> {
         let doc_values_producer = if !field_infos.has_doc_values {
             ThreadLocal::new()
         } else if si.has_field_updates() {
-            unimplemented!()
+            let dv_producer: Box<dyn DocValuesProducer> =
+                Box::new(SegmentDocValues::new(&si, dir, field_infos));
+
+            let doc_values_producer = ThreadLocal::new();
+            doc_values_producer.get_or(|| Box::new(Arc::from(dv_producer)));
+            doc_values_producer
         } else {
             // simple case, no DocValues updates
             let dv_producer =
@@ -594,13 +709,27 @@ impl<D: Directory + 'static, C: Codec> SegmentReader<D, C> {
 
     fn init_local_doc_values_producer(&self) -> Result<()> {
         if self.field_infos.has_doc_values {
-            if self.si.has_field_updates() {
-                unimplemented!()
-            } else {
-                if self.doc_values_producer.get().is_some() {
-                    return Ok(());
-                }
+            if self.doc_values_producer.get().is_some() {
+                return Ok(());
+            }
 
+            if self.si.has_field_updates() {
+                let dv_producer = if let Some(ref cfs_dir) = self.core.cfs_reader {
+                    SegmentDocValues::new(
+                        &self.si,
+                        Arc::clone(cfs_dir),
+                        Arc::clone(&self.field_infos),
+                    )
+                } else {
+                    SegmentDocValues::new(
+                        &self.si,
+                        Arc::clone(&self.si.info.directory),
+                        Arc::clone(&self.field_infos),
+                    )
+                };
+                self.doc_values_producer
+                    .get_or(|| Box::new(Arc::from(dv_producer)));
+            } else {
                 let dv_producer = if let Some(ref cfs_dir) = self.core.cfs_reader {
                     SegmentDocValues::get_doc_values_producer(
                         -1_i64,

@@ -66,3 +66,7 @@ pub use self::doc_writer_per_thread::*;
 mod prefix_code_terms;
 
 pub use self::prefix_code_terms::*;
+
+pub mod doc_values_update;
+
+pub use self::doc_values_update::*;

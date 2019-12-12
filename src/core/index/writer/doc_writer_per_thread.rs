@@ -387,6 +387,7 @@ where
 
         self.segment_info.max_doc = self.num_docs_in_ram as i32;
         let ctx = IOContext::Flush(FlushInfo::new(self.num_docs_in_ram));
+
         let mut flush_state = SegmentWriteState::new(
             Arc::clone(&self.directory),
             self.segment_info.clone(),
@@ -459,7 +460,9 @@ where
         );
 
         let mut fs = {
-            let segment_deletes = if self.pending_updates.deleted_queries.is_empty() {
+            let segment_deletes = if self.pending_updates.deleted_queries.is_empty()
+                && self.pending_updates.doc_values_updates.is_empty()
+            {
                 self.pending_updates.clear();
                 None
             } else {
@@ -551,7 +554,7 @@ where
             // carry the changes; there's no reason to use
             // filesystem as intermediary here.
             let codec = flushed_segment.segment_info.info.codec();
-            if let Some(sort_map) = sort_map {
+            if let Some(sort_map) = &sort_map {
                 let sorted_bits =
                     self.sort_live_docs(flushed_segment.live_docs.as_ref(), sort_map.as_ref())?;
                 codec.live_docs_format().write_live_docs(
@@ -576,6 +579,14 @@ where
                 .set_del_count(flushed_segment.del_count as i32)?;
             flushed_segment.segment_info.advance_del_gen();
         }
+
+        // set sort_map for updates & query delete
+        if flushed_segment.segment_updates.is_some()
+            && flushed_segment.segment_updates.as_ref().unwrap().any()
+        {
+            flushed_segment.set_sort_map(sort_map);
+        }
+
         Ok(())
     }
 
@@ -604,6 +615,7 @@ pub struct FlushedSegment<D: Directory, C: Codec> {
     pub segment_updates: Option<FrozenBufferedUpdates<C>>,
     pub live_docs: BitsRef,
     pub del_count: u32,
+    pub sort_map: Option<Arc<PackedLongDocMap>>,
 }
 
 impl<D: Directory, C: Codec> FlushedSegment<D, C> {
@@ -626,7 +638,11 @@ impl<D: Directory, C: Codec> FlushedSegment<D, C> {
             segment_updates,
             live_docs,
             del_count,
+            sort_map: None,
         }
+    }
+    pub fn set_sort_map(&mut self, sort_map: Option<Arc<PackedLongDocMap>>) {
+        self.sort_map = sort_map;
     }
 }
 

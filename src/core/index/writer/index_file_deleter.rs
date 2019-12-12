@@ -13,8 +13,8 @@
 
 use core::codec::segment_infos::{
     generation_from_segments_file_name, parse_generation, parse_segment_name, SegmentInfos,
-    CODEC_FILE_PATTERN, INDEX_FILE_OLD_SEGMENT_GEN, INDEX_FILE_PENDING_SEGMENTS,
-    INDEX_FILE_SEGMENTS,
+    CODEC_FILE_PATTERN, CODEC_UPDATE_DV_PATTERN, CODEC_UPDATE_FNM_PATTERN,
+    INDEX_FILE_OLD_SEGMENT_GEN, INDEX_FILE_PENDING_SEGMENTS, INDEX_FILE_SEGMENTS,
 };
 use core::codec::Codec;
 use core::index::writer::KeepOnlyLastCommitDeletionPolicy;
@@ -25,9 +25,10 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::mem;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use error::{ErrorKind, Result};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// This class keeps track of each SegmentInfos instance that
 /// is still "live", either because it corresponds to a
@@ -77,6 +78,10 @@ pub struct IndexFileDeleter<D: Directory> {
     last_files: HashSet<String>,
     policy: KeepOnlyLastCommitDeletionPolicy,
 
+    delayed_dv_update_files: Arc<Mutex<Vec<(u64, Vec<String>)>>>,
+    dv_pattern: Regex,
+    fnm_pattern: Regex,
+
     directory: Arc<LockValidatingDirectoryWrapper<D>>,
     inited: bool,
 }
@@ -88,6 +93,9 @@ impl<D: Directory> IndexFileDeleter<D> {
             commits: vec![],
             last_files: HashSet::new(),
             policy: KeepOnlyLastCommitDeletionPolicy {},
+            delayed_dv_update_files: Arc::new(Mutex::new(Vec::new())),
+            dv_pattern: Regex::new(CODEC_UPDATE_DV_PATTERN).unwrap(),
+            fnm_pattern: Regex::new(CODEC_UPDATE_FNM_PATTERN).unwrap(),
             directory,
             inited: false,
         }
@@ -129,6 +137,7 @@ impl<D: Directory> IndexFileDeleter<D> {
                             sis.generation,
                             sis.segment_file_name().unwrap_or("".to_string()),
                             sis.files(true),
+                            sis.has_dv_updates(),
                         );
                         self.commits.push(commit_point);
                         if sis.generation == segment_infos.generation {
@@ -153,6 +162,7 @@ impl<D: Directory> IndexFileDeleter<D> {
                     sis.generation,
                     sis.segment_file_name().unwrap_or("".to_string()),
                     sis.files(true),
+                    sis.has_dv_updates(),
                 );
                 self.commits.push(commit_point);
                 current_commit_point_idx = Some(self.commits.len() - 1);
@@ -187,7 +197,7 @@ impl<D: Directory> IndexFileDeleter<D> {
                     to_delete.insert(filename.clone());
                 }
             }
-            self.delete_files(&to_delete)?;
+            self.delete_files(&to_delete, false)?;
         }
 
         // Finally, give policy a chance to remove things on
@@ -320,6 +330,7 @@ impl<D: Directory> IndexFileDeleter<D> {
                 segment_infos.generation,
                 segment_infos.segment_file_name().unwrap_or("".to_string()),
                 segment_infos.files(true),
+                segment_infos.has_dv_updates(),
             );
             self.commits.push(p);
 
@@ -380,7 +391,17 @@ impl<D: Directory> IndexFileDeleter<D> {
                 to_delete.insert(f.clone());
             }
         }
-        self.delete_files(&to_delete)
+        self.delete_files(&to_delete, false)
+    }
+
+    fn _dec_ref_files_by_commit(&self, files: &HashSet<String>) -> Result<()> {
+        let mut to_delete = HashSet::new();
+        for f in files {
+            if self.dec_ref(f) {
+                to_delete.insert(f.clone());
+            }
+        }
+        self.delete_files(&to_delete, true)
     }
 
     pub fn dec_ref_files_no_error(&self, files: &HashSet<String>) {
@@ -438,7 +459,7 @@ impl<D: Directory> IndexFileDeleter<D> {
         Ok(())
     }
 
-    fn delete_files(&self, files: &HashSet<String>) -> Result<()> {
+    fn delete_files(&self, files: &HashSet<String>, do_commit_filter: bool) -> Result<()> {
         // We make two passes, first deleting any segments_N files, second
         // deleting the rest.  We do this so that if we throw exc or JVM
         // crashes during deletions, even when not on Windows, we don't
@@ -452,6 +473,10 @@ impl<D: Directory> IndexFileDeleter<D> {
             self.delete_file(file)?;
         }
 
+        if do_commit_filter {
+            self.filter_dv_update_files(&mut copys);
+        }
+
         for file in copys {
             if file.starts_with(INDEX_FILE_SEGMENTS) {
                 continue;
@@ -459,6 +484,34 @@ impl<D: Directory> IndexFileDeleter<D> {
             self.delete_file(file)?;
         }
         Ok(())
+    }
+
+    fn filter_dv_update_files(&self, candidates: &mut Vec<&String>) {
+        let dv_update_files: Vec<String> = candidates
+            .drain_filter(|f| -> bool {
+                self.fnm_pattern.is_match(f) || self.dv_pattern.is_match(f)
+            })
+            .map(|f| f.clone())
+            .collect();
+        let to_deletes: Vec<Vec<String>>;
+        {
+            let mut l = self.delayed_dv_update_files.lock();
+            let old_dv_update_files = l.as_mut().unwrap();
+            let tm_now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            to_deletes = old_dv_update_files
+                .drain_filter(|(x, _)| -> bool { *x < tm_now })
+                .map(|(_, y)| y)
+                .collect();
+            old_dv_update_files.push((tm_now + 60, dv_update_files));
+        }
+        for files in to_deletes {
+            for file in files {
+                self.delete_file(&file).unwrap_or(());
+            }
+        }
     }
 
     fn delete_file(&self, filename: &str) -> Result<()> {
@@ -483,7 +536,7 @@ impl<D: Directory> IndexFileDeleter<D> {
             }
         }
 
-        self.delete_files(&filtered)
+        self.delete_files(&filtered, false)
     }
 
     /// Writer calls this when it has hit an error and had to
@@ -509,7 +562,7 @@ impl<D: Directory> IndexFileDeleter<D> {
             }
         }
 
-        self.delete_files(&to_delete)
+        self.delete_files(&to_delete, false)
     }
 
     pub fn close(&mut self) -> Result<()> {
@@ -586,15 +639,22 @@ pub struct CommitPoint {
     generation: i64,
     segment_file_name: String,
     files: HashSet<String>,
+    has_dv_updates: bool,
     deleted: bool,
 }
 
 impl CommitPoint {
-    fn new(generation: i64, segment_file_name: String, files: HashSet<String>) -> Self {
+    fn new(
+        generation: i64,
+        segment_file_name: String,
+        files: HashSet<String>,
+        has_dv_updates: bool,
+    ) -> Self {
         CommitPoint {
             generation,
             segment_file_name,
             files,
+            has_dv_updates,
             deleted: false,
         }
     }
@@ -618,6 +678,10 @@ impl CommitPoint {
     pub fn delete(&mut self) -> Result<()> {
         self.deleted = true;
         Ok(())
+    }
+
+    pub fn has_dv_updates(&self) -> bool {
+        self.has_dv_updates
     }
 }
 

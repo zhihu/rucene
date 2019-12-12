@@ -13,7 +13,7 @@
 
 pub mod lucene54;
 
-mod doc_values_format;
+pub(crate) mod doc_values_format;
 
 pub use self::doc_values_format::*;
 

@@ -11,14 +11,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::codec::field_infos::{FieldInfos, FieldInfosFormat, FieldNumbers, FieldNumbersRef};
+use core::codec::doc_values::doc_values_format::DocValuesFormat;
+use core::codec::field_infos::{
+    FieldInfo, FieldInfos, FieldInfosBuilder, FieldInfosFormat, FieldNumbers, FieldNumbersRef,
+};
 use core::codec::segment_infos::{
     file_name_from_generation, get_last_commit_segments_filename, SegmentCommitInfo, SegmentInfo,
-    SegmentInfoFormat, SegmentInfos, INDEX_FILE_PENDING_SEGMENTS,
+    SegmentInfoFormat, SegmentInfos, SegmentWriteState, INDEX_FILE_PENDING_SEGMENTS,
 };
-use core::codec::{Codec, CompoundFormat, LiveDocsFormat};
-use core::doc::Fieldable;
+use core::codec::{Codec, CompoundFormat, LiveDocsFormat, PackedLongDocMap};
 use core::doc::Term;
+use core::doc::{DocValuesType, Fieldable};
 use core::index::merge::MergeRateLimiter;
 use core::index::merge::MergeScheduler;
 use core::index::merge::SegmentMerger;
@@ -29,7 +32,8 @@ use core::index::reader::index_exist;
 use core::index::reader::{LeafReader, SegmentReader, StandardDirectoryReader};
 use core::index::writer::{
     BufferedUpdatesStream, DocumentsWriter, Event, FlushedSegment, FrozenBufferedUpdates,
-    IndexFileDeleter, IndexWriterConfig, OpenMode,
+    IndexFileDeleter, IndexWriterConfig, MergedDocValuesUpdatesIterator, NewDocValuesIterator,
+    NumericDocValuesUpdate, OpenMode,
 };
 use core::search::query::{MatchAllDocsQuery, Query};
 use core::store::directory::{Directory, LockValidatingDirectoryWrapper, TrackingDirectoryWrapper};
@@ -50,7 +54,11 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::time::{Duration, SystemTime};
 
+use core::codec::doc_values::{
+    DocValuesWriter, NumericDocValuesWriter, SortedNumericDocValuesWriter,
+};
 use core::index::writer::dir_wrapper::RateLimitFilterDirectory;
+use core::search::NO_MORE_DOCS;
 use thread_local::ThreadLocal;
 
 /// Hard limit on maximum number of documents that may be added to the index
@@ -507,6 +515,10 @@ where
 
     pub fn nrt_is_current(&self, infos: &SegmentInfos<D, C>) -> bool {
         self.writer.nrt_is_current(infos)
+    }
+
+    pub fn update_numeric_doc_value(&self, term: Term, field: &str, value: i64) -> Result<u64> {
+        IndexWriterInner::update_numeric_doc_value(self, term, field, value)
     }
 
     /// Forces merge policy to merge segments until there are
@@ -1330,6 +1342,8 @@ where
         let segment_updates = new_segment.segment_updates.take();
         let next_gen = if let Some(p) = segment_updates {
             if p.any() {
+                let rld = self.reader_pool.get_or_create(&new_segment.segment_info)?;
+                rld.inner.lock()?.sort_map = new_segment.sort_map;
                 self.buffered_updates_stream.push(p)?
             } else {
                 self.buffered_updates_stream.get_next_gen()
@@ -2293,8 +2307,44 @@ where
     /// @throws IOException
     ///           if there is a low-level IO error
     #[allow(dead_code)]
-    fn update_numeric_doc_value(&mut self, _field: &str, _value: i64, _term: Term) -> Result<u64> {
-        unimplemented!()
+    fn update_numeric_doc_value(
+        index_writer: &IndexWriter<D, C, MS, MP>,
+        term: Term,
+        field: &str,
+        value: i64,
+    ) -> Result<u64> {
+        index_writer.writer.ensure_open(true)?;
+
+        let dv_type = index_writer
+            .writer
+            .global_field_numbers
+            .get_doc_values_type(field)?;
+        if dv_type.is_none()
+            || (dv_type != Some(DocValuesType::Numeric)
+                && dv_type != Some(DocValuesType::SortedNumeric))
+        {
+            bail!(IllegalArgument(format!("invalid field [{}]", field)));
+        }
+
+        if let Some(sort_field) = index_writer.writer.config.index_sort() {
+            let sort_field = sort_field.get_sort();
+            for f in sort_field {
+                if f.field() == field {
+                    bail!(IllegalArgument(format!(
+                        "can't update sort field [{}]",
+                        field
+                    )));
+                }
+            }
+        }
+
+        let (seq, changed) = index_writer.writer.doc_writer.update_doc_values(Arc::new(
+            NumericDocValuesUpdate::new(term, field.to_string(), dv_type.unwrap(), value, None),
+        ))?;
+        if changed {
+            Self::process_events(index_writer, true, false)?;
+        }
+        Ok(seq)
     }
 
     pub fn new_segment_name(&self) -> String {
@@ -2768,7 +2818,6 @@ where
             "IW - now apply deletes for {} merging segments.",
             merge.segments.len()
         );
-
         // Lock order: IW - BD
         let result = self
             .buffered_updates_stream
@@ -2963,7 +3012,6 @@ where
                 index_writer,
             )
         };
-
         if use_compound_file {
             let tracking_cfs_dir =
                 TrackingDirectoryWrapper::new(&index_writer.writer.merge_directory);
@@ -3161,6 +3209,8 @@ where
         // lazy init (only when we find a delete to carry over):
         let mut holder = MergedDeletesAndUpdates::default();
         debug_assert_eq!(merge.segments.len(), merge_state.doc_maps.len());
+        let mut dv_updates: HashMap<String, Vec<(i32, i64)>> = HashMap::new();
+
         for i in 0..merge.segments.len() {
             let info = &merge.segments[i];
             min_gen = min_gen.min(info.buffered_deletes_gen());
@@ -3168,6 +3218,30 @@ where
             let prev_live_docs = merge.readers[i].live_docs();
             let rld = self.reader_pool.get(info.as_ref()).unwrap();
             let inner = rld.inner.lock()?;
+
+            let mut fields: Vec<&String> = Vec::with_capacity(inner.merging_dv_updates.len());
+            let mut field_updates: Vec<Vec<(i32, i64)>> =
+                Vec::with_capacity(inner.merging_dv_updates.len());
+            let mut indexes: Vec<usize> = Vec::with_capacity(inner.merging_dv_updates.len());
+
+            // get all updates for fields
+            for (field, updates) in &inner.merging_dv_updates {
+                let updates = MergedDocValuesUpdatesIterator::join(updates.clone());
+                let mut updates = NewDocValuesIterator::new(
+                    merge.readers[i].clone(),
+                    updates,
+                    None,
+                    true,
+                    false,
+                )?;
+
+                let updates = updates.get_numeric_updates();
+                if !updates.is_empty() {
+                    fields.push(field);
+                    field_updates.push(updates);
+                    indexes.push(0);
+                }
+            }
 
             if !prev_live_docs.is_empty() {
                 debug_assert!(inner.live_docs.is_some());
@@ -3187,7 +3261,7 @@ where
                 // check if the before/after liveDocs have changed.
                 // If so, we must carefully merge the liveDocs one
                 // doc at a time:
-                if ptr::eq(cur_live_doc.as_ref(), prev_live_docs.as_ref()) {
+                if !ptr::eq(cur_live_doc.as_ref(), prev_live_docs.as_ref()) {
                     // This means this segment received new deletes
                     // since we started the merge, so we
                     // must merge them:
@@ -3209,6 +3283,34 @@ where
                                 .as_ref()
                                 .unwrap()
                                 .delete(doc_id)?;
+                        } else if !fields.is_empty() {
+                            self.maybe_apply_merged_dv_updates(
+                                merge,
+                                merge_state,
+                                &mut holder,
+                                &fields,
+                                &field_updates,
+                                &mut indexes,
+                                &mut dv_updates,
+                                i,
+                                j as i32,
+                            )?;
+                        }
+                    }
+                } else if !fields.is_empty() {
+                    for j in 0..max_doc as usize {
+                        if prev_live_docs.get(j)? {
+                            self.maybe_apply_merged_dv_updates(
+                                merge,
+                                merge_state,
+                                &mut holder,
+                                &fields,
+                                &field_updates,
+                                &mut indexes,
+                                &mut dv_updates,
+                                i,
+                                j as i32,
+                            )?;
                         }
                     }
                 }
@@ -3230,9 +3332,69 @@ where
                             .as_ref()
                             .unwrap()
                             .delete(doc_id)?;
+                    } else if !fields.is_empty() {
+                        self.maybe_apply_merged_dv_updates(
+                            merge,
+                            merge_state,
+                            &mut holder,
+                            &fields,
+                            &field_updates,
+                            &mut indexes,
+                            &mut dv_updates,
+                            i,
+                            j as i32,
+                        )?;
                     }
                 }
+            } else if !fields.is_empty() {
+                for j in 0..max_doc as usize {
+                    self.maybe_apply_merged_dv_updates(
+                        merge,
+                        merge_state,
+                        &mut holder,
+                        &fields,
+                        &field_updates,
+                        &mut indexes,
+                        &mut dv_updates,
+                        i,
+                        j as i32,
+                    )?;
+                }
             }
+        }
+
+        if !dv_updates.is_empty() {
+            for (field, mut updates) in dv_updates {
+                updates.sort_by(|a, b| a.0.cmp(&b.0));
+                let up = MergedDocValuesUpdatesIterator::from_updates(field.clone(), updates);
+                if holder.merged_deletes_and_updates.is_none() {
+                    holder.init(&self.reader_pool, merge, false)?;
+                }
+                holder
+                    .merged_deletes_and_updates
+                    .as_mut()
+                    .unwrap()
+                    .inner
+                    .lock()
+                    .unwrap()
+                    .add_field_updates(field, up);
+            }
+            if holder.merged_deletes_and_updates.is_none() {
+                holder.init(&self.reader_pool, merge, false)?;
+            }
+            holder
+                .merged_deletes_and_updates
+                .as_mut()
+                .unwrap()
+                .create_reader_if_not_exist(&IOContext::READ_ONCE)?;
+            holder
+                .merged_deletes_and_updates
+                .as_ref()
+                .unwrap()
+                .inner
+                .lock()
+                .unwrap()
+                .write_field_updates()?;
         }
 
         merge
@@ -3241,6 +3403,47 @@ where
             .unwrap()
             .set_buffered_deletes_gen(min_gen);
         Ok(holder.merged_deletes_and_updates.take())
+    }
+
+    fn maybe_apply_merged_dv_updates(
+        &self,
+        merge: &OneMerge<D, C>,
+        merge_state: &MergeState<D, C>,
+        holder: &mut MergedDeletesAndUpdates<D, C, MS, MP>,
+        fields: &Vec<&String>,
+        updates: &Vec<Vec<(i32, i64)>>,
+        indexes: &mut Vec<usize>,
+        out_updates: &mut HashMap<String, Vec<(i32, i64)>>,
+        segment: usize,
+        doc_id: i32,
+    ) -> Result<()> {
+        let mut new_doc = -1;
+        for i in 0..fields.len() {
+            let idx = indexes[i];
+            if idx < updates[i].len() {
+                if doc_id == updates[i][idx].0 {
+                    if holder.merged_deletes_and_updates.is_none() {
+                        holder.init(&self.reader_pool, merge, false)?;
+                    }
+                    if new_doc == -1 {
+                        new_doc = merge_state
+                            .doc_maps
+                            .get(segment)
+                            .unwrap()
+                            .get(doc_id)
+                            .unwrap();
+                    }
+                    if let Some(upds) = out_updates.get_mut(fields[i]) {
+                        upds.push((new_doc, updates[i][idx].1));
+                    } else {
+                        let values = vec![(new_doc, updates[i][idx].1)];
+                        out_updates.insert(fields[i].clone(), values);
+                    }
+                    indexes[i] += 1;
+                }
+            }
+        }
+        Ok(())
     }
 
     fn commit_merge(
@@ -3397,6 +3600,8 @@ where
             let rld = rld.unwrap();
             if drop {
                 rld.drop_changes();
+            } else {
+                rld.drop_merging_updates();
             }
 
             let mut res_drop = self.reader_pool.release(&rld);
@@ -3871,6 +4076,11 @@ where
         guard.drop_merging_updates();
     }
 
+    pub fn drop_merging_updates(&self) {
+        let mut guard = self.inner.lock().unwrap();
+        guard.drop_merging_updates();
+    }
+
     /// Returns a reader for merge. this method applies filed update if there are
     /// any and marks that this segment is currently merging.
     pub fn reader_for_merge(&self, context: &IOContext) -> Result<Arc<SegmentReader<D, C>>> {
@@ -3881,7 +4091,7 @@ where
         // bugs).
         self.create_reader_if_not_exist(context)?;
         let mut guard = self.inner.lock()?;
-        guard.is_merging = true;
+        guard.mark_merge();
         Ok(Arc::clone(guard.reader.as_ref().unwrap()))
     }
 }
@@ -3894,7 +4104,7 @@ where
     MP: MergePolicy,
 {
     // used for process DocValues update which is not currently implemented
-    _writer: Weak<IndexWriterInner<D, C, MS, MP>>,
+    writer: Weak<IndexWriterInner<D, C, MS, MP>>,
     // Set once (null, and then maybe set, and never set again):
     reader: Option<Arc<SegmentReader<D, C>>>,
     // Holds the current shared (readable and writable)
@@ -3916,6 +4126,11 @@ where
     // updates on the merged segment too.
     is_merging: bool,
     // merging_dv_updates: HashMap<String, DocValuesFieldUpdates>,
+    pending_dv_updates: HashMap<String, Vec<MergedDocValuesUpdatesIterator>>,
+    merging_dv_updates: HashMap<String, Vec<MergedDocValuesUpdatesIterator>>,
+
+    // for dv updates
+    sort_map: Option<Arc<PackedLongDocMap>>,
 }
 
 impl<D, C, MS, MP> ReadersAndUpdatesInner<D, C, MS, MP>
@@ -3927,12 +4142,15 @@ where
 {
     fn new(writer: Weak<IndexWriterInner<D, C, MS, MP>>) -> Self {
         ReadersAndUpdatesInner {
-            _writer: writer,
+            writer,
             reader: None,
             live_docs: None,
             pending_delete_count: 0,
             live_docs_shared: true,
             is_merging: false,
+            pending_dv_updates: HashMap::new(),
+            merging_dv_updates: HashMap::new(),
+            sort_map: None,
         }
     }
 
@@ -3945,12 +4163,15 @@ where
         let pending_delete_count = reader.num_deleted_docs();
         debug_assert!(pending_delete_count >= 0);
         ReadersAndUpdatesInner {
-            _writer: writer,
+            writer,
             reader: Some(Arc::new(reader)),
             live_docs: Some(live_docs),
             pending_delete_count: pending_delete_count as u32,
             live_docs_shared: true,
             is_merging: false,
+            pending_dv_updates: HashMap::new(),
+            merging_dv_updates: HashMap::new(),
+            sort_map: None,
         }
     }
 
@@ -3985,6 +4206,15 @@ where
         // Ref for caller
         // self.reader.as_mut().unwrap().inc_ref();
         Ok(())
+    }
+
+    pub fn mark_merge(&mut self) {
+        debug_assert!(self.merging_dv_updates.is_empty());
+        self.is_merging = true;
+        for (field, updates) in &self.pending_dv_updates {
+            self.merging_dv_updates
+                .insert(field.clone(), updates.clone());
+        }
     }
 
     fn live_docs(&self) -> &BitsRef {
@@ -4136,7 +4366,7 @@ where
     }
 
     fn drop_merging_updates(&mut self) {
-        // self.merging_dv_updates.clear();
+        self.merging_dv_updates.clear();
         self.is_merging = false;
     }
 
@@ -4164,13 +4394,203 @@ where
             field_infos,
             &infos_context,
         )?;
-        info.advance_del_gen();
+        info.advance_field_infos_gen();
         Ok(tracking_dir.get_create_files())
     }
 
+    pub fn add_field_updates(&mut self, field: String, updates: MergedDocValuesUpdatesIterator) {
+        if self.is_merging {
+            if let Some(mg_list) = self.merging_dv_updates.get_mut(&field) {
+                mg_list.push(updates.clone());
+            } else {
+                let v = vec![updates.clone()];
+                self.merging_dv_updates.insert(field.clone(), v);
+            }
+        }
+
+        if let Some(upd_list) = self.pending_dv_updates.get_mut(&field) {
+            upd_list.push(updates);
+        } else {
+            let v = vec![updates];
+            self.pending_dv_updates.insert(field, v);
+        }
+    }
     // Writes field updates (new _X_N updates files) to the directory
-    pub fn write_field_updates<DW: Directory>(&self, _dir: &DW) -> Result<()> {
-        unreachable!()
+    // pub fn write_field_updates<DW: Directory>(&mut self, _dir: &DW) -> Result<()> {
+    pub fn write_field_updates(&self) -> Result<bool> {
+        if self.pending_dv_updates.is_empty() {
+            // no updates
+            return Ok(false);
+        }
+
+        let me = unsafe {
+            &mut *(self as *const ReadersAndUpdatesInner<D, C, MS, MP>
+                as *mut ReadersAndUpdatesInner<D, C, MS, MP>)
+        };
+
+        assert!(self.reader.is_some());
+
+        let info = &self.reader.as_ref().unwrap().si;
+
+        let mut builder =
+            FieldInfosBuilder::new(self.writer.upgrade().unwrap().global_field_numbers.clone());
+        let finfos = self.reader.as_ref().unwrap().field_infos.clone();
+        builder.add_infos(finfos.as_ref())?;
+        for fi in builder.by_name.values_mut() {
+            let origin = finfos.by_name.get(&fi.name).unwrap();
+            fi.set_doc_values_gen(origin.dv_gen);
+            let attributes = origin.attributes.read()?;
+            for (key, val) in attributes.iter() {
+                fi.put_attribute(key.clone(), val.clone());
+            }
+        }
+        let mut field_infos = builder.finish()?;
+
+        let codec = info.info.codec();
+        let doc_values_format = codec.doc_values_format();
+
+        let mut new_dv_files = me.handle_doc_values_updates(&mut field_infos, doc_values_format)?;
+
+        let info_mut_ref = unsafe {
+            &mut *(info.as_ref() as *const SegmentCommitInfo<D, C> as *mut SegmentCommitInfo<D, C>)
+        };
+        // writeFieldInfosGen fnm
+        if !new_dv_files.is_empty() {
+            let infos_format = codec.field_infos_format();
+            let field_infos_files = self.write_field_infos_gen(
+                info,
+                &field_infos,
+                &info.info.directory,
+                &infos_format,
+            )?;
+            let old_dv_files = info_mut_ref.get_doc_values_updates_files();
+            for (id, files) in old_dv_files {
+                if !new_dv_files.contains_key(id) {
+                    new_dv_files.insert(*id, files.clone());
+                }
+            }
+            info_mut_ref.set_doc_values_updates_files(new_dv_files);
+            info_mut_ref.set_field_infos_files(field_infos_files);
+
+            {
+                let lock = Mutex::new(());
+                let useless = lock.lock()?;
+                unsafe {
+                    me.writer
+                        .upgrade()
+                        .as_ref()
+                        .unwrap()
+                        .writer_mut(&useless)
+                        .check_point(&useless)?
+                };
+            }
+
+            // reopen segment reader for updates
+            me.reader = Some(Arc::new(me.get_readonly_clone(info, &IOContext::Default)?));
+        }
+
+        me.pending_dv_updates.clear();
+        Ok(true)
+    }
+
+    fn handle_doc_values_updates(
+        &mut self,
+        infos: &mut FieldInfos,
+        dv_format: <C as Codec>::DVFmt,
+    ) -> Result<HashMap<i32, HashSet<String>>> {
+        let mut new_dv_files = HashMap::new();
+        for (field, updates) in &self.pending_dv_updates {
+            let info = self.reader.as_ref().unwrap().si.clone();
+            let tracker = Arc::new(TrackingDirectoryWrapper::new(info.info.directory.as_ref()));
+            let dv_gen = info.next_write_doc_values_gen();
+            // step1 construct segment write state
+            let ctx = IOContext::Flush(FlushInfo::new(info.info.max_doc() as u32));
+            let field_info = infos.field_info_by_name(field).unwrap();
+            let field_info = unsafe { &mut *(field_info as *const FieldInfo as *mut FieldInfo) };
+            let old_dv_gen = field_info.set_doc_values_gen(dv_gen);
+            let state = SegmentWriteState::new(
+                tracker.clone(),
+                info.info.clone(),
+                FieldInfos::new(vec![field_info.clone()])?,
+                None,
+                ctx,
+                to_base36(dv_gen as u64),
+            );
+            // step2 get doc values consumer
+            let mut field_consumer = dv_format.fields_consumer(&state)?;
+
+            let mut new_dv_updates_iter = if updates.len() == 1 && updates[0].is_merged_updates() {
+                NewDocValuesIterator::new(
+                    self.reader().clone(),
+                    updates[0].clone(),
+                    None,
+                    false,
+                    true,
+                )?
+            } else {
+                NewDocValuesIterator::new(
+                    self.reader().clone(),
+                    MergedDocValuesUpdatesIterator::join(updates.clone()),
+                    self.sort_map.take(),
+                    true,
+                    true,
+                )?
+            };
+            let mut doc_num = 0;
+            match field_info.doc_values_type {
+                DocValuesType::Numeric => {
+                    // step3 construct doc values writer, add data, and then flush to index
+                    let mut ndv_writer = NumericDocValuesWriter::new(field_info);
+
+                    loop {
+                        let (doc_id, value) = new_dv_updates_iter.next_numeric();
+                        if doc_id == NO_MORE_DOCS {
+                            break;
+                        }
+                        ndv_writer.add_value(doc_id, value)?;
+                        doc_num += 1;
+                    }
+                    if doc_num > 0 {
+                        ndv_writer.finish(doc_num);
+                        ndv_writer.flush(
+                            &state,
+                            None as Option<&PackedLongDocMap>,
+                            &mut field_consumer,
+                        )?;
+                    }
+                }
+                DocValuesType::SortedNumeric => {
+                    // step3 construct doc values writer, add data, and then flush to index
+                    let mut ndv_writer = SortedNumericDocValuesWriter::new(field_info);
+
+                    loop {
+                        let (doc_id, value) = new_dv_updates_iter.next_numeric();
+                        if doc_id == NO_MORE_DOCS {
+                            break;
+                        }
+                        ndv_writer.add_value(doc_id, value);
+                        doc_num += 1;
+                    }
+                    if doc_num > 0 {
+                        ndv_writer.finish(doc_num);
+                        ndv_writer.flush(
+                            &state,
+                            None as Option<&PackedLongDocMap>,
+                            &mut field_consumer,
+                        )?;
+                    }
+                }
+                _ => unimplemented!(),
+            };
+
+            if doc_num > 0 {
+                info.advance_doc_values_gen();
+                new_dv_files.insert(field_info.number as i32, tracker.get_create_files());
+            } else {
+                field_info.set_doc_values_gen(old_dv_gen);
+            }
+        }
+        Ok(new_dv_files)
     }
 }
 

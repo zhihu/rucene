@@ -13,7 +13,7 @@
 
 use core::codec::Codec;
 use core::doc::Term;
-use core::index::writer::{BufferedUpdates, FrozenBufferedUpdates};
+use core::index::writer::{BufferedUpdates, DocValuesUpdate, FrozenBufferedUpdates};
 use core::search::{query::Query, NO_MORE_DOCS};
 use core::util::DocId;
 
@@ -131,6 +131,13 @@ impl<C: Codec> DocumentsWriterDeleteQueue<C> {
 
     pub fn add_delete_terms(&self, terms: Vec<Term>) -> u64 {
         let node = Arc::new(DeleteListNode::new(DeleteNode::TermArray(terms)));
+        let seq_no = self.add_node(node);
+        self.try_apply_global_slice();
+        seq_no
+    }
+
+    pub fn add_doc_values_update(&self, update: Arc<dyn DocValuesUpdate>) -> u64 {
+        let node = Arc::new(DeleteListNode::new(DeleteNode::DocValuesUpdate(update)));
         let seq_no = self.add_node(node);
         self.try_apply_global_slice();
         seq_no
@@ -261,6 +268,7 @@ impl<C: Codec> DocumentsWriterDeleteQueue<C> {
         let current_tail = Arc::clone(self.tail());
         guard.global_slice.slice_head = Arc::clone(&current_tail);
         guard.global_slice.slice_tail = current_tail;
+        guard.global_buffered_updates.clear();
     }
 
     pub fn last_sequence_number(&self) -> u64 {
@@ -282,6 +290,7 @@ enum DeleteNode<C: Codec> {
     Term(Term),
     TermArray(Vec<Term>),
     QueryArray(Vec<Arc<dyn Query<C>>>),
+    DocValuesUpdate(Arc<dyn DocValuesUpdate>),
     // used for sentinel head
     None,
 }
@@ -301,6 +310,9 @@ impl<C: Codec> DeleteNode<C> {
                 for q in queries {
                     buffered_deletes.add_query(Arc::clone(q), doc_id_upto);
                 }
+            }
+            DeleteNode::DocValuesUpdate(update) => {
+                buffered_deletes.add_doc_values_update(update.clone(), doc_id_upto);
             }
             DeleteNode::None => {
                 unreachable!();
