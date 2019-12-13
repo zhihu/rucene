@@ -33,12 +33,13 @@ use core::index::writer::doc_writer_flush_queue::FlushTicket;
 use std::cmp::max;
 use std::collections::HashSet;
 use std::mem;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::thread;
 use std::time::Duration;
 
 use num_cpus;
+use std::sync::atomic::Ordering::{Acquire, Release};
 
 ///
 // This class accepts multiple added documents and directly
@@ -107,7 +108,7 @@ pub struct DocumentsWriter<
     lock: Arc<Mutex<()>>,
     directory_orig: Arc<D>,
     directory: Arc<LockValidatingDirectoryWrapper<D>>,
-    closed: bool,
+    closed: Arc<AtomicBool>,
     num_docs_in_ram: AtomicU32,
     // TODO: cut over to BytesRefHash in BufferedDeletes
     pub delete_queue: Arc<DocumentsWriterDeleteQueue<C>>,
@@ -147,7 +148,7 @@ where
             lock: Arc::new(Mutex::new(())),
             directory_orig,
             directory,
-            closed: false,
+            closed: Arc::new(AtomicBool::new(false)),
             num_docs_in_ram: AtomicU32::new(0),
             delete_queue: Arc::new(DocumentsWriterDeleteQueue::default()),
             ticket_queue: DocumentsWriterFlushQueue::new(),
@@ -498,7 +499,7 @@ where
     }
 
     fn ensure_open(&self) -> Result<()> {
-        if self.closed {
+        if self.closed.load(Acquire) {
             bail!(AlreadyClosed("this IndexWriter is closed".into()));
         }
         Ok(())
@@ -570,10 +571,15 @@ where
 
         for _i in 0..thread_num {
             let index_writer_inner = self.index_writer();
-            thread::spawn(move || -> Result<()> {
+            let closed = self.closed.clone();
+            thread::spawn(move || {
                 let doc_writer = &index_writer_inner.doc_writer;
 
                 loop {
+                    if closed.load(Acquire) {
+                        return;
+                    }
+
                     thread::sleep(Duration::from_millis(3000));
 
                     if let Some(next_pending_flush) = doc_writer.flush_control.next_pending_flush()
@@ -762,7 +768,7 @@ where
     }
 
     pub fn close(&mut self) {
-        self.closed = true;
+        self.closed.store(true, Release);
         self.flush_control.set_closed();
     }
 }
@@ -775,7 +781,7 @@ where
     MP: MergePolicy,
 {
     fn drop(&mut self) {
-        self.closed = true;
+        self.closed.store(true, Release);
         self.flush_control.set_closed();
     }
 }

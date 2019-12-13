@@ -140,7 +140,7 @@ pub struct ConcurrentMergeScheduler {
 
 impl Default for ConcurrentMergeScheduler {
     fn default() -> Self {
-        let max_thread_count = 3.max(5.min(num_cpus::get() / 2));
+        let max_thread_count = 3.min(num_cpus::get() / 2);
         Self::new(max_thread_count)
     }
 }
@@ -188,7 +188,7 @@ impl ConcurrentMergeSchedulerInner {
             lock: Mutex::new(()),
             cond: Condvar::new(),
             merge_tasks: vec![],
-            max_merge_count: max_thread_count + 5,
+            max_merge_count: max_thread_count.max(5),
             max_thread_count,
             merge_thread_count: 0,
             target_mb_per_sec: START_MB_PER_SEC,
