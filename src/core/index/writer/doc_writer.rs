@@ -405,7 +405,7 @@ where
     fn obtain_and_lock(&self) -> Result<Arc<ThreadState<D, C, MS, MP>>> {
         let per_thread: Arc<ThreadState<D, C, MS, MP>> = self.per_thread_pool.get_and_lock()?;
         {
-            let guard = match per_thread.lock.try_lock() {
+            let guard = match per_thread.lock.lock() {
                 Ok(g) => g,
                 Err(e) => {
                     bail!(IllegalState(format!(
