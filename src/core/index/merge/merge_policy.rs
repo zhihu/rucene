@@ -431,7 +431,7 @@ impl Default for TieredMergePolicy {
             max_merged_segment_bytes: 5 * 1024 * 1024 * 1024,
             max_merge_at_once_explicit: 30,
             floor_segment_bytes: 2 * 1024 * 1024,
-            segs_per_tier: 10.0,
+            segs_per_tier: 5.0,
             force_merge_deletes_pct_allowed: 10.0,
             reclaim_deletes_weight: 2.0,
         }

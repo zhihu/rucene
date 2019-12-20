@@ -481,10 +481,9 @@ pub struct SegmentReader<D: Directory, C: Codec> {
     pub core: Arc<SegmentCoreReaders<D, C>>,
     pub is_nrt: bool,
     pub field_infos: Arc<FieldInfos>,
-    // context: LeafReaderContext
+    doc_values_producer_preload: Arc<RwLock<Vec<Arc<dyn DocValuesProducer>>>>,
     doc_values_producer: ThreadLocalDocValueProducer,
-    // docs_with_field_local: CachedThreadLocal<RefCell<HashMap<String, BitsRef>>>,
-    doc_values_preload: Arc<RwLock<Vec<RefCell<HashMap<String, DocValuesProviderEnum>>>>>,
+    doc_values_local_preload: Arc<RwLock<Vec<RefCell<HashMap<String, DocValuesProviderEnum>>>>>,
     doc_values_local: CachedThreadLocal<RefCell<HashMap<String, DocValuesProviderEnum>>>,
 }
 
@@ -502,64 +501,86 @@ impl<D: Directory + 'static, C: Codec> SegmentReader<D, C> {
         core: Arc<SegmentCoreReaders<D, C>>,
         is_nrt: bool,
         field_infos: Arc<FieldInfos>,
-        doc_values_producer: ThreadLocalDocValueProducer,
     ) -> SegmentReader<D, C> {
         let doc_values_local = CachedThreadLocal::new();
         doc_values_local.get_or(|| Box::new(RefCell::new(HashMap::new())));
 
-        let dv_producer = doc_values_producer.get().unwrap();
         let max_preload_num = 5 * num_cpus::get_physical();
-        let mut doc_values_preload: Vec<RefCell<HashMap<String, DocValuesProviderEnum>>> =
+
+        let mut doc_values_producer_preload: Vec<Arc<dyn DocValuesProducer>> =
             Vec::with_capacity(max_preload_num);
         for _ in 0..max_preload_num {
-            let mut dvs = HashMap::new();
-            for (field_name, field_info) in field_infos.by_name.iter() {
-                match field_info.doc_values_type {
-                    DocValuesType::Binary => {
-                        if let Ok(cell) = dv_producer.get_binary(field_info) {
-                            dvs.insert(
-                                field_name.to_string(),
-                                DocValuesProviderEnum::Binary(Arc::clone(&cell)),
-                            );
+            if let Some(dv_producer) = SegmentReader::init_doc_values_producer(
+                core.as_ref(),
+                si.as_ref(),
+                field_infos.clone(),
+            ) {
+                doc_values_producer_preload.push(dv_producer);
+            }
+        }
+
+        let dv_producer = SegmentReader::init_doc_values_producer(
+            core.as_ref(),
+            si.as_ref(),
+            field_infos.clone(),
+        );
+
+        let doc_values_producer = ThreadLocal::new();
+        let mut doc_values_local_preload: Vec<RefCell<HashMap<String, DocValuesProviderEnum>>> =
+            Vec::with_capacity(max_preload_num);
+        if let Some(dv_producer) = dv_producer {
+            for _ in 0..max_preload_num {
+                let mut dvs = HashMap::new();
+                for (field_name, field_info) in field_infos.by_name.iter() {
+                    match field_info.doc_values_type {
+                        DocValuesType::Binary => {
+                            if let Ok(cell) = dv_producer.get_binary(field_info) {
+                                dvs.insert(
+                                    field_name.to_string(),
+                                    DocValuesProviderEnum::Binary(Arc::clone(&cell)),
+                                );
+                            }
                         }
-                    }
-                    DocValuesType::Numeric => {
-                        if let Ok(cell) = dv_producer.get_numeric(field_info) {
-                            dvs.insert(
-                                field_name.to_string(),
-                                DocValuesProviderEnum::Numeric(Arc::clone(&cell)),
-                            );
+                        DocValuesType::Numeric => {
+                            if let Ok(cell) = dv_producer.get_numeric(field_info) {
+                                dvs.insert(
+                                    field_name.to_string(),
+                                    DocValuesProviderEnum::Numeric(Arc::clone(&cell)),
+                                );
+                            }
                         }
-                    }
-                    DocValuesType::SortedNumeric => {
-                        if let Ok(cell) = dv_producer.get_sorted_numeric(field_info) {
-                            dvs.insert(
-                                field_name.to_string(),
-                                DocValuesProviderEnum::SortedNumeric(Arc::clone(&cell)),
-                            );
+                        DocValuesType::SortedNumeric => {
+                            if let Ok(cell) = dv_producer.get_sorted_numeric(field_info) {
+                                dvs.insert(
+                                    field_name.to_string(),
+                                    DocValuesProviderEnum::SortedNumeric(Arc::clone(&cell)),
+                                );
+                            }
                         }
-                    }
-                    DocValuesType::Sorted => {
-                        if let Ok(cell) = dv_producer.get_sorted(field_info) {
-                            dvs.insert(
-                                field_name.to_string(),
-                                DocValuesProviderEnum::Sorted(Arc::clone(&cell)),
-                            );
+                        DocValuesType::Sorted => {
+                            if let Ok(cell) = dv_producer.get_sorted(field_info) {
+                                dvs.insert(
+                                    field_name.to_string(),
+                                    DocValuesProviderEnum::Sorted(Arc::clone(&cell)),
+                                );
+                            }
                         }
-                    }
-                    DocValuesType::SortedSet => {
-                        if let Ok(cell) = dv_producer.get_sorted_set(field_info) {
-                            dvs.insert(
-                                field_name.to_string(),
-                                DocValuesProviderEnum::SortedSet(Arc::clone(&cell)),
-                            );
+                        DocValuesType::SortedSet => {
+                            if let Ok(cell) = dv_producer.get_sorted_set(field_info) {
+                                dvs.insert(
+                                    field_name.to_string(),
+                                    DocValuesProviderEnum::SortedSet(Arc::clone(&cell)),
+                                );
+                            }
                         }
+                        _ => {}
                     }
-                    _ => {}
                 }
+
+                doc_values_local_preload.push(RefCell::new(dvs));
             }
 
-            doc_values_preload.push(RefCell::new(dvs));
+            doc_values_producer.get_or(|| Box::new(dv_producer));
         }
 
         SegmentReader {
@@ -569,8 +590,9 @@ impl<D: Directory + 'static, C: Codec> SegmentReader<D, C> {
             core,
             is_nrt,
             field_infos,
+            doc_values_producer_preload: Arc::new(RwLock::new(doc_values_producer_preload)),
             doc_values_producer,
-            doc_values_preload: Arc::new(RwLock::new(doc_values_preload)),
+            doc_values_local_preload: Arc::new(RwLock::new(doc_values_local_preload)),
             doc_values_local,
         }
     }
@@ -582,17 +604,7 @@ impl<D: Directory + 'static, C: Codec> SegmentReader<D, C> {
         core: Arc<SegmentCoreReaders<D, C>>,
     ) -> Result<Self> {
         let field_infos = Self::init_field_infos(si.as_ref(), core.as_ref())?;
-        let doc_values =
-            Self::init_doc_values_producer(core.as_ref(), si.as_ref(), Arc::clone(&field_infos))?;
-        Ok(Self::new(
-            si,
-            live_docs,
-            num_docs,
-            core,
-            true,
-            field_infos,
-            doc_values,
-        ))
+        Ok(Self::new(si, live_docs, num_docs, core, true, field_infos))
     }
 
     pub fn build_from_reader(
@@ -634,11 +646,7 @@ impl<D: Directory + 'static, C: Codec> SegmentReader<D, C> {
         }
 
         let field_infos = Self::init_field_infos(si.as_ref(), sr.core.as_ref())?;
-        let doc_values_producer = Self::init_doc_values_producer(
-            sr.core.as_ref(),
-            si.as_ref(),
-            Arc::clone(&field_infos),
-        )?;
+
         Ok(SegmentReader::new(
             si,
             live_docs,
@@ -646,7 +654,6 @@ impl<D: Directory + 'static, C: Codec> SegmentReader<D, C> {
             Arc::clone(&sr.core),
             is_nrt,
             field_infos,
-            doc_values_producer,
         ))
     }
 
@@ -701,9 +708,6 @@ impl<D: Directory + 'static, C: Codec> SegmentReader<D, C> {
             Arc::new(MatchAllBits::new(si.info.max_doc() as usize))
         };
 
-        let doc_values_producer =
-            SegmentReader::init_doc_values_producer(&core, &si, Arc::clone(&field_infos))?;
-
         Ok(SegmentReader::new(
             Arc::clone(si),
             live_docs,
@@ -711,7 +715,6 @@ impl<D: Directory + 'static, C: Codec> SegmentReader<D, C> {
             core,
             false,
             field_infos,
-            doc_values_producer,
         ))
     }
 
@@ -732,37 +735,41 @@ impl<D: Directory + 'static, C: Codec> SegmentReader<D, C> {
         core: &SegmentCoreReaders<D, C>,
         si: &SegmentCommitInfo<D, C>,
         field_infos: Arc<FieldInfos>,
-    ) -> Result<ThreadLocalDocValueProducer> {
+    ) -> Option<Arc<dyn DocValuesProducer>> {
         // initDocValuesProducer: init most recent DocValues for the current commit
         let dir = match core.cfs_reader {
             Some(ref d) => Arc::clone(d),
             None => Arc::new(CfsDirectory::Raw(Arc::clone(&si.info.directory))),
         };
 
-        let doc_values_producer = if !field_infos.has_doc_values {
-            ThreadLocal::new()
+        if !field_infos.has_doc_values {
+            None
         } else if si.has_field_updates() {
             let dv_producer: Box<dyn DocValuesProducer> =
                 Box::new(SegmentDocValues::new(&si, dir, field_infos));
 
-            let doc_values_producer = ThreadLocal::new();
-            doc_values_producer.get_or(|| Box::new(Arc::from(dv_producer)));
-            doc_values_producer
+            Some(Arc::from(dv_producer))
         } else {
             // simple case, no DocValues updates
-            let dv_producer =
-                SegmentDocValues::get_doc_values_producer(-1_i64, &si, dir, field_infos)?;
-
-            let doc_values_producer = ThreadLocal::new();
-            doc_values_producer.get_or(|| Box::new(Arc::from(dv_producer)));
-            doc_values_producer
-        };
-        Ok(doc_values_producer)
+            if let Ok(dv_producer) =
+                SegmentDocValues::get_doc_values_producer(-1_i64, &si, dir, field_infos)
+            {
+                Some(Arc::from(dv_producer))
+            } else {
+                None
+            }
+        }
     }
 
     fn init_local_doc_values_producer(&self) -> Result<()> {
         if self.field_infos.has_doc_values {
             if self.doc_values_producer.get().is_some() {
+                return Ok(());
+            }
+
+            if let Some(dv_producer) = self.doc_values_producer_preload.write()?.pop() {
+                self.doc_values_producer.get_or(|| Box::new(dv_producer));
+
                 return Ok(());
             }
 
@@ -829,7 +836,7 @@ impl<D: Directory + 'static, C: Codec> SegmentReader<D, C> {
         self.init_local_doc_values_producer()?;
 
         Ok(self.doc_values_local.get_or(|| {
-            if let Some(dv_preload) = self.doc_values_preload.write().unwrap().pop() {
+            if let Some(dv_preload) = self.doc_values_local_preload.write().unwrap().pop() {
                 Box::new(dv_preload)
             } else {
                 Box::new(RefCell::new(HashMap::new()))

@@ -1101,7 +1101,9 @@ where
             &mut any_changes,
         )?;
 
-        let _ = Self::maybe_merge(index_writer, MergerTrigger::FullFlush, None);
+        if any_changes {
+            let _ = Self::maybe_merge(index_writer, MergerTrigger::FullFlush, None);
+        }
 
         debug!(
             "IW - get_reader took {} ms",
