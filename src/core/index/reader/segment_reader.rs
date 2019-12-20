@@ -16,7 +16,7 @@ use std::collections::{hash_map::Entry, HashMap, HashSet};
 use std::fmt;
 use std::mem;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use error::{ErrorKind::IllegalArgument, ErrorKind::IllegalState, Result};
 use thread_local::{CachedThreadLocal, ThreadLocal};
@@ -484,6 +484,7 @@ pub struct SegmentReader<D: Directory, C: Codec> {
     // context: LeafReaderContext
     doc_values_producer: ThreadLocalDocValueProducer,
     // docs_with_field_local: CachedThreadLocal<RefCell<HashMap<String, BitsRef>>>,
+    doc_values_preload: Arc<RwLock<Vec<RefCell<HashMap<String, DocValuesProviderEnum>>>>>,
     doc_values_local: CachedThreadLocal<RefCell<HashMap<String, DocValuesProviderEnum>>>,
 }
 
@@ -503,11 +504,63 @@ impl<D: Directory + 'static, C: Codec> SegmentReader<D, C> {
         field_infos: Arc<FieldInfos>,
         doc_values_producer: ThreadLocalDocValueProducer,
     ) -> SegmentReader<D, C> {
-        //        let docs_with_field_local = CachedThreadLocal::new();
-        //        docs_with_field_local.get_or(|| Box::new(RefCell::new(HashMap::new())));
-
         let doc_values_local = CachedThreadLocal::new();
         doc_values_local.get_or(|| Box::new(RefCell::new(HashMap::new())));
+
+        let dv_producer = doc_values_producer.get().unwrap();
+        let max_preload_num = 5 * num_cpus::get_physical();
+        let mut doc_values_preload: Vec<RefCell<HashMap<String, DocValuesProviderEnum>>> =
+            Vec::with_capacity(max_preload_num);
+        for _ in 0..max_preload_num {
+            let mut dvs = HashMap::new();
+            for (field_name, field_info) in field_infos.by_name.iter() {
+                match field_info.doc_values_type {
+                    DocValuesType::Binary => {
+                        if let Ok(cell) = dv_producer.get_binary(field_info) {
+                            dvs.insert(
+                                field_name.to_string(),
+                                DocValuesProviderEnum::Binary(Arc::clone(&cell)),
+                            );
+                        }
+                    }
+                    DocValuesType::Numeric => {
+                        if let Ok(cell) = dv_producer.get_numeric(field_info) {
+                            dvs.insert(
+                                field_name.to_string(),
+                                DocValuesProviderEnum::Numeric(Arc::clone(&cell)),
+                            );
+                        }
+                    }
+                    DocValuesType::SortedNumeric => {
+                        if let Ok(cell) = dv_producer.get_sorted_numeric(field_info) {
+                            dvs.insert(
+                                field_name.to_string(),
+                                DocValuesProviderEnum::SortedNumeric(Arc::clone(&cell)),
+                            );
+                        }
+                    }
+                    DocValuesType::Sorted => {
+                        if let Ok(cell) = dv_producer.get_sorted(field_info) {
+                            dvs.insert(
+                                field_name.to_string(),
+                                DocValuesProviderEnum::Sorted(Arc::clone(&cell)),
+                            );
+                        }
+                    }
+                    DocValuesType::SortedSet => {
+                        if let Ok(cell) = dv_producer.get_sorted_set(field_info) {
+                            dvs.insert(
+                                field_name.to_string(),
+                                DocValuesProviderEnum::SortedSet(Arc::clone(&cell)),
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            doc_values_preload.push(RefCell::new(dvs));
+        }
 
         SegmentReader {
             si,
@@ -517,7 +570,7 @@ impl<D: Directory + 'static, C: Codec> SegmentReader<D, C> {
             is_nrt,
             field_infos,
             doc_values_producer,
-            // docs_with_field_local,
+            doc_values_preload: Arc::new(RwLock::new(doc_values_preload)),
             doc_values_local,
         }
     }
@@ -771,6 +824,18 @@ impl<D: Directory + 'static, C: Codec> SegmentReader<D, C> {
             )?))
         }
     }
+
+    fn doc_values_local(&self) -> Result<&RefCell<HashMap<String, DocValuesProviderEnum>>> {
+        self.init_local_doc_values_producer()?;
+
+        Ok(self.doc_values_local.get_or(|| {
+            if let Some(dv_preload) = self.doc_values_preload.write().unwrap().pop() {
+                Box::new(dv_preload)
+            } else {
+                Box::new(RefCell::new(HashMap::new()))
+            }
+        }))
+    }
 }
 
 impl<D: Directory + 'static, C: Codec> IndexReader for SegmentReader<D, C> {
@@ -867,11 +932,8 @@ where
     }
 
     fn get_numeric_doc_values(&self, field: &str) -> Result<Box<dyn NumericDocValues>> {
-        self.init_local_doc_values_producer()?;
-
         match self
-            .doc_values_local
-            .get_or(|| Box::new(RefCell::new(HashMap::new())))
+            .doc_values_local()?
             .borrow_mut()
             .entry(String::from(field))
         {
@@ -899,10 +961,8 @@ where
     }
 
     fn get_binary_doc_values(&self, field: &str) -> Result<Box<dyn BinaryDocValues>> {
-        self.init_local_doc_values_producer()?;
         match self
-            .doc_values_local
-            .get_or(|| Box::new(RefCell::new(HashMap::new())))
+            .doc_values_local()?
             .borrow_mut()
             .entry(String::from(field))
         {
@@ -930,11 +990,8 @@ where
     }
 
     fn get_sorted_doc_values(&self, field: &str) -> Result<Box<dyn SortedDocValues>> {
-        self.init_local_doc_values_producer()?;
-
         match self
-            .doc_values_local
-            .get_or(|| Box::new(RefCell::new(HashMap::new())))
+            .doc_values_local()?
             .borrow_mut()
             .entry(String::from(field))
         {
@@ -964,11 +1021,8 @@ where
         &self,
         field: &str,
     ) -> Result<Box<dyn SortedNumericDocValues>> {
-        self.init_local_doc_values_producer()?;
-
         match self
-            .doc_values_local
-            .get_or(|| Box::new(RefCell::new(HashMap::new())))
+            .doc_values_local()?
             .borrow_mut()
             .entry(String::from(field))
         {
@@ -996,11 +1050,8 @@ where
     }
 
     fn get_sorted_set_doc_values(&self, field: &str) -> Result<Box<dyn SortedSetDocValues>> {
-        self.init_local_doc_values_producer()?;
-
         match self
-            .doc_values_local
-            .get_or(|| Box::new(RefCell::new(HashMap::new())))
+            .doc_values_local()?
             .borrow_mut()
             .entry(String::from(field))
         {
@@ -1041,17 +1092,6 @@ where
     }
 
     fn get_docs_with_field(&self, field: &str) -> Result<Box<dyn BitsMut>> {
-        //        if let Some(prev) = self
-        //            .docs_with_field_local
-        //            .get_or(|| Box::new(RefCell::new(HashMap::new())))
-        //            .borrow_mut()
-        //            .get(field)
-        //        {
-        //            return Ok(Arc::clone(prev));
-        //        }
-        //
-        //        self.init_local_doc_values_producer()?;
-
         match self.field_infos.field_info_by_name(field) {
             Some(fi)
                 if fi.doc_values_type != DocValuesType::Null
