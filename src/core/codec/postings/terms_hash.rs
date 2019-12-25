@@ -73,12 +73,9 @@ impl TermsHashBase {
         MS: MergeScheduler,
         MP: MergePolicy,
     {
-        let byte_pool =
-            unsafe { ByteBlockPool::new(doc_writer.byte_block_allocator.copy_unsafe()) };
-
         TermsHashBase {
             int_pool: IntBlockPool::new(doc_writer.int_block_allocator.shallow_copy()),
-            byte_pool,
+            byte_pool: ByteBlockPool::new(doc_writer.byte_block_allocator.shallow_copy()),
             term_byte_pool: ptr::null_mut(),
         }
     }

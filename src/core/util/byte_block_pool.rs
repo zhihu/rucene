@@ -303,7 +303,7 @@ pub trait ByteBlockAllocator {
         vec![0u8; self.block_size()]
     }
 
-    unsafe fn copy_unsafe(&self) -> Box<dyn ByteBlockAllocator>;
+    fn shallow_copy(&self) -> Box<dyn ByteBlockAllocator>;
 }
 
 pub struct DirectAllocator {
@@ -329,7 +329,7 @@ impl ByteBlockAllocator for DirectAllocator {
 
     fn recycle_byte_blocks(&mut self, _blocks: &mut [Vec<u8>], _start: usize, _end: usize) {}
 
-    unsafe fn copy_unsafe(&self) -> Box<dyn ByteBlockAllocator> {
+    fn shallow_copy(&self) -> Box<dyn ByteBlockAllocator> {
         Box::new(DirectAllocator::new(self.block_size))
     }
 }
@@ -362,7 +362,7 @@ impl ByteBlockAllocator for DirectTrackingAllocator {
         vec![0u8; self.block_size]
     }
 
-    unsafe fn copy_unsafe(&self) -> Box<dyn ByteBlockAllocator> {
+    fn shallow_copy(&self) -> Box<dyn ByteBlockAllocator> {
         Box::new(DirectTrackingAllocator {
             block_size: self.block_size,
         })

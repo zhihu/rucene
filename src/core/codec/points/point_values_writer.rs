@@ -50,7 +50,7 @@ impl PointValuesWriter {
         MS: MergeScheduler,
         MP: MergePolicy,
     {
-        let bytes = unsafe { ByteBlockPool::new(doc_writer.byte_block_allocator.copy_unsafe()) };
+        let bytes = ByteBlockPool::new(doc_writer.byte_block_allocator.shallow_copy());
         PointValuesWriter {
             field_info: field_info.clone(),
             bytes,

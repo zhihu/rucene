@@ -204,7 +204,7 @@ where
 
         let per_thread: Arc<ThreadState<D, C, MS, MP>> = self.obtain_and_lock()?;
         let seq_no = {
-            let l = match per_thread.lock.try_lock() {
+            let l = match per_thread.lock.lock() {
                 Ok(g) => g,
                 Err(e) => {
                     bail!(
@@ -294,7 +294,7 @@ where
 
         let per_thread: Arc<ThreadState<D, C, MS, MP>> = self.obtain_and_lock()?;
         let seq_no = {
-            let guard = match per_thread.lock.try_lock() {
+            let guard = match per_thread.lock.lock() {
                 Ok(g) => g,
                 Err(e) => {
                     bail!(
@@ -567,7 +567,7 @@ where
     }
 
     fn start_flush_daemon(&self) {
-        let thread_num = 3.max(5.min(num_cpus::get() / 2));
+        let thread_num = 5.max(8.min(num_cpus::get() / 2));
 
         for _i in 0..thread_num {
             let index_writer_inner = self.index_writer();
