@@ -86,6 +86,10 @@ impl TermsHashBase {
         self.int_pool.reset(false, false);
         self.byte_pool.reset(false, false);
     }
+
+    pub fn need_flush(&self) -> bool {
+        self.int_pool.need_flush
+    }
 }
 
 pub trait TermsHash<D: Directory, C: Codec> {
@@ -153,6 +157,10 @@ where
         self.next_terms_hash
             .set_term_bytes_pool(&mut self.base.byte_pool);
         self.next_terms_hash.set_inited(true);
+    }
+
+    pub fn need_flush(&self) -> bool {
+        self.base.need_flush()
     }
 }
 
@@ -484,7 +492,7 @@ where
         self.scratch = self
             .terms()
             .base
-            .byte_block_pool()
+            .byte_pool()
             .set_bytes_ref(text_start as usize);
     }
 }

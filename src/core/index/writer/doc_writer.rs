@@ -570,23 +570,19 @@ where
         let thread_num = 5.max(8.min(num_cpus::get() / 2));
 
         for _i in 0..thread_num {
-            let index_writer_inner = self.index_writer();
+            let index_writer_inner = self.index_writer.clone();
             let closed = self.closed.clone();
-            thread::spawn(move || {
-                let doc_writer = &index_writer_inner.doc_writer;
+            thread::spawn(move || loop {
+                if closed.load(Acquire) {
+                    return;
+                }
 
-                loop {
-                    if closed.load(Acquire) {
-                        return;
-                    }
+                thread::sleep(Duration::from_millis(100));
 
-                    thread::sleep(Duration::from_millis(3000));
-
-                    if let Some(next_pending_flush) = doc_writer.flush_control.next_pending_flush()
-                    {
-                        if let Err(e) = doc_writer.do_flush(next_pending_flush) {
-                            error!("flush err:{:?}", e);
-                        }
+                let doc_writer = &index_writer_inner.upgrade().unwrap().doc_writer;
+                if let Some(next_pending_flush) = doc_writer.flush_control.next_pending_flush() {
+                    if let Err(e) = doc_writer.do_flush(next_pending_flush) {
+                        error!("flush err:{:?}", e);
                     }
                 }
             });

@@ -32,6 +32,7 @@ use std::mem::MaybeUninit;
 use std::ptr;
 
 const HASH_INIT_SIZE: usize = 4;
+const AUTO_FLUSH_BYTES_USED: usize = 1024 * 1024 * 1024;
 
 pub struct TermsHashPerFieldBase<T: PostingsArray> {
     // Copied from our perThread
@@ -49,8 +50,8 @@ pub struct TermsHashPerFieldBase<T: PostingsArray> {
     // cur int_uptos index for int_pool.buffer
     int_upto_start: usize,
     do_next_call: bool,
-    inited: bool,
     // must init before use
+    inited: bool,
 }
 
 impl<T: PostingsArray> Drop for TermsHashPerFieldBase<T> {
@@ -106,16 +107,16 @@ impl<T: PostingsArray + 'static> TermsHashPerFieldBase<T> {
         }
     }
 
-    fn int_block_pool(&self) -> &IntBlockPool {
+    pub fn int_pool(&self) -> &IntBlockPool {
         unsafe { &*self.int_pool }
     }
-    fn int_pool_mut(&mut self) -> &mut IntBlockPool {
+    pub fn int_pool_mut(&mut self) -> &mut IntBlockPool {
         unsafe { &mut *self.int_pool }
     }
-    pub fn byte_block_pool(&self) -> &ByteBlockPool {
+    pub fn byte_pool(&self) -> &ByteBlockPool {
         unsafe { &*self.byte_pool }
     }
-    fn byte_pool_mut(&mut self) -> &mut ByteBlockPool {
+    pub fn byte_pool_mut(&mut self) -> &mut ByteBlockPool {
         unsafe { &mut *self.byte_pool }
     }
     pub fn term_pool(&self) -> &ByteBlockPool {
@@ -129,21 +130,21 @@ impl<T: PostingsArray + 'static> TermsHashPerFieldBase<T> {
             let term_id = term_id as usize;
             // first time we are seeing this token since we last flushed the hash.
             // Init stream slices
-            if self.num_posting_int + self.int_block_pool().int_upto > INT_BLOCK_SIZE {
+            if self.num_posting_int + self.int_pool().int_upto > INT_BLOCK_SIZE {
                 self.int_pool_mut().next_buffer();
             }
-            if ByteBlockPool::BYTE_BLOCK_SIZE - self.byte_block_pool().byte_upto
+            if ByteBlockPool::BYTE_BLOCK_SIZE - self.byte_pool().byte_upto
                 < self.num_posting_int * ByteBlockPool::FIRST_LEVEL_SIZE
             {
                 self.byte_pool_mut().next_buffer();
             }
 
-            self.int_upto_idx = self.int_block_pool().buffer_upto as usize;
-            self.int_upto_start = self.int_block_pool().int_upto;
+            self.int_upto_idx = self.int_pool().buffer_upto as usize;
+            self.int_upto_start = self.int_pool().int_upto;
             self.int_pool_mut().int_upto += self.stream_count;
 
             self.postings_array.parallel_array_mut().int_starts[term_id] =
-                (self.int_upto_start as isize + self.int_block_pool().int_offset) as usize as u32;
+                (self.int_upto_start as isize + self.int_pool().int_offset) as usize as u32;
 
             for i in 0..self.stream_count {
                 let upto = self
@@ -151,11 +152,11 @@ impl<T: PostingsArray + 'static> TermsHashPerFieldBase<T> {
                     .new_slice(ByteBlockPool::FIRST_LEVEL_SIZE);
                 unsafe {
                     (*self.int_pool).buffers[self.int_upto_idx][self.int_upto_start + i] =
-                        (upto as isize + self.byte_block_pool().byte_offset) as i32;
+                        (upto as isize + self.byte_pool().byte_offset) as i32;
                 }
             }
             self.postings_array.parallel_array_mut().byte_starts[term_id] =
-                self.int_block_pool().buffers[self.int_upto_idx][self.int_upto_start] as u32;
+                self.int_pool().buffers[self.int_upto_idx][self.int_upto_start] as u32;
         } else {
             let term_id = -term_id - 1;
             let int_start =
@@ -169,17 +170,21 @@ impl<T: PostingsArray + 'static> TermsHashPerFieldBase<T> {
         debug_assert!(self.inited);
         unsafe {
             let upto =
-                (*self.int_pool).buffers[self.int_upto_idx][self.int_upto_start + stream] as usize;
+                self.int_pool().buffers[self.int_upto_idx][self.int_upto_start + stream] as usize;
+            if Self::check_flush(upto) {
+                self.int_pool_mut().need_flush = true;
+            }
+
             let mut byte_pool_idx = upto >> ByteBlockPool::BYTE_BLOCK_SHIFT;
             let mut offset = upto & ByteBlockPool::BYTE_BLOCK_MASK;
-            if (*self.byte_pool).buffers[byte_pool_idx][offset] != 0 {
+            if self.byte_pool().buffers[byte_pool_idx][offset] != 0 {
                 // End of slice; allocate a new one
-                offset = (*self.byte_pool).alloc_slice(byte_pool_idx, offset);
-                byte_pool_idx = (*self.byte_pool).buffer_upto as usize;
+                offset = self.byte_pool_mut().alloc_slice(byte_pool_idx, offset);
+                byte_pool_idx = self.byte_pool().buffer_upto as usize;
                 (*self.int_pool).buffers[self.int_upto_idx][self.int_upto_start + stream] =
-                    (offset as isize + (*self.byte_pool).byte_offset) as i32;
+                    (offset as isize + self.byte_pool().byte_offset) as i32;
             }
-            (*self.byte_pool).buffers[byte_pool_idx][offset] = b;
+            self.byte_pool_mut().buffers[byte_pool_idx][offset] = b;
             (*self.int_pool).buffers[self.int_upto_idx][self.int_upto_start + stream] += 1;
         }
     }
@@ -213,6 +218,14 @@ impl<T: PostingsArray + 'static> TermsHashPerFieldBase<T> {
             self.bytes_hash.get_mut().sort();
         }
     }
+
+    fn check_flush(bytes_used: usize) -> bool {
+        if bytes_used > AUTO_FLUSH_BYTES_USED {
+            true
+        } else {
+            false
+        }
+    }
 }
 
 pub trait TermsHashPerField: Ord + PartialOrd + Eq + PartialEq {
@@ -238,12 +251,8 @@ pub trait TermsHashPerField: Ord + PartialOrd + Eq + PartialEq {
         let upto = int_start as usize & INT_BLOCK_MASK;
         let start_index = self.base().postings_array.parallel_array().byte_starts[term_id] as usize
             + stream * ByteBlockPool::FIRST_LEVEL_SIZE;
-        let end_index = self.base().int_block_pool().buffers[ints_idx][upto + stream];
-        reader.init(
-            &self.base().byte_block_pool(),
-            start_index,
-            end_index as usize,
-        );
+        let end_index = self.base().int_pool().buffers[ints_idx][upto + stream];
+        reader.init(&self.base().byte_pool(), start_index, end_index as usize);
     }
 
     // Secondary entry point (for 2nd & subsequent TermsHash),

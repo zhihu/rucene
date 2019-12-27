@@ -181,8 +181,9 @@ impl<C1: Codec, MS1: MergeScheduler, MP1: MergePolicy> FlushPolicy
         MS: MergeScheduler,
         MP: MergePolicy,
     {
-        if self.index_write_config.flush_on_doc_count()
-            && state.dwpt().num_docs_in_ram >= self.index_write_config.max_buffered_docs()
+        if (self.index_write_config.flush_on_doc_count()
+            && state.dwpt().num_docs_in_ram >= self.index_write_config.max_buffered_docs())
+            || unsafe { state.dwpt().consumer.get_ref().need_flush() }
         {
             // Flush this state by num docs
             control.set_flush_pending(state, lg);

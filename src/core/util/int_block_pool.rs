@@ -55,6 +55,8 @@ pub struct IntBlockPool {
     pub int_upto: usize,
     /// Current head offset
     pub int_offset: isize,
+    /// 2GB limit, auto flush
+    pub need_flush: bool,
     allocator: Box<dyn IntAllocator>,
 }
 
@@ -65,6 +67,7 @@ impl Default for IntBlockPool {
             buffer_upto: -1,
             int_upto: INT_BLOCK_SIZE,
             int_offset: -(INT_BLOCK_SIZE as isize),
+            need_flush: false,
             allocator: Box::new(DirectIntAllocator::default()),
         }
     }
@@ -81,6 +84,7 @@ impl IntBlockPool {
             buffer_upto: -1,
             int_upto: INT_BLOCK_SIZE,
             int_offset: -(INT_BLOCK_SIZE as isize),
+            need_flush: false,
             allocator,
         }
     }

@@ -733,6 +733,10 @@ where
         self.stored_fields_consumer.abort();
         res
     }
+
+    pub fn need_flush(&self) -> bool {
+        self.terms_hash.need_flush()
+    }
 }
 
 pub struct PerField<T: TermsHashPerField> {
