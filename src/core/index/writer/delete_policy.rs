@@ -98,9 +98,6 @@ impl KeepOnlyLastCommitDeletionPolicy {
 
     pub fn on_commit(&self, mut commits: Vec<&mut CommitPoint>) -> Result<()> {
         commits.pop();
-        if commits.len() > 0 && commits[commits.len() - 1].has_dv_updates() {
-            commits.pop();
-        }
         for commit in commits {
             commit.delete()?;
         }

@@ -245,6 +245,20 @@ where
         self.writer = writer;
     }
 
+    pub fn set_associate_writer(
+        &mut self,
+        writer: Option<IndexWriter<D, C, MS, MP>>,
+    ) -> Result<()> {
+        if self.writer.is_none() && self.readers.len() > 0 && writer.is_some() {
+            writer
+                .as_ref()
+                .unwrap()
+                .inc_ref_deleter(&self.segment_infos)?;
+            self.writer = writer;
+        }
+        Ok(())
+    }
+
     pub fn get_writer(&self) -> Option<IndexWriter<D, C, MS, MP>> {
         self.writer.clone()
     }
