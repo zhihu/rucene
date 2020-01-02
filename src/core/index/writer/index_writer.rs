@@ -644,6 +644,10 @@ where
     pub fn tragedy(&self) -> Option<&Error> {
         self.writer.tragedy.as_ref()
     }
+
+    pub fn explicit_merge(&self) -> Result<()> {
+        IndexWriterInner::maybe_merge(self, MergerTrigger::Explicit, None)
+    }
 }
 
 impl<D, C, MS, MP> IndexWriter<D, C, MS, MP>
