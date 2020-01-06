@@ -182,13 +182,15 @@ const START_MB_PER_SEC: f64 = 20.0;
 // their own thread (up until maxMergeCount).
 const MIN_BIG_MERGE_MB: f64 = 50.0;
 
+pub const MAX_MERGING_COUNT: usize = 5;
+
 impl ConcurrentMergeSchedulerInner {
     fn new(max_thread_count: usize) -> Self {
         ConcurrentMergeSchedulerInner {
             lock: Mutex::new(()),
             cond: Condvar::new(),
             merge_tasks: vec![],
-            max_merge_count: max_thread_count.max(5),
+            max_merge_count: max_thread_count.max(MAX_MERGING_COUNT),
             max_thread_count,
             merge_thread_count: 0,
             target_mb_per_sec: START_MB_PER_SEC,

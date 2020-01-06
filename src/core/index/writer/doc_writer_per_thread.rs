@@ -31,11 +31,8 @@ use core::{
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockWriteGuard, Weak};
 use std::time::SystemTime;
-
-use crossbeam::queue::ArrayQueue;
-use crossbeam::sync::{ShardedLock, ShardedLockWriteGuard};
 
 use core::codec::{PackedLongDocMap, SorterDocMap};
 use core::util::external::Volatile;
@@ -664,7 +661,7 @@ pub struct DocumentsWriterPerThreadPool<
     MS: MergeScheduler,
     MP: MergePolicy,
 > {
-    inner: ShardedLock<DWPTPoolInner<D, C, MS, MP>>,
+    inner: RwLock<DWPTPoolInner<D, C, MS, MP>>,
     aborted: Volatile<bool>,
 }
 
@@ -676,7 +673,7 @@ struct DWPTPoolInner<
 > {
     thread_states: Vec<Arc<ThreadState<D, C, MS, MP>>>,
     // valid thread_state index in `self.thread_states`
-    free_list: ArrayQueue<usize>,
+    free_list: Vec<usize>,
 }
 
 impl<D, C, MS, MP> DocumentsWriterPerThreadPool<D, C, MS, MP>
@@ -689,10 +686,10 @@ where
     pub fn new() -> Self {
         let inner = DWPTPoolInner {
             thread_states: vec![],
-            free_list: ArrayQueue::new(32),
+            free_list: Vec::with_capacity(64),
         };
         DocumentsWriterPerThreadPool {
-            inner: ShardedLock::new(inner),
+            inner: RwLock::new(inner),
             aborted: Volatile::new(false),
         }
     }
@@ -716,19 +713,19 @@ where
     /// NOTE: the returned `ThreadState` is already locked iff non-None
     fn new_thread_state(
         &self,
-        mut guard: ShardedLockWriteGuard<'_, DWPTPoolInner<D, C, MS, MP>>,
+        mut guard: RwLockWriteGuard<'_, DWPTPoolInner<D, C, MS, MP>>,
     ) -> Result<Arc<ThreadState<D, C, MS, MP>>> {
         let thread_state = Arc::new(ThreadState::new(None, guard.thread_states.len()));
         guard.thread_states.push(thread_state);
         let idx = guard.thread_states.len() - 1;
         // recap the free list queue
-        if guard.thread_states.len() > guard.free_list.capacity() {
-            let new_free_list = ArrayQueue::new(guard.free_list.capacity() * 2);
-            while let Ok(idx) = guard.free_list.pop() {
-                new_free_list.push(idx).unwrap();
-            }
-            guard.free_list = new_free_list;
-        }
+        //        if guard.thread_states.len() > guard.free_list.capacity() {
+        //            let mut new_free_list = Vec::with_capacity(guard.free_list.capacity() * 2);
+        //            while let Some(idx) = guard.free_list.pop() {
+        //                new_free_list.push(idx);
+        //            }
+        //            guard.free_list = new_free_list;
+        //        }
         Ok(Arc::clone(&guard.thread_states[idx]))
     }
 
@@ -745,8 +742,8 @@ where
 
     pub fn get_and_lock(&self) -> Result<Arc<ThreadState<D, C, MS, MP>>> {
         {
-            let guard = self.inner.read().unwrap();
-            if let Ok(idx) = guard.free_list.pop() {
+            let mut guard = self.inner.write().unwrap();
+            if let Some(idx) = guard.free_list.pop() {
                 return Ok(Arc::clone(&guard.thread_states[idx]));
             }
         }
@@ -755,9 +752,9 @@ where
     }
 
     pub fn release(&self, state: Arc<ThreadState<D, C, MS, MP>>) {
-        let guard = self.inner.read().unwrap();
+        let mut guard = self.inner.write().unwrap();
         // this shouldn't fail
-        guard.free_list.push(state.index).unwrap();
+        guard.free_list.push(state.index);
         // In case any thread is waiting, wake one of them up since we just
         // released a thread state; notify() should be sufficient but we do
         // notifyAll defensively:

@@ -305,7 +305,7 @@ where
     }
 
     pub fn num_docs(&self) -> u32 {
-        let _l = self.writer.lock.lock().unwrap();
+        // let _l = self.writer.lock.lock().unwrap();
         let mut count = self.writer.doc_writer.num_docs();
         for info in &self.writer.segment_infos.segments {
             count += info.info.max_doc() as u32 - self.writer.num_deleted_docs(&info);
@@ -1106,7 +1106,7 @@ where
         )?;
 
         if any_changes {
-            let _ = Self::maybe_merge(index_writer, MergerTrigger::FullFlush, None);
+            let _ = Self::maybe_merge(index_writer, MergerTrigger::Explicit, None);
         }
 
         debug!(
@@ -2102,7 +2102,7 @@ where
         // We can be called during close, when closing==true, so we must pass false to ensureOpen:
         index_writer.writer.ensure_open(false)?;
         if Self::do_flush(index_writer, apply_all_deletes)? && trigger_merge {
-            Self::maybe_merge(index_writer, MergerTrigger::FullFlush, None)?;
+            Self::maybe_merge(index_writer, MergerTrigger::Explicit, None)?;
         }
         Ok(())
     }
