@@ -12,7 +12,7 @@
 // limitations under the License.
 
 use serde;
-use serde::ser::SerializeMap;
+use serde::ser::{SerializeMap, SerializeSeq};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt;
@@ -29,8 +29,9 @@ pub enum VariantValue {
     Long(i64),
     Float(f32),
     Double(f64),
-    VString(String), // SHOULD BORROW ?
-    Binary(Vec<u8>), // SHOULD BORROW ?
+    VString(String),
+    Binary(Vec<u8>),
+    Vec(Vec<VariantValue>),
     Map(HashMap<String, VariantValue>),
 }
 
@@ -113,6 +114,13 @@ impl VariantValue {
         }
     }
 
+    pub fn get_vec(&self) -> Option<&Vec<VariantValue>> {
+        match self {
+            VariantValue::Vec(v) => Some(v),
+            _ => None,
+        }
+    }
+
     pub fn get_map(&self) -> Option<&HashMap<String, VariantValue>> {
         match self {
             VariantValue::Map(m) => Some(m),
@@ -135,6 +143,7 @@ impl fmt::Display for VariantValue {
             VariantValue::Double(d) => write!(f, "{:.6}", d),
             VariantValue::VString(ref s) => write!(f, "{}", s),
             VariantValue::Binary(ref _b) => write!(f, "Binary(unprintable)"),
+            VariantValue::Vec(ref v) => write!(f, "{:?}", v),
             VariantValue::Map(ref m) => write!(f, "{:?}", m),
         }
     }
@@ -155,6 +164,14 @@ impl serde::Serialize for VariantValue {
             VariantValue::Double(d) => serializer.serialize_f64(d),
             VariantValue::VString(ref s) => serializer.serialize_str(s.as_str()),
             VariantValue::Binary(ref b) => serializer.serialize_bytes(b),
+            VariantValue::Vec(ref vec) => {
+                let mut seq = serializer.serialize_seq(Some(vec.len())).unwrap();
+                for v in vec {
+                    seq.serialize_element(v)?;
+                }
+
+                seq.end()
+            }
             VariantValue::Map(ref m) => {
                 let mut map = serializer.serialize_map(Some(m.len())).unwrap();
                 for (k, v) in m {
