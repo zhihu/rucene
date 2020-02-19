@@ -571,6 +571,8 @@ impl TieredMergePolicy {
             }
         }
 
+        next_idx = next_idx.max((self.segs_per_tier * 0.5) as usize);
+
         let merging = writer.merging_segments();
         let mut to_be_merged = HashSet::new();
         let mut candidates = vec![];

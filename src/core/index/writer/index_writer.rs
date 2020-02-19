@@ -4506,6 +4506,10 @@ where
     ) -> Result<HashMap<i32, HashSet<String>>> {
         let mut new_dv_files = HashMap::new();
         for (field, updates) in &self.pending_dv_updates {
+            if self.reader.is_none() || infos.field_info_by_name(field).is_none() {
+                continue;
+            }
+
             let info = self.reader.as_ref().unwrap().si.clone();
             let tracker = Arc::new(TrackingDirectoryWrapper::new(info.info.directory.as_ref()));
             let dv_gen = info.next_write_doc_values_gen();

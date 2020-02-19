@@ -579,10 +579,13 @@ where
 
                 thread::sleep(Duration::from_millis(100));
 
-                let doc_writer = &index_writer_inner.upgrade().unwrap().doc_writer;
-                if let Some(next_pending_flush) = doc_writer.flush_control.next_pending_flush() {
-                    if let Err(e) = doc_writer.do_flush(next_pending_flush) {
-                        error!("flush err:{:?}", e);
+                if let Some(index_writer_inner_upgrade) = index_writer_inner.upgrade() {
+                    let doc_writer = &index_writer_inner_upgrade.doc_writer;
+                    if let Some(next_pending_flush) = doc_writer.flush_control.next_pending_flush()
+                    {
+                        if let Err(e) = doc_writer.do_flush(next_pending_flush) {
+                            error!("flush err:{:?}", e);
+                        }
                     }
                 }
             });
