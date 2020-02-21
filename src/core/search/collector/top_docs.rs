@@ -66,9 +66,6 @@ impl TopDocsBaseCollector {
 
     fn add_doc(&mut self, doc_id: DocId, score: f32) {
         debug_assert!(self.pq.len() <= self.estimated_hits);
-
-        self.total_hits += 1;
-
         let at_capacity = self.pq.len() == self.estimated_hits;
 
         if !at_capacity {
@@ -94,6 +91,7 @@ impl Collector for TopDocsBaseCollector {
 
         let id = doc + self.cur_doc_base;
         self.add_doc(id, score);
+        self.total_hits += 1;
 
         Ok(())
     }

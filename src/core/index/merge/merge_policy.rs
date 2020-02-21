@@ -553,10 +553,6 @@ impl TieredMergePolicy {
         MP: MergePolicy,
     {
         let mut infos_sorted = segment_infos.segments.clone();
-        if infos_sorted.len() <= self.segs_per_tier as usize {
-            return Ok(None);
-        }
-
         let comparator = SegmentByteSizeDescending::new(writer, self);
         infos_sorted.sort_by(|o1, o2| comparator.compare(o1.as_ref(), o2.as_ref()));
 
