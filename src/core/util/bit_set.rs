@@ -189,6 +189,87 @@ impl FixedBitSet {
         }
     }
 
+    pub fn resize(&mut self, num_bits: usize) {
+        let num_words = bits2words(num_bits);
+        if num_words != self.bits.len() {
+            self.bits.resize(num_words, 0);
+            self.num_words = num_words;
+            self.num_bits = self.num_words << 6usize;
+        }
+    }
+
+    pub fn encode_size(&self) -> usize {
+        self.num_words << 3
+    }
+
+    pub fn count_ones_before_index2(
+        &self,
+        doc_upto: i32,
+        bit_index: usize,
+        end_index: usize,
+    ) -> u32 {
+        let mut count = doc_upto as u32;
+        if end_index > bit_index {
+            let mut start_high = bit_index >> 6;
+            let end_high = end_index >> 6;
+            if start_high < end_high {
+                let remain = self.bits[start_high] as usize >> (bit_index & 0x3F);
+                if remain != 0 {
+                    count += (remain as i64).count_ones();
+                }
+                start_high += 1;
+                for i in start_high..end_high {
+                    if self.bits[i] != 0 {
+                        count += self.bits[i].count_ones();
+                    }
+                }
+                let low_value = end_index & 0x3F;
+                if low_value > 0 {
+                    let value = self.bits[end_high] & ((1usize << low_value) - 1) as i64;
+                    if value > 0 {
+                        count += value.count_ones();
+                    }
+                }
+            } else {
+                let end_remain = end_index & 0x3F;
+                if end_remain > 0 {
+                    let value = self.bits[end_high] & ((1usize << end_remain) - 1) as i64;
+                    if value > 0 {
+                        let bit_remain = bit_index & 0x3F;
+                        let value = value >> bit_remain as i64;
+                        if value > 0 {
+                            count += value.count_ones();
+                        }
+                    }
+                }
+            }
+        }
+        count
+    }
+
+    pub fn count_ones_before_index(&self, end_index: usize) -> u32 {
+        let mut count = 0;
+        if end_index > 0 {
+            let index = end_index - 1;
+            let max = index >> 6;
+            for i in 0..max {
+                count += self.bits[i].count_ones();
+            }
+            let num_bits = (index & 0x3Fusize) + 1;
+            count += if num_bits == 64 {
+                self.bits[max].count_ones()
+            } else {
+                (self.bits[max] & ((1usize << num_bits) - 1) as i64).count_ones()
+            };
+        }
+        count
+    }
+
+    #[inline]
+    pub fn clear_all(&mut self) {
+        self.bits.iter_mut().for_each(|x| *x = 0i64);
+    }
+
     /// Checks if the bits past numBits are clear. Some methods rely on this implicit
     /// assumption: search for "Depends on the ghost bits being clear!"
     /// @return true if the bits past numBits are clear.
@@ -335,7 +416,7 @@ impl BitSet for FixedBitSet {
     }
 
     fn clear_batch(&mut self, start_index: usize, end_index: usize) {
-        debug_assert!(start_index < self.num_bits);
+        debug_assert!(start_index <= self.num_bits);
         debug_assert!(end_index <= self.num_bits);
         if end_index <= start_index {
             return;

@@ -54,3 +54,11 @@ pub use self::packed_long_values::*;
 mod block_packed_writer;
 
 pub use self::block_packed_writer::*;
+
+mod elias_fano_encoder;
+
+pub use self::elias_fano_encoder::*;
+
+mod elias_fano_decoder;
+
+pub use self::elias_fano_decoder::*;

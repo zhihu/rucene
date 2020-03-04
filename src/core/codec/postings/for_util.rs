@@ -17,8 +17,9 @@ use std::sync::{Arc, Once};
 use core::codec::postings::posting_format::BLOCK_SIZE;
 use core::store::io::{DataOutput, IndexInput, IndexOutput};
 use core::util::packed::*;
-use core::util::BitsRequired;
+use core::util::{BitSet, BitsRequired, DocId, FixedBitSet};
 
+use core::codec::postings::{EfWriterMeta, EncodeType};
 use error::Result;
 use std::mem::MaybeUninit;
 use std::ptr;
@@ -178,8 +179,20 @@ impl ForUtilInstance {
         input: &mut dyn IndexInput,
         encoded: &mut [u8],
         decoded: &mut [i32],
+        encode_type: Option<&mut EncodeType>,
     ) -> Result<()> {
-        let num_bits = input.read_byte()? as usize;
+        let code = input.read_byte()?;
+        if encode_type.is_some() {
+            let etype = ForUtil::encode_type_from_code(code);
+            match etype {
+                EncodeType::PF => {}
+                _ => {
+                    *(encode_type.unwrap()) = etype;
+                    return Ok(());
+                }
+            }
+        }
+        let num_bits = (code & 0x3F) as usize;
         debug_assert!(num_bits <= 32);
 
         if num_bits as i32 == ALL_VALUES_EQUAL {
@@ -241,8 +254,47 @@ impl ForUtil {
         input: &mut dyn IndexInput,
         encoded: &mut [u8],
         decoded: &mut [i32],
+        encode_type: Option<&mut EncodeType>,
     ) -> Result<()> {
-        self.instance.read_block(input, encoded, decoded)
+        self.instance
+            .read_block(input, encoded, decoded, encode_type)
+    }
+
+    pub fn read_other_encode_block(
+        doc_in: &mut dyn IndexInput,
+        ef_decoder: &mut Option<EliasFanoDecoder>,
+        encode_type: &EncodeType,
+        doc_bits: &mut FixedBitSet,
+        bits_min_doc: &mut DocId,
+    ) -> Result<()> {
+        match encode_type {
+            EncodeType::EF => {
+                let upper_bound = doc_in.read_vlong()?;
+                if ef_decoder.is_some() {
+                    let encoder = unsafe {
+                        &mut *(ef_decoder.as_mut().unwrap().get_encoder().as_ref()
+                            as *const EliasFanoEncoder
+                            as *mut EliasFanoEncoder)
+                    };
+                    encoder.rebuild_not_with_check(BLOCK_SIZE as i64, upper_bound)?;
+                    encoder.deserialize2(doc_in)?;
+                    ef_decoder.as_mut().unwrap().refresh();
+                } else {
+                    let mut encoder =
+                        EliasFanoEncoder::get_encoder(BLOCK_SIZE as i64, upper_bound)?;
+                    encoder.deserialize2(doc_in)?;
+                    *ef_decoder = Some(EliasFanoDecoder::new(Arc::new(encoder)));
+                }
+            }
+            EncodeType::BITSET => {
+                *bits_min_doc = doc_in.read_vint()?;
+                let num_longs = doc_in.read_byte()? as usize;
+                doc_bits.resize((num_longs << 6) as usize);
+                EliasFanoEncoder::read_data2(&mut doc_bits.bits, doc_in)?;
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     fn is_all_equal(data: &[i32]) -> bool {
@@ -272,6 +324,7 @@ impl ForUtil {
         data: &[i32],
         encoded: &mut [u8],
         out: &mut impl IndexOutput,
+        ef_writer_meta: Option<&mut EfWriterMeta>,
     ) -> Result<()> {
         if Self::is_all_equal(data) {
             out.write_byte(0)?;
@@ -286,7 +339,58 @@ impl ForUtil {
         assert!(iters * encoder.byte_value_count() as i32 >= BLOCK_SIZE);
         let encoded_size = self.instance.encoded_sizes[num_bits - 1];
         debug_assert!(iters * encoder.byte_block_count() as i32 >= encoded_size);
+        if ef_writer_meta.is_some() {
+            let meta = ef_writer_meta.unwrap();
+            if meta.use_ef {
+                let mut ef_encoder = EliasFanoEncoder::get_encoder(
+                    BLOCK_SIZE as i64,
+                    (meta.ef_upper_doc - meta.ef_base_doc - 1) as i64,
+                )?;
+                let ef_encode_size = ef_encoder.encode_size();
+                if ef_encode_size <= MAX_ENCODED_SIZE as i32 {
+                    let mut doc_id = meta.ef_base_doc;
+                    if doc_id < 0 {
+                        doc_id = 0;
+                    }
+                    let mut min_doc = i32::max_value();
+                    let mut max_doc = 0;
+                    for i in 0..BLOCK_SIZE as usize {
+                        doc_id += data[i];
+                        if doc_id > max_doc {
+                            max_doc = doc_id;
+                        }
+                        if doc_id < min_doc {
+                            min_doc = doc_id;
+                        }
 
+                        ef_encoder.encode_next((doc_id - meta.ef_base_doc - 1) as i64)?;
+                    }
+
+                    // write bitset
+                    meta.bits.resize((max_doc - min_doc + 1) as usize);
+                    if meta.bits.encode_size() as i32 <= encoded_size {
+                        // meta.bits.clear_batch(0, meta.bits.len());
+                        meta.bits.clear_all();
+                        let mut doc_id = meta.ef_base_doc;
+                        if doc_id < 0 {
+                            doc_id = 0;
+                        }
+                        for i in 0..BLOCK_SIZE as usize {
+                            doc_id += data[i];
+                            meta.bits.set((doc_id - min_doc) as usize);
+                        }
+                        out.write_byte(ForUtil::encode_type_to_code(EncodeType::BITSET))?;
+                        out.write_vint(min_doc)?;
+                        out.write_byte(meta.bits.num_words as u8)?;
+                        return EliasFanoEncoder::write_data(&mut meta.bits.bits, out);
+                    }
+
+                    if !meta.with_pf || ef_encoder.encode_size() <= encoded_size {
+                        return ef_encoder.serialize(out);
+                    }
+                }
+            }
+        }
         out.write_byte(num_bits as u8)?;
         encoder.encode_int_to_byte(data, encoded, iters as usize);
         out.write_bytes(encoded, 0, encoded_size as usize)
@@ -294,5 +398,27 @@ impl ForUtil {
 
     pub fn skip_block(&self, input: &mut dyn IndexInput) -> Result<()> {
         self.instance.skip_block(input)
+    }
+
+    #[inline]
+    pub fn encode_type_from_code(code: u8) -> EncodeType {
+        match code >> 6 {
+            0 => EncodeType::PF,
+            1 => EncodeType::EF,
+            2 => EncodeType::BITSET,
+            3 => EncodeType::FULL,
+            _ => EncodeType::PF,
+        }
+    }
+
+    #[inline]
+    pub fn encode_type_to_code(etype: EncodeType) -> u8 {
+        let code: u8 = match etype {
+            EncodeType::PF => 0,
+            EncodeType::EF => 1,
+            EncodeType::BITSET => 2,
+            EncodeType::FULL => 3,
+        };
+        code << 6
     }
 }
