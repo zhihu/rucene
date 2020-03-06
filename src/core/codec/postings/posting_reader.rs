@@ -468,7 +468,6 @@ impl BlockDocIterator {
         self.ef_decoder = None;
         self.ef_base_doc = -1;
         self.ef_base_total = 0;
-        // self.doc_bits.clear_batch(0, self.doc_bits.len());
         self.doc_bits.clear_all();
         self.bits_index = 0;
 
@@ -601,7 +600,7 @@ impl DocIterator for BlockDocIterator {
     }
 
     fn advance(&mut self, target: DocId) -> Result<DocId> {
-        if unsafe {unlikely(target == NO_MORE_DOCS)} {
+        if unsafe { unlikely(target == NO_MORE_DOCS) } {
             self.doc = NO_MORE_DOCS;
             return Ok(self.doc);
         }
@@ -1139,7 +1138,7 @@ impl DocIterator for BlockPostingIterator {
     }
 
     fn advance(&mut self, target: DocId) -> Result<i32> {
-        if unsafe {unlikely(target == NO_MORE_DOCS)} {
+        if unsafe { unlikely(target == NO_MORE_DOCS) } {
             self.doc = NO_MORE_DOCS;
             return Ok(self.doc);
         }
@@ -1876,7 +1875,7 @@ impl DocIterator for EverythingIterator {
     }
 
     fn advance(&mut self, target: DocId) -> Result<DocId> {
-        if unsafe {unlikely(target == NO_MORE_DOCS)} {
+        if unsafe { unlikely(target == NO_MORE_DOCS) } {
             self.doc = NO_MORE_DOCS;
             return Ok(self.doc);
         }

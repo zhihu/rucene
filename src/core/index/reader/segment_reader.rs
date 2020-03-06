@@ -958,7 +958,6 @@ where
                     v.insert(DocValuesProviderEnum::Numeric(Arc::clone(&cell)));
                     cell.get()
                 }
-
                 _ => bail!(IllegalArgument(format!(
                     "non-dv-segment or non-exist or non-numeric field: {}",
                     field
@@ -987,7 +986,6 @@ where
                     v.insert(DocValuesProviderEnum::Binary(Arc::clone(&dv)));
                     dv.get()
                 }
-
                 _ => bail!(IllegalArgument(format!(
                     "non-dv-segment or non-exist or non-binary field: {}",
                     field
@@ -1005,7 +1003,7 @@ where
             Entry::Occupied(o) => match *o.get() {
                 DocValuesProviderEnum::Sorted(ref dv) => dv.get(),
                 _ => bail!(IllegalArgument(format!(
-                    "non-binary dv found for field {}",
+                    "non-sorted dv found for field {}",
                     field
                 ))),
             },
@@ -1017,7 +1015,7 @@ where
                     dv.get()
                 }
                 _ => bail!(IllegalArgument(format!(
-                    "non-dv-segment or non-exist or non-binary field: {}",
+                    "non-dv-segment or non-exist or non-sorted field: {}",
                     field
                 ))),
             },
@@ -1036,7 +1034,7 @@ where
             Entry::Occupied(o) => match *o.get() {
                 DocValuesProviderEnum::SortedNumeric(ref dv) => dv.get(),
                 _ => bail!(IllegalArgument(format!(
-                    "non-binary dv found for field {}",
+                    "non-sorted_numeric dv found for field {}",
                     field
                 ))),
             },
@@ -1049,7 +1047,7 @@ where
                     cell.get()
                 }
                 _ => bail!(IllegalArgument(format!(
-                    "non-dv-segment or non-exist or non-binary field: {}",
+                    "non-dv-segment or non-exist or non-sorted_numeric field: {}",
                     field
                 ))),
             },
@@ -1065,7 +1063,7 @@ where
             Entry::Occupied(o) => match *o.get() {
                 DocValuesProviderEnum::SortedSet(ref dv) => dv.get(),
                 _ => bail!(IllegalArgument(format!(
-                    "non-binary dv found for field {}",
+                    "non-sorted_set dv found for field {}",
                     field
                 ))),
             },
@@ -1079,7 +1077,7 @@ where
                 }
 
                 _ => bail!(IllegalArgument(format!(
-                    "non-dv-segment or non-exist or non-binary field: {}",
+                    "non-dv-segment or non-exist or non-sorted_set field: {}",
                     field
                 ))),
             },

@@ -27,7 +27,7 @@ use core::search::{DocIterator, NO_MORE_DOCS};
 use core::store::directory::Directory;
 use core::store::io::{DataOutput, IndexOutput};
 use core::util::packed::COMPACT;
-use core::util::{BitSet, Bits, DocId, FixedBitSet};
+use core::util::{BitSet, DocId, FixedBitSet};
 use error::{ErrorKind, Result};
 
 pub struct EfWriterMeta {
@@ -52,8 +52,7 @@ impl EfWriterMeta {
     pub fn reset(&mut self) {
         self.ef_base_doc = -1;
         self.ef_upper_doc = 0;
-        self.bits.clear_batch(0, self.bits.len());
-        // self.bits.clear_all();
+        self.bits.clear_all();
     }
 }
 

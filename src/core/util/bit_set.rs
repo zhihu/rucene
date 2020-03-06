@@ -18,6 +18,7 @@ use core::util::bit_util::{self, UnsignedShift};
 use core::util::{Bits, BitsRef};
 
 use error::{ErrorKind, Result};
+use std::intrinsics::volatile_set_memory;
 
 pub trait ImmutableBitSet: Bits {
     /// Return the number of bits that are set.
@@ -267,7 +268,9 @@ impl FixedBitSet {
 
     #[inline]
     pub fn clear_all(&mut self) {
-        self.bits.iter_mut().for_each(|x| *x = 0i64);
+        unsafe {
+            volatile_set_memory(self.bits.as_mut_ptr(), 0, self.bits.len());
+        }
     }
 
     /// Checks if the bits past numBits are clear. Some methods rely on this implicit
