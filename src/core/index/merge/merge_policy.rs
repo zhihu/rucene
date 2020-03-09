@@ -552,6 +552,10 @@ impl TieredMergePolicy {
         MS: MergeScheduler,
         MP: MergePolicy,
     {
+        if segment_infos.len() < 1 {
+            return Ok(None);
+        }
+
         let mut infos_sorted = segment_infos.segments.clone();
         let comparator = SegmentByteSizeDescending::new(writer, self);
         infos_sorted.sort_by(|o1, o2| comparator.compare(o1.as_ref(), o2.as_ref()));
@@ -567,7 +571,11 @@ impl TieredMergePolicy {
             }
         }
 
-        next_idx = next_idx.max((self.segs_per_tier * 0.5) as usize);
+        next_idx = next_idx.max(self.segs_per_tier as usize - 1);
+        let mut reserved_min = self.max_merged_segment_bytes as i64;
+        for i in 0..next_idx {
+            reserved_min = reserved_min.min(info_seg_bytes[i]);
+        }
 
         let merging = writer.merging_segments();
         let mut to_be_merged = HashSet::new();
@@ -586,12 +594,15 @@ impl TieredMergePolicy {
             for j in i + 1..infos_sorted.len() {
                 if curr_merge_bytes > self.max_merged_segment_bytes as i64
                     || next_merges.len() >= self.max_merge_at_once as usize
-                    || (info_seg_bytes[i] > (self.max_merged_segment_bytes as f64 * 0.1) as i64
+                    || (info_seg_bytes[i]
+                        > (self.max_merged_segment_bytes / self.max_merge_at_once as u64) as i64
                         && info_seg_bytes[i] > info_seg_bytes[j] * (self.max_merge_at_once as i64))
                 {
                     break;
                 } else if curr_merge_bytes + info_seg_bytes[j]
                     > self.max_merged_segment_bytes as i64
+                    || curr_merge_bytes + info_seg_bytes[j]
+                        > reserved_min * self.segs_per_tier as i64
                     || merging.contains(&infos_sorted[j].info.name)
                     || to_be_merged.contains(&infos_sorted[j].info.name)
                 {
