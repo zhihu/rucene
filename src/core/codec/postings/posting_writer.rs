@@ -43,7 +43,7 @@ impl EfWriterMeta {
         Self {
             ef_base_doc: -1,
             ef_upper_doc: 0,
-            use_ef: true,
+            use_ef: false,
             with_pf: true,
             bits: FixedBitSet::default(),
         }
