@@ -562,25 +562,28 @@ impl TieredMergePolicy {
 
         let mut next_idx = 0;
         let mut info_seg_bytes = vec![];
+        let mut merge_bytes = 0;
         for info in infos_sorted.iter() {
             let seg_bytes = self.size(info.as_ref(), writer);
             info_seg_bytes.push(seg_bytes);
 
             if seg_bytes > (self.max_merged_segment_bytes as f64 * 0.8) as i64 {
                 next_idx += 1;
+            } else {
+                merge_bytes += seg_bytes;
             }
         }
 
-        next_idx = next_idx.max(self.segs_per_tier as usize - 1);
-        let mut reserved_min = self.max_merged_segment_bytes as i64;
-        for i in 0..next_idx {
-            reserved_min = reserved_min.min(info_seg_bytes[i]);
-        }
+        let reserved_min = (merge_bytes / (self.segs_per_tier * 0.5 + 1.0) as i64)
+            .min(self.max_merged_segment_bytes as i64);
+        info!(
+            "merge_bytes={} reserved_min={} next_idx={} info_seg_bytes={:?}",
+            merge_bytes, reserved_min, next_idx, info_seg_bytes
+        );
 
         let merging = writer.merging_segments();
         let mut to_be_merged = HashSet::new();
         let mut candidates = vec![];
-        let mut spec = MergeSpecification::default();
 
         for i in next_idx..infos_sorted.len() {
             if merging.contains(&infos_sorted[i].info.name)
@@ -594,15 +597,12 @@ impl TieredMergePolicy {
             for j in i + 1..infos_sorted.len() {
                 if curr_merge_bytes > self.max_merged_segment_bytes as i64
                     || next_merges.len() >= self.max_merge_at_once as usize
-                    || (info_seg_bytes[i]
-                        > (self.max_merged_segment_bytes / self.max_merge_at_once as u64) as i64
-                        && info_seg_bytes[i] > info_seg_bytes[j] * (self.max_merge_at_once as i64))
+                    || info_seg_bytes[i]
+                        > info_seg_bytes[j]
+                            * (self.max_merge_at_once * self.max_merge_at_once) as i64
                 {
                     break;
-                } else if curr_merge_bytes + info_seg_bytes[j]
-                    > self.max_merged_segment_bytes as i64
-                    || curr_merge_bytes + info_seg_bytes[j]
-                        > reserved_min * self.segs_per_tier as i64
+                } else if curr_merge_bytes + info_seg_bytes[j] > reserved_min
                     || merging.contains(&infos_sorted[j].info.name)
                     || to_be_merged.contains(&infos_sorted[j].info.name)
                 {
@@ -617,6 +617,15 @@ impl TieredMergePolicy {
                 continue;
             }
 
+            let next_merges_bytes: Vec<i64> =
+                next_merges.iter().map(|i| info_seg_bytes[*i]).collect();
+
+            info!(
+                "segment_count={} curr_merge_bytes={} one_merge={:?}",
+                next_merges_bytes.len(),
+                curr_merge_bytes,
+                next_merges_bytes
+            );
             let mut segments = Vec::with_capacity(next_merges.len());
             for idx in next_merges {
                 segments.push(infos_sorted[idx].clone());
@@ -625,13 +634,15 @@ impl TieredMergePolicy {
 
             let merge = OneMerge::new(segments, writer.next_merge_id())?;
             candidates.push(merge);
-        }
 
-        loop {
-            if spec.merges.len() >= MAX_MERGING_COUNT {
+            if candidates.len() > MAX_MERGING_COUNT {
                 break;
             }
+        }
 
+        let mut spec = MergeSpecification::default();
+
+        loop {
             if let Some(one_merge) = candidates.pop() {
                 spec.add(one_merge);
             } else {
