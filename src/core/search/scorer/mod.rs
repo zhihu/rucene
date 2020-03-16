@@ -31,6 +31,10 @@ mod req_opt_scorer;
 
 pub use self::req_opt_scorer::*;
 
+mod req_not_scorer;
+
+pub use self::req_not_scorer::*;
+
 mod rescorer;
 
 pub use self::rescorer::*;

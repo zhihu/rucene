@@ -17,17 +17,21 @@ use std::fmt;
 use core::codec::Codec;
 use core::index::reader::LeafReaderContext;
 use core::search::explanation::Explanation;
-use core::search::query::{ConstantScoreQuery, Query, TermQuery, Weight};
-use core::search::scorer::{ConjunctionScorer, DisjunctionSumScorer, ReqOptScorer, Scorer};
+use core::search::query::{ConstantScoreQuery, MatchAllDocsQuery, Query, TermQuery, Weight};
+use core::search::scorer::{
+    ConjunctionScorer, DisjunctionSumScorer, ReqNotScorer, ReqOptScorer, Scorer,
+};
 use core::search::searcher::SearchPlanBuilder;
 use core::util::DocId;
 use error::{ErrorKind::IllegalArgument, Result};
+use std::intrinsics::unlikely;
 
 /// A Query that matches documents matching boolean combinations of other queries.
 pub struct BooleanQuery<C: Codec> {
     must_queries: Vec<Box<dyn Query<C>>>,
     should_queries: Vec<Box<dyn Query<C>>>,
     filter_queries: Vec<Box<dyn Query<C>>>,
+    must_not_queries: Vec<Box<dyn Query<C>>>,
     minimum_should_match: i32,
 }
 
@@ -38,17 +42,19 @@ impl<C: Codec> BooleanQuery<C> {
         musts: Vec<Box<dyn Query<C>>>,
         shoulds: Vec<Box<dyn Query<C>>>,
         filters: Vec<Box<dyn Query<C>>>,
+        must_nots: Vec<Box<dyn Query<C>>>,
     ) -> Result<Box<dyn Query<C>>> {
         let minimum_should_match = if musts.is_empty() { 1 } else { 0 };
         let mut musts = musts;
         let mut shoulds = shoulds;
         let mut filters = filters;
-        if musts.len() + shoulds.len() + filters.len() == 0 {
+        let must_nots = must_nots;
+        if musts.len() + shoulds.len() + filters.len() + must_nots.len() == 0 {
             bail!(IllegalArgument(
                 "boolean query should at least contain one inner query!".into()
             ));
         }
-        if musts.len() + shoulds.len() + filters.len() == 1 {
+        if must_nots.len() == 0 && musts.len() + shoulds.len() + filters.len() == 1 {
             let query = if musts.len() == 1 {
                 musts.remove(0)
             } else if shoulds.len() == 1 {
@@ -58,10 +64,15 @@ impl<C: Codec> BooleanQuery<C> {
             };
             return Ok(query);
         }
+        if musts.len() + shoulds.len() + filters.len() == 0 {
+            // only must_not exists
+            musts.push(Box::new(MatchAllDocsQuery {}));
+        }
         Ok(Box::new(BooleanQuery {
             must_queries: musts,
             should_queries: shoulds,
             filter_queries: filters,
+            must_not_queries: must_nots,
             minimum_should_match,
         }))
     }
@@ -90,10 +101,15 @@ impl<C: Codec> Query<C> for BooleanQuery<C> {
         for q in &self.should_queries {
             should_weights.push(searcher.create_weight(q.as_ref(), needs_scores)?);
         }
+        let mut must_not_weights = Vec::with_capacity(self.must_not_queries.len());
+        for q in &self.must_not_queries {
+            must_not_weights.push(searcher.create_weight(q.as_ref(), false)?);
+        }
 
         Ok(Box::new(BooleanWeight::new(
             must_weights,
             should_weights,
+            must_not_weights,
             needs_scores,
         )))
     }
@@ -126,10 +142,11 @@ impl<C: Codec> fmt::Display for BooleanQuery<C> {
         let must_str = self.queries_to_str(&self.must_queries);
         let should_str = self.queries_to_str(&self.should_queries);
         let filters_str = self.queries_to_str(&self.filter_queries);
+        let must_not_str = self.queries_to_str(&self.must_not_queries);
         write!(
             f,
-            "BooleanQuery(must: [{}], should: [{}], filters: [{}], match: {})",
-            must_str, should_str, filters_str, self.minimum_should_match
+            "BooleanQuery(must: [{}], should: [{}], filters: [{}], must_not: [{}], match: {})",
+            must_str, should_str, filters_str, must_not_str, self.minimum_should_match
         )
     }
 }
@@ -137,6 +154,7 @@ impl<C: Codec> fmt::Display for BooleanQuery<C> {
 struct BooleanWeight<C: Codec> {
     must_weights: Vec<Box<dyn Weight<C>>>,
     should_weights: Vec<Box<dyn Weight<C>>>,
+    must_not_weights: Vec<Box<dyn Weight<C>>>,
     #[allow(dead_code)]
     minimum_should_match: i32,
     needs_scores: bool,
@@ -146,12 +164,14 @@ impl<C: Codec> BooleanWeight<C> {
     pub fn new(
         musts: Vec<Box<dyn Weight<C>>>,
         shoulds: Vec<Box<dyn Weight<C>>>,
+        must_nots: Vec<Box<dyn Weight<C>>>,
         needs_scores: bool,
     ) -> BooleanWeight<C> {
         let minimum_should_match = if musts.is_empty() { 1 } else { 0 };
         BooleanWeight {
             must_weights: musts,
             should_weights: shoulds,
+            must_not_weights: must_nots,
             minimum_should_match,
             needs_scores,
         }
@@ -201,15 +221,43 @@ impl<C: Codec> Weight<C> for BooleanWeight<C> {
                 ))),
             }
         };
+        let must_not_scorer: Option<Box<dyn Scorer>> = {
+            let mut scorers = vec![];
+            for weight in &self.must_not_weights {
+                if let Some(scorer) = weight.create_scorer(leaf_reader)? {
+                    scorers.push(scorer);
+                }
+            }
+            match scorers.len() {
+                0 => None,
+                1 => Some(scorers.remove(0)),
+                _ => Some(Box::new(DisjunctionSumScorer::new(scorers, false))),
+            }
+        };
 
         if let Some(must) = must_scorer {
             if let Some(should) = should_scorer {
-                Ok(Some(Box::new(ReqOptScorer::new(must, should))))
+                if let Some(must_not) = must_not_scorer {
+                    Ok(Some(Box::new(ReqNotScorer::new(
+                        Box::new(ReqOptScorer::new(must, should)),
+                        must_not,
+                    ))))
+                } else {
+                    Ok(Some(Box::new(ReqOptScorer::new(must, should))))
+                }
             } else {
-                Ok(Some(must))
+                if let Some(must_not) = must_not_scorer {
+                    Ok(Some(Box::new(ReqNotScorer::new(must, must_not))))
+                } else {
+                    Ok(Some(must))
+                }
             }
         } else if let Some(should) = should_scorer {
-            Ok(Some(should))
+            if let Some(must_not) = must_not_scorer {
+                Ok(Some(Box::new(ReqNotScorer::new(should, must_not))))
+            } else {
+                Ok(Some(should))
+            }
         } else {
             Ok(None)
         }
@@ -225,6 +273,9 @@ impl<C: Codec> Weight<C> for BooleanWeight<C> {
         }
         for should in &mut self.should_weights {
             should.normalize(norm, boost);
+        }
+        for must_not in &mut self.must_not_weights {
+            must_not.normalize(norm, boost);
         }
     }
 
@@ -339,10 +390,12 @@ impl<C: Codec> fmt::Display for BooleanWeight<C> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let must_str = self.weights_to_str(&self.must_weights);
         let should_str = self.weights_to_str(&self.should_weights);
+        let must_not_str = self.weights_to_str(&self.must_not_weights);
         write!(
             f,
-            "BooleanWeight(must: [{}], should: [{}], min match: {}, needs score: {})",
-            must_str, should_str, self.minimum_should_match, self.needs_scores
+            "BooleanWeight(must: [{}], should: [{}], must_not: [{}], min match: {}, needs score: \
+             {})",
+            must_str, should_str, must_not_str, self.minimum_should_match, self.needs_scores
         )
     }
 }

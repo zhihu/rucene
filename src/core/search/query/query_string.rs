@@ -171,7 +171,7 @@ impl QueryStringQueryBuilder {
                 shoulds.remove(0)
             }
         } else {
-            BooleanQuery::build(musts, shoulds, vec![])?
+            BooleanQuery::build(musts, shoulds, vec![], vec![])?
         };
         Ok(Some(query))
     }
@@ -190,7 +190,7 @@ impl QueryStringQueryBuilder {
         let res = if queries.len() == 1 {
             queries.remove(0)
         } else {
-            BooleanQuery::build(Vec::new(), queries, vec![])?
+            BooleanQuery::build(Vec::new(), queries, vec![], vec![])?
         };
         Ok(res)
     }
