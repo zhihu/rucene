@@ -24,7 +24,6 @@ use core::search::scorer::{
 use core::search::searcher::SearchPlanBuilder;
 use core::util::DocId;
 use error::{ErrorKind::IllegalArgument, Result};
-use std::intrinsics::unlikely;
 
 /// A Query that matches documents matching boolean combinations of other queries.
 pub struct BooleanQuery<C: Codec> {
