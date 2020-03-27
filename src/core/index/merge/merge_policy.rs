@@ -574,8 +574,12 @@ impl TieredMergePolicy {
             }
         }
 
-        let reserved_min = (merge_bytes / (self.segs_per_tier * 0.5 + 1.0) as i64)
-            .min(self.max_merged_segment_bytes as i64);
+        let min_segment = (self.segs_per_tier * 0.5 + 1.0) as i64;
+        let reserved_min = if next_idx as i64 >= min_segment {
+            self.max_merged_segment_bytes as i64
+        } else {
+            (merge_bytes / min_segment).min(self.max_merged_segment_bytes as i64)
+        };
         info!(
             "merge_bytes={} reserved_min={} next_idx={} info_seg_bytes={:?}",
             merge_bytes, reserved_min, next_idx, info_seg_bytes
@@ -597,9 +601,9 @@ impl TieredMergePolicy {
             for j in i + 1..infos_sorted.len() {
                 if curr_merge_bytes > self.max_merged_segment_bytes as i64
                     || next_merges.len() >= self.max_merge_at_once as usize
-                    || info_seg_bytes[i]
-                        > info_seg_bytes[j]
-                            * (self.max_merge_at_once * self.max_merge_at_once) as i64
+                    || (info_seg_bytes[i]
+                        > (self.max_merged_segment_bytes as f64 / self.segs_per_tier) as i64
+                        && info_seg_bytes[i] > info_seg_bytes[j] * self.max_merge_at_once as i64)
                 {
                     break;
                 } else if curr_merge_bytes + info_seg_bytes[j] > reserved_min
