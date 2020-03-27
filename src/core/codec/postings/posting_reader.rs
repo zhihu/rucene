@@ -600,7 +600,7 @@ impl DocIterator for BlockDocIterator {
     }
 
     fn advance(&mut self, target: DocId) -> Result<DocId> {
-        if unsafe { unlikely(target == NO_MORE_DOCS) } {
+        if unlikely(target == NO_MORE_DOCS) {
             self.doc = NO_MORE_DOCS;
             return Ok(self.doc);
         }
@@ -1138,7 +1138,7 @@ impl DocIterator for BlockPostingIterator {
     }
 
     fn advance(&mut self, target: DocId) -> Result<i32> {
-        if unsafe { unlikely(target == NO_MORE_DOCS) } {
+        if unlikely(target == NO_MORE_DOCS) {
             self.doc = NO_MORE_DOCS;
             return Ok(self.doc);
         }
@@ -1875,7 +1875,7 @@ impl DocIterator for EverythingIterator {
     }
 
     fn advance(&mut self, target: DocId) -> Result<DocId> {
-        if unsafe { unlikely(target == NO_MORE_DOCS) } {
+        if unlikely(target == NO_MORE_DOCS) {
             self.doc = NO_MORE_DOCS;
             return Ok(self.doc);
         }

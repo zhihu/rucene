@@ -522,7 +522,7 @@ impl<S: Spans> SpanScorer<S> {
         Ok(())
     }
 
-    fn score_current_doc(&mut self) -> Result<(f32)> {
+    fn score_current_doc(&mut self) -> Result<f32> {
         debug_assert!(self.doc_scorer.is_some());
         let doc = self.doc_id();
         let freq = self.freq;

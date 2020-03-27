@@ -773,7 +773,7 @@ impl RoaringDocIterator {
         }
     }
 
-    fn first_doc_from_next_block(&mut self) -> Result<(DocId)> {
+    fn first_doc_from_next_block(&mut self) -> Result<DocId> {
         loop {
             self.block += 1;
             if self.block as usize >= self.doc_id_sets.len() {

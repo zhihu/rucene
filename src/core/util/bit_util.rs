@@ -32,7 +32,7 @@ impl ZigZagEncoding for i64 {
         (*self >> 63) ^ (self << 1)
     }
     fn decode(&self) -> i64 {
-        ((*self as u64 >> 1) as i64 ^ -(self & 1))
+        (*self as u64 >> 1) as i64 ^ -(self & 1)
     }
 }
 

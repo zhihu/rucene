@@ -27,7 +27,6 @@
 #![feature(maybe_uninit_extra)]
 #![feature(in_band_lifetimes)]
 #![feature(vec_into_raw_parts)]
-#![feature(slice_from_raw_parts)]
 #![feature(core_intrinsics)]
 
 #[macro_use]

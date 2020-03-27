@@ -45,7 +45,7 @@ impl DocIterator for ReqNotScorer {
 
     fn next(&mut self) -> Result<DocId> {
         while let Ok(doc) = self.req_scorer.next() {
-            if unsafe { unlikely(doc == NO_MORE_DOCS) } {
+            if unlikely(doc == NO_MORE_DOCS) {
                 break;
             }
             if doc == self.not_scorer.doc_id() {
@@ -63,7 +63,7 @@ impl DocIterator for ReqNotScorer {
 
     fn advance(&mut self, target: DocId) -> Result<DocId> {
         let doc = self.req_scorer.advance(target)?;
-        if unsafe { likely(doc < NO_MORE_DOCS) } {
+        if likely(doc < NO_MORE_DOCS) {
             loop {
                 if doc == self.not_scorer.doc_id() {
                     return self.next();
@@ -86,7 +86,7 @@ impl DocIterator for ReqNotScorer {
 
     fn approximate_next(&mut self) -> Result<DocId> {
         while let Ok(doc) = self.req_scorer.approximate_next() {
-            if unsafe { unlikely(doc == NO_MORE_DOCS) } {
+            if unlikely(doc == NO_MORE_DOCS) {
                 break;
             }
             if doc == self.not_scorer.doc_id() {
@@ -104,7 +104,7 @@ impl DocIterator for ReqNotScorer {
 
     fn approximate_advance(&mut self, target: DocId) -> Result<DocId> {
         let doc = self.req_scorer.approximate_advance(target)?;
-        if unsafe { likely(doc < NO_MORE_DOCS) } {
+        if likely(doc < NO_MORE_DOCS) {
             loop {
                 if doc == self.not_scorer.doc_id() {
                     return self.approximate_next();

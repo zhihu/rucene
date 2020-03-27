@@ -626,7 +626,7 @@ impl<F: OutputFactory> NodeHash<F> {
         Ok(h)
     }
 
-    pub fn add(&mut self, builder: &mut FstBuilder<F>, node_index: usize) -> Result<(u64)> {
+    pub fn add(&mut self, builder: &mut FstBuilder<F>, node_index: usize) -> Result<u64> {
         let h = self.node_hash_uncompiled(&builder.frontier[node_index]);
         let mut pos = h & self.mask as u64;
         let mut c = 0;

@@ -262,7 +262,7 @@ impl<'a, D: Directory, O: IndexOutput> OneDimensionBKDWriter<'a, D, O> {
         bkd_writer.common_prefix_lengths[0] = prefix;
         debug_assert!(bkd_writer.scratch_out.position() == 0);
 
-        let scratch_out = (&mut bkd_writer.scratch_out) as (*mut GrowableByteArrayDataOutput);
+        let scratch_out = (&mut bkd_writer.scratch_out) as *mut GrowableByteArrayDataOutput;
         let common_prefix_lengths: *mut [usize] = bkd_writer.common_prefix_lengths.as_mut();
 
         bkd_writer.write_leaf_block_docs(
@@ -615,8 +615,8 @@ impl<D: Directory> BKDWriter<D> {
             self.heap_point_writer = None;
         }
 
-        let min_packed_value = (&mut self.min_packed_value) as (*mut Vec<u8>);
-        let max_packed_value = (&mut self.max_packed_value) as (*mut Vec<u8>);
+        let min_packed_value = (&mut self.min_packed_value) as *mut Vec<u8>;
+        let max_packed_value = (&mut self.max_packed_value) as *mut Vec<u8>;
         let mut parent_splits: Vec<i32> = vec![0i32; self.num_dims as usize];
         self.build(
             1,
@@ -772,7 +772,7 @@ impl<D: Directory> BKDWriter<D> {
         );
 
         let mut one_dim_writer = OneDimensionBKDWriter::new(out, self)?;
-        let one_dim_writer_ptr = (&mut one_dim_writer) as (*mut OneDimensionBKDWriter<D, O>);
+        let one_dim_writer_ptr = (&mut one_dim_writer) as *mut OneDimensionBKDWriter<D, O>;
         let mut visitor = OneDimIntersectVisitor::new(unsafe { &mut (*one_dim_writer_ptr) });
         reader.intersect(field_name, &mut visitor)?;
 
@@ -1453,7 +1453,7 @@ impl<D: Directory> BKDWriter<D> {
             // like how terms dict does so from the FST:
 
             // Write the common prefixes:
-            let scratch1 = (&mut self.scratch1) as (*mut Vec<u8>);
+            let scratch1 = (&mut self.scratch1) as *mut Vec<u8>;
             self.write_common_prefixes(out, &self.common_prefix_lengths, unsafe {
                 &mut (*scratch1)
             })?;
@@ -1491,8 +1491,8 @@ impl<D: Directory> BKDWriter<D> {
         } else {
             // Inner node: partition/recurse
             let split_dim = if self.num_dims > 1 {
-                let min_packed_value = (&self.min_packed_value) as (*const Vec<u8>);
-                let max_packed_value = (&self.max_packed_value) as (*const Vec<u8>);
+                let min_packed_value = (&self.min_packed_value) as *const Vec<u8>;
+                let max_packed_value = (&self.max_packed_value) as *const Vec<u8>;
                 self.split(
                     unsafe { &(*min_packed_value) },
                     unsafe { &(*max_packed_value) },
@@ -1502,7 +1502,7 @@ impl<D: Directory> BKDWriter<D> {
                 0
             };
 
-            let source = (&slices[split_dim]) as (*const PathSlice<PointWriterEnum<D>>);
+            let source = (&slices[split_dim]) as *const PathSlice<PointWriterEnum<D>>;
             let source = unsafe { &(*source) };
             debug_assert!((node_id as usize) < split_packed_values.len());
 
