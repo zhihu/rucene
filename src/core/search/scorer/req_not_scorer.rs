@@ -123,7 +123,6 @@ mod tests {
     use super::*;
     use core::search::scorer::*;
     use core::search::tests::*;
-    use core::search::*;
 
     #[test]
     fn test_next() {
