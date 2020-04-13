@@ -50,6 +50,10 @@ mod disjunction_max_query;
 
 pub use self::disjunction_max_query::*;
 
+mod boosting_query;
+
+pub use self::boosting_query::*;
+
 use core::codec::Codec;
 use core::index::reader::LeafReaderContext;
 use core::search::explanation::Explanation;

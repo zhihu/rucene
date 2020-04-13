@@ -43,6 +43,10 @@ mod term_scorer;
 
 pub use self::term_scorer::*;
 
+mod boosting_scorer;
+
+pub use self::boosting_scorer::*;
+
 use std::collections::HashMap;
 use std::i32;
 
