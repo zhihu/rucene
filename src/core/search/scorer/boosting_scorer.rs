@@ -10,7 +10,11 @@ pub struct BoostingScorer {
 }
 
 impl BoostingScorer {
-    pub fn new(positive: Box<dyn Scorer>, negative: Box<dyn Scorer>, negative_boost: f32) -> BoostingScorer {
+    pub fn new(
+        positive: Box<dyn Scorer>,
+        negative: Box<dyn Scorer>,
+        negative_boost: f32,
+    ) -> BoostingScorer {
         debug_assert!(negative_boost > 0.0 && negative_boost < 1.0);
         BoostingScorer {
             positive,

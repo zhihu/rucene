@@ -279,23 +279,13 @@ pub struct DefaultIndexSearcher<
     thread_pool: Option<Arc<ThreadPool<DefaultContext>>>,
     // used for concurrent search - each slice holds a set of LeafReader's ord that
     // executed within one thread.
-    leaf_ord_slices: Vec<LeafOrdSlice>,
+    leaf_ord_slices: Vec<Vec<usize>>,
     next_limit: usize,
 }
 
 const MAX_DOCS_PER_SLICE: i32 = 250_000;
-const MAX_SEGMENTS_PER_SLICE: usize = 20;
-
-struct LeafOrdSlice(Vec<usize>);
-
-impl<'a> IntoIterator for &'a LeafOrdSlice {
-    type Item = &'a usize;
-    type IntoIter = ::std::slice::Iter<'a, usize>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        (&self.0).into_iter()
-    }
-}
+const MAX_SEGMENTS_PER_SLICE: i32 = 20;
+const MIN_PARALLEL_SLICES: i32 = 3;
 
 impl<C: Codec, R: IndexReader<Codec = C> + ?Sized, IR: Deref<Target = R>>
     DefaultIndexSearcher<C, R, IR, DefaultSimilarityProducer>
@@ -369,6 +359,7 @@ where
             self.reader.leaves(),
             MAX_DOCS_PER_SLICE,
             MAX_SEGMENTS_PER_SLICE,
+            MIN_PARALLEL_SLICES,
         );
     }
 
@@ -409,8 +400,9 @@ where
     fn slice(
         mut leaves: Vec<LeafReaderContext<'_, C>>,
         max_docs_per_slice: i32,
-        max_segments_per_slice: usize,
-    ) -> Vec<LeafOrdSlice> {
+        max_segments_per_slice: i32,
+        min_parallel_slices: i32,
+    ) -> Vec<Vec<usize>> {
         if leaves.is_empty() {
             return vec![];
         }
@@ -421,14 +413,29 @@ where
         let mut slices = vec![];
         let mut doc_sum = 0;
         let mut ords = vec![];
+
+        if leaves.len() <= min_parallel_slices as usize {
+            for ctx in &leaves {
+                slices.push(vec![ctx.ord]);
+            }
+            return slices;
+        }
+
+        let mut total_docs = 0;
+        for ctx in &leaves {
+            total_docs += ctx.reader.max_doc();
+        }
+
+        let reserved = max_docs_per_slice.min(total_docs / min_parallel_slices);
+
         for ctx in &leaves {
             let max_doc = ctx.reader.max_doc();
-            if max_doc >= max_docs_per_slice {
-                slices.push(LeafOrdSlice(vec![ctx.ord]));
+            if max_doc >= reserved {
+                slices.push(vec![ctx.ord]);
             } else {
-                if doc_sum + max_doc > max_docs_per_slice || ords.len() >= max_segments_per_slice {
+                if doc_sum + max_doc > reserved || ords.len() >= max_segments_per_slice as usize {
                     ords.sort();
-                    slices.push(LeafOrdSlice(ords));
+                    slices.push(ords);
                     ords = vec![];
                     doc_sum = 0;
                 }
@@ -438,7 +445,7 @@ where
         }
         if !ords.is_empty() {
             ords.sort();
-            slices.push(LeafOrdSlice(ords));
+            slices.push(ords);
         }
         slices
     }
@@ -513,7 +520,7 @@ where
             for leaf_slice in &self.leaf_ord_slices {
                 let mut scorer_and_collectors = vec![];
 
-                for ord in leaf_slice.into_iter() {
+                for ord in leaf_slice.iter() {
                     let leaf_ctx = &leaf_readers[*ord];
                     match collector.leaf_collector(leaf_ctx) {
                         Ok(leaf_collector) => {

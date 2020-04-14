@@ -5,10 +5,10 @@ use core::codec::Codec;
 use core::index::reader::LeafReaderContext;
 use core::search::explanation::Explanation;
 use core::search::query::{Query, TermQuery, Weight};
+use core::search::scorer::BoostingScorer;
 use core::search::scorer::Scorer;
 use core::search::searcher::SearchPlanBuilder;
 use core::util::DocId;
-use core::search::scorer::BoostingScorer;
 use error::Result;
 
 const BOOSTING_QUERY: &str = "boosting";
@@ -39,12 +39,11 @@ impl<C: Codec> Query<C> for BoostingQuery<C> {
         searcher: &dyn SearchPlanBuilder<C>,
         needs_scores: bool,
     ) -> Result<Box<dyn Weight<C>>> {
-        Ok(Box::new(
-            BoostingWeight::new(
-                self.positive.create_weight(searcher, needs_scores)?,
-                self.negative.create_weight(searcher, false)?,
-                self.negative_boost,
-            )))
+        Ok(Box::new(BoostingWeight::new(
+            self.positive.create_weight(searcher, needs_scores)?,
+            self.negative.create_weight(searcher, false)?,
+            self.negative_boost,
+        )))
     }
 
     fn extract_terms(&self) -> Vec<TermQuery> {
@@ -91,8 +90,10 @@ impl<C: Codec> Weight<C> for BoostingWeight<C> {
         &self,
         leaf_reader: &LeafReaderContext<'_, C>,
     ) -> Result<Option<Box<dyn Scorer>>> {
-        if let (Some(positive_scorer), Some(negative_scorer)) =
-        (self.positive_weight.create_scorer(leaf_reader)?, self.negative_weight.create_scorer(leaf_reader)?) {
+        if let (Some(positive_scorer), Some(negative_scorer)) = (
+            self.positive_weight.create_scorer(leaf_reader)?,
+            self.negative_weight.create_scorer(leaf_reader)?,
+        ) {
             Ok(Some(Box::new(BoostingScorer::new(
                 positive_scorer,
                 negative_scorer,
@@ -127,7 +128,6 @@ impl<C: Codec> Weight<C> for BoostingWeight<C> {
         self.positive_weight.explain(reader, doc)
     }
 }
-
 
 impl<C: Codec> fmt::Display for BoostingWeight<C> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
