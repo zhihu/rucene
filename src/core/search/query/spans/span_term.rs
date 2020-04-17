@@ -12,7 +12,7 @@
 // limitations under the License.
 
 use core::codec::PostingIterator;
-use core::codec::{Codec, CodecPostingIterator, CodecTermState};
+use core::codec::{Codec, CodecPostingIterator};
 use core::codec::{TermIterator, Terms};
 use core::doc::Term;
 use core::index::reader::LeafReaderContext;
@@ -20,7 +20,6 @@ use core::search::explanation::Explanation;
 use core::search::query::spans::{build_sim_weight, PostingsFlag, SpansEnum, NO_MORE_POSITIONS};
 use core::search::query::spans::{SpanCollector, SpanQuery, SpanWeight, Spans};
 use core::search::searcher::SearchPlanBuilder;
-use core::search::TermContext;
 use core::search::{
     query::Query, query::TermQuery, query::Weight, scorer::Scorer, similarity::SimWeight,
     DocIterator, NO_MORE_DOCS,
@@ -29,9 +28,7 @@ use core::util::{DocId, KeyedContext};
 
 use error::{ErrorKind, Result};
 
-use std::collections::HashMap;
 use std::fmt;
-use std::sync::Arc;
 
 const SPAN_TERM_QUERY: &str = "span_term";
 
@@ -55,10 +52,8 @@ impl<C: Codec> Query<C> for SpanTermQuery {
         searcher: &dyn SearchPlanBuilder<C>,
         needs_scores: bool,
     ) -> Result<Box<dyn Weight<C>>> {
-        let term_context = searcher.term_state(&self.term)?;
         Ok(Box::new(SpanTermWeight::new(
             self,
-            term_context,
             searcher,
             self.ctx.clone(),
             needs_scores,
@@ -86,10 +81,8 @@ impl<C: Codec> SpanQuery<C> for SpanTermQuery {
         searcher: &dyn SearchPlanBuilder<C>,
         needs_scores: bool,
     ) -> Result<Self::Weight> {
-        let term_context = searcher.term_state(&self.term)?;
         Ok(SpanTermWeight::new(
             self,
-            term_context,
             searcher,
             self.ctx.clone(),
             needs_scores,
@@ -224,26 +217,20 @@ const TERM_OPS_PER_POS: i32 = 7;
 pub struct SpanTermWeight<C: Codec> {
     term: Term,
     sim_weight: Option<Box<dyn SimWeight<C>>>,
-    term_context: Arc<TermContext<CodecTermState<C>>>,
 }
 
 impl<C: Codec> SpanTermWeight<C> {
     pub fn new<IS: SearchPlanBuilder<C> + ?Sized>(
         query: &SpanTermQuery,
-        term_context: Arc<TermContext<CodecTermState<C>>>,
         searcher: &IS,
         ctx: Option<KeyedContext>,
-        needs_scores: bool,
+        _needs_scores: bool,
     ) -> Result<Self> {
-        let mut term_contexts = HashMap::new();
-        if needs_scores {
-            term_contexts.insert(query.term.clone(), Arc::clone(&term_context));
-        }
-        let sim_weight = build_sim_weight(query.term.field(), searcher, term_contexts, ctx)?;
+        let sim_weight =
+            build_sim_weight(query.term.field(), searcher, vec![query.term.clone()], ctx)?;
         Ok(SpanTermWeight {
             term: query.term.clone(),
             sim_weight,
-            term_context,
         })
     }
 
@@ -279,37 +266,31 @@ impl<C: Codec> SpanWeight<C> for SpanTermWeight<C> {
         reader: &LeafReaderContext<'_, C>,
         required_postings: &PostingsFlag,
     ) -> Result<Option<SpansEnum<CodecPostingIterator<C>>>> {
-        if let Some(state) = self.term_context.get_term_state(reader) {
-            if let Some(terms) = reader.reader.terms(self.term.field())? {
-                if !terms.has_positions()? {
-                    bail!(ErrorKind::IllegalState(format!(
-                        "field '{}' was indexed without position data; cannot run SpanTermQuery \
-                         (term={:?})",
-                        &self.term.field,
-                        &self.term.text()
-                    )));
-                }
-                let mut terms_iter = terms.iterator()?;
-                terms_iter.seek_exact_state(&self.term.bytes, state)?;
-                let postings =
-                    terms_iter.postings_with_flags(required_postings.required_postings())?;
-                let positions_cost = Self::term_positions_cost(&mut terms_iter)?
-                    + PHRASE_TO_SPAN_TERM_POSITIONS_COST;
-                return Ok(Some(SpansEnum::Term(TermSpans::new(
-                    postings,
-                    self.term.clone(),
-                    positions_cost,
-                ))));
+        if let Some(terms) = reader.reader.terms(self.term.field())? {
+            if !terms.has_positions()? {
+                bail!(ErrorKind::IllegalState(format!(
+                    "field '{}' was indexed without position data; cannot run SpanTermQuery \
+                     (term={:?})",
+                    &self.term.field,
+                    &self.term.text()
+                )));
             }
+            let mut terms_iter = terms.iterator()?;
+            terms_iter.seek_exact(&self.term.bytes)?;
+            let postings = terms_iter.postings_with_flags(required_postings.required_postings())?;
+            let positions_cost =
+                Self::term_positions_cost(&mut terms_iter)? + PHRASE_TO_SPAN_TERM_POSITIONS_COST;
+            return Ok(Some(SpansEnum::Term(TermSpans::new(
+                postings,
+                self.term.clone(),
+                positions_cost,
+            ))));
         }
         Ok(None)
     }
 
-    fn extract_term_contexts(
-        &self,
-        contexts: &mut HashMap<Term, Arc<TermContext<CodecTermState<C>>>>,
-    ) {
-        contexts.insert(self.term.clone(), Arc::clone(&self.term_context));
+    fn extract_term_keys(&self, terms: &mut Vec<Term>) {
+        terms.push(self.term.clone());
     }
 }
 

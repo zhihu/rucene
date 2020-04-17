@@ -11,17 +11,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::codec::{Codec, CodecEnum, CodecPostingIterator, CodecTermState};
+use core::codec::{Codec, CodecEnum, CodecPostingIterator};
 use core::doc::Term;
 use core::index::reader::LeafReaderContext;
 use core::search::explanation::Explanation;
 use core::search::query::spans::{
     build_sim_weight, PostingsFlag, SpanQueryEnum, SpanWeightEnum, SpansEnum, NO_MORE_POSITIONS,
 };
-use core::search::query::spans::{term_contexts, ConjunctionSpanBase, ConjunctionSpans};
+use core::search::query::spans::{ConjunctionSpanBase, ConjunctionSpans};
 use core::search::query::spans::{SpanCollector, SpanQuery, SpanWeight, Spans};
 use core::search::searcher::SearchPlanBuilder;
-use core::search::TermContext;
 use core::search::{
     query::Query, query::TermQuery, query::Weight, scorer::Scorer, similarity::SimWeight,
     DocIterator, NO_MORE_DOCS,
@@ -31,13 +30,12 @@ use core::util::{DocId, KeyedContext, BM25_SIMILARITY_IDF};
 use error::{ErrorKind, Result};
 
 use core::codec::PostingIterator;
+use core::search::query::spans::span::term_keys;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
-use std::collections::HashMap;
 use std::fmt;
 use std::mem::MaybeUninit;
 use std::ptr;
-use std::sync::Arc;
 
 pub struct SpanNearQueryBuilder {
     ordered: bool,
@@ -153,12 +151,12 @@ impl SpanNearQuery {
             sub_weights.push(clause.span_weight(searcher, needs_scores)?);
             ctx = Self::merge_idf_ctx(ctx, SpanQuery::<C>::ctx(clause));
         }
-        let term_contexts = if needs_scores {
-            term_contexts(&sub_weights)
+        let terms = if needs_scores {
+            term_keys(&sub_weights)
         } else {
-            HashMap::new()
+            Vec::new()
         };
-        SpanNearWeight::new(self, sub_weights, searcher, term_contexts, ctx)
+        SpanNearWeight::new(self, sub_weights, searcher, terms, ctx)
     }
 }
 
@@ -227,7 +225,7 @@ impl<C: Codec> SpanNearWeight<C> {
         query: &SpanNearQuery,
         sub_weights: Vec<SpanWeightEnum<C>>,
         searcher: &IS,
-        terms: HashMap<Term, Arc<TermContext<CodecTermState<C>>>>,
+        terms: Vec<Term>,
         ctx: Option<KeyedContext>,
     ) -> Result<Self> {
         let field = SpanQuery::<C>::field(query).to_string();
@@ -284,12 +282,9 @@ impl<C: Codec> SpanWeight<C> for SpanNearWeight<C> {
         Ok(None)
     }
 
-    fn extract_term_contexts(
-        &self,
-        contexts: &mut HashMap<Term, Arc<TermContext<CodecTermState<C>>>>,
-    ) {
+    fn extract_term_keys(&self, terms: &mut Vec<Term>) {
         for weight in &self.sub_weights {
-            weight.extract_term_contexts(contexts)
+            weight.extract_term_keys(terms)
         }
     }
 }
@@ -928,7 +923,7 @@ impl<C: Codec> SpanGapWeight<C> {
         width: i32,
     ) -> Result<Self> {
         let sim_weight =
-            build_sim_weight(SpanQuery::<C>::field(query), searcher, HashMap::new(), None)?;
+            build_sim_weight(SpanQuery::<C>::field(query), searcher, Vec::new(), None)?;
         Ok(SpanGapWeight { width, sim_weight })
     }
 }
@@ -956,11 +951,7 @@ impl<C: Codec> SpanWeight<C> for SpanGapWeight<C> {
         Ok(Some(SpansEnum::Gap(GapSpans::new(self.width))))
     }
 
-    fn extract_term_contexts(
-        &self,
-        _contexts: &mut HashMap<Term, Arc<TermContext<CodecTermState<C>>>>,
-    ) {
-    }
+    fn extract_term_keys(&self, _terms: &mut Vec<Term>) {}
 }
 
 impl<C: Codec> Weight<C> for SpanGapWeight<C> {

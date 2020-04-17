@@ -19,7 +19,7 @@ use std::collections::{HashMap, HashSet};
 use std::f32;
 use std::fmt;
 
-use core::codec::{Codec, CodecTermState};
+use core::codec::Codec;
 use core::codec::{PostingIterator, PostingIteratorFlags};
 use core::codec::{TermIterator, Terms};
 use core::doc::Term;
@@ -155,20 +155,28 @@ impl<C: Codec> Query<C> for PhraseQuery {
         );
 
         let max_doc = i64::from(searcher.max_doc());
-        let mut term_states = Vec::with_capacity(self.terms.len());
         let mut term_stats: Vec<TermStatistics> = Vec::with_capacity(self.terms.len());
 
         for i in 0..self.terms.len() {
-            let term_context = searcher.term_state(&self.terms[i])?;
-
-            term_stats.push(searcher.term_statistics(&self.terms[i], term_context.as_ref()));
-            term_states.push(term_context.term_states());
+            if needs_scores {
+                term_stats.push(searcher.term_statistics(&self.terms[i])?);
+            } else {
+                term_stats.push(TermStatistics::new(
+                    self.terms[i].bytes.clone(),
+                    max_doc,
+                    -1,
+                ));
+            };
         }
 
         let collection_stats = if needs_scores {
-            searcher.collections_statistics(&self.field)?
+            if let Some(stat) = searcher.collections_statistics(&self.field) {
+                stat.clone()
+            } else {
+                CollectionStatistics::new(self.field.clone(), 0, max_doc, -1, -1, -1)
+            }
         } else {
-            CollectionStatistics::new(self.field.clone(), max_doc, -1, -1, -1)
+            CollectionStatistics::new(self.field.clone(), 0, max_doc, -1, -1, -1)
         };
 
         let similarity = searcher.similarity(&self.field, needs_scores);
@@ -184,7 +192,6 @@ impl<C: Codec> Query<C> for PhraseQuery {
             similarity,
             sim_weight,
             needs_scores,
-            term_states,
         )))
     }
 
@@ -229,7 +236,6 @@ struct PhraseWeight<C: Codec> {
     similarity: Box<dyn Similarity<C>>,
     sim_weight: Box<dyn SimWeight<C>>,
     needs_scores: bool,
-    term_states: Vec<HashMap<DocId, CodecTermState<C>>>,
 }
 
 impl<C: Codec> PhraseWeight<C> {
@@ -242,7 +248,6 @@ impl<C: Codec> PhraseWeight<C> {
         similarity: Box<dyn Similarity<C>>,
         sim_weight: Box<dyn SimWeight<C>>,
         needs_scores: bool,
-        term_states: Vec<HashMap<DocId, CodecTermState<C>>>,
     ) -> PhraseWeight<C> {
         PhraseWeight {
             field,
@@ -252,7 +257,6 @@ impl<C: Codec> PhraseWeight<C> {
             similarity,
             sim_weight,
             needs_scores,
-            term_states,
         }
     }
 
@@ -272,14 +276,11 @@ impl<C: Codec> PhraseWeight<C> {
 }
 
 impl<C: Codec> Weight<C> for PhraseWeight<C> {
-    fn create_scorer(
-        &self,
-        reader_context: &LeafReaderContext<'_, C>,
-    ) -> Result<Option<Box<dyn Scorer>>> {
+    fn create_scorer(&self, reader: &LeafReaderContext<'_, C>) -> Result<Option<Box<dyn Scorer>>> {
         debug_assert!(!self.terms.len() >= 2);
 
         let mut postings_freqs = Vec::with_capacity(self.terms.len());
-        let mut term_iter = if let Some(field_terms) = reader_context.reader.terms(&self.field)? {
+        let mut term_iter = if let Some(field_terms) = reader.reader.terms(&self.field)? {
             debug_assert!(
                 field_terms.has_positions()?,
                 format!(
@@ -295,23 +296,17 @@ impl<C: Codec> Weight<C> for PhraseWeight<C> {
 
         let mut total_match_cost = 0f32;
         for i in 0..self.terms.len() {
-            let postings = if let Some(state) = self.term_states[i].get(&reader_context.doc_base) {
-                term_iter.seek_exact_state(self.terms[i].bytes.as_ref(), state)?;
-                total_match_cost += self.term_positions_cost(&mut term_iter)?;
-
-                term_iter.postings_with_flags(PostingIteratorFlags::POSITIONS)?
-            } else {
-                return Ok(None);
-            };
+            term_iter.seek_exact(self.terms[i].bytes.as_ref())?;
+            total_match_cost += self.term_positions_cost(&mut term_iter)?;
 
             postings_freqs.push(PostingsAndFreq::new(
-                postings,
+                term_iter.postings_with_flags(PostingIteratorFlags::POSITIONS)?,
                 self.positions[i],
                 &self.terms[i],
             ));
         }
 
-        let sim_scorer = self.sim_weight.sim_scorer(reader_context.reader)?;
+        let sim_scorer = self.sim_weight.sim_scorer(reader.reader)?;
         let scorer: Box<dyn Scorer> = if self.slop == 0 {
             // sort by increasing docFreq order
             // optimize exact case
@@ -373,21 +368,15 @@ impl<C: Codec> Weight<C> for PhraseWeight<C> {
 
         let mut total_match_cost = 0f32;
         for i in 0..self.terms.len() {
-            if let Some(state) = self.term_states[i].get(&reader.doc_base()) {
-                if let Some(ref mut term_iter) = term_iter {
-                    term_iter.seek_exact_state(self.terms[i].bytes.as_ref(), state)?;
-                    total_match_cost += self.term_positions_cost(term_iter)?;
+            if let Some(ref mut term_iter) = term_iter {
+                term_iter.seek_exact(self.terms[i].bytes.as_ref())?;
+                total_match_cost += self.term_positions_cost(term_iter)?;
 
-                    let postings =
-                        term_iter.postings_with_flags(PostingIteratorFlags::POSITIONS)?;
-                    postings_freqs.push(PostingsAndFreq::new(
-                        postings,
-                        self.positions[i],
-                        &self.terms[i],
-                    ));
-                }
-            } else {
-                matched = false;
+                postings_freqs.push(PostingsAndFreq::new(
+                    term_iter.postings_with_flags(PostingIteratorFlags::POSITIONS)?,
+                    self.positions[i],
+                    &self.terms[i],
+                ));
             }
         }
 

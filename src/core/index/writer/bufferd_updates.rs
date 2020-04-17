@@ -564,7 +564,7 @@ impl<C: Codec> BufferedUpdatesStream<C> {
     {
         let mut del_count: u64 = 0;
         let mut rld = seg_state.rld.inner.lock()?;
-        let mut searcher = DefaultIndexSearcher::new(Arc::clone(rld.reader()), None, None);
+        let mut searcher = DefaultIndexSearcher::new(Arc::clone(rld.reader()), None);
         let query_cache: Arc<dyn QueryCache<C>> = Arc::new(NoCacheQueryCache::new());
         searcher.set_query_cache(query_cache);
         let reader = searcher.reader().leaves().remove(0);

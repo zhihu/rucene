@@ -11,10 +11,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::util::DocId;
+
 /// Contains statistics for a collection (field)
 #[derive(Clone)]
 pub struct CollectionStatistics {
     pub field: String,
+    pub doc_base: DocId,
     pub max_doc: i64,
     pub doc_count: i64,
     pub sum_total_term_freq: i64,
@@ -24,6 +27,7 @@ pub struct CollectionStatistics {
 impl CollectionStatistics {
     pub fn new(
         field: String,
+        doc_base: DocId,
         max_doc: i64,
         doc_count: i64,
         sum_total_term_freq: i64,
@@ -35,6 +39,7 @@ impl CollectionStatistics {
         debug_assert!(sum_total_term_freq == -1 || sum_total_term_freq >= sum_doc_freq); // #positions must be >= #postings
         CollectionStatistics {
             field,
+            doc_base,
             max_doc,
             doc_count,
             sum_total_term_freq,
@@ -71,7 +76,7 @@ mod tests {
     #[test]
     fn test_collection_statistics() {
         let collection_statistics =
-            CollectionStatistics::new(String::from("hello"), 25, 10, 14, 13);
+            CollectionStatistics::new(String::from("hello"), 0, 25, 10, 14, 13);
         assert_eq!(collection_statistics.field, "hello");
         assert_eq!(collection_statistics.max_doc, 25);
         assert_eq!(collection_statistics.doc_count, 10);

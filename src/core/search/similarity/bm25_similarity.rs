@@ -412,14 +412,14 @@ mod tests {
 
     #[test]
     fn test_idf() {
-        let collection_stats = CollectionStatistics::new(String::from("world"), 11, -1, 0, 0);
+        let collection_stats = CollectionStatistics::new(String::from("world"), 0, 11, -1, 0, 0);
         let term_stats = vec![TermStatistics::new(Vec::new(), 1, -1)];
         assert!(
             (BM25Similarity::idf(&term_stats, &collection_stats) - (8f32).ln())
                 < ::std::f32::EPSILON
         );
 
-        let collection_stats = CollectionStatistics::new(String::from("world"), 35, 32, -1, -1);
+        let collection_stats = CollectionStatistics::new(String::from("world"), 0, 35, 32, -1, -1);
         let term_stats = vec![TermStatistics::new(Vec::new(), 1, -1)];
         assert!(
             (BM25Similarity::idf(&term_stats, &collection_stats) - (22f32).ln())
@@ -429,19 +429,19 @@ mod tests {
 
     #[test]
     fn test_avg_field_length() {
-        let collection_stats = CollectionStatistics::new(String::from("world"), 11, 5, 0, -1);
+        let collection_stats = CollectionStatistics::new(String::from("world"), 0, 11, 5, 0, -1);
         assert!((BM25Similarity::avg_field_length(&collection_stats) - 1f32) < ::std::f32::EPSILON);
 
-        let collection_stats = CollectionStatistics::new(String::from("world"), 3, 2, 8, -1);
+        let collection_stats = CollectionStatistics::new(String::from("world"), 0, 3, 2, 8, -1);
         assert!((BM25Similarity::avg_field_length(&collection_stats) - 4f32) < ::std::f32::EPSILON);
 
-        let collection_stats = CollectionStatistics::new(String::from("world"), 3, -1, 9, -1);
+        let collection_stats = CollectionStatistics::new(String::from("world"), 0, 3, -1, 9, -1);
         assert!((BM25Similarity::avg_field_length(&collection_stats) - 3f32) < ::std::f32::EPSILON);
     }
 
     #[test]
     fn test_bm25_similarity() {
-        let collection_stats = CollectionStatistics::new(String::from("world"), 32, 32, 120, -1);
+        let collection_stats = CollectionStatistics::new(String::from("world"), 0, 32, 32, 120, -1);
         let term_stats = vec![TermStatistics::new(Vec::new(), 1, -1)];
         let bm25_sim = BM25Similarity::new(1.2, 0.75);
         let sim_weight = bm25_sim.compute_weight(&collection_stats, &term_stats, None, 1.0f32);

@@ -11,17 +11,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::codec::{Codec, CodecEnum, CodecPostingIterator, CodecTermState};
+use core::codec::{Codec, CodecEnum, CodecPostingIterator};
 use core::doc::Term;
 use core::index::reader::LeafReaderContext;
 use core::search::explanation::Explanation;
 use core::search::query::spans::{
-    build_sim_weight, term_contexts, PostingsFlag, SpanQueryEnum, SpanWeightEnum, SpansEnum,
-    NO_MORE_POSITIONS,
+    build_sim_weight, PostingsFlag, SpanQueryEnum, SpanWeightEnum, SpansEnum, NO_MORE_POSITIONS,
 };
 use core::search::query::spans::{SpanCollector, SpanQuery, SpanWeight, Spans};
 use core::search::searcher::SearchPlanBuilder;
-use core::search::TermContext;
 use core::search::{
     query::Query, query::TermQuery, query::Weight, scorer::Scorer, similarity::SimWeight,
     DocIterator,
@@ -32,11 +30,10 @@ use core::util::DocId;
 use error::{ErrorKind, Result};
 
 use core::codec::PostingIterator;
+use core::search::query::spans::span::term_keys;
 use std::cmp::{max, Ordering};
 use std::collections::BinaryHeap;
-use std::collections::HashMap;
 use std::fmt;
-use std::sync::Arc;
 
 const SPAN_OR_QUERY: &str = "span_or";
 
@@ -74,12 +71,12 @@ impl SpanOrQuery {
         for clause in &self.clauses {
             sub_weights.push(clause.span_weight(searcher, needs_scores)?);
         }
-        let term_contexts = if needs_scores {
-            term_contexts(&sub_weights)
+        let terms = if needs_scores {
+            term_keys(&sub_weights)
         } else {
-            HashMap::new()
+            Vec::new()
         };
-        SpanOrWeight::new(self, sub_weights, searcher, term_contexts)
+        SpanOrWeight::new(self, sub_weights, searcher, terms)
     }
 }
 
@@ -144,7 +141,7 @@ impl<C: Codec> SpanOrWeight<C> {
         query: &SpanOrQuery,
         sub_weights: Vec<SpanWeightEnum<C>>,
         searcher: &IS,
-        terms: HashMap<Term, Arc<TermContext<CodecTermState<C>>>>,
+        terms: Vec<Term>,
     ) -> Result<Self> {
         assert!(sub_weights.len() >= 2);
         let sim_weight = build_sim_weight(SpanQuery::<C>::field(query), searcher, terms, None)?;
@@ -192,12 +189,9 @@ impl<C: Codec> SpanWeight<C> for SpanOrWeight<C> {
         ))))
     }
 
-    fn extract_term_contexts(
-        &self,
-        contexts: &mut HashMap<Term, Arc<TermContext<CodecTermState<C>>>>,
-    ) {
+    fn extract_term_keys(&self, terms: &mut Vec<Term>) {
         for spans in &self.sub_weights {
-            spans.extract_term_contexts(contexts)
+            spans.extract_term_keys(terms)
         }
     }
 }

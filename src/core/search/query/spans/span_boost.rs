@@ -11,7 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::codec::{Codec, CodecPostingIterator, CodecTermState};
+use core::codec::{Codec, CodecPostingIterator};
 use core::doc::Term;
 use core::index::reader::{LeafReaderContext, SearchLeafReader};
 use core::search::explanation::Explanation;
@@ -21,7 +21,6 @@ use core::search::query::spans::{
     SpanWeightEnum, SpansEnum,
 };
 use core::search::searcher::SearchPlanBuilder;
-use core::search::TermContext;
 use core::search::{
     query::Query, query::TermQuery, query::Weight, scorer::Scorer, similarity::SimScorer,
     similarity::SimWeight,
@@ -31,10 +30,8 @@ use core::util::{DocId, KeyedContext};
 use error::Result;
 
 use std::any::Any;
-use std::collections::HashMap;
 use std::f32;
 use std::fmt;
-use std::sync::Arc;
 
 const SPAN_BOOST_QUERY: &str = "span_boost";
 
@@ -240,10 +237,9 @@ impl<C: Codec> SpanBoostWeight<C> {
         needs_scores: bool,
     ) -> Result<Self> {
         let mut weight = query.query.span_weight(searcher, needs_scores)?;
-        let mut term_contexts = HashMap::new();
-        weight.extract_term_contexts(&mut term_contexts);
-        let sim_weight =
-            build_sim_weight(SpanQuery::<C>::field(query), searcher, term_contexts, None)?;
+        let mut terms = Vec::new();
+        weight.extract_term_keys(&mut terms);
+        let sim_weight = build_sim_weight(SpanQuery::<C>::field(query), searcher, terms, None)?;
         weight.do_normalize(1.0, query.boost);
         Ok(SpanBoostWeight {
             sim_weight,
@@ -274,11 +270,8 @@ impl<C: Codec> SpanWeight<C> for SpanBoostWeight<C> {
         self.weight.get_spans(reader, required_postings)
     }
 
-    fn extract_term_contexts(
-        &self,
-        contexts: &mut HashMap<Term, Arc<TermContext<CodecTermState<C>>>>,
-    ) {
-        self.weight.extract_term_contexts(contexts)
+    fn extract_term_keys(&self, terms: &mut Vec<Term>) {
+        self.weight.extract_term_keys(terms)
     }
 }
 
@@ -361,15 +354,12 @@ impl<C: Codec> SpanWeight<C> for SpanBoostWeightEnum<C> {
         }
     }
 
-    fn extract_term_contexts(
-        &self,
-        contexts: &mut HashMap<Term, Arc<TermContext<CodecTermState<C>>>>,
-    ) {
+    fn extract_term_keys(&self, terms: &mut Vec<Term>) {
         match self {
-            SpanBoostWeightEnum::Term(w) => w.extract_term_contexts(contexts),
-            SpanBoostWeightEnum::Gap(w) => w.extract_term_contexts(contexts),
-            SpanBoostWeightEnum::Or(w) => w.extract_term_contexts(contexts),
-            SpanBoostWeightEnum::Near(w) => w.extract_term_contexts(contexts),
+            SpanBoostWeightEnum::Term(w) => w.extract_term_keys(terms),
+            SpanBoostWeightEnum::Gap(w) => w.extract_term_keys(terms),
+            SpanBoostWeightEnum::Or(w) => w.extract_term_keys(terms),
+            SpanBoostWeightEnum::Near(w) => w.extract_term_keys(terms),
         }
     }
 

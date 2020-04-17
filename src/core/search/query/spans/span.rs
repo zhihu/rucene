@@ -11,7 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::codec::{Codec, CodecPostingIterator, CodecTermState};
+use core::codec::{Codec, CodecPostingIterator};
 use core::codec::{PostingIterator, PostingIteratorFlags};
 use core::doc::Term;
 use core::index::reader::{LeafReaderContext, SearchLeafReader};
@@ -27,22 +27,18 @@ use core::search::query::{Query, TermQuery, Weight};
 use core::search::scorer::{ConjunctionScorer, Scorer};
 use core::search::searcher::SearchPlanBuilder;
 use core::search::similarity::{SimScorer, SimWeight};
-use core::search::TermContext;
 use core::search::{DocIterator, NO_MORE_DOCS};
 use core::util::{DocId, KeyedContext};
 
 use error::{ErrorKind, Result};
 
-use std::collections::HashMap;
+use core::search::statistics::CollectionStatistics;
 use std::fmt;
-use std::sync::Arc;
 
-pub fn term_contexts<C: Codec, T: SpanWeight<C>>(
-    weights: &[T],
-) -> HashMap<Term, Arc<TermContext<CodecTermState<C>>>> {
-    let mut terms = HashMap::new();
+pub fn term_keys<C: Codec, T: SpanWeight<C>>(weights: &[T]) -> Vec<Term> {
+    let mut terms = Vec::new();
     for w in weights {
-        w.extract_term_contexts(&mut terms);
+        w.extract_term_keys(&mut terms);
     }
     terms
 }
@@ -578,19 +574,25 @@ impl<S: Spans> DocIterator for SpanScorer<S> {
 pub fn build_sim_weight<C: Codec, IS: SearchPlanBuilder<C> + ?Sized>(
     field: &str,
     searcher: &IS,
-    term_contexts: HashMap<Term, Arc<TermContext<CodecTermState<C>>>>,
+    terms: Vec<Term>,
     ctx: Option<KeyedContext>,
 ) -> Result<Option<Box<dyn SimWeight<C>>>> {
-    if field.is_empty() || term_contexts.is_empty() {
+    if field.is_empty() || terms.is_empty() {
         return Ok(None);
     }
 
-    let similarity = searcher.similarity(field, !term_contexts.is_empty());
-    let mut term_stats = Vec::with_capacity(term_contexts.len());
-    for (term, ctx) in term_contexts {
-        term_stats.push(searcher.term_statistics(&term, ctx.as_ref()));
+    let similarity = searcher.similarity(field, !terms.is_empty());
+    let mut term_stats = Vec::with_capacity(terms.len());
+    for term in terms.iter() {
+        term_stats.push(searcher.term_statistics(term)?);
     }
-    let collection_stats = searcher.collections_statistics(field)?;
+
+    let collection_stats = if let Some(stat) = searcher.collections_statistics(field) {
+        stat.clone()
+    } else {
+        CollectionStatistics::new(field.to_string(), 0, searcher.max_doc() as i64, -1, -1, -1)
+    };
+
     Ok(Some(similarity.compute_weight(
         &collection_stats,
         &term_stats,
@@ -612,11 +614,8 @@ pub trait SpanWeight<C: Codec>: Weight<C> {
         required_postings: &PostingsFlag,
     ) -> Result<Option<SpansEnum<CodecPostingIterator<C>>>>;
 
-    /// Collect all TermContexts used by this Weight
-    fn extract_term_contexts(
-        &self,
-        contexts: &mut HashMap<Term, Arc<TermContext<CodecTermState<C>>>>,
-    );
+    /// Collect all Terms used by this Weight
+    fn extract_term_keys(&self, terms: &mut Vec<Term>);
 
     fn do_create_scorer(&self, ctx: &LeafReaderContext<'_, C>) -> Result<Option<Box<dyn Scorer>>> {
         if let Some(spans) = self.get_spans(ctx, &PostingsFlag::Positions)? {
@@ -725,16 +724,13 @@ impl<C: Codec> SpanWeight<C> for SpanWeightEnum<C> {
         }
     }
 
-    fn extract_term_contexts(
-        &self,
-        contexts: &mut HashMap<Term, Arc<TermContext<CodecTermState<C>>>>,
-    ) {
+    fn extract_term_keys(&self, terms: &mut Vec<Term>) {
         match self {
-            SpanWeightEnum::Term(w) => w.extract_term_contexts(contexts),
-            SpanWeightEnum::Gap(w) => w.extract_term_contexts(contexts),
-            SpanWeightEnum::Or(w) => w.extract_term_contexts(contexts),
-            SpanWeightEnum::Near(w) => w.extract_term_contexts(contexts),
-            SpanWeightEnum::Boost(w) => w.extract_term_contexts(contexts),
+            SpanWeightEnum::Term(w) => w.extract_term_keys(terms),
+            SpanWeightEnum::Gap(w) => w.extract_term_keys(terms),
+            SpanWeightEnum::Or(w) => w.extract_term_keys(terms),
+            SpanWeightEnum::Near(w) => w.extract_term_keys(terms),
+            SpanWeightEnum::Boost(w) => w.extract_term_keys(terms),
         }
     }
 

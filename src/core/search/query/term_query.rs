@@ -13,10 +13,9 @@
 
 use error::Result;
 
-use std::collections::HashMap;
 use std::fmt;
 
-use core::codec::{Codec, CodecPostingIterator, CodecTermState};
+use core::codec::Codec;
 use core::codec::{PostingIterator, PostingIteratorFlags};
 use core::doc::Term;
 use core::index::reader::LeafReaderContext;
@@ -61,19 +60,24 @@ impl<C: Codec> Query<C> for TermQuery {
         searcher: &dyn SearchPlanBuilder<C>,
         needs_scores: bool,
     ) -> Result<Box<dyn Weight<C>>> {
-        let term_context = searcher.term_state(&self.term)?;
-        let max_doc = i64::from(searcher.max_doc());
-        let (term_stats, collection_stats) = if needs_scores {
-            (
-                vec![searcher.term_statistics(&self.term, term_context.as_ref())],
-                searcher.collections_statistics(&self.term.field)?,
-            )
+        let max_doc = searcher.max_doc() as i64;
+
+        let term_stats = if needs_scores {
+            vec![searcher.term_statistics(&self.term)?]
         } else {
-            (
-                vec![TermStatistics::new(self.term.bytes.clone(), max_doc, -1)],
-                CollectionStatistics::new(self.term.field.clone(), max_doc, -1, -1, -1),
-            )
+            vec![TermStatistics::new(self.term.bytes.clone(), max_doc, -1)]
         };
+
+        let collection_stats = if needs_scores {
+            if let Some(stat) = searcher.collections_statistics(&self.term.field) {
+                stat.clone()
+            } else {
+                CollectionStatistics::new(self.term.field.clone(), 0, max_doc, -1, -1, -1)
+            }
+        } else {
+            CollectionStatistics::new(self.term.field.clone(), 0, max_doc, -1, -1, -1)
+        };
+
         let similarity = searcher.similarity(&self.term.field, needs_scores);
         let sim_weight = similarity.compute_weight(
             &collection_stats,
@@ -83,7 +87,6 @@ impl<C: Codec> Query<C> for TermQuery {
         );
         Ok(Box::new(TermWeight::new(
             self.term.clone(),
-            term_context.term_states(),
             self.boost,
             similarity,
             sim_weight,
@@ -118,13 +121,11 @@ struct TermWeight<C: Codec> {
     similarity: Box<dyn Similarity<C>>,
     sim_weight: Box<dyn SimWeight<C>>,
     needs_scores: bool,
-    term_states: HashMap<DocId, CodecTermState<C>>,
 }
 
 impl<C: Codec> TermWeight<C> {
     pub fn new(
         term: Term,
-        term_states: HashMap<DocId, CodecTermState<C>>,
         boost: f32,
         similarity: Box<dyn Similarity<C>>,
         sim_weight: Box<dyn SimWeight<C>>,
@@ -136,30 +137,14 @@ impl<C: Codec> TermWeight<C> {
             similarity,
             sim_weight,
             needs_scores,
-            term_states,
-        }
-    }
-
-    fn create_postings_iterator(
-        &self,
-        reader: &LeafReaderContext<'_, C>,
-        flags: i32,
-    ) -> Result<Option<CodecPostingIterator<C>>> {
-        if let Some(state) = self.term_states.get(&reader.doc_base) {
-            reader.reader.postings_from_state(&self.term, &state, flags)
-        } else {
-            Ok(None)
         }
     }
 }
 
 impl<C: Codec> Weight<C> for TermWeight<C> {
-    fn create_scorer(
-        &self,
-        reader_context: &LeafReaderContext<'_, C>,
-    ) -> Result<Option<Box<dyn Scorer>>> {
-        let _norms = reader_context.reader.norm_values(&self.term.field);
-        let sim_scorer = self.sim_weight.sim_scorer(reader_context.reader)?;
+    fn create_scorer(&self, reader: &LeafReaderContext<'_, C>) -> Result<Option<Box<dyn Scorer>>> {
+        let _norms = reader.reader.norm_values(&self.term.field);
+        let sim_scorer = self.sim_weight.sim_scorer(reader.reader)?;
 
         let flags = if self.needs_scores {
             PostingIteratorFlags::FREQS
@@ -167,8 +152,11 @@ impl<C: Codec> Weight<C> for TermWeight<C> {
             PostingIteratorFlags::NONE
         };
 
-        if let Some(postings) = self.create_postings_iterator(reader_context, i32::from(flags))? {
-            Ok(Some(Box::new(TermScorer::new(sim_scorer, postings))))
+        if let Some(postings_iterator) = reader.reader.postings(&self.term, flags as i32)? {
+            Ok(Some(Box::new(TermScorer::new(
+                sim_scorer,
+                postings_iterator,
+            ))))
         } else {
             Ok(None)
         }
@@ -197,9 +185,7 @@ impl<C: Codec> Weight<C> for TermWeight<C> {
             PostingIteratorFlags::NONE
         };
 
-        if let Some(mut postings_iterator) =
-            self.create_postings_iterator(reader, i32::from(flags))?
-        {
+        if let Some(mut postings_iterator) = reader.reader.postings(&self.term, flags as i32)? {
             let new_doc = postings_iterator.advance(doc)?;
             if new_doc == doc {
                 let freq = postings_iterator.freq()? as f32;
