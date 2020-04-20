@@ -12,7 +12,7 @@
 // limitations under the License.
 
 use core::search::scorer::Scorer;
-use core::search::DocIterator;
+use core::search::{DocIterator, NO_MORE_DOCS};
 use core::util::{DisiPriorityQueue, DocId};
 
 use error::Result;
@@ -20,7 +20,7 @@ use std::f32;
 
 /// A Scorer for OR like queries, counterpart of `ConjunctionScorer`.
 pub struct DisjunctionSumScorer<T: Scorer> {
-    sub_scorers: DisiPriorityQueue<T>,
+    sub_scorers: SubScorers<T>,
     needs_scores: bool,
     cost: usize,
 }
@@ -31,54 +31,33 @@ impl<T: Scorer> DisjunctionSumScorer<T> {
 
         let cost = children.iter().map(|w| w.cost()).sum();
 
+        let sub_scorers = if children.len() < 10 {
+            SubScorers::SQ(SimpleQueue::new(children))
+        } else {
+            SubScorers::DPQ(DisiPriorityQueue::new(children))
+        };
+
         DisjunctionSumScorer {
-            sub_scorers: DisiPriorityQueue::new(children),
+            sub_scorers,
             needs_scores,
             cost,
         }
-    }
-
-    pub fn sub_scorers(&self) -> &DisiPriorityQueue<T> {
-        &self.sub_scorers
-    }
-
-    pub fn sub_scorers_mut(&mut self) -> &mut DisiPriorityQueue<T> {
-        &mut self.sub_scorers
-    }
-
-    pub fn get_cost(&self) -> usize {
-        self.cost
     }
 }
 
 impl<T: Scorer> Scorer for DisjunctionSumScorer<T> {
     fn score(&mut self) -> Result<f32> {
-        let mut score: f32 = 0.0f32;
-
         if !self.needs_scores {
-            return Ok(score);
+            return Ok(0.0f32);
         }
 
-        let mut disi = self.sub_scorers_mut().top_list();
-
-        loop {
-            let sub_score = disi.inner_mut().score()?;
-            score += sub_score;
-
-            if disi.next.is_null() {
-                break;
-            } else {
-                unsafe { disi = &mut *disi.next };
-            }
-        }
-
-        Ok(score)
+        self.sub_scorers.score_sum()
     }
 }
 
 impl<T: Scorer> DocIterator for DisjunctionSumScorer<T> {
     fn doc_id(&self) -> DocId {
-        self.sub_scorers().peek().doc()
+        self.sub_scorers.doc_id()
     }
 
     fn next(&mut self) -> Result<DocId> {
@@ -102,29 +81,11 @@ impl<T: Scorer> DocIterator for DisjunctionSumScorer<T> {
     }
 
     fn approximate_next(&mut self) -> Result<DocId> {
-        let sub_scorers = self.sub_scorers_mut();
-        let doc = sub_scorers.peek().doc();
-
-        loop {
-            sub_scorers.peek_mut().approximate_next()?;
-            if sub_scorers.peek().doc() != doc {
-                break;
-            }
-        }
-
-        Ok(sub_scorers.peek().doc())
+        self.sub_scorers.approximate_next()
     }
 
     fn approximate_advance(&mut self, target: DocId) -> Result<DocId> {
-        let sub_scorers = self.sub_scorers_mut();
-        loop {
-            sub_scorers.peek_mut().approximate_advance(target)?;
-            if sub_scorers.peek().doc() >= target {
-                break;
-            }
-        }
-
-        Ok(sub_scorers.peek().doc())
+        self.sub_scorers.approximate_advance(target)
     }
 }
 
@@ -134,7 +95,7 @@ impl<T: Scorer> DocIterator for DisjunctionSumScorer<T> {
 /// tieBreakerMultiplier times the sum of the scores for the other subqueries that generate the
 /// document.
 pub struct DisjunctionMaxScorer<T: Scorer> {
-    sub_scorers: DisiPriorityQueue<T>,
+    sub_scorers: SubScorers<T>,
     needs_scores: bool,
     cost: usize,
     tie_breaker_multiplier: f32,
@@ -150,59 +111,34 @@ impl<T: Scorer> DisjunctionMaxScorer<T> {
 
         let cost = children.iter().map(|w| w.cost()).sum();
 
+        let sub_scorers = if children.len() < 10 {
+            SubScorers::SQ(SimpleQueue::new(children))
+        } else {
+            SubScorers::DPQ(DisiPriorityQueue::new(children))
+        };
+
         DisjunctionMaxScorer {
-            sub_scorers: DisiPriorityQueue::new(children),
+            sub_scorers,
             needs_scores,
             cost,
             tie_breaker_multiplier,
         }
     }
-
-    pub fn sub_scorers(&self) -> &DisiPriorityQueue<T> {
-        &self.sub_scorers
-    }
-
-    pub fn sub_scorers_mut(&mut self) -> &mut DisiPriorityQueue<T> {
-        &mut self.sub_scorers
-    }
-
-    pub fn get_cost(&self) -> usize {
-        self.cost
-    }
 }
 
 impl<T: Scorer> Scorer for DisjunctionMaxScorer<T> {
     fn score(&mut self) -> Result<f32> {
-        let mut score_sum = 0.0f32;
-
         if !self.needs_scores {
-            return Ok(score_sum);
+            return Ok(0.0f32);
         }
 
-        let mut score_max = f32::NEG_INFINITY;
-        let mut disi = self.sub_scorers_mut().top_list();
-
-        loop {
-            let sub_score = disi.inner_mut().score()?;
-            score_sum += sub_score;
-            if sub_score > score_max {
-                score_max = sub_score;
-            }
-
-            if disi.next.is_null() {
-                break;
-            } else {
-                unsafe { disi = &mut *disi.next };
-            }
-        }
-
-        Ok(score_max + (score_sum - score_max) * self.tie_breaker_multiplier)
+        self.sub_scorers.score_max(self.tie_breaker_multiplier)
     }
 }
 
 impl<T: Scorer> DocIterator for DisjunctionMaxScorer<T> {
     fn doc_id(&self) -> DocId {
-        self.sub_scorers().peek().doc()
+        self.sub_scorers.doc_id()
     }
 
     fn next(&mut self) -> Result<DocId> {
@@ -226,28 +162,178 @@ impl<T: Scorer> DocIterator for DisjunctionMaxScorer<T> {
     }
 
     fn approximate_next(&mut self) -> Result<DocId> {
-        let sub_scorers = self.sub_scorers_mut();
-        let doc = sub_scorers.peek().doc();
-
-        loop {
-            sub_scorers.peek_mut().approximate_next()?;
-            if sub_scorers.peek().doc() != doc {
-                break;
-            }
-        }
-
-        Ok(sub_scorers.peek().doc())
+        self.sub_scorers.approximate_next()
     }
 
     fn approximate_advance(&mut self, target: DocId) -> Result<DocId> {
-        let sub_scorers = self.sub_scorers_mut();
-        loop {
-            sub_scorers.peek_mut().approximate_advance(target)?;
-            if sub_scorers.peek().doc() >= target {
-                break;
+        self.sub_scorers.approximate_advance(target)
+    }
+}
+
+pub struct SimpleQueue<T: Scorer> {
+    scorers: Vec<T>,
+    curr_doc: DocId,
+}
+
+impl<T: Scorer> SimpleQueue<T> {
+    pub fn new(children: Vec<T>) -> SimpleQueue<T> {
+        let mut curr_doc = NO_MORE_DOCS;
+        for s in children.iter() {
+            curr_doc = curr_doc.min(s.doc_id());
+        }
+        SimpleQueue {
+            scorers: children,
+            curr_doc,
+        }
+    }
+}
+
+pub enum SubScorers<T: Scorer> {
+    SQ(SimpleQueue<T>),
+    DPQ(DisiPriorityQueue<T>),
+}
+
+impl<T: Scorer> SubScorers<T> {
+    fn score_sum(&mut self) -> Result<f32> {
+        match self {
+            SubScorers::SQ(sq) => {
+                let mut score: f32 = 0.0f32;
+
+                let doc_id = sq.curr_doc;
+                for s in sq.scorers.iter_mut() {
+                    if s.doc_id() == doc_id {
+                        let sub_score = s.score()?;
+                        score += sub_score;
+                    }
+                }
+
+                Ok(score)
+            }
+            SubScorers::DPQ(dpq) => {
+                let mut score: f32 = 0.0f32;
+                let mut disi = dpq.top_list();
+
+                loop {
+                    let sub_score = disi.inner_mut().score()?;
+                    score += sub_score;
+
+                    if disi.next.is_null() {
+                        break;
+                    } else {
+                        unsafe { disi = &mut *disi.next };
+                    }
+                }
+
+                Ok(score)
             }
         }
+    }
 
-        Ok(sub_scorers.peek().doc())
+    fn score_max(&mut self, tie_breaker_multiplier: f32) -> Result<f32> {
+        match self {
+            SubScorers::SQ(sq) => {
+                let mut score_sum = 0.0f32;
+                let mut score_max = f32::NEG_INFINITY;
+
+                let doc_id = sq.curr_doc;
+                for s in sq.scorers.iter_mut() {
+                    if s.doc_id() == doc_id {
+                        let sub_score = s.score()?;
+
+                        score_sum += sub_score;
+                        score_max = score_max.max(sub_score);
+                    }
+                }
+
+                Ok(score_max + (score_sum - score_max) * tie_breaker_multiplier)
+            }
+            SubScorers::DPQ(dbq) => {
+                let mut score_sum = 0.0f32;
+                let mut score_max = f32::NEG_INFINITY;
+                let mut disi = dbq.top_list();
+
+                loop {
+                    let sub_score = disi.inner_mut().score()?;
+                    score_sum += sub_score;
+                    if sub_score > score_max {
+                        score_max = sub_score;
+                    }
+
+                    if disi.next.is_null() {
+                        break;
+                    } else {
+                        unsafe { disi = &mut *disi.next };
+                    }
+                }
+
+                Ok(score_max + (score_sum - score_max) * tie_breaker_multiplier)
+            }
+        }
+    }
+
+    fn doc_id(&self) -> DocId {
+        match self {
+            SubScorers::SQ(sq) => sq.curr_doc,
+            SubScorers::DPQ(dbq) => dbq.peek().doc(),
+        }
+    }
+
+    fn approximate_next(&mut self) -> Result<DocId> {
+        match self {
+            SubScorers::SQ(sq) => {
+                let curr_doc = sq.curr_doc;
+                let mut min_doc = NO_MORE_DOCS;
+                for s in sq.scorers.iter_mut() {
+                    if s.doc_id() == curr_doc {
+                        s.approximate_next()?;
+                    }
+
+                    min_doc = min_doc.min(s.doc_id());
+                }
+
+                sq.curr_doc = min_doc;
+                Ok(sq.curr_doc)
+            }
+            SubScorers::DPQ(dbq) => {
+                let doc = dbq.peek().doc();
+
+                loop {
+                    dbq.peek_mut().approximate_next()?;
+                    if dbq.peek().doc() != doc {
+                        break;
+                    }
+                }
+
+                Ok(dbq.peek().doc())
+            }
+        }
+    }
+
+    fn approximate_advance(&mut self, target: DocId) -> Result<DocId> {
+        match self {
+            SubScorers::SQ(sq) => {
+                let mut min_doc = NO_MORE_DOCS;
+                for s in sq.scorers.iter_mut() {
+                    if s.doc_id() < target {
+                        s.approximate_advance(target)?;
+                    }
+
+                    min_doc = min_doc.min(s.doc_id());
+                }
+
+                sq.curr_doc = min_doc;
+                Ok(sq.curr_doc)
+            }
+            SubScorers::DPQ(dbq) => {
+                loop {
+                    dbq.peek_mut().approximate_advance(target)?;
+                    if dbq.peek().doc() >= target {
+                        break;
+                    }
+                }
+
+                Ok(dbq.peek().doc())
+            }
+        }
     }
 }
