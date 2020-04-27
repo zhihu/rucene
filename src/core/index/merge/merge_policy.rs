@@ -37,7 +37,7 @@ use std::ptr;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-pub const DEFAULT_NO_CFS_RATIO: f64 = 0.1;
+pub const DEFAULT_NO_CFS_RATIO: f64 = 0.0;
 
 pub const DEFAULT_MAX_CFS_SEGMENT_SIZE: u64 = i64::max_value() as u64;
 
@@ -159,7 +159,7 @@ pub trait MergePolicy: 'static {
         MP: MergePolicy,
     {
         let no_cfs_ratio = self.no_cfs_ratio();
-        if no_cfs_ratio == 0.0 {
+        if no_cfs_ratio <= 0.0 {
             return false;
         }
 

@@ -609,6 +609,8 @@ impl<O: IndexOutput> PostingsWriterBase for Lucene50PostingsWriter<O> {
         _term: &[u8],
         terms: &mut impl TermIterator,
         docs_seen: &mut FixedBitSet,
+        doc_freq_limit: i32,
+        term_freq_limit: i32,
     ) -> Result<Option<BlockTermState>> {
         self.start_term();
         let mut postings_enum = terms.postings_with_flags(self.enum_flags)?;
@@ -622,7 +624,7 @@ impl<O: IndexOutput> PostingsWriterBase for Lucene50PostingsWriter<O> {
             doc_freq += 1;
             docs_seen.set(doc_id as usize);
             let freq = if self.write_freqs {
-                let f = postings_enum.freq()?;
+                let f = postings_enum.freq()?.min(term_freq_limit);
                 total_term_freq += f;
                 f
             } else {
@@ -648,6 +650,11 @@ impl<O: IndexOutput> PostingsWriterBase for Lucene50PostingsWriter<O> {
             }
 
             self.finish_doc();
+
+            if doc_freq > doc_freq_limit {
+                println!("{} {}", String::from_utf8(_term.to_vec())?, doc_freq);
+                break;
+            }
         }
 
         if doc_freq == 0 {

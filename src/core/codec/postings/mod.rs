@@ -67,6 +67,10 @@ use error::ErrorKind::IllegalArgument;
 use error::Result;
 use std::sync::Arc;
 
+// sometimes will cause miss increasing with phrase/highlight.
+pub const DEFAULT_SEGMENT_DOC_FREQ: i32 = 500_000;
+pub const DEFAULT_DOC_TERM_FREQ: i32 = 10;
+
 /// Encodes/decodes terms, postings, and proximity data.
 /// <p>
 /// Note, when extending this class, the name ({@link #getName}) may
@@ -336,6 +340,8 @@ pub trait PostingsWriterBase {
         term: &[u8],
         terms: &mut impl TermIterator,
         docs_seen: &mut FixedBitSet,
+        doc_freq_limit: i32,
+        term_freq_limit: i32,
     ) -> Result<Option<BlockTermState>>;
 
     /// Encode metadata as [i64] and [u8]. {@param absolute} controls whether

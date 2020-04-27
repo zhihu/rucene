@@ -85,7 +85,7 @@ impl Default for IndexWriterConfig<CodecEnum, SerialMergeScheduler, TieredMergeP
 impl<C: Codec, MS: MergeScheduler, MP: MergePolicy> IndexWriterConfig<C, MS, MP> {
     pub fn new(codec: Arc<C>, merge_scheduler: MS, merge_policy: MP) -> Self {
         IndexWriterConfig {
-            use_compound_file: true,
+            use_compound_file: false,
             max_buffered_delete_terms: None,
             max_buffered_docs: None,
             merge_policy,

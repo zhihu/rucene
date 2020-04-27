@@ -14,7 +14,9 @@
 use core::codec::codec_util::{write_footer, write_index_header};
 use core::codec::field_infos::{FieldInfo, FieldInfos};
 use core::codec::postings::blocktree::*;
-use core::codec::postings::{FieldsConsumer, PostingsWriterBase};
+use core::codec::postings::{
+    FieldsConsumer, PostingsWriterBase, DEFAULT_DOC_TERM_FREQ, DEFAULT_SEGMENT_DOC_FREQ,
+};
 use core::codec::segment_infos::{segment_file_name, SegmentWriteState};
 use core::codec::Codec;
 use core::codec::{Fields, TermIterator, Terms};
@@ -281,7 +283,12 @@ impl<T: PostingsWriterBase, O: IndexOutput> FieldsConsumer for BlockTreeTermsWri
                 let mut terms_writer = TermsWriter::new(field_info, self);
 
                 while let Some(term) = terms_iter.next()? {
-                    terms_writer.write(&term, &mut terms_iter)?;
+                    terms_writer.write(
+                        &term,
+                        &mut terms_iter,
+                        DEFAULT_SEGMENT_DOC_FREQ,
+                        DEFAULT_DOC_TERM_FREQ,
+                    )?;
                 }
                 terms_writer.finish()?;
             }
@@ -697,11 +704,19 @@ impl<'a, T: PostingsWriterBase, O: IndexOutput> TermsWriter<'a, T, O> {
     }
 
     // Writes one term's worth of postings.
-    pub fn write(&mut self, text: &[u8], terms_iter: &mut impl TermIterator) -> Result<()> {
+    pub fn write(
+        &mut self,
+        text: &[u8],
+        terms_iter: &mut impl TermIterator,
+        doc_freq_limit: i32,
+        term_freq_limit: i32,
+    ) -> Result<()> {
         if let Some(state) = self.block_tree_writer.postings_writer.write_term(
             text,
             terms_iter,
             &mut self.docs_seen,
+            doc_freq_limit,
+            term_freq_limit,
         )? {
             assert_ne!(state.doc_freq, 0);
             assert!(
