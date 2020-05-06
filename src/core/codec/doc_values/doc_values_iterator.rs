@@ -1,8 +1,7 @@
-use core::codec::Codec;
 use core::codec::doc_values::{
-    BinaryDocValues, NumericDocValues,
-    SortedDocValues, SortedNumericDocValues, SortedSetDocValues,
+    BinaryDocValues, NumericDocValues, SortedDocValues, SortedNumericDocValues, SortedSetDocValues,
 };
+use core::codec::Codec;
 use core::doc::DocValuesType;
 use core::index::reader::LeafReaderContext;
 use core::search::DocIterator;
@@ -64,7 +63,6 @@ impl DocValuesIterator {
     }
 
     fn exists(&mut self, doc_id: DocId) -> Result<bool> {
-
         match self.doc_values {
             DocValuesEnum::Binary(ref mut binary) => {
                 if let Ok(v) = binary.get(doc_id) {
@@ -75,7 +73,6 @@ impl DocValuesIterator {
                 if let Ok(_) = numeric.get(doc_id) {
                     return Ok(true);
                 }
-
             }
             DocValuesEnum::Sorted(ref mut sorted) => {
                 if let Ok(o) = sorted.get_ord(doc_id) {
@@ -90,7 +87,7 @@ impl DocValuesIterator {
             DocValuesEnum::SortedSet(ref mut sorted_set) => {
                 if let Ok(()) = sorted_set.set_document(doc_id) {
                     if let Ok(o) = sorted_set.next_ord() {
-                        return Ok(o > -1)
+                        return Ok(o > -1);
                     }
                 }
             }

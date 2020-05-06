@@ -1,8 +1,8 @@
 use std::any::Any;
 use std::fmt;
 
-use core::codec::Codec;
 use core::codec::doc_values::DocValuesIterator;
+use core::codec::Codec;
 use core::index::reader::LeafReaderContext;
 use core::search::explanation::Explanation;
 use core::search::query::{Query, TermQuery, Weight};
@@ -19,12 +19,8 @@ pub struct ExistsQuery {
 }
 
 impl ExistsQuery {
-    pub fn build(
-        field: String,
-    ) -> ExistsQuery {
-        ExistsQuery {
-            field,
-        }
+    pub fn build(field: String) -> ExistsQuery {
+        ExistsQuery { field }
     }
 }
 
@@ -34,10 +30,7 @@ impl<C: Codec> Query<C> for ExistsQuery {
         _searcher: &dyn SearchPlanBuilder<C>,
         _needs_scores: bool,
     ) -> Result<Box<dyn Weight<C>>> {
-        Ok(Box::new(
-            ExistsWeight::new(
-                self.field.clone(),
-            )))
+        Ok(Box::new(ExistsWeight::new(self.field.clone())))
     }
 
     fn extract_terms(&self) -> Vec<TermQuery> {
@@ -51,11 +44,7 @@ impl<C: Codec> Query<C> for ExistsQuery {
 
 impl fmt::Display for ExistsQuery {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "ExistsQuery(field={})",
-            &self.field
-        )
+        write!(f, "ExistsQuery(field={})", &self.field)
     }
 }
 
@@ -66,9 +55,7 @@ struct ExistsWeight {
 }
 
 impl ExistsWeight {
-    pub fn new(
-        field: String,
-    ) -> ExistsWeight {
+    pub fn new(field: String) -> ExistsWeight {
         ExistsWeight {
             field,
             weight: 0f32,
@@ -86,7 +73,11 @@ impl<C: Codec> Weight<C> for ExistsWeight {
             let cost: i32 = leaf_reader.reader.max_doc();
             let doc_iterator = DocValuesIterator::new(field_info.name.as_str(), cost, leaf_reader);
 
-            return Ok(Some(Box::new(ConstantScoreScorer::new(self.weight, doc_iterator, cost as usize))));
+            return Ok(Some(Box::new(ConstantScoreScorer::new(
+                self.weight,
+                doc_iterator,
+                cost as usize,
+            ))));
         }
 
         Ok(None)
@@ -118,13 +109,15 @@ impl<C: Codec> Weight<C> for ExistsWeight {
             true,
             self.weight,
             format!("{}, product of:", self),
-            vec![
-                Explanation::new(true, self.weight, "exists".to_string(), vec![]),
-            ],
+            vec![Explanation::new(
+                true,
+                self.weight,
+                "exists".to_string(),
+                vec![],
+            )],
         ))
     }
 }
-
 
 impl fmt::Display for ExistsWeight {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {

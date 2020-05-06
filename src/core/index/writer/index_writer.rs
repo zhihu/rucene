@@ -1722,12 +1722,11 @@ where
         Ok(seq_no)
     }
 
-    // _l is self.commit_lock
     fn prepare_commit_internal(
         &mut self,
         do_maybe_merge: &mut bool,
         index_writer: &IndexWriter<D, C, MS, MP>,
-        _l: &MutexGuard<()>,
+        commit_lock: &MutexGuard<()>,
     ) -> Result<i64> {
         // self.start_commit_time = SystemTime::now();
         self.ensure_open(false)?;
@@ -1784,7 +1783,7 @@ where
         if any_segments_flushed {
             *do_maybe_merge = true;
         }
-        let res = self.start_commit(to_commit);
+        let res = self.start_commit(to_commit, commit_lock);
         if res.is_err() {
             let lock = Arc::clone(&self.lock);
             let _l = lock.lock().unwrap();
@@ -1864,7 +1863,11 @@ where
     /// if it wasn't already.  If that succeeds, then we
     /// prepare a new segments_N file but do not fully commit
     /// it.
-    fn start_commit(&mut self, to_sync: SegmentInfos<D, C>) -> Result<()> {
+    fn start_commit(
+        &mut self,
+        to_sync: SegmentInfos<D, C>,
+        commit_lock: &MutexGuard<()>,
+    ) -> Result<()> {
         debug_assert!(self.pending_commit.is_none());
 
         if let Some(ref tragedy) = self.tragedy {
@@ -1917,7 +1920,7 @@ where
             }
         }
         if let Err(e) = err {
-            self.tragic_event(e, "start_commit")?;
+            self.tragic_event(e, "start_commit", Some(commit_lock))?;
         }
         Ok(())
     }
@@ -2718,7 +2721,7 @@ where
     /// Merges the indicated segments, replacing them in the stack with a single segment.
     fn merge(index_writer: &IndexWriter<D, C, MS, MP>, merge: &mut OneMerge<D, C>) -> Result<()> {
         if let Err(e) = Self::do_merge(index_writer, merge) {
-            index_writer.writer.tragic_event(e, "merge")?;
+            index_writer.writer.tragic_event(e, "merge", None)?;
         }
 
         Ok(())
@@ -3634,7 +3637,12 @@ where
         Ok(())
     }
 
-    fn tragic_event(&self, tragedy: Error, location: &str) -> Result<()> {
+    fn tragic_event(
+        &self,
+        tragedy: Error,
+        location: &str,
+        commit_lock: Option<&MutexGuard<()>>,
+    ) -> Result<()> {
         trace!("IW - hit tragic '{:?}' inside {}", &tragedy, location);
 
         {
@@ -3651,8 +3659,12 @@ where
 
         // if we are already closed (e.g. called by rollback), this will be a no-op.
         if self.should_close(false) {
-            let commit_lock = self.commit_lock.lock()?;
-            self.rollback_internal(&commit_lock)?;
+            if let Some(lock) = commit_lock {
+                self.rollback_internal(lock)?;
+            } else {
+                let lock = self.commit_lock.lock()?;
+                self.rollback_internal(&lock)?;
+            }
         }
 
         bail!(IllegalState(format!(

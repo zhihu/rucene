@@ -892,7 +892,7 @@ impl<T: TermsHashPerField> PerField<T> {
             .start(&self.invert_state, field, first)?;
 
         loop {
-            let end = token_stream.increment_token()?;
+            let end = token_stream.next_token()?;
             if !end {
                 break;
             }
@@ -903,7 +903,7 @@ impl<T: TermsHashPerField> PerField<T> {
             // non-aborting and (above) this one document
             // will be marked as deleted, but still
             // consume a docID
-            let pos_incr = token_stream.position_attribute_mut().get_position();
+            let pos_incr = token_stream.token().position;
             self.invert_state.position += pos_incr as i32;
             if self.invert_state.position < self.invert_state.last_position {
                 if pos_incr == 0 {
@@ -926,10 +926,8 @@ impl<T: TermsHashPerField> PerField<T> {
             }
 
             if check_offset {
-                let start_offset =
-                    self.invert_state.offset + token_stream.offset_attribute_mut().start_offset();
-                let end_offset =
-                    self.invert_state.offset + token_stream.offset_attribute_mut().end_offset();
+                let start_offset = self.invert_state.offset + token_stream.token().start_offset;
+                let end_offset = self.invert_state.offset + token_stream.token().end_offset;
                 if (start_offset as i32) < self.invert_state.last_start_offset
                     || end_offset < start_offset
                 {
@@ -964,8 +962,8 @@ impl<T: TermsHashPerField> PerField<T> {
 
         // TODO: maybe add some safety? then again, it's already checked
         // when we come back around to the field...
-        self.invert_state.position += token_stream.position_attribute_mut().get_position() as i32;
-        self.invert_state.offset += token_stream.offset_attribute_mut().end_offset();
+        self.invert_state.position += token_stream.token().position as i32;
+        self.invert_state.offset += token_stream.token().end_offset;
 
         //        if analyzed {
         //            self.invert_state.position += doc_state.analyzer.get_position_increment_gap();

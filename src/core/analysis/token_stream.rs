@@ -11,154 +11,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::fmt::Debug;
-
-use core::analysis::{
-    BytesTermAttribute, CharTermAttribute, OffsetAttribute, PayloadAttribute, PositionAttribute,
-    TermToBytesRefAttribute,
-};
+use core::analysis::{Token, TokenStream, MAX_WORD_LEN};
 
 use core::util::BytesRef;
 use error::Result;
 use std::cmp::Ordering;
 use std::collections::HashSet;
 
-/// A `TokenStream` enumerates the sequence of tokens, either from
-/// `Field`s of a `Document` or from query text.
-///
-/// <b>The workflow of the `TokenStream` API is as follows:</b>
-///
-/// - The consumer calls {@link TokenStream#reset()}.
-/// - The consumer retrieves attributes from the stream and stores local
-/// references to all attributes it wants to access.
-/// - The consumer calls {@link #increment_token()} until it returns false
-/// consuming the attributes after each call.
-/// - The consumer calls {@link #end()} so that any end-of-stream operations
-/// can be performed.
-/// - The consumer calls {@link #close()} to release any resource when finished
-/// using the `TokenStream`.
-///
-/// To make sure that filters and consumers know which attributes are available,
-/// the attributes must be added during instantiation. Filters and consumers are
-/// not required to check for availability of attributes in
-/// {@link #increment_token()}.
-///
-/// You can find some example code for the new API in the analysis package level
-/// Javadoc.
-///
-/// The `TokenStream`-API in Lucene is based on the decorator pattern.
-/// Therefore all non-abstract subclasses must be final or have at least a final
-/// implementation of {@link #incrementToken}! This is checked when Java
-/// assertions are enabled.
-pub trait TokenStream: Debug {
-    /// Consumers (i.e., `IndexWriter`) use this method to advance the stream to
-    /// the next token. Implementing classes must implement this method and update
-    /// the appropriate {@link AttributeImpl}s with the attributes of the next
-    /// token.
-    ///
-    /// The producer must make no assumptions about the attributes after the method
-    /// has been returned: the caller may arbitrarily change it. If the producer
-    /// needs to preserve the state for subsequent calls, it can use
-    /// {@link #captureState} to create a copy of the current attribute state.
-    ///
-    /// This method is called for every token of a document, so an efficient
-    /// implementation is crucial for good performance. To avoid calls to
-    /// {@link #addAttribute(Class)} and {@link #getAttribute(Class)},
-    /// references to all {@link AttributeImpl}s that this stream uses should be
-    /// retrieved during instantiation.
-    ///
-    /// To ensure that filters and consumers know which attributes are available,
-    /// the attributes must be added during instantiation. Filters and consumers
-    /// are not required to check for availability of attributes in
-    /// {@link #incrementToken()}.
-    ///
-    /// @return false for end of stream; true otherwise
-    fn increment_token(&mut self) -> Result<bool>;
-
-    /// This method is called by the consumer after the last token has been
-    /// consumed, after {@link #incrementToken()} returned `false`
-    /// (using the new `TokenStream` API). Streams implementing the old API
-    /// should upgrade to use this feature.
-    ///
-    /// This method can be used to perform any end-of-stream operations, such as
-    /// setting the final offset of a stream. The final offset of a stream might
-    /// differ from the offset of the last token eg in case one or more whitespaces
-    /// followed after the last token, but a WhitespaceTokenizer was used.
-    ///
-    /// Additionally any skipped positions (such as those removed by a stopfilter)
-    /// can be applied to the position increment, or any adjustment of other
-    /// attributes where the end-of-stream value may be important.
-    ///
-    /// If you override this method, always call {@code super.end()}.
-    fn end(&mut self) -> Result<()>;
-
-    /// This method is called by a consumer before it begins consumption using
-    /// {@link #incrementToken()}.
-    ///
-    /// Resets this stream to a clean state. Stateful implementations must implement
-    /// this method so that they can be reused, just as if they had been created fresh.
-    ///
-    /// If you override this method, always call {@code super.reset()}, otherwise
-    /// some internal state will not be correctly reset (e.g., {@link Tokenizer} will
-    /// throw {@link IllegalStateException} on further usage).
-    fn reset(&mut self) -> Result<()>;
-
-    // attributes used for build invert index
-
-    /// Resets all attributes in this `TokenStream` by calling `clear` method
-    /// on each Attribute implementation.
-    fn clear_attributes(&mut self) {
-        self.offset_attribute_mut().clear();
-        self.position_attribute_mut().clear();
-        if let Some(attr) = self.payload_attribute_mut() {
-            attr.clear();
-        }
-        self.term_bytes_attribute_mut().clear();
-    }
-
-    /// Resets all attributes in this `TokenStream` by calling `end` method
-    /// on each Attribute implementation.
-    fn end_attributes(&mut self) {
-        self.offset_attribute_mut().end();
-        self.position_attribute_mut().end();
-        if let Some(attr) = self.payload_attribute_mut() {
-            attr.end();
-        }
-        self.term_bytes_attribute_mut().end();
-    }
-
-    /// mutable access of the `OffsetAttribute`
-    fn offset_attribute_mut(&mut self) -> &mut OffsetAttribute;
-
-    /// access of the `OffsetAttribute`
-    fn offset_attribute(&self) -> &OffsetAttribute;
-
-    /// mutable access of the `PositionIncrementAttribute`
-    fn position_attribute_mut(&mut self) -> &mut PositionAttribute;
-
-    /// mutable access of the `PayloadAttribute`, wound return None if not enabled
-    fn payload_attribute_mut(&mut self) -> Option<&mut PayloadAttribute> {
-        None
-    }
-
-    /// access of the `PayloadAttribute`, wound return None if not enabled
-    fn payload_attribute(&self) -> Option<&PayloadAttribute> {
-        None
-    }
-
-    /// mutable access of the `TermToBytesRefAttribute`
-    fn term_bytes_attribute_mut(&mut self) -> &mut dyn TermToBytesRefAttribute;
-
-    /// access of the [`TermToBytesRefAttribute`
-    fn term_bytes_attribute(&self) -> &dyn TermToBytesRefAttribute;
-}
-
 #[derive(Debug)]
 pub struct StringTokenStream {
-    term_attribute: CharTermAttribute,
-    offset_attribute: OffsetAttribute,
-    position_attribute: PositionAttribute,
-    payload_attribute: PayloadAttribute,
+    token: Token,
     used: bool,
     value: String,
 }
@@ -166,10 +28,7 @@ pub struct StringTokenStream {
 impl StringTokenStream {
     pub fn new(value: String) -> Self {
         StringTokenStream {
-            term_attribute: CharTermAttribute::new(),
-            offset_attribute: OffsetAttribute::new(),
-            position_attribute: PositionAttribute::new(),
-            payload_attribute: PayloadAttribute::new(Vec::with_capacity(0)),
+            token: Token::new(),
             used: true,
             value,
         }
@@ -177,56 +36,43 @@ impl StringTokenStream {
 }
 
 impl TokenStream for StringTokenStream {
-    fn increment_token(&mut self) -> Result<bool> {
+    fn next_token(&mut self) -> Result<bool> {
         if self.used {
             return Ok(false);
         }
-        self.clear_attributes();
 
-        self.term_attribute.append(&self.value);
-        self.offset_attribute.set_offset(0, self.value.len())?;
+        self.clear_token();
+        self.token.term = self.value.as_bytes().to_vec();
+        self.token.set_offset(0, self.value.len())?;
+
         self.used = true;
+
         Ok(true)
     }
 
     fn end(&mut self) -> Result<()> {
-        self.end_attributes();
-        let final_offset = self.value.len();
-        self.offset_attribute.set_offset(final_offset, final_offset)
+        self.end_token();
+        self.token.set_offset(self.value.len(), self.value.len())
     }
 
     fn reset(&mut self) -> Result<()> {
         self.used = false;
+
         Ok(())
     }
 
-    fn offset_attribute_mut(&mut self) -> &mut OffsetAttribute {
-        &mut self.offset_attribute
+    fn token(&self) -> &Token {
+        &self.token
     }
 
-    fn offset_attribute(&self) -> &OffsetAttribute {
-        &self.offset_attribute
-    }
-
-    fn position_attribute_mut(&mut self) -> &mut PositionAttribute {
-        &mut self.position_attribute
-    }
-
-    fn term_bytes_attribute_mut(&mut self) -> &mut dyn TermToBytesRefAttribute {
-        &mut self.term_attribute
-    }
-
-    fn term_bytes_attribute(&self) -> &dyn TermToBytesRefAttribute {
-        &self.term_attribute
+    fn token_mut(&mut self) -> &mut Token {
+        &mut self.token
     }
 }
 
 #[derive(Debug)]
 pub struct BinaryTokenStream {
-    term_attribute: BytesTermAttribute,
-    offset_attribute: OffsetAttribute,
-    position_attribute: PositionAttribute,
-    payload_attribute: PayloadAttribute,
+    token: Token,
     used: bool,
     value: BytesRef,
 }
@@ -234,10 +80,7 @@ pub struct BinaryTokenStream {
 impl BinaryTokenStream {
     pub fn new(value: BytesRef) -> Self {
         BinaryTokenStream {
-            term_attribute: BytesTermAttribute::new(),
-            offset_attribute: OffsetAttribute::new(),
-            position_attribute: PositionAttribute::new(),
-            payload_attribute: PayloadAttribute::new(Vec::with_capacity(0)),
+            token: Token::new(),
             used: true,
             value,
         }
@@ -245,19 +88,22 @@ impl BinaryTokenStream {
 }
 
 impl TokenStream for BinaryTokenStream {
-    fn increment_token(&mut self) -> Result<bool> {
+    fn next_token(&mut self) -> Result<bool> {
         if self.used {
             return Ok(false);
         }
-        self.clear_attributes();
 
-        self.term_attribute.set_bytes(self.value.bytes());
+        self.clear_token();
+        self.token.term = self.value.bytes().to_vec();
+
         self.used = true;
+
         Ok(true)
     }
 
     fn end(&mut self) -> Result<()> {
-        self.end_attributes();
+        self.end_token();
+
         Ok(())
     }
 
@@ -266,28 +112,14 @@ impl TokenStream for BinaryTokenStream {
         Ok(())
     }
 
-    fn offset_attribute_mut(&mut self) -> &mut OffsetAttribute {
-        &mut self.offset_attribute
+    fn token(&self) -> &Token {
+        &self.token
     }
 
-    fn offset_attribute(&self) -> &OffsetAttribute {
-        &self.offset_attribute
-    }
-
-    fn position_attribute_mut(&mut self) -> &mut PositionAttribute {
-        &mut self.position_attribute
-    }
-
-    fn term_bytes_attribute_mut(&mut self) -> &mut dyn TermToBytesRefAttribute {
-        &mut self.term_attribute
-    }
-
-    fn term_bytes_attribute(&self) -> &dyn TermToBytesRefAttribute {
-        &self.term_attribute
+    fn token_mut(&mut self) -> &mut Token {
+        &mut self.token
     }
 }
-
-pub const MAX_WORD_LEN: usize = 128;
 
 #[derive(Debug, Eq, PartialEq, Hash)]
 pub struct Word {
@@ -316,10 +148,7 @@ impl Word {
 
 #[derive(Debug)]
 pub struct WordTokenStream {
-    term_attribute: CharTermAttribute,
-    offset_attribute: OffsetAttribute,
-    position_attribute: PositionAttribute,
-    payload_attribute: PayloadAttribute,
+    token: Token,
     values: Vec<Word>,
     current: usize,
 }
@@ -340,10 +169,7 @@ impl WordTokenStream {
         });
 
         WordTokenStream {
-            term_attribute: CharTermAttribute::new(),
-            offset_attribute: OffsetAttribute::new(),
-            position_attribute: PositionAttribute::new(),
-            payload_attribute: PayloadAttribute::new(Vec::with_capacity(0)),
+            token: Token::new(),
             values: elements,
             current: 0,
         }
@@ -351,28 +177,30 @@ impl WordTokenStream {
 }
 
 impl TokenStream for WordTokenStream {
-    fn increment_token(&mut self) -> Result<bool> {
+    fn next_token(&mut self) -> Result<bool> {
         if self.current == self.values.len() {
             return Ok(false);
         }
 
-        self.clear_attributes();
+        self.clear_token();
 
         let word: &Word = &self.values[self.current];
-        self.term_attribute.append(&word.value);
-        self.offset_attribute
+        self.token.term = word.value.as_bytes().to_vec();
+        self.token
             .set_offset(word.begin, word.begin + word.length)?;
         self.current += 1;
+
         Ok(true)
     }
 
     fn end(&mut self) -> Result<()> {
-        self.end_attributes();
+        self.end_token();
+
         if let Some(word) = self.values.last() {
             let final_offset = word.begin + word.length;
-            self.offset_attribute.set_offset(final_offset, final_offset)
+            self.token.set_offset(final_offset, final_offset)
         } else {
-            self.offset_attribute.set_offset(0, 0)
+            self.token.set_offset(0, 0)
         }
     }
 
@@ -381,23 +209,73 @@ impl TokenStream for WordTokenStream {
         Ok(())
     }
 
-    fn offset_attribute_mut(&mut self) -> &mut OffsetAttribute {
-        &mut self.offset_attribute
+    fn token(&self) -> &Token {
+        &self.token
     }
 
-    fn offset_attribute(&self) -> &OffsetAttribute {
-        &self.offset_attribute
+    fn token_mut(&mut self) -> &mut Token {
+        &mut self.token
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_string_token_stream() {
+        let value = "case".to_string();
+        let mut token = StringTokenStream::new(value.clone());
+        token.reset().unwrap();
+
+        assert_eq!(token.next_token().unwrap(), true);
+        assert_eq!(token.token().term.as_slice(), value.as_bytes());
     }
 
-    fn position_attribute_mut(&mut self) -> &mut PositionAttribute {
-        &mut self.position_attribute
+    #[test]
+    fn test_binary_token_stream() {
+        let value = "case".as_bytes().to_vec();
+        let mut token = BinaryTokenStream::new(BytesRef::new(&value));
+        token.reset().unwrap();
+
+        assert_eq!(token.next_token().unwrap(), true);
+        assert_eq!(token.token().term.as_slice(), value.as_slice());
     }
 
-    fn term_bytes_attribute_mut(&mut self) -> &mut dyn TermToBytesRefAttribute {
-        &mut self.term_attribute
-    }
+    #[test]
+    fn test_word_token_stream() {
+        let words = vec![
+            Word::new("The", 0, 3),
+            Word::new("quick", 4, 9),
+            Word::new("brown", 10, 15),
+            Word::new("fox", 16, 19),
+            Word::new("jumps", 20, 25),
+            Word::new("over", 26, 30),
+            Word::new("the", 31, 34),
+            Word::new("lazy", 35, 39),
+            Word::new("dog", 40, 43),
+        ];
+        let mut token = WordTokenStream::new(words);
+        token.reset().unwrap();
 
-    fn term_bytes_attribute(&self) -> &dyn TermToBytesRefAttribute {
-        &self.term_attribute
+        assert_eq!(token.next_token().unwrap(), true);
+        assert_eq!(token.token().term.as_slice(), "The".as_bytes());
+        assert_eq!(token.next_token().unwrap(), true);
+        assert_eq!(token.token().term.as_slice(), "quick".as_bytes());
+        assert_eq!(token.next_token().unwrap(), true);
+        assert_eq!(token.token().term.as_slice(), "brown".as_bytes());
+        assert_eq!(token.next_token().unwrap(), true);
+        assert_eq!(token.token().term.as_slice(), "fox".as_bytes());
+        assert_eq!(token.next_token().unwrap(), true);
+        assert_eq!(token.token().term.as_slice(), "jumps".as_bytes());
+        assert_eq!(token.next_token().unwrap(), true);
+        assert_eq!(token.token().term.as_slice(), "over".as_bytes());
+        assert_eq!(token.next_token().unwrap(), true);
+        assert_eq!(token.token().term.as_slice(), "the".as_bytes());
+        assert_eq!(token.next_token().unwrap(), true);
+        assert_eq!(token.token().term.as_slice(), "lazy".as_bytes());
+        assert_eq!(token.next_token().unwrap(), true);
+        assert_eq!(token.token().term.as_slice(), "dog".as_bytes());
+        assert_eq!(token.next_token().unwrap(), false);
     }
 }
