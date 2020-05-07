@@ -1819,11 +1819,11 @@ impl PostingIterator for EverythingIterator {
     }
 
     fn payload(&self) -> Result<Payload> {
-        if self.payload_length == 0 {
+        if self.payload_length == 0 || self.payload_byte_upto < self.payload_length {
             Ok(vec![])
         } else {
-            let start = self.payload_byte_upto as usize;
-            let end = start + self.payload_length as usize;
+            let end = self.payload_byte_upto as usize;
+            let start = end - self.payload_length as usize;
             Ok(self.payload_bytes[start..end].to_vec())
         }
     }

@@ -82,6 +82,10 @@ impl Fieldable for Field {
 
     // TODO currently this function should only be called once per doc field
     fn token_stream(&mut self) -> Result<Box<dyn TokenStream>> {
+        if self.token_stream.is_some() {
+            return Ok(self.token_stream.take().unwrap());
+        }
+
         debug_assert_ne!(self.field_type.index_options, IndexOptions::Null);
 
         if !self.field_type.tokenized {
@@ -93,21 +97,16 @@ impl Fieldable for Field {
                     VariantValue::Binary(b) => {
                         return Ok(Box::new(BinaryTokenStream::new(BytesRef::new(b.as_ref()))));
                     }
-                    _ => {
-                        bail!(ErrorKind::IllegalArgument(
-                            "Non-Tokenized Fields must have a String value".into()
-                        ));
-                    }
+                    _ => bail!(ErrorKind::IllegalArgument(
+                        "Non-Tokenized Fields must have a String value".into()
+                    )),
                 }
             }
         }
 
-        if self.token_stream.is_some() {
-            Ok(self.token_stream.take().unwrap())
-        } else {
-            // TODO currently not support analyzer
-            unimplemented!()
-        }
+        bail!(ErrorKind::IllegalArgument(
+            "Tokenized field's token_stream should not be None ".into()
+        ))
     }
 
     fn binary_value(&self) -> Option<&[u8]> {
