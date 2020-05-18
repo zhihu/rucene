@@ -19,7 +19,7 @@ use core::store::io::{DataOutput, IndexInput, IndexOutput};
 use core::util::packed::*;
 use core::util::{BitSet, BitsRequired, DocId, FixedBitSet};
 
-use core::codec::postings::{EfWriterMeta, EncodeType};
+use core::codec::postings::{EfWriterMeta, EncodeType, PartialBlockDecoder};
 use error::Result;
 use std::mem::MaybeUninit;
 use std::ptr;
@@ -180,6 +180,7 @@ impl ForUtilInstance {
         encoded: &mut [u8],
         decoded: &mut [i32],
         encode_type: Option<&mut EncodeType>,
+        partial_decoder: Option<&mut PartialBlockDecoder>,
     ) -> Result<()> {
         let code = input.read_byte()?;
         if encode_type.is_some() {
@@ -197,19 +198,30 @@ impl ForUtilInstance {
 
         if num_bits as i32 == ALL_VALUES_EQUAL {
             let value = input.read_vint()?;
-            decoded[0..BLOCK_SIZE as usize]
-                .iter_mut()
-                .map(|x| *x = value)
-                .count();
+            if let Some(p) = partial_decoder {
+                p.set_single(value);
+            } else {
+                decoded[0..BLOCK_SIZE as usize]
+                    .iter_mut()
+                    .map(|x| *x = value)
+                    .count();
+            }
             return Ok(());
         }
 
         let encoded_size = self.encoded_sizes[num_bits - 1];
-        input.read_exact(&mut encoded[0..encoded_size as usize])?;
-
         let decoder = unsafe { &self.decoders.get_ref()[num_bits - 1] };
-        let iters = self.iterations[num_bits - 1] as usize;
-        decoder.decode_byte_to_int(encoded, decoded, iters);
+        if let Some(p) = partial_decoder {
+            let format = match decoder {
+                &BulkOperationEnum::Packed(_) => Format::Packed,
+                &BulkOperationEnum::PackedSB(_) => Format::PackedSingleBlock,
+            };
+            p.parse_from(input, encoded_size as usize, num_bits, format)?;
+        } else {
+            input.read_exact(&mut encoded[0..encoded_size as usize])?;
+            let iters = self.iterations[num_bits - 1] as usize;
+            decoder.decode_byte_to_int(encoded, decoded, iters);
+        }
         Ok(())
     }
 
@@ -257,7 +269,19 @@ impl ForUtil {
         encode_type: Option<&mut EncodeType>,
     ) -> Result<()> {
         self.instance
-            .read_block(input, encoded, decoded, encode_type)
+            .read_block(input, encoded, decoded, encode_type, None)
+    }
+
+    pub fn read_block_only(
+        &self,
+        input: &mut dyn IndexInput,
+        encoded: &mut [u8],
+        decoded: &mut [i32],
+        encode_type: Option<&mut EncodeType>,
+        partial_decoder: &mut PartialBlockDecoder,
+    ) -> Result<()> {
+        self.instance
+            .read_block(input, encoded, decoded, encode_type, Some(partial_decoder))
     }
 
     pub fn read_other_encode_block(

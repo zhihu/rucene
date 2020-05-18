@@ -49,6 +49,10 @@ mod terms_hash_per_field;
 
 pub use self::terms_hash_per_field::*;
 
+mod partial_block_decoder;
+
+pub use self::partial_block_decoder::*;
+
 use core::codec::field_infos::FieldInfo;
 use core::codec::multi_fields::{MappedMultiFields, MultiFields};
 use core::codec::postings::blocktree::{

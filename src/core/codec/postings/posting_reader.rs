@@ -27,8 +27,9 @@ use core::util::{Bits, DocId, FixedBitSet, ImmutableBitSet};
 
 use error::{ErrorKind::IllegalState, Result};
 
+use core::codec::postings::PartialBlockDecoder;
 use core::util::packed::{EliasFanoDecoder, NO_MORE_VALUES};
-use std::intrinsics::unlikely;
+use std::intrinsics::{likely, unlikely};
 use std::sync::Arc;
 
 /// Filename extension for document number, frequencies, and skip data.
@@ -385,6 +386,9 @@ struct BlockDocIterator {
     doc_bits: FixedBitSet,
     bits_min_doc: DocId,
     bits_index: i32,
+    partial_decode: bool,
+    partial_doc_deltas: PartialBlockDecoder,
+    partial_freqs: PartialBlockDecoder,
 }
 
 impl BlockDocIterator {
@@ -428,6 +432,9 @@ impl BlockDocIterator {
             doc_bits: FixedBitSet::default(),
             bits_min_doc: 0,
             bits_index: 0,
+            partial_decode: false,
+            partial_doc_deltas: PartialBlockDecoder::new(),
+            partial_freqs: PartialBlockDecoder::new(),
         };
         iterator.reset(term_state, flags)?;
         Ok(iterator)
@@ -482,16 +489,19 @@ impl BlockDocIterator {
         self.ef_base_total = self.doc_upto;
         self.encode_type = EncodeType::PF;
         self.bits_index = 0;
+        self.partial_decode = false;
 
         let left = self.doc_freq - self.doc_upto;
         debug_assert!(left > 0);
         if left >= BLOCK_SIZE {
+            self.partial_decode = true;
             let doc_in = self.doc_in.as_mut().unwrap();
-            self.for_util.read_block(
+            self.for_util.read_block_only(
                 doc_in.as_mut(),
                 &mut self.encoded,
                 &mut self.doc_delta_buffer,
                 Some(&mut self.encode_type),
+                &mut self.partial_doc_deltas,
             )?;
 
             ForUtil::read_other_encode_block(
@@ -504,11 +514,12 @@ impl BlockDocIterator {
 
             if self.index_has_freq {
                 if self.needs_freq {
-                    self.for_util.read_block(
+                    self.for_util.read_block_only(
                         doc_in.as_mut(),
                         &mut self.encoded,
                         &mut self.freq_buffer,
                         None,
+                        &mut self.partial_freqs,
                     )?;
                 } else {
                     self.for_util.skip_block(doc_in.as_mut())?; // skip over freqs
@@ -530,6 +541,24 @@ impl BlockDocIterator {
         }
         self.doc_buffer_upto = 0;
         Ok(())
+    }
+
+    #[inline(always)]
+    fn decode_current_doc_delta(&mut self) -> i32 {
+        if unsafe { likely(self.partial_decode) } {
+            self.partial_doc_deltas.next()
+        } else {
+            self.doc_delta_buffer[self.doc_buffer_upto as usize]
+        }
+    }
+
+    #[inline(always)]
+    fn decode_current_freq(&mut self) -> i32 {
+        if unsafe { likely(self.partial_decode && self.needs_freq) } {
+            self.partial_freqs.get(self.doc_buffer_upto as usize)
+        } else {
+            self.freq_buffer[self.doc_buffer_upto as usize]
+        }
     }
 }
 
@@ -572,7 +601,7 @@ impl DocIterator for BlockDocIterator {
 
         // set doc id
         self.doc = match self.encode_type {
-            EncodeType::PF => self.accum + self.doc_delta_buffer[self.doc_buffer_upto as usize],
+            EncodeType::PF => self.accum + self.decode_current_doc_delta(),
 
             EncodeType::EF => {
                 self.ef_decoder.as_mut().unwrap().next_value() as i32 + 1 + self.ef_base_doc
@@ -594,7 +623,7 @@ impl DocIterator for BlockDocIterator {
         self.doc_upto += 1;
 
         // set doc freq
-        self.freq = self.freq_buffer[self.doc_buffer_upto as usize];
+        self.freq = self.decode_current_freq();
         self.doc_buffer_upto += 1;
         Ok(self.doc)
     }
@@ -668,7 +697,7 @@ impl DocIterator for BlockDocIterator {
                 // Now scan... this is an inlined/pared down version
                 // of nextDoc():
                 loop {
-                    self.accum += self.doc_delta_buffer[self.doc_buffer_upto as usize];
+                    self.accum += self.decode_current_doc_delta();
                     self.doc_upto += 1;
 
                     if self.accum >= target {
@@ -736,7 +765,7 @@ impl DocIterator for BlockDocIterator {
             }
         };
 
-        self.freq = self.freq_buffer[self.doc_buffer_upto as usize];
+        self.freq = self.decode_current_freq();
         self.doc_buffer_upto += 1;
         Ok(self.doc)
     }
