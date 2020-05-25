@@ -54,7 +54,7 @@ impl PartialBlockDecoder {
 
     #[inline(always)]
     pub fn get(&mut self, index: usize) -> i32 {
-        if unsafe { unlikely(self.is_single) } {
+        if unlikely(self.is_single) {
             self.data as i32
         } else {
             match self.format {
@@ -77,7 +77,7 @@ impl PartialBlockDecoder {
 
     #[inline(always)]
     pub fn next(&mut self) -> i32 {
-        if unsafe { unlikely(self.is_single) } {
+        if unlikely(self.is_single) {
             self.data as i32
         } else {
             match self.format {

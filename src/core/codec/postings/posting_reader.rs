@@ -545,7 +545,7 @@ impl BlockDocIterator {
 
     #[inline(always)]
     fn decode_current_doc_delta(&mut self) -> i32 {
-        if unsafe { likely(self.partial_decode) } {
+        if likely(self.partial_decode) {
             self.partial_doc_deltas.next()
         } else {
             self.doc_delta_buffer[self.doc_buffer_upto as usize]
@@ -554,7 +554,7 @@ impl BlockDocIterator {
 
     #[inline(always)]
     fn decode_current_freq(&mut self) -> i32 {
-        if unsafe { likely(self.partial_decode && self.needs_freq) } {
+        if likely(self.partial_decode && self.needs_freq) {
             self.partial_freqs.get(self.doc_buffer_upto as usize)
         } else {
             self.freq_buffer[self.doc_buffer_upto as usize]
@@ -1621,7 +1621,6 @@ impl<'a> EverythingIterator {
             let count = (self.total_term_freq % i64::from(BLOCK_SIZE)) as usize;
             let mut payload_length = 0i32;
             let mut offset_length = 0i32;
-            let payload_byte_upto = 0i32;
             for i in 0..count {
                 let code = pos_in.read_vint()?;
                 if self.index_has_payloads {
@@ -1634,7 +1633,7 @@ impl<'a> EverythingIterator {
                         if self.payload_byte_upto + payload_length > self.payload_bytes.len() as i32
                         {
                             self.payload_bytes
-                                .resize((payload_byte_upto + payload_length) as usize, 0);
+                                .resize((self.payload_byte_upto + payload_length) as usize, 0);
                         }
                         pos_in.read_exact(
                             &mut self.payload_bytes[self.payload_byte_upto as usize
