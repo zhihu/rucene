@@ -53,6 +53,10 @@ mod partial_block_decoder;
 
 pub use self::partial_block_decoder::*;
 
+mod simd_block_decoder;
+
+pub use self::simd_block_decoder::*;
+
 use core::codec::field_infos::FieldInfo;
 use core::codec::multi_fields::{MappedMultiFields, MultiFields};
 use core::codec::postings::blocktree::{

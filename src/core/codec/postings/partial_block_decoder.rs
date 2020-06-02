@@ -110,7 +110,7 @@ mod tests {
     use core::util::fst::{BytesStore, StoreBytesReader};
     use core::util::packed::Format;
     use error::Result;
-    use std::io::{Read, Write};
+    use std::io::Write;
 
     #[test]
     fn test_get() -> Result<()> {
@@ -182,7 +182,7 @@ mod tests {
 
     fn create_decoder(data: &[u8], bits_per_value: usize, format: Format) -> PartialBlockDecoder {
         let mut bs = BytesStore::with_block_bits(8);
-        bs.write(data);
+        let _ = bs.write(data);
         let mut sbr = StoreBytesReader::from_bytes_store(bs, false);
         let mut decoder = PartialBlockDecoder::new();
         decoder

@@ -27,8 +27,8 @@ use core::util::{Bits, DocId, FixedBitSet, ImmutableBitSet};
 
 use error::{ErrorKind::IllegalState, Result};
 
-use core::codec::postings::PartialBlockDecoder;
-use core::util::packed::{EliasFanoDecoder, NO_MORE_VALUES};
+use core::codec::postings::{PartialBlockDecoder, SIMDBlockDecoder};
+use core::util::packed::{EliasFanoDecoder, SIMD128Packer, SIMDPacker, NO_MORE_VALUES};
 use std::intrinsics::{likely, unlikely};
 use std::sync::Arc;
 
@@ -54,8 +54,8 @@ pub const POS_CODEC: &str = "Lucene50PostingsWriterPos";
 pub const PAY_CODEC: &str = "Lucene50PostingsWriterPay";
 
 // Increment version to change it
-const VERSION_START: i32 = 0;
-pub const VERSION_CURRENT: i32 = VERSION_START;
+pub const VERSION_START: i32 = 0;
+pub const VERSION_CURRENT: i32 = VERSION_START + 1;
 
 fn clone_option_index_input(input: &Option<Box<dyn IndexInput>>) -> Result<Box<dyn IndexInput>> {
     debug_assert!(input.is_some());
@@ -72,6 +72,7 @@ pub struct Lucene50PostingsReader {
     pay_in: Option<Box<dyn IndexInput>>,
     pub version: i32,
     pub for_util: ForUtil,
+    use_simd: bool,
 }
 
 impl Lucene50PostingsReader {
@@ -98,6 +99,13 @@ impl Lucene50PostingsReader {
             &state.segment_info.id,
             &state.segment_suffix,
         )?;
+
+        let use_simd = if version > VERSION_START && SIMD128Packer::is_support() {
+            true
+        } else {
+            false
+        };
+
         let for_util = ForUtil::with_input(doc_in.as_mut())?;
         codec_util::retrieve_checksum(doc_in.as_mut())?;
         let mut pos_in = None;
@@ -145,6 +153,7 @@ impl Lucene50PostingsReader {
             pay_in,
             version,
             for_util,
+            use_simd,
         })
     }
 
@@ -198,6 +207,7 @@ impl Lucene50PostingsReader {
                     state,
                     flags,
                     self.for_util.clone(),
+                    self.use_simd,
                 )?,
             )))
         } else if (!index_has_offsets
@@ -213,6 +223,7 @@ impl Lucene50PostingsReader {
                     state,
                     flags,
                     self.for_util.clone(),
+                    self.use_simd,
                 )?,
             )))
         } else {
@@ -227,6 +238,7 @@ impl Lucene50PostingsReader {
                     state,
                     flags,
                     self.for_util.clone(),
+                    self.use_simd,
                 )?),
             ))
         }
@@ -387,8 +399,11 @@ struct BlockDocIterator {
     bits_min_doc: DocId,
     bits_index: i32,
     partial_decode: bool,
+    #[allow(dead_code)]
     partial_doc_deltas: PartialBlockDecoder,
+    #[allow(dead_code)]
     partial_freqs: PartialBlockDecoder,
+    use_simd: bool,
 }
 
 impl BlockDocIterator {
@@ -398,6 +413,7 @@ impl BlockDocIterator {
         term_state: &BlockTermState,
         flags: u16,
         for_util: ForUtil,
+        use_simd: bool,
     ) -> Result<BlockDocIterator> {
         let options = &field_info.index_options;
         let mut iterator = BlockDocIterator {
@@ -435,6 +451,7 @@ impl BlockDocIterator {
             partial_decode: false,
             partial_doc_deltas: PartialBlockDecoder::new(),
             partial_freqs: PartialBlockDecoder::new(),
+            use_simd,
         };
         iterator.reset(term_state, flags)?;
         Ok(iterator)
@@ -496,12 +513,12 @@ impl BlockDocIterator {
         if left >= BLOCK_SIZE {
             self.partial_decode = true;
             let doc_in = self.doc_in.as_mut().unwrap();
-            self.for_util.read_block_only(
+            self.for_util.read_block(
                 doc_in.as_mut(),
                 &mut self.encoded,
                 &mut self.doc_delta_buffer,
                 Some(&mut self.encode_type),
-                &mut self.partial_doc_deltas,
+                self.use_simd,
             )?;
 
             ForUtil::read_other_encode_block(
@@ -514,12 +531,12 @@ impl BlockDocIterator {
 
             if self.index_has_freq {
                 if self.needs_freq {
-                    self.for_util.read_block_only(
+                    self.for_util.read_block(
                         doc_in.as_mut(),
                         &mut self.encoded,
                         &mut self.freq_buffer,
                         None,
-                        &mut self.partial_freqs,
+                        self.use_simd,
                     )?;
                 } else {
                     self.for_util.skip_block(doc_in.as_mut())?; // skip over freqs
@@ -543,6 +560,7 @@ impl BlockDocIterator {
         Ok(())
     }
 
+    #[allow(dead_code)]
     #[inline(always)]
     fn decode_current_doc_delta(&mut self) -> i32 {
         if likely(self.partial_decode) {
@@ -552,6 +570,7 @@ impl BlockDocIterator {
         }
     }
 
+    #[allow(dead_code)]
     #[inline(always)]
     fn decode_current_freq(&mut self) -> i32 {
         if likely(self.partial_decode && self.needs_freq) {
@@ -601,8 +620,7 @@ impl DocIterator for BlockDocIterator {
 
         // set doc id
         self.doc = match self.encode_type {
-            EncodeType::PF => self.accum + self.decode_current_doc_delta(),
-
+            EncodeType::PF => self.accum + self.doc_delta_buffer[self.doc_buffer_upto as usize],
             EncodeType::EF => {
                 self.ef_decoder.as_mut().unwrap().next_value() as i32 + 1 + self.ef_base_doc
             }
@@ -623,7 +641,7 @@ impl DocIterator for BlockDocIterator {
         self.doc_upto += 1;
 
         // set doc freq
-        self.freq = self.decode_current_freq();
+        self.freq = self.freq_buffer[self.doc_buffer_upto as usize];
         self.doc_buffer_upto += 1;
         Ok(self.doc)
     }
@@ -697,7 +715,7 @@ impl DocIterator for BlockDocIterator {
                 // Now scan... this is an inlined/pared down version
                 // of nextDoc():
                 loop {
-                    self.accum += self.decode_current_doc_delta();
+                    self.accum += self.doc_delta_buffer[self.doc_buffer_upto as usize];
                     self.doc_upto += 1;
 
                     if self.accum >= target {
@@ -765,13 +783,259 @@ impl DocIterator for BlockDocIterator {
             }
         };
 
-        self.freq = self.decode_current_freq();
+        self.freq = self.freq_buffer[self.doc_buffer_upto as usize];
         self.doc_buffer_upto += 1;
         Ok(self.doc)
     }
 
     fn cost(&self) -> usize {
         self.doc_freq as usize
+    }
+}
+
+struct SIMDBlockDocIterator {
+    doc_iter: BlockDocIterator,
+    simd_doc_deltas: SIMDBlockDecoder,
+    total_base: i32,
+}
+
+impl SIMDBlockDocIterator {
+    #[allow(dead_code)]
+    pub fn new(
+        start_doc_in: Box<dyn IndexInput>,
+        field_info: &FieldInfo,
+        term_state: &BlockTermState,
+        flags: u16,
+        for_util: ForUtil,
+    ) -> Result<Self> {
+        Ok(Self {
+            doc_iter: BlockDocIterator::new(
+                start_doc_in,
+                field_info,
+                term_state,
+                flags,
+                for_util,
+                false,
+            )?,
+            simd_doc_deltas: SIMDBlockDecoder::new(),
+            total_base: 0,
+        })
+    }
+
+    fn refill_docs(&mut self) -> Result<()> {
+        self.doc_iter.partial_decode = false;
+
+        let left = self.doc_iter.doc_freq - self.doc_iter.doc_upto;
+        debug_assert!(left > 0);
+        if left >= BLOCK_SIZE {
+            self.doc_iter.partial_decode = true;
+            let doc_in = self.doc_iter.doc_in.as_mut().unwrap();
+            self.doc_iter
+                .for_util
+                .read_block_by_simd(doc_in.as_mut(), &mut self.simd_doc_deltas)?;
+
+            if self.doc_iter.index_has_freq {
+                if self.doc_iter.needs_freq {
+                    self.doc_iter.for_util.read_block_only(
+                        doc_in.as_mut(),
+                        &mut self.doc_iter.encoded,
+                        &mut self.doc_iter.freq_buffer,
+                        None,
+                        &mut self.doc_iter.partial_freqs,
+                    )?;
+                } else {
+                    self.doc_iter.for_util.skip_block(doc_in.as_mut())?; // skip over freqs
+                }
+            }
+        } else if self.doc_iter.doc_freq == 1 {
+            self.doc_iter.doc_delta_buffer[0] = self.doc_iter.singleton_doc_id;
+            self.doc_iter.freq_buffer[0] = self.doc_iter.total_term_freq as i32;
+        } else {
+            let doc_in = self.doc_iter.doc_in.as_mut().unwrap();
+            // Read vInts:
+            read_vint_block(
+                doc_in.as_mut(),
+                &mut self.doc_iter.doc_delta_buffer,
+                &mut self.doc_iter.freq_buffer,
+                left,
+                self.doc_iter.index_has_freq,
+            )?;
+        }
+        self.doc_iter.doc_buffer_upto = 0;
+        Ok(())
+    }
+}
+
+impl DocIterator for SIMDBlockDocIterator {
+    fn doc_id(&self) -> DocId {
+        self.doc_iter.doc_id()
+    }
+
+    fn next(&mut self) -> Result<DocId> {
+        if unlikely(self.doc_iter.doc_upto == self.doc_iter.doc_freq) {
+            self.doc_iter.doc = NO_MORE_DOCS;
+            return Ok(self.doc_iter.doc);
+        }
+        if unlikely(self.doc_iter.doc_buffer_upto == BLOCK_SIZE) {
+            if unlikely(self.doc_iter.doc < 0) {
+                self.doc_iter.accum = 0;
+                self.total_base = 0;
+                self.simd_doc_deltas.reset_delta_base(0);
+            } else {
+                self.doc_iter.accum = self.doc_iter.doc;
+                self.total_base = self.doc_iter.doc_upto;
+                self.simd_doc_deltas.reset_delta_base(self.doc_iter.accum);
+            }
+            self.refill_docs()?;
+        }
+        self.doc_iter.doc = if likely(self.doc_iter.partial_decode) {
+            self.doc_iter.accum = self.simd_doc_deltas.next();
+            self.doc_iter.accum
+        } else {
+            self.doc_iter.accum = self.doc_iter.accum
+                + self.doc_iter.doc_delta_buffer[self.doc_iter.doc_buffer_upto as usize];
+            self.doc_iter.accum
+        };
+
+        self.doc_iter.freq = self.doc_iter.decode_current_freq();
+        self.doc_iter.doc_buffer_upto += 1;
+        self.doc_iter.doc_upto += 1;
+        Ok(self.doc_iter.doc)
+    }
+
+    fn advance(&mut self, target: i32) -> Result<DocId> {
+        if unlikely(target == NO_MORE_DOCS) {
+            self.doc_iter.doc = NO_MORE_DOCS;
+            return Ok(self.doc_iter.doc);
+        }
+        // TODO: make frq block load lazy/skippable
+        // current skip docID < docIDs generated from current buffer <= next skip docID
+        // we don't need to skip if target is buffered already
+        if self.doc_iter.doc_freq > BLOCK_SIZE && target > self.doc_iter.next_skip_doc {
+            if self.doc_iter.skipper.is_none() {
+                // Lazy init: first time this enum has ever been used for skipping
+                self.doc_iter.skipper = Some(Lucene50SkipReader::new(
+                    clone_option_index_input(&self.doc_iter.doc_in)?,
+                    MAX_SKIP_LEVELS,
+                    self.doc_iter.index_has_pos,
+                    self.doc_iter.index_has_offsets,
+                    self.doc_iter.index_has_payloads,
+                ));
+            }
+
+            let skipper = self.doc_iter.skipper.as_mut().unwrap();
+
+            if !self.doc_iter.skipped {
+                debug_assert_ne!(self.doc_iter.skip_offset, -1);
+                // This is the first time this enum has skipped
+                // since reset() was called; load the skip data:
+                skipper.init(
+                    self.doc_iter.doc_term_start_fp + self.doc_iter.skip_offset,
+                    self.doc_iter.doc_term_start_fp,
+                    0,
+                    0,
+                    self.doc_iter.doc_freq,
+                )?;
+                self.doc_iter.skipped = true;
+            }
+
+            // always plus one to fix the result, since skip position in Lucene50SkipReader
+            // is a little different from MultiLevelSkipListReader
+            let new_doc_upto = skipper.skip_to(target)? + 1;
+
+            if new_doc_upto >= self.doc_iter.doc_upto {
+                // Skipper moved
+                debug_assert_eq!(new_doc_upto % BLOCK_SIZE, 0);
+                self.doc_iter.doc_upto = new_doc_upto;
+
+                // Force to read next block
+                self.doc_iter.doc_buffer_upto = BLOCK_SIZE;
+                self.doc_iter.accum = skipper.doc(); // actually, this is just lastSkipEntry
+                self.doc_iter
+                    .doc_in
+                    .as_mut()
+                    .unwrap()
+                    .seek(skipper.doc_pointer())?; // now point to the
+                                                   // block we want to
+                                                   // search
+            }
+            // next time we call advance, this is used to
+            // foresee whether skipper is necessary.
+            self.doc_iter.next_skip_doc = skipper.next_skip_doc();
+        }
+        if self.doc_iter.doc_upto == self.doc_iter.doc_freq {
+            self.doc_iter.doc = NO_MORE_DOCS;
+            return Ok(self.doc_iter.doc);
+        }
+
+        if unlikely(self.doc_iter.doc_buffer_upto == BLOCK_SIZE) {
+            if unlikely(self.doc_iter.accum <= 0) {
+                // self.doc_iter.accum = 0;
+                self.total_base = 0;
+                self.simd_doc_deltas.reset_delta_base(0);
+            } else {
+                // self.doc_iter.accum = self.doc_iter.skipper.as_ref().unwrap().doc();
+                self.total_base = self.doc_iter.doc_upto;
+                self.simd_doc_deltas.reset_delta_base(self.doc_iter.accum);
+            }
+            self.refill_docs()?;
+        }
+
+        if likely(self.doc_iter.partial_decode) {
+            // let (doc, pos) = self.simd_doc_deltas.advance_by_binary_search(target);
+            let (doc, pos) = self.simd_doc_deltas.advance(target);
+            self.doc_iter.doc = doc;
+            if unlikely(doc == NO_MORE_DOCS) {
+                return Ok(NO_MORE_DOCS);
+            }
+            self.doc_iter.doc_buffer_upto = pos as i32;
+            self.doc_iter.doc_upto = self.total_base + pos as i32 + 1;
+        } else {
+            loop {
+                self.doc_iter.accum +=
+                    self.doc_iter.doc_delta_buffer[self.doc_iter.doc_buffer_upto as usize];
+                self.doc_iter.doc_upto += 1;
+
+                if self.doc_iter.accum >= target {
+                    break;
+                }
+                self.doc_iter.doc_buffer_upto += 1;
+                if self.doc_iter.doc_upto == self.doc_iter.doc_freq {
+                    self.doc_iter.doc = NO_MORE_DOCS;
+                    return Ok(self.doc_iter.doc);
+                }
+            }
+            self.doc_iter.doc = self.doc_iter.accum;
+        }
+        self.doc_iter.freq = self.doc_iter.decode_current_freq();
+        self.doc_iter.doc_buffer_upto += 1;
+        Ok(self.doc_iter.doc)
+    }
+
+    fn cost(&self) -> usize {
+        self.doc_iter.cost()
+    }
+}
+
+impl PostingIterator for SIMDBlockDocIterator {
+    fn freq(&self) -> Result<i32> {
+        self.doc_iter.freq()
+    }
+
+    fn next_position(&mut self) -> Result<i32> {
+        self.doc_iter.next_position()
+    }
+
+    fn start_offset(&self) -> Result<i32> {
+        self.doc_iter.start_offset()
+    }
+
+    fn end_offset(&self) -> Result<i32> {
+        self.doc_iter.end_offset()
+    }
+
+    fn payload(&self) -> Result<Payload> {
+        self.doc_iter.payload()
     }
 }
 
@@ -854,6 +1118,7 @@ struct BlockPostingIterator {
     doc_bits: FixedBitSet,
     bits_min_doc: DocId,
     bits_index: i32,
+    use_simd: bool,
 }
 
 impl BlockPostingIterator {
@@ -864,6 +1129,7 @@ impl BlockPostingIterator {
         term_state: &BlockTermState,
         _flags: u16,
         for_util: ForUtil,
+        use_simd: bool,
     ) -> Result<BlockPostingIterator> {
         let options = &field_info.index_options;
         let mut iterator = BlockPostingIterator {
@@ -905,6 +1171,7 @@ impl BlockPostingIterator {
             doc_bits: FixedBitSet::default(),
             bits_min_doc: 0,
             bits_index: 0,
+            use_simd,
         };
         iterator.reset(term_state)?;
         Ok(iterator)
@@ -979,6 +1246,7 @@ impl BlockPostingIterator {
                 &mut self.encoded,
                 &mut self.doc_delta_buffer,
                 Some(&mut self.encode_type),
+                self.use_simd,
             )?;
 
             ForUtil::read_other_encode_block(
@@ -994,6 +1262,7 @@ impl BlockPostingIterator {
                 &mut self.encoded,
                 &mut self.freq_buffer,
                 None,
+                self.use_simd,
             )?;
         } else if self.doc_freq == 1 {
             self.doc_delta_buffer[0] = self.singleton_doc_id;
@@ -1043,6 +1312,7 @@ impl BlockPostingIterator {
                 &mut self.encoded,
                 &mut self.pos_delta_buffer,
                 None,
+                self.use_simd,
             )?;
         }
 
@@ -1420,6 +1690,7 @@ struct EverythingIterator {
     doc_bits: FixedBitSet,
     bits_min_doc: DocId,
     bits_index: i32,
+    use_simd: bool,
 }
 
 impl<'a> EverythingIterator {
@@ -1432,6 +1703,7 @@ impl<'a> EverythingIterator {
         term_state: &BlockTermState,
         flags: u16,
         for_util: ForUtil,
+        use_simd: bool,
     ) -> Result<EverythingIterator> {
         let encoded = [0u8; MAX_ENCODED_SIZE];
         let index_has_offsets = field_info.index_options.has_offsets();
@@ -1502,6 +1774,7 @@ impl<'a> EverythingIterator {
             doc_bits: FixedBitSet::default(),
             bits_min_doc: 0,
             bits_index: 0,
+            use_simd,
         };
 
         iterator.reset(term_state, flags)?;
@@ -1582,6 +1855,7 @@ impl<'a> EverythingIterator {
                 &mut self.encoded,
                 &mut self.doc_delta_buffer,
                 Some(&mut self.encode_type),
+                self.use_simd,
             )?;
 
             ForUtil::read_other_encode_block(
@@ -1597,6 +1871,7 @@ impl<'a> EverythingIterator {
                 &mut self.encoded,
                 &mut self.freq_buffer,
                 None,
+                self.use_simd,
             )?;
         } else if self.doc_freq == 1 {
             self.doc_delta_buffer[0] = self.singleton_doc_id;
@@ -1661,6 +1936,7 @@ impl<'a> EverythingIterator {
                 self.encoded.as_mut(),
                 self.pos_delta_buffer.as_mut(),
                 None,
+                self.use_simd,
             )?;
 
             let pay_in = &mut self.pay_in;
@@ -1671,6 +1947,7 @@ impl<'a> EverythingIterator {
                         &mut self.encoded,
                         self.payload_length_buffer.as_mut(),
                         None,
+                        self.use_simd,
                     )?;
                     let num_bytes = pay_in.read_vint()? as usize;
                     if num_bytes > self.payload_bytes.len() {
@@ -1695,12 +1972,14 @@ impl<'a> EverythingIterator {
                         &mut self.encoded,
                         self.offset_start_delta_buffer.as_mut(),
                         None,
+                        self.use_simd,
                     )?;
                     self.for_util.read_block(
                         pay_in.as_mut(),
                         &mut self.encoded,
                         self.offset_length_buffer.as_mut(),
                         None,
+                        self.use_simd,
                     )?;
                 } else {
                     // this works, because when writing a vint block we always force the first
@@ -2061,6 +2340,8 @@ pub struct Lucene50PostingIterator(Lucene50PostingIterEnum);
 
 enum Lucene50PostingIterEnum {
     Doc(BlockDocIterator),
+    #[allow(dead_code)]
+    SDoc(SIMDBlockDocIterator),
     Posting(BlockPostingIterator),
     Everything(EverythingIterator),
 }
@@ -2069,6 +2350,7 @@ impl PostingIterator for Lucene50PostingIterator {
     fn freq(&self) -> Result<i32> {
         match &self.0 {
             Lucene50PostingIterEnum::Doc(i) => i.freq(),
+            Lucene50PostingIterEnum::SDoc(i) => i.freq(),
             Lucene50PostingIterEnum::Posting(i) => i.freq(),
             Lucene50PostingIterEnum::Everything(i) => i.freq(),
         }
@@ -2077,6 +2359,7 @@ impl PostingIterator for Lucene50PostingIterator {
     fn next_position(&mut self) -> Result<i32> {
         match &mut self.0 {
             Lucene50PostingIterEnum::Doc(i) => i.next_position(),
+            Lucene50PostingIterEnum::SDoc(i) => i.next_position(),
             Lucene50PostingIterEnum::Posting(i) => i.next_position(),
             Lucene50PostingIterEnum::Everything(i) => i.next_position(),
         }
@@ -2085,6 +2368,7 @@ impl PostingIterator for Lucene50PostingIterator {
     fn start_offset(&self) -> Result<i32> {
         match &self.0 {
             Lucene50PostingIterEnum::Doc(i) => i.start_offset(),
+            Lucene50PostingIterEnum::SDoc(i) => i.start_offset(),
             Lucene50PostingIterEnum::Posting(i) => i.start_offset(),
             Lucene50PostingIterEnum::Everything(i) => i.start_offset(),
         }
@@ -2093,6 +2377,7 @@ impl PostingIterator for Lucene50PostingIterator {
     fn end_offset(&self) -> Result<i32> {
         match &self.0 {
             Lucene50PostingIterEnum::Doc(i) => i.end_offset(),
+            Lucene50PostingIterEnum::SDoc(i) => i.end_offset(),
             Lucene50PostingIterEnum::Posting(i) => i.end_offset(),
             Lucene50PostingIterEnum::Everything(i) => i.end_offset(),
         }
@@ -2101,6 +2386,7 @@ impl PostingIterator for Lucene50PostingIterator {
     fn payload(&self) -> Result<Payload> {
         match &self.0 {
             Lucene50PostingIterEnum::Doc(i) => i.payload(),
+            Lucene50PostingIterEnum::SDoc(i) => i.payload(),
             Lucene50PostingIterEnum::Posting(i) => i.payload(),
             Lucene50PostingIterEnum::Everything(i) => i.payload(),
         }
@@ -2111,6 +2397,7 @@ impl DocIterator for Lucene50PostingIterator {
     fn doc_id(&self) -> DocId {
         match &self.0 {
             Lucene50PostingIterEnum::Doc(i) => i.doc_id(),
+            Lucene50PostingIterEnum::SDoc(i) => i.doc_id(),
             Lucene50PostingIterEnum::Posting(i) => i.doc_id(),
             Lucene50PostingIterEnum::Everything(i) => i.doc_id(),
         }
@@ -2119,6 +2406,7 @@ impl DocIterator for Lucene50PostingIterator {
     fn next(&mut self) -> Result<DocId> {
         match &mut self.0 {
             Lucene50PostingIterEnum::Doc(i) => i.next(),
+            Lucene50PostingIterEnum::SDoc(i) => i.next(),
             Lucene50PostingIterEnum::Posting(i) => i.next(),
             Lucene50PostingIterEnum::Everything(i) => i.next(),
         }
@@ -2127,6 +2415,7 @@ impl DocIterator for Lucene50PostingIterator {
     fn advance(&mut self, target: i32) -> Result<DocId> {
         match &mut self.0 {
             Lucene50PostingIterEnum::Doc(i) => i.advance(target),
+            Lucene50PostingIterEnum::SDoc(i) => i.advance(target),
             Lucene50PostingIterEnum::Posting(i) => i.advance(target),
             Lucene50PostingIterEnum::Everything(i) => i.advance(target),
         }
@@ -2135,6 +2424,7 @@ impl DocIterator for Lucene50PostingIterator {
     fn slow_advance(&mut self, target: i32) -> Result<DocId> {
         match &mut self.0 {
             Lucene50PostingIterEnum::Doc(i) => i.slow_advance(target),
+            Lucene50PostingIterEnum::SDoc(i) => i.slow_advance(target),
             Lucene50PostingIterEnum::Posting(i) => i.slow_advance(target),
             Lucene50PostingIterEnum::Everything(i) => i.slow_advance(target),
         }
@@ -2143,6 +2433,7 @@ impl DocIterator for Lucene50PostingIterator {
     fn cost(&self) -> usize {
         match &self.0 {
             Lucene50PostingIterEnum::Doc(i) => i.cost(),
+            Lucene50PostingIterEnum::SDoc(i) => i.cost(),
             Lucene50PostingIterEnum::Posting(i) => i.cost(),
             Lucene50PostingIterEnum::Everything(i) => i.cost(),
         }
@@ -2151,6 +2442,7 @@ impl DocIterator for Lucene50PostingIterator {
     fn matches(&mut self) -> Result<bool> {
         match &mut self.0 {
             Lucene50PostingIterEnum::Doc(i) => i.matches(),
+            Lucene50PostingIterEnum::SDoc(i) => i.matches(),
             Lucene50PostingIterEnum::Posting(i) => i.matches(),
             Lucene50PostingIterEnum::Everything(i) => i.matches(),
         }
@@ -2159,6 +2451,7 @@ impl DocIterator for Lucene50PostingIterator {
     fn match_cost(&self) -> f32 {
         match &self.0 {
             Lucene50PostingIterEnum::Doc(i) => i.match_cost(),
+            Lucene50PostingIterEnum::SDoc(i) => i.match_cost(),
             Lucene50PostingIterEnum::Posting(i) => i.match_cost(),
             Lucene50PostingIterEnum::Everything(i) => i.match_cost(),
         }
@@ -2167,6 +2460,7 @@ impl DocIterator for Lucene50PostingIterator {
     fn approximate_next(&mut self) -> Result<DocId> {
         match &mut self.0 {
             Lucene50PostingIterEnum::Doc(i) => i.approximate_next(),
+            Lucene50PostingIterEnum::SDoc(i) => i.approximate_next(),
             Lucene50PostingIterEnum::Posting(i) => i.approximate_next(),
             Lucene50PostingIterEnum::Everything(i) => i.approximate_next(),
         }
@@ -2175,6 +2469,7 @@ impl DocIterator for Lucene50PostingIterator {
     fn approximate_advance(&mut self, target: i32) -> Result<DocId> {
         match &mut self.0 {
             Lucene50PostingIterEnum::Doc(i) => i.approximate_advance(target),
+            Lucene50PostingIterEnum::SDoc(i) => i.approximate_advance(target),
             Lucene50PostingIterEnum::Posting(i) => i.approximate_advance(target),
             Lucene50PostingIterEnum::Everything(i) => i.approximate_advance(target),
         }

@@ -62,3 +62,7 @@ pub use self::elias_fano_encoder::*;
 mod elias_fano_decoder;
 
 pub use self::elias_fano_decoder::*;
+
+mod packed_simd;
+
+pub use self::packed_simd::*;

@@ -28,6 +28,7 @@
 #![feature(in_band_lifetimes)]
 #![feature(vec_into_raw_parts)]
 #![feature(core_intrinsics)]
+#![feature(stmt_expr_attributes)]
 
 #[macro_use]
 extern crate error_chain;
@@ -55,6 +56,8 @@ extern crate num_traits;
 extern crate smallvec;
 extern crate thread_local;
 extern crate unicode_reader;
+#[macro_use]
+extern crate crunchy;
 
 pub mod core;
 pub mod error;

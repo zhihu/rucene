@@ -33,6 +33,10 @@ pub trait IndexInput: DataInput + Send + Sync {
         unimplemented!();
     }
 
+    unsafe fn get_and_advance(&mut self, _length: usize) -> *const u8 {
+        unimplemented!()
+    }
+
     fn is_buffered(&self) -> bool {
         false
     }

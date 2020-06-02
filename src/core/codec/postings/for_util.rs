@@ -19,10 +19,11 @@ use core::store::io::{DataOutput, IndexInput, IndexOutput};
 use core::util::packed::*;
 use core::util::{BitSet, BitsRequired, DocId, FixedBitSet};
 
-use core::codec::postings::{EfWriterMeta, EncodeType, PartialBlockDecoder};
+use core::codec::postings::{EfWriterMeta, EncodeType, PartialBlockDecoder, SIMDBlockDecoder};
 use error::Result;
 use std::mem::MaybeUninit;
 use std::ptr;
+use std::slice::{from_raw_parts, from_raw_parts_mut};
 
 /// Special number of bits per value used whenever all values to encode are equal.
 const ALL_VALUES_EQUAL: i32 = 0;
@@ -40,6 +41,15 @@ pub const MAX_ENCODED_SIZE: usize = BLOCK_SIZE as usize * 4;
 /// something like lazy_static can allow us use [; MAX_DATA_SIZE] instead of Vec.
 pub const MAX_DATA_SIZE: usize = 147;
 
+lazy_static! {
+    static ref SIMD_ENCODE_SIZE: [usize; 64] = {
+        let mut buffer = [0usize; 64];
+        for i in 1..=32 {
+            buffer[i] = i * BLOCK_SIZE as usize / 8;
+        }
+        buffer
+    };
+}
 #[test]
 fn test_max_data_size() {
     assert_eq!(MAX_DATA_SIZE, max_data_size());
@@ -181,6 +191,7 @@ impl ForUtilInstance {
         decoded: &mut [i32],
         encode_type: Option<&mut EncodeType>,
         partial_decoder: Option<&mut PartialBlockDecoder>,
+        by_simd: bool,
     ) -> Result<()> {
         let code = input.read_byte()?;
         if encode_type.is_some() {
@@ -217,12 +228,36 @@ impl ForUtilInstance {
                 &BulkOperationEnum::PackedSB(_) => Format::PackedSingleBlock,
             };
             p.parse_from(input, encoded_size as usize, num_bits, format)?;
+        } else if by_simd {
+            let encoded = unsafe { input.get_and_advance(SIMD_ENCODE_SIZE[num_bits]) };
+            let decoded = unsafe {
+                from_raw_parts_mut(decoded.as_mut_ptr() as *mut u32, BLOCK_SIZE as usize)
+            };
+            SIMD128Packer::unpack(encoded, decoded, num_bits as u8);
         } else {
             input.read_exact(&mut encoded[0..encoded_size as usize])?;
             let iters = self.iterations[num_bits - 1] as usize;
             decoder.decode_byte_to_int(encoded, decoded, iters);
         }
         Ok(())
+    }
+
+    pub fn read_block_by_simd(
+        &self,
+        input: &mut dyn IndexInput,
+        decoder: &mut SIMDBlockDecoder,
+    ) -> Result<()> {
+        let code = input.read_byte()?;
+        let num_bits = (code & 0x3F) as usize;
+        debug_assert!(num_bits <= 32);
+
+        if num_bits as i32 == ALL_VALUES_EQUAL {
+            let value = input.read_vint()?;
+            decoder.set_single(value);
+            return Ok(());
+        }
+
+        decoder.parse_from_no_copy(input, num_bits * BLOCK_SIZE as usize / 8, num_bits)
     }
 
     pub fn skip_block(&self, input: &mut dyn IndexInput) -> Result<()> {
@@ -267,9 +302,10 @@ impl ForUtil {
         encoded: &mut [u8],
         decoded: &mut [i32],
         encode_type: Option<&mut EncodeType>,
+        by_simd: bool,
     ) -> Result<()> {
         self.instance
-            .read_block(input, encoded, decoded, encode_type, None)
+            .read_block(input, encoded, decoded, encode_type, None, by_simd)
     }
 
     pub fn read_block_only(
@@ -280,8 +316,22 @@ impl ForUtil {
         encode_type: Option<&mut EncodeType>,
         partial_decoder: &mut PartialBlockDecoder,
     ) -> Result<()> {
-        self.instance
-            .read_block(input, encoded, decoded, encode_type, Some(partial_decoder))
+        self.instance.read_block(
+            input,
+            encoded,
+            decoded,
+            encode_type,
+            Some(partial_decoder),
+            false,
+        )
+    }
+
+    pub fn read_block_by_simd(
+        &self,
+        input: &mut dyn IndexInput,
+        decoder: &mut SIMDBlockDecoder,
+    ) -> Result<()> {
+        self.instance.read_block_by_simd(input, decoder)
     }
 
     pub fn read_other_encode_block(
@@ -349,6 +399,7 @@ impl ForUtil {
         encoded: &mut [u8],
         out: &mut impl IndexOutput,
         ef_writer_meta: Option<&mut EfWriterMeta>,
+        by_simd: bool,
     ) -> Result<()> {
         if Self::is_all_equal(data) {
             out.write_byte(0)?;
@@ -416,8 +467,34 @@ impl ForUtil {
             }
         }
         out.write_byte(num_bits as u8)?;
-        encoder.encode_int_to_byte(data, encoded, iters as usize);
-        out.write_bytes(encoded, 0, encoded_size as usize)
+        if by_simd {
+            let data = unsafe { from_raw_parts(data.as_ptr() as *const u32, BLOCK_SIZE as usize) };
+            SIMD128Packer::pack(data, encoded, num_bits as u8);
+            out.write_bytes(encoded, 0, SIMD_ENCODE_SIZE[num_bits])
+        } else {
+            encoder.encode_int_to_byte(data, encoded, iters as usize);
+            out.write_bytes(encoded, 0, encoded_size as usize)
+        }
+    }
+
+    pub fn write_block_by_simd(
+        &self,
+        data: &[i32],
+        encoded: &mut [u8],
+        out: &mut impl IndexOutput,
+    ) -> Result<()> {
+        if Self::is_all_equal(data) {
+            out.write_byte(0)?;
+            return out.write_vint(data[0]);
+        }
+
+        let num_bits = Self::bits_required(data) as usize;
+        assert!(num_bits > 0 && num_bits <= 32);
+
+        out.write_byte(num_bits as u8)?;
+        let data = unsafe { from_raw_parts(data.as_ptr() as *const u32, BLOCK_SIZE as usize) };
+        SIMD128Packer::pack(data, encoded, num_bits as u8);
+        out.write_bytes(encoded, 0, num_bits * BLOCK_SIZE as usize / 8)
     }
 
     pub fn skip_block(&self, input: &mut dyn IndexInput) -> Result<()> {
