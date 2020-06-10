@@ -51,6 +51,10 @@ pub trait MergeScheduler: Send + Sync + Clone + 'static {
         MP: MergePolicy;
 
     fn close(&self) -> Result<()>;
+
+    fn merging_thread_count(&self) -> Option<usize> {
+        None
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -453,6 +457,10 @@ impl MergeScheduler for ConcurrentMergeScheduler {
         // this is safe because each MergeThread contain a IndexWriter make sure that
         // IndexWrite live long enough before all the threads finish running
         Ok(())
+    }
+
+    fn merging_thread_count(&self) -> Option<usize> {
+        Some(self.inner.merge_thread_count())
     }
 }
 

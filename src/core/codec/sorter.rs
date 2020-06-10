@@ -622,11 +622,16 @@ impl CrossReaderComparator for DoubleCrossReaderComparator {
         } else {
             self.missing_value
         };
-        let res = value1.partial_cmp(&value2).unwrap();
-        if self.reverse {
-            Ok(res.reverse())
+
+        // NaN
+        if let Some(res) = value1.partial_cmp(&value2) {
+            if self.reverse {
+                Ok(res.reverse())
+            } else {
+                Ok(res)
+            }
         } else {
-            Ok(res)
+            Ok(Ordering::Equal)
         }
     }
 }

@@ -19,10 +19,10 @@ use std::rc::Rc;
 
 use core::codec::PostingIterator;
 use core::doc::Term;
-use core::search::{DocIterator, NO_MORE_DOCS};
-use core::search::scorer::{ConjunctionScorer, Scorer, two_phase_next};
+use core::search::scorer::{two_phase_next, ConjunctionScorer, Scorer};
 use core::search::similarity::SimScorer;
-use core::util::{Bits, BitSet, DocId, FixedBitSet, ImmutableBitSet};
+use core::search::{DocIterator, NO_MORE_DOCS};
+use core::util::{BitSet, Bits, DocId, FixedBitSet, ImmutableBitSet};
 use error::Result;
 
 // a fake scorer struct used for `ConjunctionScorer`
@@ -55,7 +55,6 @@ impl<T: PostingIterator> DocIterator for PostingsIterAsScorer<T> {
         self.iterator.borrow().cost()
     }
 }
-
 
 pub struct PostingsAndFreq<T: PostingIterator> {
     pub postings: T,
@@ -137,15 +136,15 @@ impl<T: PostingIterator> ExactPhraseScorer<T> {
         match_cost: f32,
     ) -> Self {
         let mut iterators = Vec::with_capacity(postings.len());
-        let mut postings_and_positions: Vec<PostingsAndPosition<T>> = Vec::with_capacity(postings.len());
+        let mut postings_and_positions: Vec<PostingsAndPosition<T>> =
+            Vec::with_capacity(postings.len());
 
         for (_, posting) in postings.into_iter().enumerate() {
             let iterator = Rc::new(RefCell::new(posting.postings));
-            iterators.push(PostingsIterAsScorer { iterator: iterator.clone() });
-            postings_and_positions.push(PostingsAndPosition::new(
-                iterator.clone(),
-                posting.pos,
-            ));
+            iterators.push(PostingsIterAsScorer {
+                iterator: iterator.clone(),
+            });
+            postings_and_positions.push(PostingsAndPosition::new(iterator.clone(), posting.pos));
         }
 
         let conjunction = ConjunctionScorer::new(iterators);
@@ -488,7 +487,9 @@ impl<T: PostingIterator> SloppyPhraseScorer<T> {
                 idx as i32,
                 posting.terms.clone(),
             ));
-            doc_iterators.push(PostingsIterAsScorer { iterator: iterator.clone() });
+            doc_iterators.push(PostingsIterAsScorer {
+                iterator: iterator.clone(),
+            });
         }
         let conjunction = ConjunctionScorer::new(doc_iterators);
 

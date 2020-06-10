@@ -3176,6 +3176,13 @@ where
         // take very long because they periodically check if
         // they are aborted.
         while !self.running_merges.is_empty() {
+            // in case merge panic.
+            if let Some(thread_count) = self.merge_scheduler.merging_thread_count() {
+                if thread_count == 0 {
+                    break;
+                }
+            }
+
             let (loc, _) = self.cond.wait_timeout(lock, Duration::from_millis(1000))?;
             warn!(
                 "IW - abort merges, waiting for running_merges to be empty, current size: {}",

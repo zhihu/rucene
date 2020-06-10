@@ -14,18 +14,18 @@
 use std::boxed::Box;
 use std::fmt;
 
+use core::codec::Codec;
 use core::codec::PostingIteratorFlags;
 use core::codec::{TermIterator, Terms};
-use core::codec::Codec;
 use core::doc::Term;
 use core::index::reader::LeafReaderContext;
-use core::search::DocIterator;
 use core::search::explanation::Explanation;
 use core::search::query::{Query, TermQuery, Weight};
 use core::search::scorer::{ExactPhraseScorer, PostingsAndFreq, Scorer, SloppyPhraseScorer};
 use core::search::searcher::SearchPlanBuilder;
-use core::search::similarity::{Similarity, SimWeight};
+use core::search::similarity::{SimWeight, Similarity};
 use core::search::statistics::{CollectionStatistics, TermStatistics};
+use core::search::DocIterator;
 use core::util::{DocId, KeyedContext};
 use error::{ErrorKind, Result};
 
@@ -493,7 +493,8 @@ mod tests {
         fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
             let remain = buf.len().min(self.text.len() - self.index);
             if remain > 0 {
-                buf[..remain].copy_from_slice(&self.text.as_bytes()[self.index..self.index + remain]);
+                buf[..remain]
+                    .copy_from_slice(&self.text.as_bytes()[self.index..self.index + remain]);
                 self.index += remain;
             }
             Ok(remain)
@@ -557,8 +558,10 @@ mod tests {
                 ],
                 vec![0, 1],
                 0,
-                None, None,
-            ).unwrap();
+                None,
+                None,
+            )
+            .unwrap();
             let mut collector = TopDocsCollector::new(10);
             index_searcher.search(&query, &mut collector).unwrap();
             let top_docs = collector.top_docs();
@@ -574,8 +577,10 @@ mod tests {
                 ],
                 vec![0, 1],
                 1,
-                None, None,
-            ).unwrap();
+                None,
+                None,
+            )
+            .unwrap();
             let mut collector = TopDocsCollector::new(10);
             index_searcher.search(&query, &mut collector).unwrap();
             let top_docs = collector.top_docs();
@@ -591,8 +596,10 @@ mod tests {
                 ],
                 vec![0, 1],
                 2,
-                None, None,
-            ).unwrap();
+                None,
+                None,
+            )
+            .unwrap();
             let mut collector = TopDocsCollector::new(10);
             index_searcher.search(&query, &mut collector).unwrap();
             let top_docs = collector.top_docs();
@@ -608,8 +615,10 @@ mod tests {
                 ],
                 vec![0, 1],
                 3,
-                None, None,
-            ).unwrap();
+                None,
+                None,
+            )
+            .unwrap();
             let mut collector = TopDocsCollector::new(10);
             index_searcher.search(&query, &mut collector).unwrap();
             let top_docs = collector.top_docs();
