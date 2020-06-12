@@ -1896,6 +1896,7 @@ impl<'a> EverythingIterator {
             let count = (self.total_term_freq % i64::from(BLOCK_SIZE)) as usize;
             let mut payload_length = 0i32;
             let mut offset_length = 0i32;
+            self.payload_byte_upto = 0;
             for i in 0..count {
                 let code = pos_in.read_vint()?;
                 if self.index_has_payloads {
