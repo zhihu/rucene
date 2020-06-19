@@ -574,7 +574,7 @@ impl TieredMergePolicy {
             }
         }
 
-        let min_segment = (self.segs_per_tier * 0.5 + 1.0) as i64;
+        let min_segment = self.segs_per_tier as i64;
         let reserved_min = if next_idx as i64 >= min_segment {
             self.max_merged_segment_bytes as i64
         } else {
