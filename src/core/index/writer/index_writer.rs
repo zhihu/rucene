@@ -3610,33 +3610,28 @@ where
 
         let mut res = Ok(());
         for reader in &merge.readers {
-            let rld = self.reader_pool.get(reader.si.as_ref());
-            // We still hold a ref so it should not have been removed:
-            debug_assert!(rld.is_some());
-            let rld = rld.unwrap();
-            if drop {
-                rld.drop_changes();
-            } else {
-                rld.drop_merging_updates();
-            }
-
-            let mut res_drop = self.reader_pool.release(&rld);
-            if res_drop.is_ok() {
+            if let Some(rld) = self.reader_pool.get(reader.si.as_ref()) {
                 if drop {
-                    res_drop = self.reader_pool.drop(rld.info.as_ref());
+                    rld.drop_changes();
+                } else {
+                    rld.drop_merging_updates();
                 }
-            }
 
-            if let Err(e) = res_drop {
-                if res.is_ok() {
-                    res = Err(e);
+                let mut res_drop = self.reader_pool.release(&rld);
+                if res_drop.is_ok() {
+                    if drop {
+                        res_drop = self.reader_pool.drop(rld.info.as_ref());
+                    }
+                }
+
+                if let Err(e) = res_drop {
+                    if res.is_ok() {
+                        res = Err(e);
+                    }
                 }
             }
-            // merge.readers[i] = None;
         }
         merge.readers.clear();
-
-        // merge.merge_finished();
 
         if !suppress_errors {
             return res;
