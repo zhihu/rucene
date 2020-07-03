@@ -462,6 +462,17 @@ impl TieredMergePolicy {
         Ok(())
     }
 
+    pub fn set_segs_per_tier(&mut self, v: f64) -> Result<()> {
+        if v < 0.0 {
+            bail!(IllegalArgument(format!(
+                "segs_per_tier must be > 0, got {}",
+                v
+            )));
+        }
+        self.segs_per_tier = v;
+        Ok(())
+    }
+
     pub fn set_max_merged_segment_mb(&mut self, mut v: f64) -> Result<()> {
         if v < 0.0 {
             bail!(IllegalArgument(format!(
