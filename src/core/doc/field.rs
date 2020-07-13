@@ -13,7 +13,7 @@
 
 use core::analysis::{BinaryTokenStream, StringTokenStream, TokenStream};
 use core::doc::{DocValuesType, IndexOptions};
-use core::util::{BytesRef, Numeric, VariantValue};
+use core::util::{ByteBlockPool, BytesRef, Numeric, VariantValue};
 
 use error::ErrorKind::IllegalArgument;
 use error::{ErrorKind, Result};
@@ -35,6 +35,22 @@ impl Field {
         field_data: Option<VariantValue>,
         token_stream: Option<Box<dyn TokenStream>>,
     ) -> Field {
+        let field_data = if let Some(data) = field_data {
+            match data {
+                VariantValue::Binary(b) => {
+                    let bytes = b[..(ByteBlockPool::BYTE_BLOCK_SIZE - 2).min(b.len())].to_vec();
+                    Some(VariantValue::Binary(bytes))
+                }
+                VariantValue::VString(vs) => {
+                    let s = (&vs[..(ByteBlockPool::BYTE_BLOCK_SIZE - 2).min(vs.len())]).to_string();
+                    Some(VariantValue::VString(s))
+                }
+                _ => Some(data),
+            }
+        } else {
+            None
+        };
+
         Field {
             field_type,
             field_name,
@@ -45,6 +61,7 @@ impl Field {
     }
 
     pub fn new_bytes(field_name: String, bytes: Vec<u8>, field_type: FieldType) -> Self {
+        let bytes = bytes[..(ByteBlockPool::BYTE_BLOCK_SIZE - 2).min(bytes.len())].to_vec();
         Field {
             field_name,
             field_data: Some(VariantValue::Binary(bytes)),
