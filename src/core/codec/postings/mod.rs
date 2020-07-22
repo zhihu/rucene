@@ -76,7 +76,9 @@ use error::Result;
 use std::sync::Arc;
 
 // sometimes will cause miss increasing with phrase/highlight.
-pub const DEFAULT_SEGMENT_DOC_FREQ: i32 = 500_000;
+// pub const DEFAULT_SEGMENT_DOC_FREQ: i32 = 500_000;
+// for dmp
+pub const DEFAULT_SEGMENT_DOC_FREQ: i32 = 1_000_000_000;
 pub const DEFAULT_DOC_TERM_FREQ: i32 = 10;
 
 /// Encodes/decodes terms, postings, and proximity data.
