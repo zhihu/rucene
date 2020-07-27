@@ -179,7 +179,7 @@ impl BytesRefHash {
             // new entry
             let len2 = 2 + bytes.len();
             if len2 + self.byte_pool().byte_upto > ByteBlockPool::BYTE_BLOCK_SIZE {
-                assert!(len2 < ByteBlockPool::BYTE_BLOCK_SIZE);
+                assert!(len2 <= ByteBlockPool::BYTE_BLOCK_SIZE);
                 // this length check already done in the caller func
                 //                if len2 > BYTE_BLOCK_SIZE {
                 // bail!("bytes can be at most: {}, got: {}", BYTE_BLOCK_SIZE -

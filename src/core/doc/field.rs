@@ -42,7 +42,11 @@ impl Field {
                     Some(VariantValue::Binary(bytes))
                 }
                 VariantValue::VString(vs) => {
-                    let s = (&vs[..(ByteBlockPool::BYTE_BLOCK_SIZE - 2).min(vs.len())]).to_string();
+                    let mut index = (ByteBlockPool::BYTE_BLOCK_SIZE - 2).min(vs.len());
+                    while !vs.is_char_boundary(index) {
+                        index -= 1;
+                    }
+                    let s = (&vs[..index]).to_string();
                     Some(VariantValue::VString(s))
                 }
                 _ => Some(data),
