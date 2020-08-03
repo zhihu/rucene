@@ -1148,6 +1148,7 @@ where
     }
 
     fn doc_values_reader(&self) -> Result<Option<Arc<dyn DocValuesProducer>>> {
+        self.init_local_doc_values_producer()?;
         Ok(self.doc_values_producer.get().map(Arc::clone))
     }
 
