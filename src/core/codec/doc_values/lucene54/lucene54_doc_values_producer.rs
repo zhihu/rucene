@@ -279,7 +279,7 @@ impl Lucene54DocValuesProducer {
                             )?;
 
                             match entry {
-                                Some(n) => ords.insert(info.name.clone(), n),
+                                Some(n) => numerics.insert(info.name.clone(), n),
                                 _ => unreachable!(),
                             };
 
