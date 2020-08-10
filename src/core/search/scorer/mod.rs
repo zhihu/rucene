@@ -94,7 +94,7 @@ pub trait Scorer: DocIterator {
     }
 
     fn score_feature(&mut self) -> Result<Vec<FeatureResult>> {
-        unimplemented!()
+        Ok(vec![])
     }
 }
 
