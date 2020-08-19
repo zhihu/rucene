@@ -101,6 +101,22 @@ impl VariantValue {
         }
     }
 
+    pub fn get_utf8_string(&self) -> Option<String> {
+        match self {
+            VariantValue::VString(s) => Some(s.clone()),
+            VariantValue::Binary(b) => {
+                if let Ok(s) = String::from_utf8(b.clone()) {
+                    Some(s)
+                } else {
+                    None
+                }
+            }
+            _ => {
+                None
+            }
+        }
+    }
+
     // used for index sort check
     pub fn is_zero(&self) -> bool {
         match self {
