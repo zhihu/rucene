@@ -87,7 +87,8 @@ impl PostingsFormat for PerFieldPostingsFormat {
 }
 
 pub struct PerFieldFieldsReader {
-    fields: BTreeMap<String, FieldsProducerEnum>,
+    _formats: HashMap<String, Arc<FieldsProducerEnum>>,
+    fields: BTreeMap<String, Arc<FieldsProducerEnum>>,
     segment: String,
 }
 
@@ -96,7 +97,7 @@ impl PerFieldFieldsReader {
         state: &SegmentReadState<'_, D, DW, C>,
     ) -> Result<PerFieldFieldsReader> {
         let mut fields = BTreeMap::new();
-        let mut formats = HashMap::new();
+        let mut _formats = HashMap::new();
         for (name, info) in &state.field_infos.by_name {
             if let IndexOptions::Null = info.index_options {
                 continue;
@@ -113,13 +114,20 @@ impl PerFieldFieldsReader {
                     .unwrap()
                     .get(PER_FIELD_POSTING_SUFFIX_KEY)
                 {
-                    if !formats.contains_key(suffix) {
-                        formats.insert(suffix.clone(), postings_format_for_name(format)?);
+                    let segment_suffix = get_suffix(&format, suffix);
+
+                    if !_formats.contains_key(&segment_suffix) {
+                        let postings_format = postings_format_for_name(format)?;
+                        let state = SegmentReadState::with_suffix(state, &segment_suffix);
+                        _formats.insert(
+                            segment_suffix.clone(),
+                            Arc::new(postings_format.fields_producer(&state)?),
+                        );
                     }
-                    let postings_format = formats.get(suffix).unwrap();
-                    let suffix = get_suffix(format, suffix);
-                    let state = SegmentReadState::with_suffix(state, &suffix);
-                    fields.insert(name.clone(), postings_format.fields_producer(&state)?);
+
+                    if let Some(field_producer) = _formats.get(&segment_suffix) {
+                        fields.insert(name.clone(), field_producer.clone());
+                    }
                 } else {
                     bail!(
                         "Illegal State: missing attribute: {} for field {}",
@@ -130,7 +138,11 @@ impl PerFieldFieldsReader {
             }
         }
         let segment = state.segment_info.name.clone();
-        Ok(PerFieldFieldsReader { fields, segment })
+        Ok(PerFieldFieldsReader {
+            _formats,
+            fields,
+            segment,
+        })
     }
 
     fn terms_impl(&self, field: &str) -> Result<Option<FieldReaderRef>> {

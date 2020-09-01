@@ -111,9 +111,7 @@ impl VariantValue {
                     None
                 }
             }
-            _ => {
-                None
-            }
+            _ => None,
         }
     }
 
