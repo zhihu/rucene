@@ -21,7 +21,7 @@ use std::ops::DerefMut;
 use std::string::ToString;
 use std::sync::Arc;
 
-use core::codec::field_infos::{FieldInfo, FieldInfoRef};
+use core::codec::field_infos::FieldInfo;
 use core::codec::postings::blocktree::{BlockTermState, SegmentTermsIterFrame, MAX_LONGS_SIZE};
 use core::codec::postings::{
     FieldsProducer, Lucene50PostingIterator, Lucene50PostingsReader, Lucene50PostingsReaderRef,
@@ -389,7 +389,7 @@ type FSTRef = Arc<FST<ByteSequenceOutputFactory>>;
 /// BlockTree's implementation of `Terms`
 pub struct FieldReader {
     num_terms: i64,
-    field_info: FieldInfoRef,
+    field_info: Arc<FieldInfo>,
     sum_total_term_freq: i64,
     sum_doc_freq: i64,
     doc_count: i32,
@@ -411,7 +411,7 @@ impl FieldReader {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         parent: BlockTreeTermsReader,
-        field_info: FieldInfoRef,
+        field_info: Arc<FieldInfo>,
         num_terms: i64,
         root_code: Vec<u8>,
         sum_total_term_freq: i64,
@@ -913,7 +913,7 @@ impl SegmentTermIterator {
         field_reader: &FieldReader,
         terms_in: IndexInputRef,
         postings_reader: Lucene50PostingsReaderRef,
-        field_info: FieldInfoRef,
+        field_info: Arc<FieldInfo>,
     ) -> Self {
         let iter = Box::new(SegmentTermIteratorInner::new(
             field_reader,
@@ -1028,7 +1028,7 @@ impl SegmentTermIteratorInner {
         field_reader: &FieldReader,
         terms_in: IndexInputRef,
         postings_reader: Lucene50PostingsReaderRef,
-        field_info: FieldInfoRef,
+        field_info: Arc<FieldInfo>,
     ) -> Self {
         let mut arcs = vec![];
         if let Some(ref index) = field_reader.index {

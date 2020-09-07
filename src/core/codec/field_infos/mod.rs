@@ -307,8 +307,6 @@ impl fmt::Display for FieldInfo {
     }
 }
 
-pub type FieldInfoRef = Arc<FieldInfo>;
-
 /// This class tracks the number and position / offset parameters of terms
 /// being added to the index. The information collected in this class is
 /// also used to calculate the normalization factor for a field.
@@ -384,8 +382,8 @@ pub struct FieldInfos {
     pub has_doc_values: bool,
     pub has_point_values: bool,
 
-    pub by_number: BTreeMap<u32, FieldInfoRef>,
-    pub by_name: HashMap<String, FieldInfoRef>,
+    pub by_number: BTreeMap<u32, Arc<FieldInfo>>,
+    pub by_name: HashMap<String, Arc<FieldInfo>>,
 }
 
 impl Serialize for FieldInfos {
@@ -434,8 +432,8 @@ impl FieldInfos {
         let mut has_doc_values = false;
         let mut has_point_values = false;
 
-        let mut by_number: BTreeMap<u32, FieldInfoRef> = BTreeMap::new();
-        let mut by_name: HashMap<String, FieldInfoRef> = HashMap::new();
+        let mut by_number: BTreeMap<u32, Arc<FieldInfo>> = BTreeMap::new();
+        let mut by_name: HashMap<String, Arc<FieldInfo>> = HashMap::new();
         let mut max_number = 0;
 
         let mut infos = infos;

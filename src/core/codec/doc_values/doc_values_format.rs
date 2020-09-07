@@ -17,8 +17,8 @@ use core::codec::doc_values::{
     SortedSetDocValues,
 };
 use core::codec::doc_values::{
-    BinaryDocValuesProvider, DocValuesProducer, DocValuesProducerRef, NumericDocValuesProvider,
-    SortedDocValuesProvider, SortedNumericDocValuesProvider, SortedSetDocValuesProvider,
+    BinaryDocValuesProvider, DocValuesProducer, NumericDocValuesProvider, SortedDocValuesProvider,
+    SortedNumericDocValuesProvider, SortedSetDocValuesProvider,
 };
 use core::codec::field_infos::FieldInfo;
 use core::codec::segment_infos::{SegmentReadState, SegmentWriteState};
@@ -30,7 +30,6 @@ use core::util::{BitsMut, BytesRef, Numeric, ReusableIterator};
 
 use error::ErrorKind::{IllegalArgument, IllegalState};
 use error::Result;
-use std::collections::hash_map::Entry as HashMapEntry;
 use std::collections::{BTreeMap, HashMap};
 use std::mem;
 use std::sync::Arc;
@@ -310,7 +309,7 @@ pub fn doc_values_format_for_name(format: &str) -> Result<DocValuesFormatEnum> {
 }
 
 pub struct DocValuesFieldsReader {
-    fields: BTreeMap<String, DocValuesProducerRef>,
+    fields: BTreeMap<String, Arc<dyn DocValuesProducer>>,
 }
 
 impl DocValuesFieldsReader {
@@ -321,40 +320,34 @@ impl DocValuesFieldsReader {
         C: Codec,
     {
         let mut fields = BTreeMap::new();
-        let mut formats = HashMap::new();
+        let mut formats: HashMap<String, Arc<dyn DocValuesProducer>> = HashMap::new();
         for (name, info) in &state.field_infos.by_name {
             if info.doc_values_type == DocValuesType::Null {
                 continue;
             }
             let attrs = info.attributes.read().unwrap();
             if let Some(format) = attrs.get(PER_FIELD_VALUE_FORMAT_KEY) {
-                let suffix = attrs.get(PER_FIELD_VALUE_SUFFIX_KEY);
-                match suffix {
-                    None => bail!(IllegalState(format!(
+                if let Some(suffix) = attrs.get(PER_FIELD_VALUE_SUFFIX_KEY) {
+                    let segment_suffix =
+                        get_full_segment_suffix(&state.segment_suffix, get_suffix(format, suffix));
+
+                    if !formats.contains_key(&segment_suffix) {
+                        let dv_format = doc_values_format_for_name(format)?;
+                        let segment_read_state =
+                            SegmentReadState::with_suffix(state, &segment_suffix);
+                        let dv_producer = dv_format.fields_producer(&segment_read_state)?;
+                        let dv_producer = Arc::from(dv_producer);
+                        formats.insert(segment_suffix.clone(), Arc::clone(&dv_producer));
+                    }
+
+                    if let Some(dv_producer) = formats.get(&segment_suffix) {
+                        fields.insert(name.clone(), Arc::clone(dv_producer));
+                    }
+                } else {
+                    bail!(IllegalState(format!(
                         "Missing attribute {} for field: {}",
                         PER_FIELD_VALUE_SUFFIX_KEY, name
-                    ))),
-                    Some(suffix) => {
-                        let dv_format = doc_values_format_for_name(format)?;
-                        let segment_suffix = get_full_segment_suffix(
-                            &state.segment_suffix,
-                            get_suffix(format, suffix),
-                        );
-
-                        match formats.entry(segment_suffix.clone()) {
-                            HashMapEntry::Occupied(occupied) => {
-                                fields.insert(name.to_string(), Arc::clone(occupied.get()));
-                            }
-                            HashMapEntry::Vacant(vacant) => {
-                                let segment_read_state =
-                                    SegmentReadState::with_suffix(state, &segment_suffix);
-                                let dv_producer = dv_format.fields_producer(&segment_read_state)?;
-                                let dv_producer = Arc::from(dv_producer);
-                                vacant.insert(Arc::clone(&dv_producer));
-                                fields.insert(name.to_string(), dv_producer);
-                            }
-                        }
-                    }
+                    )));
                 }
             }
         }

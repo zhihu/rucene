@@ -489,6 +489,15 @@ pub struct SegmentReader<D: Directory, C: Codec> {
 
 unsafe impl<D: Directory + Send + Sync + 'static, C: Codec> Sync for SegmentReader<D, C> {}
 
+impl<D: Directory, C: Codec> Drop for SegmentReader<D, C> {
+    fn drop(&mut self) {
+        self.doc_values_producer_preload.write().unwrap().clear();
+        self.doc_values_local_preload.write().unwrap().clear();
+        self.doc_values_producer.clear();
+        self.doc_values_local.clear();
+    }
+}
+
 /// IndexReader implementation over a single segment.
 /// Instances pointing to the same segment (but with different deletes, etc)
 /// may share the same core data.
@@ -502,11 +511,7 @@ impl<D: Directory + 'static, C: Codec> SegmentReader<D, C> {
         is_nrt: bool,
         field_infos: Arc<FieldInfos>,
     ) -> SegmentReader<D, C> {
-        let doc_values_local = CachedThreadLocal::new();
-        doc_values_local.get_or(|| Box::new(RefCell::new(HashMap::new())));
-
-        let max_preload_num = 5 * num_cpus::get_physical();
-
+        let max_preload_num = num_cpus::get_physical();
         let mut doc_values_producer_preload: Vec<Arc<dyn DocValuesProducer>> =
             Vec::with_capacity(max_preload_num);
         for _ in 0..max_preload_num {
@@ -582,6 +587,9 @@ impl<D: Directory + 'static, C: Codec> SegmentReader<D, C> {
 
             doc_values_producer.get_or(|| Box::new(dv_producer));
         }
+
+        let doc_values_local = CachedThreadLocal::new();
+        doc_values_local.get_or(|| Box::new(RefCell::new(HashMap::new())));
 
         SegmentReader {
             si,
