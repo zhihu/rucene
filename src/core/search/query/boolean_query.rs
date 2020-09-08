@@ -31,7 +31,7 @@ pub struct BooleanQuery<C: Codec> {
     should_queries: Vec<Box<dyn Query<C>>>,
     filter_queries: Vec<Box<dyn Query<C>>>,
     must_not_queries: Vec<Box<dyn Query<C>>>,
-    minimum_should_match: i32,
+    min_should_match: i32,
 }
 
 pub const BOOLEAN: &str = "boolean";
@@ -42,8 +42,18 @@ impl<C: Codec> BooleanQuery<C> {
         shoulds: Vec<Box<dyn Query<C>>>,
         filters: Vec<Box<dyn Query<C>>>,
         must_nots: Vec<Box<dyn Query<C>>>,
+        min_should_match: i32,
     ) -> Result<Box<dyn Query<C>>> {
-        let minimum_should_match = if musts.is_empty() { 1 } else { 0 };
+        let min_should_match = if min_should_match > 0 {
+            min_should_match
+        } else {
+            if musts.is_empty() {
+                1
+            } else {
+                0
+            }
+        };
+
         let mut musts = musts;
         let mut shoulds = shoulds;
         let mut filters = filters;
@@ -72,7 +82,7 @@ impl<C: Codec> BooleanQuery<C> {
             should_queries: shoulds,
             filter_queries: filters,
             must_not_queries: must_nots,
-            minimum_should_match,
+            min_should_match,
         }))
     }
 
@@ -110,6 +120,7 @@ impl<C: Codec> Query<C> for BooleanQuery<C> {
             should_weights,
             must_not_weights,
             needs_scores,
+            self.min_should_match,
         )))
     }
 
@@ -145,7 +156,7 @@ impl<C: Codec> fmt::Display for BooleanQuery<C> {
         write!(
             f,
             "BooleanQuery(must: [{}], should: [{}], filters: [{}], must_not: [{}], match: {})",
-            must_str, should_str, filters_str, must_not_str, self.minimum_should_match
+            must_str, should_str, filters_str, must_not_str, self.min_should_match
         )
     }
 }
@@ -154,8 +165,7 @@ struct BooleanWeight<C: Codec> {
     must_weights: Vec<Box<dyn Weight<C>>>,
     should_weights: Vec<Box<dyn Weight<C>>>,
     must_not_weights: Vec<Box<dyn Weight<C>>>,
-    #[allow(dead_code)]
-    minimum_should_match: i32,
+    min_should_match: i32,
     needs_scores: bool,
 }
 
@@ -165,13 +175,13 @@ impl<C: Codec> BooleanWeight<C> {
         shoulds: Vec<Box<dyn Weight<C>>>,
         must_nots: Vec<Box<dyn Weight<C>>>,
         needs_scores: bool,
+        min_should_match: i32,
     ) -> BooleanWeight<C> {
-        let minimum_should_match = if musts.is_empty() { 1 } else { 0 };
         BooleanWeight {
             must_weights: musts,
             should_weights: shoulds,
             must_not_weights: must_nots,
-            minimum_should_match,
+            min_should_match,
             needs_scores,
         }
     }
@@ -217,6 +227,7 @@ impl<C: Codec> Weight<C> for BooleanWeight<C> {
                 _ => Some(Box::new(DisjunctionSumScorer::new(
                     scorers,
                     self.needs_scores,
+                    self.min_should_match,
                 ))),
             }
         };
@@ -230,7 +241,11 @@ impl<C: Codec> Weight<C> for BooleanWeight<C> {
             match scorers.len() {
                 0 => None,
                 1 => Some(scorers.remove(0)),
-                _ => Some(Box::new(DisjunctionSumScorer::new(scorers, false))),
+                _ => Some(Box::new(DisjunctionSumScorer::new(
+                    scorers,
+                    false,
+                    self.min_should_match,
+                ))),
             }
         };
 
@@ -348,13 +363,13 @@ impl<C: Codec> Weight<C> for BooleanWeight<C> {
                 "No matching clauses".to_string(),
                 subs,
             ))
-        } else if should_match_count < self.minimum_should_match {
+        } else if should_match_count < self.min_should_match {
             Ok(Explanation::new(
                 false,
                 0.0f32,
                 format!(
                     "Failure to match minimum number of optional clauses: {}<{}",
-                    should_match_count, self.minimum_should_match
+                    should_match_count, self.min_should_match
                 ),
                 subs,
             ))
@@ -394,7 +409,7 @@ impl<C: Codec> fmt::Display for BooleanWeight<C> {
             f,
             "BooleanWeight(must: [{}], should: [{}], must_not: [{}], min match: {}, needs score: \
              {})",
-            must_str, should_str, must_not_str, self.minimum_should_match, self.needs_scores
+            must_str, should_str, must_not_str, self.min_should_match, self.needs_scores
         )
     }
 }

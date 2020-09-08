@@ -29,7 +29,7 @@ pub struct QueryStringQueryBuilder {
     query_string: String,
     fields: Vec<(String, f32)>,
     #[allow(dead_code)]
-    minimum_should_match: i32,
+    min_should_match: i32,
     #[allow(dead_code)]
     boost: f32,
 }
@@ -38,13 +38,13 @@ impl QueryStringQueryBuilder {
     pub fn new(
         query_string: String,
         fields: Vec<(String, f32)>,
-        minimum_should_match: i32,
+        min_should_match: i32,
         boost: f32,
     ) -> QueryStringQueryBuilder {
         QueryStringQueryBuilder {
             query_string,
             fields,
-            minimum_should_match,
+            min_should_match,
             boost,
         }
     }
@@ -171,7 +171,7 @@ impl QueryStringQueryBuilder {
                 shoulds.remove(0)
             }
         } else {
-            BooleanQuery::build(musts, shoulds, vec![], vec![])?
+            BooleanQuery::build(musts, shoulds, vec![], vec![], self.min_should_match)?
         };
         Ok(Some(query))
     }
@@ -190,7 +190,7 @@ impl QueryStringQueryBuilder {
         let res = if queries.len() == 1 {
             queries.remove(0)
         } else {
-            BooleanQuery::build(Vec::new(), queries, vec![], vec![])?
+            BooleanQuery::build(Vec::new(), queries, vec![], vec![], self.min_should_match)?
         };
         Ok(res)
     }
@@ -259,7 +259,7 @@ mod tests {
         let term = String::from("test");
         let field = String::from("title");
         let q: Box<dyn Query<TestCodec>> =
-            QueryStringQueryBuilder::new(term.clone(), vec![(field, 1.0)], 1, 1.0)
+            QueryStringQueryBuilder::new(term.clone(), vec![(field, 1.0)], 0, 1.0)
                 .build()
                 .unwrap();
         let term_str: String = q.to_string();
@@ -271,7 +271,7 @@ mod tests {
         let term = String::from("(test^0.2 | 测试^2)");
         let field = String::from("title");
         let q: Box<dyn Query<TestCodec>> =
-            QueryStringQueryBuilder::new(term.clone(), vec![(field, 1.0)], 1, 2.0)
+            QueryStringQueryBuilder::new(term.clone(), vec![(field, 1.0)], 0, 2.0)
                 .build()
                 .unwrap();
         let term_str: String = q.to_string();
@@ -287,7 +287,7 @@ mod tests {
         let term = String::from("test^0.2 \"测试\"^2");
         let field = String::from("title");
         let q: Box<dyn Query<TestCodec>> =
-            QueryStringQueryBuilder::new(term.clone(), vec![(field, 1.0)], 1, 2.0)
+            QueryStringQueryBuilder::new(term.clone(), vec![(field, 1.0)], 0, 2.0)
                 .build()
                 .unwrap();
         let term_str: String = q.to_string();
@@ -302,7 +302,7 @@ mod tests {
 
         let field = String::from("title");
         let q: Box<dyn Query<TestCodec>> =
-            QueryStringQueryBuilder::new(String::from("+test"), vec![(field, 1.0)], 1, 1.0)
+            QueryStringQueryBuilder::new(String::from("+test"), vec![(field, 1.0)], 0, 1.0)
                 .build()
                 .unwrap();
         let term_str: String = q.to_string();
@@ -314,7 +314,7 @@ mod tests {
         let query_string = String::from("test search");
         let field = String::from("title");
         let q: Box<dyn Query<TestCodec>> =
-            QueryStringQueryBuilder::new(query_string.clone(), vec![(field, 1.0)], 1, 1.0)
+            QueryStringQueryBuilder::new(query_string.clone(), vec![(field, 1.0)], 0, 1.0)
                 .build()
                 .unwrap();
         let term_str: String = q.to_string();
@@ -330,7 +330,7 @@ mod tests {
         let query_string = String::from("test +search");
         let field = String::from("title");
         let q: Box<dyn Query<TestCodec>> =
-            QueryStringQueryBuilder::new(query_string.clone(), vec![(field, 1.0)], 1, 1.0)
+            QueryStringQueryBuilder::new(query_string.clone(), vec![(field, 1.0)], 0, 1.0)
                 .build()
                 .unwrap();
         let term_str: String = q.to_string();
@@ -346,7 +346,7 @@ mod tests {
         let query_string = String::from("test +(search 搜索)");
         let field = String::from("title");
         let q: Box<dyn Query<TestCodec>> =
-            QueryStringQueryBuilder::new(query_string.clone(), vec![(field, 1.0)], 1, 1.0)
+            QueryStringQueryBuilder::new(query_string.clone(), vec![(field, 1.0)], 0, 1.0)
                 .build()
                 .unwrap();
         let term_str: String = q.to_string();
@@ -364,7 +364,7 @@ mod tests {
         let q: Box<dyn Query<TestCodec>> = QueryStringQueryBuilder::new(
             query_string.clone(),
             vec![("title".to_string(), 1.0), ("content".to_string(), 1.0)],
-            1,
+            0,
             1.0,
         )
         .build()
@@ -387,7 +387,7 @@ mod tests {
         );
         let field = String::from("title");
         let q: Box<dyn Query<TestCodec>> =
-            QueryStringQueryBuilder::new(query_string.clone(), vec![(field, 1.0)], 1, 1.0)
+            QueryStringQueryBuilder::new(query_string.clone(), vec![(field, 1.0)], 0, 1.0)
                 .build()
                 .unwrap();
         let term_str: String = q.to_string();
