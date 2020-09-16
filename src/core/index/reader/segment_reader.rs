@@ -489,15 +489,6 @@ pub struct SegmentReader<D: Directory, C: Codec> {
 
 unsafe impl<D: Directory + Send + Sync + 'static, C: Codec> Sync for SegmentReader<D, C> {}
 
-impl<D: Directory, C: Codec> Drop for SegmentReader<D, C> {
-    fn drop(&mut self) {
-        self.doc_values_producer_preload.write().unwrap().clear();
-        self.doc_values_local_preload.write().unwrap().clear();
-        self.doc_values_producer.clear();
-        self.doc_values_local.clear();
-    }
-}
-
 /// IndexReader implementation over a single segment.
 /// Instances pointing to the same segment (but with different deletes, etc)
 /// may share the same core data.
