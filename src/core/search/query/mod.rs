@@ -54,6 +54,10 @@ mod boosting_query;
 
 pub use self::boosting_query::*;
 
+mod exists_query;
+
+pub use self::exists_query::*;
+
 use core::codec::Codec;
 use core::index::reader::LeafReaderContext;
 use core::search::explanation::Explanation;

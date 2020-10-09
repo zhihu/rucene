@@ -29,6 +29,10 @@ mod doc_values_writer;
 
 pub use self::doc_values_writer::*;
 
+mod doc_values_iterator;
+
+pub use self::doc_values_iterator::*;
+
 use core::codec::doc_values::lucene54::DocValuesTermIterator;
 use core::util::DocId;
 
