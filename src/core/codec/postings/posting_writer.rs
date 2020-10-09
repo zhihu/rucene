@@ -17,7 +17,7 @@ use core::codec::postings::for_util::*;
 use core::codec::postings::posting_format::BLOCK_SIZE;
 use core::codec::postings::posting_reader::*;
 use core::codec::postings::skip_writer::Lucene50SkipWriter;
-use core::codec::postings::PostingsWriterBase;
+use core::codec::postings::{PostingsWriterBase, VERSION_START};
 use core::codec::segment_infos::{segment_file_name, SegmentWriteState};
 use core::codec::{write_footer, write_index_header, Codec, TermIterator};
 use core::codec::{PostingIterator, PostingIteratorFlags};
@@ -26,9 +26,35 @@ use core::index::writer::INDEX_MAX_POSITION;
 use core::search::{DocIterator, NO_MORE_DOCS};
 use core::store::directory::Directory;
 use core::store::io::{DataOutput, IndexOutput};
-use core::util::packed::COMPACT;
+use core::util::packed::{SIMD128Packer, SIMDPacker, COMPACT};
 use core::util::{BitSet, DocId, FixedBitSet};
 use error::{ErrorKind, Result};
+
+pub struct EfWriterMeta {
+    pub ef_base_doc: DocId,
+    pub ef_upper_doc: DocId,
+    pub use_ef: bool,
+    pub with_pf: bool,
+    pub bits: FixedBitSet,
+}
+
+impl EfWriterMeta {
+    pub fn new() -> Self {
+        Self {
+            ef_base_doc: -1,
+            ef_upper_doc: 0,
+            use_ef: false,
+            with_pf: true,
+            bits: FixedBitSet::default(),
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.ef_base_doc = -1;
+        self.ef_upper_doc = 0;
+        self.bits.clear_all();
+    }
+}
 
 /// Concrete class that writes docId(maybe frq,pos,offset,payloads) list
 /// with postings format.
@@ -82,6 +108,8 @@ pub struct Lucene50PostingsWriter<O: IndexOutput> {
     write_positions: bool,
     write_payloads: bool,
     write_offsets: bool,
+    ef_writer_meta: EfWriterMeta,
+    use_simd: bool,
 }
 
 impl<O: IndexOutput> Lucene50PostingsWriter<O> {
@@ -170,6 +198,12 @@ impl<O: IndexOutput> Lucene50PostingsWriter<O> {
             pay_out.is_some(),
         );
 
+        let use_simd = if VERSION_CURRENT > VERSION_START && SIMD128Packer::is_support() {
+            true
+        } else {
+            false
+        };
+
         Ok(Lucene50PostingsWriter {
             doc_out,
             pos_out,
@@ -211,6 +245,8 @@ impl<O: IndexOutput> Lucene50PostingsWriter<O> {
             write_positions: false,
             write_payloads: false,
             write_offsets: false,
+            ef_writer_meta: EfWriterMeta::new(),
+            use_simd,
         })
     }
 
@@ -252,6 +288,7 @@ impl<O: IndexOutput> Lucene50PostingsWriter<O> {
 
     pub fn start_term(&mut self) {
         self.doc_start_fp = self.doc_out.file_pointer();
+        self.ef_writer_meta.reset();
         if self.write_positions {
             self.pos_start_fp = self.pos_out.as_ref().unwrap().file_pointer();
             if self.write_payloads || self.write_offsets {
@@ -295,16 +332,21 @@ impl<O: IndexOutput> Lucene50PostingsWriter<O> {
         self.doc_count += 1;
 
         if self.doc_buffer_upto == BLOCK_SIZE as usize {
+            self.ef_writer_meta.ef_upper_doc = doc_id;
             self.for_util.write_block(
                 &self.doc_delta_buffer,
                 &mut self.encoded,
                 &mut self.doc_out,
+                Some(&mut self.ef_writer_meta),
+                self.use_simd,
             )?;
             if self.write_freqs {
                 self.for_util.write_block(
                     &self.freq_buffer,
                     &mut self.encoded,
                     &mut self.doc_out,
+                    None,
+                    self.use_simd,
                 )?;
             }
             // NOTE: don't set docBufferUpto back to 0 here;
@@ -367,6 +409,8 @@ impl<O: IndexOutput> Lucene50PostingsWriter<O> {
                 &self.pos_delta_buffer,
                 &mut self.encoded,
                 self.pos_out.as_mut().unwrap(),
+                None,
+                self.use_simd,
             )?;
 
             if self.write_payloads {
@@ -374,6 +418,8 @@ impl<O: IndexOutput> Lucene50PostingsWriter<O> {
                     &self.payload_length_buffer,
                     &mut self.encoded,
                     self.pay_out.as_mut().unwrap(),
+                    None,
+                    self.use_simd,
                 )?;
                 self.pay_out
                     .as_mut()
@@ -392,11 +438,15 @@ impl<O: IndexOutput> Lucene50PostingsWriter<O> {
                     &self.offset_start_delta_buffer,
                     &mut self.encoded,
                     self.pay_out.as_mut().unwrap(),
+                    None,
+                    self.use_simd,
                 )?;
                 self.for_util.write_block(
                     &self.offset_length_buffer,
                     &mut self.encoded,
                     self.pay_out.as_mut().unwrap(),
+                    None,
+                    self.use_simd,
                 )?;
             }
             self.pos_buffer_upto = 0;
@@ -419,6 +469,7 @@ impl<O: IndexOutput> Lucene50PostingsWriter<O> {
                 self.last_block_payload_byte_upto = self.payload_byte_upto;
             }
             self.doc_buffer_upto = 0;
+            self.ef_writer_meta.ef_base_doc = self.last_block_doc_id;
         }
     }
 
@@ -572,10 +623,11 @@ impl<O: IndexOutput> PostingsWriterBase for Lucene50PostingsWriter<O> {
         _term: &[u8],
         terms: &mut impl TermIterator,
         docs_seen: &mut FixedBitSet,
+        doc_freq_limit: i32,
+        term_freq_limit: i32,
     ) -> Result<Option<BlockTermState>> {
         self.start_term();
         let mut postings_enum = terms.postings_with_flags(self.enum_flags)?;
-
         let mut doc_freq = 0;
         let mut total_term_freq = 0i32;
         loop {
@@ -586,13 +638,12 @@ impl<O: IndexOutput> PostingsWriterBase for Lucene50PostingsWriter<O> {
             doc_freq += 1;
             docs_seen.set(doc_id as usize);
             let freq = if self.write_freqs {
-                let f = postings_enum.freq()?;
+                let f = postings_enum.freq()?.min(term_freq_limit);
                 total_term_freq += f;
                 f
             } else {
                 -1
             };
-
             self.start_doc(doc_id, freq)?;
 
             if self.write_positions {
@@ -613,6 +664,10 @@ impl<O: IndexOutput> PostingsWriterBase for Lucene50PostingsWriter<O> {
             }
 
             self.finish_doc();
+
+            if doc_freq > doc_freq_limit {
+                break;
+            }
         }
 
         if doc_freq == 0 {

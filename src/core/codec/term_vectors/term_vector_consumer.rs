@@ -713,8 +713,8 @@ where
         token_stream: &dyn TokenStream,
     ) {
         if self.do_vector_offsets {
-            let start_offset = field_state.offset + token_stream.offset_attribute().start_offset();
-            let end_offset = field_state.offset + token_stream.offset_attribute().end_offset();
+            let start_offset = field_state.offset + token_stream.token().start_offset;
+            let end_offset = field_state.offset + token_stream.token().end_offset;
 
             let delta = start_offset as i32 - self.base.postings_array.last_offsets[term_id] as i32;
             self.base.write_vint(1, delta);
@@ -724,8 +724,8 @@ where
 
         if self.do_vector_positions {
             let mut payload: &[u8] = &[0u8; 0];
-            if let Some(attr) = token_stream.payload_attribute() {
-                payload = attr.get_payload();
+            if token_stream.token().payload.len() > 0 {
+                payload = &token_stream.token().payload;
             }
             let pos =
                 field_state.position - self.base.postings_array.last_positions[term_id] as i32;

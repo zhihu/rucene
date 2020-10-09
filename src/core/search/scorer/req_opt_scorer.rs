@@ -111,7 +111,7 @@ mod tests {
 
         let conjunction_scorer: Box<dyn Scorer> = Box::new(ConjunctionScorer::new(vec![s1, s2]));
         let disjunction_scorer: Box<dyn Scorer> =
-            Box::new(DisjunctionSumScorer::new(vec![s3, s4], true));
+            Box::new(DisjunctionSumScorer::new(vec![s3, s4], true, 0));
         let mut scorer = ReqOptScorer::new(conjunction_scorer, disjunction_scorer);
 
         assert_eq!(scorer.doc_id(), -1);

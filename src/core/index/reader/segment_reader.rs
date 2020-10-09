@@ -502,11 +502,7 @@ impl<D: Directory + 'static, C: Codec> SegmentReader<D, C> {
         is_nrt: bool,
         field_infos: Arc<FieldInfos>,
     ) -> SegmentReader<D, C> {
-        let doc_values_local = CachedThreadLocal::new();
-        doc_values_local.get_or(|| Box::new(RefCell::new(HashMap::new())));
-
-        let max_preload_num = 5 * num_cpus::get_physical();
-
+        let max_preload_num = num_cpus::get_physical();
         let mut doc_values_producer_preload: Vec<Arc<dyn DocValuesProducer>> =
             Vec::with_capacity(max_preload_num);
         for _ in 0..max_preload_num {
@@ -582,6 +578,9 @@ impl<D: Directory + 'static, C: Codec> SegmentReader<D, C> {
 
             doc_values_producer.get_or(|| Box::new(dv_producer));
         }
+
+        let doc_values_local = CachedThreadLocal::new();
+        doc_values_local.get_or(|| Box::new(RefCell::new(HashMap::new())));
 
         SegmentReader {
             si,
@@ -958,7 +957,6 @@ where
                     v.insert(DocValuesProviderEnum::Numeric(Arc::clone(&cell)));
                     cell.get()
                 }
-
                 _ => bail!(IllegalArgument(format!(
                     "non-dv-segment or non-exist or non-numeric field: {}",
                     field
@@ -987,7 +985,6 @@ where
                     v.insert(DocValuesProviderEnum::Binary(Arc::clone(&dv)));
                     dv.get()
                 }
-
                 _ => bail!(IllegalArgument(format!(
                     "non-dv-segment or non-exist or non-binary field: {}",
                     field
@@ -1005,7 +1002,7 @@ where
             Entry::Occupied(o) => match *o.get() {
                 DocValuesProviderEnum::Sorted(ref dv) => dv.get(),
                 _ => bail!(IllegalArgument(format!(
-                    "non-binary dv found for field {}",
+                    "non-sorted dv found for field {}",
                     field
                 ))),
             },
@@ -1017,7 +1014,7 @@ where
                     dv.get()
                 }
                 _ => bail!(IllegalArgument(format!(
-                    "non-dv-segment or non-exist or non-binary field: {}",
+                    "non-dv-segment or non-exist or non-sorted field: {}",
                     field
                 ))),
             },
@@ -1036,7 +1033,7 @@ where
             Entry::Occupied(o) => match *o.get() {
                 DocValuesProviderEnum::SortedNumeric(ref dv) => dv.get(),
                 _ => bail!(IllegalArgument(format!(
-                    "non-binary dv found for field {}",
+                    "non-sorted_numeric dv found for field {}",
                     field
                 ))),
             },
@@ -1049,7 +1046,7 @@ where
                     cell.get()
                 }
                 _ => bail!(IllegalArgument(format!(
-                    "non-dv-segment or non-exist or non-binary field: {}",
+                    "non-dv-segment or non-exist or non-sorted_numeric field: {}",
                     field
                 ))),
             },
@@ -1065,7 +1062,7 @@ where
             Entry::Occupied(o) => match *o.get() {
                 DocValuesProviderEnum::SortedSet(ref dv) => dv.get(),
                 _ => bail!(IllegalArgument(format!(
-                    "non-binary dv found for field {}",
+                    "non-sorted_set dv found for field {}",
                     field
                 ))),
             },
@@ -1079,7 +1076,7 @@ where
                 }
 
                 _ => bail!(IllegalArgument(format!(
-                    "non-dv-segment or non-exist or non-binary field: {}",
+                    "non-dv-segment or non-exist or non-sorted_set field: {}",
                     field
                 ))),
             },
@@ -1150,6 +1147,7 @@ where
     }
 
     fn doc_values_reader(&self) -> Result<Option<Arc<dyn DocValuesProducer>>> {
+        self.init_local_doc_values_producer()?;
         Ok(self.doc_values_producer.get().map(Arc::clone))
     }
 

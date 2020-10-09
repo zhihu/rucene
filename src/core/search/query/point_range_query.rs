@@ -426,7 +426,7 @@ impl<C: Codec> Query<C> for PointRangeQuery {
     }
 
     fn extract_terms(&self) -> Vec<TermQuery> {
-        unimplemented!()
+        vec![]
     }
 
     fn as_any(&self) -> &dyn (::std::any::Any) {

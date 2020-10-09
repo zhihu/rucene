@@ -416,7 +416,6 @@ impl CompressingTermVectorsReader {
         })
     }
 
-    #[allow(cyclomatic_complexity)]
     fn get_mut(&mut self, doc: i32) -> Result<Option<TVFields>> {
         let mut vectors_stream = self.vectors_stream.as_ref().clone()?;
         let vectors_stream = vectors_stream.as_mut();

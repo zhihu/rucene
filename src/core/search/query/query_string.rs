@@ -29,7 +29,7 @@ pub struct QueryStringQueryBuilder {
     query_string: String,
     fields: Vec<(String, f32)>,
     #[allow(dead_code)]
-    minimum_should_match: i32,
+    min_should_match: i32,
     #[allow(dead_code)]
     boost: f32,
 }
@@ -38,13 +38,13 @@ impl QueryStringQueryBuilder {
     pub fn new(
         query_string: String,
         fields: Vec<(String, f32)>,
-        minimum_should_match: i32,
+        min_should_match: i32,
         boost: f32,
     ) -> QueryStringQueryBuilder {
         QueryStringQueryBuilder {
             query_string,
             fields,
-            minimum_should_match,
+            min_should_match,
             boost,
         }
     }
@@ -171,7 +171,7 @@ impl QueryStringQueryBuilder {
                 shoulds.remove(0)
             }
         } else {
-            BooleanQuery::build(musts, shoulds, vec![])?
+            BooleanQuery::build(musts, shoulds, vec![], vec![], self.min_should_match)?
         };
         Ok(Some(query))
     }
@@ -190,7 +190,7 @@ impl QueryStringQueryBuilder {
         let res = if queries.len() == 1 {
             queries.remove(0)
         } else {
-            BooleanQuery::build(Vec::new(), queries, vec![])?
+            BooleanQuery::build(Vec::new(), queries, vec![], vec![], self.min_should_match)?
         };
         Ok(res)
     }
@@ -259,7 +259,7 @@ mod tests {
         let term = String::from("test");
         let field = String::from("title");
         let q: Box<dyn Query<TestCodec>> =
-            QueryStringQueryBuilder::new(term.clone(), vec![(field, 1.0)], 1, 1.0)
+            QueryStringQueryBuilder::new(term.clone(), vec![(field, 1.0)], 0, 1.0)
                 .build()
                 .unwrap();
         let term_str: String = q.to_string();
@@ -271,7 +271,7 @@ mod tests {
         let term = String::from("(test^0.2 | 测试^2)");
         let field = String::from("title");
         let q: Box<dyn Query<TestCodec>> =
-            QueryStringQueryBuilder::new(term.clone(), vec![(field, 1.0)], 1, 2.0)
+            QueryStringQueryBuilder::new(term.clone(), vec![(field, 1.0)], 0, 2.0)
                 .build()
                 .unwrap();
         let term_str: String = q.to_string();
@@ -279,14 +279,15 @@ mod tests {
             term_str,
             String::from(
                 "BooleanQuery(must: [], should: [TermQuery(field: title, term: test, boost: 0.2), \
-                 TermQuery(field: title, term: 测试, boost: 2)], filters: [], match: 1)",
+                 TermQuery(field: title, term: 测试, boost: 2)], filters: [], must_not: [], \
+                 match: 1)",
             )
         );
 
         let term = String::from("test^0.2 \"测试\"^2");
         let field = String::from("title");
         let q: Box<dyn Query<TestCodec>> =
-            QueryStringQueryBuilder::new(term.clone(), vec![(field, 1.0)], 1, 2.0)
+            QueryStringQueryBuilder::new(term.clone(), vec![(field, 1.0)], 0, 2.0)
                 .build()
                 .unwrap();
         let term_str: String = q.to_string();
@@ -294,13 +295,14 @@ mod tests {
             term_str,
             String::from(
                 "BooleanQuery(must: [], should: [TermQuery(field: title, term: test, boost: 0.2), \
-                 TermQuery(field: title, term: 测试, boost: 2)], filters: [], match: 1)",
+                 TermQuery(field: title, term: 测试, boost: 2)], filters: [], must_not: [], \
+                 match: 1)",
             )
         );
 
         let field = String::from("title");
         let q: Box<dyn Query<TestCodec>> =
-            QueryStringQueryBuilder::new(String::from("+test"), vec![(field, 1.0)], 1, 1.0)
+            QueryStringQueryBuilder::new(String::from("+test"), vec![(field, 1.0)], 0, 1.0)
                 .build()
                 .unwrap();
         let term_str: String = q.to_string();
@@ -312,7 +314,7 @@ mod tests {
         let query_string = String::from("test search");
         let field = String::from("title");
         let q: Box<dyn Query<TestCodec>> =
-            QueryStringQueryBuilder::new(query_string.clone(), vec![(field, 1.0)], 1, 1.0)
+            QueryStringQueryBuilder::new(query_string.clone(), vec![(field, 1.0)], 0, 1.0)
                 .build()
                 .unwrap();
         let term_str: String = q.to_string();
@@ -320,14 +322,15 @@ mod tests {
             term_str,
             String::from(
                 "BooleanQuery(must: [], should: [TermQuery(field: title, term: test, boost: 1), \
-                 TermQuery(field: title, term: search, boost: 1)], filters: [], match: 1)",
+                 TermQuery(field: title, term: search, boost: 1)], filters: [], must_not: [], \
+                 match: 1)",
             )
         );
 
         let query_string = String::from("test +search");
         let field = String::from("title");
         let q: Box<dyn Query<TestCodec>> =
-            QueryStringQueryBuilder::new(query_string.clone(), vec![(field, 1.0)], 1, 1.0)
+            QueryStringQueryBuilder::new(query_string.clone(), vec![(field, 1.0)], 0, 1.0)
                 .build()
                 .unwrap();
         let term_str: String = q.to_string();
@@ -335,14 +338,15 @@ mod tests {
             term_str,
             String::from(
                 "BooleanQuery(must: [TermQuery(field: title, term: search, boost: 1)], should: \
-                 [TermQuery(field: title, term: test, boost: 1)], filters: [], match: 0)",
+                 [TermQuery(field: title, term: test, boost: 1)], filters: [], must_not: [], \
+                 match: 0)",
             )
         );
 
         let query_string = String::from("test +(search 搜索)");
         let field = String::from("title");
         let q: Box<dyn Query<TestCodec>> =
-            QueryStringQueryBuilder::new(query_string.clone(), vec![(field, 1.0)], 1, 1.0)
+            QueryStringQueryBuilder::new(query_string.clone(), vec![(field, 1.0)], 0, 1.0)
                 .build()
                 .unwrap();
         let term_str: String = q.to_string();
@@ -351,8 +355,8 @@ mod tests {
             String::from(
                 "BooleanQuery(must: [BooleanQuery(must: [], should: [TermQuery(field: title, \
                  term: search, boost: 1), TermQuery(field: title, term: 搜索, boost: 1)], \
-                 filters: [], match: 1)], should: [TermQuery(field: title, term: test, boost: \
-                 1)], filters: [], match: 0)",
+                 filters: [], must_not: [], match: 1)], should: [TermQuery(field: title, term: \
+                 test, boost: 1)], filters: [], must_not: [], match: 0)",
             )
         );
 
@@ -360,7 +364,7 @@ mod tests {
         let q: Box<dyn Query<TestCodec>> = QueryStringQueryBuilder::new(
             query_string.clone(),
             vec![("title".to_string(), 1.0), ("content".to_string(), 1.0)],
-            1,
+            0,
             1.0,
         )
         .build()
@@ -371,9 +375,10 @@ mod tests {
             String::from(
                 "BooleanQuery(must: [BooleanQuery(must: [], should: [TermQuery(field: title, \
                  term: search, boost: 1), TermQuery(field: content, term: search, boost: 1)], \
-                 filters: [], match: 1)], should: [BooleanQuery(must: [], should: \
+                 filters: [], must_not: [], match: 1)], should: [BooleanQuery(must: [], should: \
                  [TermQuery(field: title, term: test, boost: 1), TermQuery(field: content, term: \
-                 test, boost: 1)], filters: [], match: 1)], filters: [], match: 0)",
+                 test, boost: 1)], filters: [], must_not: [], match: 1)], filters: [], must_not: \
+                 [], match: 0)",
             )
         );
 
@@ -382,7 +387,7 @@ mod tests {
         );
         let field = String::from("title");
         let q: Box<dyn Query<TestCodec>> =
-            QueryStringQueryBuilder::new(query_string.clone(), vec![(field, 1.0)], 1, 1.0)
+            QueryStringQueryBuilder::new(query_string.clone(), vec![(field, 1.0)], 0, 1.0)
                 .build()
                 .unwrap();
         let term_str: String = q.to_string();
@@ -392,15 +397,16 @@ mod tests {
                 "BooleanQuery(must: [BooleanQuery(must: [], should: [TermQuery(field: title, \
                  term: 市场定位, boost: 1), BooleanQuery(must: [TermQuery(field: title, term: \
                  市场, boost: 1), TermQuery(field: title, term: 定位, boost: 1)], should: [], \
-                 filters: [], match: 0)], filters: [], match: 1), TermQuery(field: title, term: \
-                 b2b, boost: 1), BooleanQuery(must: [], should: [BooleanQuery(must: [], should: \
-                 [TermQuery(field: title, term: 电子商务, boost: 1), TermQuery(field: title, \
-                 term: 电商, boost: 0.8)], filters: [], match: 1), BooleanQuery(must: \
-                 [TermQuery(field: title, term: 电子, boost: 1), TermQuery(field: title, term: \
-                 商务, boost: 1)], should: [], filters: [], match: 0)], filters: [], match: 1), \
-                 TermQuery(field: title, term: 网站, boost: 1)], should: [TermQuery(field: title, \
-                 term: 从, boost: 1), TermQuery(field: title, term: 分析, boost: 1)], filters: \
-                 [], match: 0)",
+                 filters: [], must_not: [], match: 0)], filters: [], must_not: [], match: 1), \
+                 TermQuery(field: title, term: b2b, boost: 1), BooleanQuery(must: [], should: \
+                 [BooleanQuery(must: [], should: [TermQuery(field: title, term: 电子商务, boost: \
+                 1), TermQuery(field: title, term: 电商, boost: 0.8)], filters: [], must_not: [], \
+                 match: 1), BooleanQuery(must: [TermQuery(field: title, term: 电子, boost: 1), \
+                 TermQuery(field: title, term: 商务, boost: 1)], should: [], filters: [], \
+                 must_not: [], match: 0)], filters: [], must_not: [], match: 1), TermQuery(field: \
+                 title, term: 网站, boost: 1)], should: [TermQuery(field: title, term: 从, boost: \
+                 1), TermQuery(field: title, term: 分析, boost: 1)], filters: [], must_not: [], \
+                 match: 0)",
             )
         );
     }

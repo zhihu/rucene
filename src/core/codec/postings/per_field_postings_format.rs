@@ -87,7 +87,7 @@ impl PostingsFormat for PerFieldPostingsFormat {
 }
 
 pub struct PerFieldFieldsReader {
-    fields: BTreeMap<String, FieldsProducerEnum>,
+    fields: BTreeMap<String, Arc<FieldsProducerEnum>>,
     segment: String,
 }
 
@@ -101,25 +101,24 @@ impl PerFieldFieldsReader {
             if let IndexOptions::Null = info.index_options {
                 continue;
             }
-            if let Some(format) = info
-                .attributes
-                .read()
-                .unwrap()
-                .get(PER_FIELD_POSTING_FORMAT_KEY)
-            {
-                if let Some(suffix) = info
-                    .attributes
-                    .read()
-                    .unwrap()
-                    .get(PER_FIELD_POSTING_SUFFIX_KEY)
-                {
-                    if !formats.contains_key(suffix) {
-                        formats.insert(suffix.clone(), postings_format_for_name(format)?);
+
+            let attrs = info.attributes.read().unwrap();
+            if let Some(format) = attrs.get(PER_FIELD_POSTING_FORMAT_KEY) {
+                if let Some(suffix) = attrs.get(PER_FIELD_POSTING_SUFFIX_KEY) {
+                    let segment_suffix = get_suffix(&format, suffix);
+
+                    if !formats.contains_key(&segment_suffix) {
+                        let postings_format = postings_format_for_name(format)?;
+                        let state = SegmentReadState::with_suffix(state, &segment_suffix);
+                        formats.insert(
+                            segment_suffix.clone(),
+                            Arc::new(postings_format.fields_producer(&state)?),
+                        );
                     }
-                    let postings_format = formats.get(suffix).unwrap();
-                    let suffix = get_suffix(format, suffix);
-                    let state = SegmentReadState::with_suffix(state, &suffix);
-                    fields.insert(name.clone(), postings_format.fields_producer(&state)?);
+
+                    if let Some(field_producer) = formats.get(&segment_suffix) {
+                        fields.insert(name.clone(), field_producer.clone());
+                    }
                 } else {
                     bail!(
                         "Illegal State: missing attribute: {} for field {}",

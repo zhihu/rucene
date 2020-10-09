@@ -20,9 +20,9 @@ use core::doc::Fieldable;
 use core::doc::IndexOptions;
 use core::index::merge::{MergePolicy, MergeScheduler};
 use core::store::directory::Directory;
-use core::util::DocId;
 use core::util::UnsignedShift;
 use core::util::{ByteBlockPool, ByteSliceReader, BytesRefHash, BytesStartArray, IntBlockPool};
+use core::util::{BytesRef, DocId};
 use core::util::{INT_BLOCK_MASK, INT_BLOCK_SHIFT, INT_BLOCK_SIZE};
 
 use std::cmp::{max, Ordering};
@@ -291,7 +291,7 @@ pub trait TermsHashPerField: Ord + PartialOrd + Eq + PartialEq {
     ) -> Result<()> {
         // We are first in the chain so we must "insert" the
         // term text into text_start address
-        let bytes_ref = token_stream.term_bytes_attribute().get_bytes_ref();
+        let bytes_ref = BytesRef::new(&token_stream.token().term);
 
         let term_id = unsafe { self.base_mut().bytes_hash.get_mut().add(&bytes_ref) };
         if term_id >= 0 {
@@ -481,16 +481,12 @@ where
         field_state: &FieldInvertState,
         token_stream: &dyn TokenStream,
     ) -> Result<()> {
-        if let Some(payload_attr) = token_stream.payload_attribute() {
-            let payload = payload_attr.get_payload();
-            if !payload.is_empty() {
-                self.base.write_vint(1, (prox_code << 1 | 1) as i32);
-                self.base.write_vint(1, payload.len() as i32);
-                self.base.write_bytes(1, payload);
-                self.saw_payloads = true;
-            } else {
-                self.base.write_vint(1, (prox_code << 1) as i32);
-            }
+        let payload = &token_stream.token().payload;
+        if !payload.is_empty() {
+            self.base.write_vint(1, (prox_code << 1 | 1) as i32);
+            self.base.write_vint(1, payload.len() as i32);
+            self.base.write_bytes(1, payload);
+            self.saw_payloads = true;
         } else {
             self.base.write_vint(1, (prox_code << 1) as i32);
         }
@@ -505,8 +501,8 @@ where
         offset_accum: usize,
         token_stream: &dyn TokenStream,
     ) {
-        let start_offset = (offset_accum + token_stream.offset_attribute().start_offset()) as u32;
-        let end_offset = (offset_accum + token_stream.offset_attribute().end_offset()) as u32;
+        let start_offset = (offset_accum + token_stream.token().start_offset) as u32;
+        let end_offset = (offset_accum + token_stream.token().end_offset) as u32;
         debug_assert!(start_offset >= self.base.postings_array.last_offsets[term_id]);
         let value = (start_offset - self.base.postings_array.last_offsets[term_id]) as i32;
         self.base.write_vint(1, value);

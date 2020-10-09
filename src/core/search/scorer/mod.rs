@@ -31,6 +31,10 @@ mod req_opt_scorer;
 
 pub use self::req_opt_scorer::*;
 
+mod req_not_scorer;
+
+pub use self::req_not_scorer::*;
+
 mod rescorer;
 
 pub use self::rescorer::*;
@@ -38,6 +42,14 @@ pub use self::rescorer::*;
 mod term_scorer;
 
 pub use self::term_scorer::*;
+
+mod boosting_scorer;
+
+pub use self::boosting_scorer::*;
+
+mod phrase_scorer;
+
+pub use self::phrase_scorer::*;
 
 use std::collections::HashMap;
 use std::i32;
@@ -82,7 +94,7 @@ pub trait Scorer: DocIterator {
     }
 
     fn score_feature(&mut self) -> Result<Vec<FeatureResult>> {
-        unimplemented!()
+        Ok(vec![])
     }
 }
 

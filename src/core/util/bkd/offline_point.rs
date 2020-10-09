@@ -144,7 +144,7 @@ impl OfflinePointReader {
         pos += 1;
         let i1p4 = bytes[pos] as u32 as i32;
 
-        (i1p1 << 24 | i1p2 << 16 | i1p3 << 8 | i1p4)
+        i1p1 << 24 | i1p2 << 16 | i1p3 << 8 | i1p4
     }
 }
 

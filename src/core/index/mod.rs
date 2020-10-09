@@ -157,7 +157,7 @@ pub mod tests {
         }
 
         fn fields(&self) -> Result<Self::FieldsProducer> {
-            unimplemented!()
+            bail!("unimplemented")
         }
 
         fn name(&self) -> &str {

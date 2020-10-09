@@ -186,6 +186,7 @@ pub struct FrozenBufferedUpdates<C: Codec> {
     query_and_limits: Vec<(Arc<dyn Query<C>>, DocId)>,
     doc_values_updates: HashMap<String, Vec<Arc<dyn DocValuesUpdate>>>,
     pub num_term_deletes: usize,
+    pub num_query_deletes: usize,
     pub num_updates: usize,
     pub gen: u64,
     // assigned by BufferedUpdatesStream once pushed
@@ -241,6 +242,8 @@ impl<C: Codec> FrozenBufferedUpdates<C> {
         }
         deletes.doc_values_updates.clear();
 
+        let num_query_deletes = query_and_limits.len();
+
         // TODO if a Term affects multiple fields, we could keep the updates key'd by Term
         // so that it maps to all fields it affects, sorted by their docUpto, and traverse
         // that Term only once, applying the update to all fields that still need to be
@@ -250,6 +253,7 @@ impl<C: Codec> FrozenBufferedUpdates<C> {
             query_and_limits,
             doc_values_updates: dv_updates,
             num_term_deletes: deletes.num_term_deletes.load(Ordering::Acquire),
+            num_query_deletes,
             num_updates,
             gen: u64::max_value(),
             // used as a sentinel of invalid
@@ -294,6 +298,7 @@ pub struct BufferedUpdatesStream<C: Codec> {
     // used only by assert:
     last_delete_term: Vec<u8>,
     num_terms: AtomicUsize,
+    num_queries: AtomicUsize,
     num_updates: AtomicUsize,
 }
 
@@ -305,6 +310,7 @@ impl<C: Codec> Default for BufferedUpdatesStream<C> {
             next_gen: AtomicU64::new(1),
             last_delete_term: Vec::with_capacity(0),
             num_terms: AtomicUsize::new(0),
+            num_queries: AtomicUsize::new(0),
             num_updates: AtomicUsize::new(0),
         }
     }
@@ -328,6 +334,8 @@ impl<C: Codec> BufferedUpdatesStream<C> {
         let del_gen = packet.gen;
         self.num_terms
             .fetch_add(packet.num_term_deletes, Ordering::AcqRel);
+        self.num_queries
+            .fetch_add(packet.num_query_deletes, Ordering::AcqRel);
         self.num_updates
             .fetch_add(packet.num_updates, Ordering::AcqRel);
         updates.push(packet);
@@ -339,12 +347,15 @@ impl<C: Codec> BufferedUpdatesStream<C> {
         self.updates.lock()?.clear();
         self.next_gen.store(1, Ordering::Release);
         self.num_terms.store(0, Ordering::Release);
+        self.num_queries.store(0, Ordering::Release);
         self.num_updates.store(0, Ordering::Release);
         Ok(())
     }
 
     pub fn any(&self) -> bool {
-        self.num_terms.load(Ordering::Acquire) > 0 || self.num_updates.load(Ordering::Acquire) > 0
+        self.num_terms.load(Ordering::Acquire) > 0
+            || self.num_updates.load(Ordering::Acquire) > 0
+            || self.num_queries.load(Ordering::Acquire) > 0
     }
 
     pub fn num_terms(&self) -> usize {
@@ -537,6 +548,7 @@ impl<C: Codec> BufferedUpdatesStream<C> {
         }
 
         self.num_updates.store(0, Ordering::Release);
+        self.num_queries.store(0, Ordering::Release);
 
         debug!(
             "BD - apply_deletes took {:?} for {} segments, {} newly deleted docs (query deletes), \
@@ -564,7 +576,7 @@ impl<C: Codec> BufferedUpdatesStream<C> {
     {
         let mut del_count: u64 = 0;
         let mut rld = seg_state.rld.inner.lock()?;
-        let mut searcher = DefaultIndexSearcher::new(Arc::clone(rld.reader()), None, None);
+        let mut searcher = DefaultIndexSearcher::new(Arc::clone(rld.reader()), None);
         let query_cache: Arc<dyn QueryCache<C>> = Arc::new(NoCacheQueryCache::new());
         searcher.set_query_cache(query_cache);
         let reader = searcher.reader().leaves().remove(0);
@@ -919,6 +931,7 @@ impl<C: Codec> BufferedUpdatesStream<C> {
             }
         }
         self.do_prune(&mut updates, limit);
+        self.num_queries.store(0, Ordering::Release);
         debug_assert!(!self.any());
         debug_assert!(self.check_delete_stats(&updates));
     }

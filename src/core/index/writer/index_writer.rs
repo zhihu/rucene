@@ -305,7 +305,7 @@ where
     }
 
     pub fn num_docs(&self) -> u32 {
-        let _l = self.writer.lock.lock().unwrap();
+        // let _l = self.writer.lock.lock().unwrap();
         let mut count = self.writer.doc_writer.num_docs();
         for info in &self.writer.segment_infos.segments {
             count += info.info.max_doc() as u32 - self.writer.num_deleted_docs(&info);
@@ -643,6 +643,10 @@ where
 
     pub fn tragedy(&self) -> Option<&Error> {
         self.writer.tragedy.as_ref()
+    }
+
+    pub fn explicit_merge(&self) -> Result<()> {
+        IndexWriterInner::maybe_merge(self, MergerTrigger::Explicit, None)
     }
 }
 
@@ -1102,7 +1106,7 @@ where
         )?;
 
         if any_changes {
-            let _ = Self::maybe_merge(index_writer, MergerTrigger::FullFlush, None);
+            let _ = Self::maybe_merge(index_writer, MergerTrigger::Explicit, None);
         }
 
         debug!(
@@ -1718,12 +1722,11 @@ where
         Ok(seq_no)
     }
 
-    // _l is self.commit_lock
     fn prepare_commit_internal(
         &mut self,
         do_maybe_merge: &mut bool,
         index_writer: &IndexWriter<D, C, MS, MP>,
-        _l: &MutexGuard<()>,
+        commit_lock: &MutexGuard<()>,
     ) -> Result<i64> {
         // self.start_commit_time = SystemTime::now();
         self.ensure_open(false)?;
@@ -1780,7 +1783,7 @@ where
         if any_segments_flushed {
             *do_maybe_merge = true;
         }
-        let res = self.start_commit(to_commit);
+        let res = self.start_commit(to_commit, commit_lock);
         if res.is_err() {
             let lock = Arc::clone(&self.lock);
             let _l = lock.lock().unwrap();
@@ -1860,7 +1863,11 @@ where
     /// if it wasn't already.  If that succeeds, then we
     /// prepare a new segments_N file but do not fully commit
     /// it.
-    fn start_commit(&mut self, to_sync: SegmentInfos<D, C>) -> Result<()> {
+    fn start_commit(
+        &mut self,
+        to_sync: SegmentInfos<D, C>,
+        commit_lock: &MutexGuard<()>,
+    ) -> Result<()> {
         debug_assert!(self.pending_commit.is_none());
 
         if let Some(ref tragedy) = self.tragedy {
@@ -1913,7 +1920,7 @@ where
             }
         }
         if let Err(e) = err {
-            self.tragic_event(e, "start_commit")?;
+            self.tragic_event(e, "start_commit", Some(commit_lock))?;
         }
         Ok(())
     }
@@ -2098,7 +2105,7 @@ where
         // We can be called during close, when closing==true, so we must pass false to ensureOpen:
         index_writer.writer.ensure_open(false)?;
         if Self::do_flush(index_writer, apply_all_deletes)? && trigger_merge {
-            Self::maybe_merge(index_writer, MergerTrigger::FullFlush, None)?;
+            Self::maybe_merge(index_writer, MergerTrigger::Explicit, None)?;
         }
         Ok(())
     }
@@ -2714,7 +2721,7 @@ where
     /// Merges the indicated segments, replacing them in the stack with a single segment.
     fn merge(index_writer: &IndexWriter<D, C, MS, MP>, merge: &mut OneMerge<D, C>) -> Result<()> {
         if let Err(e) = Self::do_merge(index_writer, merge) {
-            index_writer.writer.tragic_event(e, "merge")?;
+            index_writer.writer.tragic_event(e, "merge", None)?;
         }
 
         Ok(())
@@ -3169,6 +3176,13 @@ where
         // take very long because they periodically check if
         // they are aborted.
         while !self.running_merges.is_empty() {
+            // in case merge panic.
+            if let Some(thread_count) = self.merge_scheduler.merging_thread_count() {
+                if thread_count == 0 {
+                    break;
+                }
+            }
+
             let (loc, _) = self.cond.wait_timeout(lock, Duration::from_millis(1000))?;
             warn!(
                 "IW - abort merges, waiting for running_merges to be empty, current size: {}",
@@ -3596,33 +3610,28 @@ where
 
         let mut res = Ok(());
         for reader in &merge.readers {
-            let rld = self.reader_pool.get(reader.si.as_ref());
-            // We still hold a ref so it should not have been removed:
-            debug_assert!(rld.is_some());
-            let rld = rld.unwrap();
-            if drop {
-                rld.drop_changes();
-            } else {
-                rld.drop_merging_updates();
-            }
-
-            let mut res_drop = self.reader_pool.release(&rld);
-            if res_drop.is_ok() {
+            if let Some(rld) = self.reader_pool.get(reader.si.as_ref()) {
                 if drop {
-                    res_drop = self.reader_pool.drop(rld.info.as_ref());
+                    rld.drop_changes();
+                } else {
+                    rld.drop_merging_updates();
                 }
-            }
 
-            if let Err(e) = res_drop {
-                if res.is_ok() {
-                    res = Err(e);
+                let mut res_drop = self.reader_pool.release(&rld);
+                if res_drop.is_ok() {
+                    if drop {
+                        res_drop = self.reader_pool.drop(rld.info.as_ref());
+                    }
+                }
+
+                if let Err(e) = res_drop {
+                    if res.is_ok() {
+                        res = Err(e);
+                    }
                 }
             }
-            // merge.readers[i] = None;
         }
         merge.readers.clear();
-
-        // merge.merge_finished();
 
         if !suppress_errors {
             return res;
@@ -3630,7 +3639,12 @@ where
         Ok(())
     }
 
-    fn tragic_event(&self, tragedy: Error, location: &str) -> Result<()> {
+    fn tragic_event(
+        &self,
+        tragedy: Error,
+        location: &str,
+        commit_lock: Option<&MutexGuard<()>>,
+    ) -> Result<()> {
         trace!("IW - hit tragic '{:?}' inside {}", &tragedy, location);
 
         {
@@ -3647,8 +3661,12 @@ where
 
         // if we are already closed (e.g. called by rollback), this will be a no-op.
         if self.should_close(false) {
-            let commit_lock = self.commit_lock.lock()?;
-            self.rollback_internal(&commit_lock)?;
+            if let Some(lock) = commit_lock {
+                self.rollback_internal(lock)?;
+            } else {
+                let lock = self.commit_lock.lock()?;
+                self.rollback_internal(&lock)?;
+            }
         }
 
         bail!(IllegalState(format!(
@@ -4502,6 +4520,10 @@ where
     ) -> Result<HashMap<i32, HashSet<String>>> {
         let mut new_dv_files = HashMap::new();
         for (field, updates) in &self.pending_dv_updates {
+            if self.reader.is_none() || infos.field_info_by_name(field).is_none() {
+                continue;
+            }
+
             let info = self.reader.as_ref().unwrap().si.clone();
             let tracker = Arc::new(TrackingDirectoryWrapper::new(info.info.directory.as_ref()));
             let dv_gen = info.next_write_doc_values_gen();

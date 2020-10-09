@@ -73,7 +73,7 @@ macro_rules! define_typed_getter {
         pub fn set_binary(&mut self, key: $type, value: Vec<u8>) -> Option<VariantValue> {
             self.set(key, VariantValue::Binary(value))
         }
-    }
+    };
 }
 
 #[derive(Clone, Debug, PartialEq)]

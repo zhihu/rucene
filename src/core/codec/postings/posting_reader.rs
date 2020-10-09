@@ -22,11 +22,14 @@ use core::codec::{PostingIterator, PostingIteratorFlags};
 use core::search::{DocIterator, Payload, NO_MORE_DOCS};
 use core::store::directory::Directory;
 use core::store::io::{DataInput, IndexInput};
-use core::util::DocId;
 use core::util::UnsignedShift;
+use core::util::{Bits, DocId, FixedBitSet, ImmutableBitSet};
 
 use error::{ErrorKind::IllegalState, Result};
 
+use core::codec::postings::{PartialBlockDecoder, SIMDBlockDecoder};
+use core::util::packed::{EliasFanoDecoder, SIMD128Packer, SIMDPacker, NO_MORE_VALUES};
+use std::intrinsics::{likely, unlikely};
 use std::sync::Arc;
 
 /// Filename extension for document number, frequencies, and skip data.
@@ -51,8 +54,8 @@ pub const POS_CODEC: &str = "Lucene50PostingsWriterPos";
 pub const PAY_CODEC: &str = "Lucene50PostingsWriterPay";
 
 // Increment version to change it
-const VERSION_START: i32 = 0;
-pub const VERSION_CURRENT: i32 = VERSION_START;
+pub const VERSION_START: i32 = 0;
+pub const VERSION_CURRENT: i32 = VERSION_START + 1;
 
 fn clone_option_index_input(input: &Option<Box<dyn IndexInput>>) -> Result<Box<dyn IndexInput>> {
     debug_assert!(input.is_some());
@@ -69,6 +72,7 @@ pub struct Lucene50PostingsReader {
     pay_in: Option<Box<dyn IndexInput>>,
     pub version: i32,
     pub for_util: ForUtil,
+    use_simd: bool,
 }
 
 impl Lucene50PostingsReader {
@@ -95,6 +99,13 @@ impl Lucene50PostingsReader {
             &state.segment_info.id,
             &state.segment_suffix,
         )?;
+
+        let use_simd = if version > VERSION_START && SIMD128Packer::is_support() {
+            true
+        } else {
+            false
+        };
+
         let for_util = ForUtil::with_input(doc_in.as_mut())?;
         codec_util::retrieve_checksum(doc_in.as_mut())?;
         let mut pos_in = None;
@@ -142,6 +153,7 @@ impl Lucene50PostingsReader {
             pay_in,
             version,
             for_util,
+            use_simd,
         })
     }
 
@@ -195,6 +207,7 @@ impl Lucene50PostingsReader {
                     state,
                     flags,
                     self.for_util.clone(),
+                    self.use_simd,
                 )?,
             )))
         } else if (!index_has_offsets
@@ -210,6 +223,7 @@ impl Lucene50PostingsReader {
                     state,
                     flags,
                     self.for_util.clone(),
+                    self.use_simd,
                 )?,
             )))
         } else {
@@ -224,6 +238,7 @@ impl Lucene50PostingsReader {
                     state,
                     flags,
                     self.for_util.clone(),
+                    self.use_simd,
                 )?),
             ))
         }
@@ -317,6 +332,14 @@ fn read_vint_block(
     Ok(())
 }
 
+#[derive(Debug, Copy, Clone)]
+pub enum EncodeType {
+    PF,
+    EF,
+    BITSET,
+    FULL,
+}
+
 struct BlockDocIterator {
     encoded: [u8; MAX_ENCODED_SIZE],
 
@@ -367,6 +390,20 @@ struct BlockDocIterator {
     singleton_doc_id: DocId,
 
     for_util: ForUtil,
+    /// PF/EF/BITSET/FULL
+    encode_type: EncodeType,
+    ef_decoder: Option<EliasFanoDecoder>,
+    ef_base_doc: DocId,
+    ef_base_total: i32,
+    doc_bits: FixedBitSet,
+    bits_min_doc: DocId,
+    bits_index: i32,
+    partial_decode: bool,
+    #[allow(dead_code)]
+    partial_doc_deltas: PartialBlockDecoder,
+    #[allow(dead_code)]
+    partial_freqs: PartialBlockDecoder,
+    use_simd: bool,
 }
 
 impl BlockDocIterator {
@@ -376,6 +413,7 @@ impl BlockDocIterator {
         term_state: &BlockTermState,
         flags: u16,
         for_util: ForUtil,
+        use_simd: bool,
     ) -> Result<BlockDocIterator> {
         let options = &field_info.index_options;
         let mut iterator = BlockDocIterator {
@@ -403,6 +441,17 @@ impl BlockDocIterator {
             index_has_offsets: options.has_offsets(),
             index_has_payloads: field_info.has_store_payloads,
             for_util,
+            encode_type: EncodeType::PF,
+            ef_decoder: None,
+            ef_base_doc: -1,
+            ef_base_total: 0,
+            doc_bits: FixedBitSet::default(),
+            bits_min_doc: 0,
+            bits_index: 0,
+            partial_decode: false,
+            partial_doc_deltas: PartialBlockDecoder::new(),
+            partial_freqs: PartialBlockDecoder::new(),
+            use_simd,
         };
         iterator.reset(term_state, flags)?;
         Ok(iterator)
@@ -438,18 +487,46 @@ impl BlockDocIterator {
         self.next_skip_doc = BLOCK_SIZE - 1; // we won't skip if target is found in first block
         self.doc_buffer_upto = BLOCK_SIZE;
         self.skipped = false;
+
+        self.encode_type = EncodeType::PF;
+        self.ef_decoder = None;
+        self.ef_base_doc = -1;
+        self.ef_base_total = 0;
+        self.doc_bits.clear_all();
+        self.bits_index = 0;
+
         Ok(())
     }
 
     fn refill_docs(&mut self) -> Result<()> {
+        // EF & PF compatible
+        if self.accum > 0 {
+            self.ef_base_doc = self.accum;
+        }
+        self.ef_base_total = self.doc_upto;
+        self.encode_type = EncodeType::PF;
+        self.bits_index = 0;
+        self.partial_decode = false;
+
         let left = self.doc_freq - self.doc_upto;
         debug_assert!(left > 0);
         if left >= BLOCK_SIZE {
+            self.partial_decode = true;
             let doc_in = self.doc_in.as_mut().unwrap();
             self.for_util.read_block(
                 doc_in.as_mut(),
                 &mut self.encoded,
                 &mut self.doc_delta_buffer,
+                Some(&mut self.encode_type),
+                self.use_simd,
+            )?;
+
+            ForUtil::read_other_encode_block(
+                doc_in.as_mut(),
+                &mut self.ef_decoder,
+                &self.encode_type,
+                &mut self.doc_bits,
+                &mut self.bits_min_doc,
             )?;
 
             if self.index_has_freq {
@@ -458,6 +535,8 @@ impl BlockDocIterator {
                         doc_in.as_mut(),
                         &mut self.encoded,
                         &mut self.freq_buffer,
+                        None,
+                        self.use_simd,
                     )?;
                 } else {
                     self.for_util.skip_block(doc_in.as_mut())?; // skip over freqs
@@ -479,6 +558,26 @@ impl BlockDocIterator {
         }
         self.doc_buffer_upto = 0;
         Ok(())
+    }
+
+    #[allow(dead_code)]
+    #[inline(always)]
+    fn decode_current_doc_delta(&mut self) -> i32 {
+        if likely(self.partial_decode) {
+            self.partial_doc_deltas.next()
+        } else {
+            self.doc_delta_buffer[self.doc_buffer_upto as usize]
+        }
+    }
+
+    #[allow(dead_code)]
+    #[inline(always)]
+    fn decode_current_freq(&mut self) -> i32 {
+        if likely(self.partial_decode && self.needs_freq) {
+            self.partial_freqs.get(self.doc_buffer_upto as usize)
+        } else {
+            self.freq_buffer[self.doc_buffer_upto as usize]
+        }
     }
 }
 
@@ -519,18 +618,40 @@ impl DocIterator for BlockDocIterator {
             self.refill_docs()?;
         }
 
-        self.accum += self.doc_delta_buffer[self.doc_buffer_upto as usize];
+        // set doc id
+        self.doc = match self.encode_type {
+            EncodeType::PF => self.accum + self.doc_delta_buffer[self.doc_buffer_upto as usize],
+            EncodeType::EF => {
+                self.ef_decoder.as_mut().unwrap().next_value() as i32 + 1 + self.ef_base_doc
+            }
+
+            EncodeType::BITSET => {
+                self.bits_index = self.doc_bits.next_set_bit(self.bits_index as usize);
+                let doc = self.bits_min_doc + self.bits_index;
+                self.bits_index += 1;
+                doc
+            }
+
+            _ => {
+                unimplemented!();
+            }
+        };
+
+        self.accum = self.doc;
         self.doc_upto += 1;
 
-        self.doc = self.accum;
+        // set doc freq
         self.freq = self.freq_buffer[self.doc_buffer_upto as usize];
         self.doc_buffer_upto += 1;
         Ok(self.doc)
     }
 
     fn advance(&mut self, target: DocId) -> Result<DocId> {
+        if unlikely(target == NO_MORE_DOCS) {
+            self.doc = NO_MORE_DOCS;
+            return Ok(self.doc);
+        }
         // TODO: make frq block load lazy/skippable
-
         // current skip docID < docIDs generated from current buffer <= next skip docID
         // we don't need to skip if target is buffered already
         if self.doc_freq > BLOCK_SIZE && target > self.next_skip_doc {
@@ -589,30 +710,332 @@ impl DocIterator for BlockDocIterator {
             self.refill_docs()?;
         }
 
-        // Now scan... this is an inlined/pared down version
-        // of nextDoc():
-        loop {
-            self.accum += self.doc_delta_buffer[self.doc_buffer_upto as usize];
-            self.doc_upto += 1;
+        self.doc = match self.encode_type {
+            EncodeType::PF => {
+                // Now scan... this is an inlined/pared down version
+                // of nextDoc():
+                loop {
+                    self.accum += self.doc_delta_buffer[self.doc_buffer_upto as usize];
+                    self.doc_upto += 1;
 
-            if self.accum >= target {
-                break;
+                    if self.accum >= target {
+                        break;
+                    }
+                    self.doc_buffer_upto += 1;
+                    if self.doc_upto == self.doc_freq {
+                        self.doc = NO_MORE_DOCS;
+                        return Ok(self.doc);
+                    }
+                }
+                self.accum
             }
-            self.doc_buffer_upto += 1;
-            if self.doc_upto == self.doc_freq {
-                self.doc = NO_MORE_DOCS;
-                return Ok(self.doc);
+
+            EncodeType::EF => {
+                let decoder = self.ef_decoder.as_mut().unwrap();
+                let doc = decoder.advance_to_value((target - 1 - self.ef_base_doc) as i64);
+                if doc == NO_MORE_VALUES {
+                    self.doc = NO_MORE_DOCS;
+                    return Ok(self.doc);
+                }
+                self.doc_buffer_upto = decoder.current_index()? as i32;
+                self.doc_upto = self.ef_base_total + self.doc_buffer_upto + 1;
+                self.accum = doc as i32 + 1 + self.ef_base_doc;
+                self.accum
             }
-        }
+
+            EncodeType::BITSET => {
+                if target < self.bits_min_doc {
+                    self.accum = self.bits_min_doc;
+                    self.bits_index = 1;
+                    self.doc_buffer_upto = 0;
+                } else {
+                    let mut index = target - self.bits_min_doc;
+                    if index >= self.doc_bits.num_bits as i32 {
+                        self.doc = NO_MORE_DOCS;
+                        return Ok(NO_MORE_DOCS);
+                    }
+                    let find = self.doc_bits.get(index as usize)?;
+                    self.accum = if find {
+                        target
+                    } else {
+                        index = self.doc_bits.next_set_bit(index as usize);
+                        if index == NO_MORE_DOCS {
+                            self.doc = NO_MORE_DOCS;
+                            return Ok(NO_MORE_DOCS);
+                        }
+                        self.bits_min_doc + index
+                    };
+                    self.doc_buffer_upto = self.doc_bits.count_ones_before_index2(
+                        self.doc_buffer_upto,
+                        self.bits_index as usize,
+                        index as usize,
+                    ) as i32;
+                    // self.doc_buffer_upto =
+                    // self.doc_bits.count_ones_before_index(index as usize) as i32;
+                    self.bits_index = index + 1;
+                }
+                self.doc_upto = self.ef_base_total + self.doc_buffer_upto + 1;
+                self.accum
+            }
+
+            _ => {
+                unimplemented!();
+            }
+        };
 
         self.freq = self.freq_buffer[self.doc_buffer_upto as usize];
         self.doc_buffer_upto += 1;
-        self.doc = self.accum;
         Ok(self.doc)
     }
 
     fn cost(&self) -> usize {
         self.doc_freq as usize
+    }
+}
+
+struct SIMDBlockDocIterator {
+    doc_iter: BlockDocIterator,
+    simd_doc_deltas: SIMDBlockDecoder,
+    total_base: i32,
+}
+
+impl SIMDBlockDocIterator {
+    #[allow(dead_code)]
+    pub fn new(
+        start_doc_in: Box<dyn IndexInput>,
+        field_info: &FieldInfo,
+        term_state: &BlockTermState,
+        flags: u16,
+        for_util: ForUtil,
+    ) -> Result<Self> {
+        Ok(Self {
+            doc_iter: BlockDocIterator::new(
+                start_doc_in,
+                field_info,
+                term_state,
+                flags,
+                for_util,
+                false,
+            )?,
+            simd_doc_deltas: SIMDBlockDecoder::new(),
+            total_base: 0,
+        })
+    }
+
+    fn refill_docs(&mut self) -> Result<()> {
+        self.doc_iter.partial_decode = false;
+
+        let left = self.doc_iter.doc_freq - self.doc_iter.doc_upto;
+        debug_assert!(left > 0);
+        if left >= BLOCK_SIZE {
+            self.doc_iter.partial_decode = true;
+            let doc_in = self.doc_iter.doc_in.as_mut().unwrap();
+            self.doc_iter
+                .for_util
+                .read_block_by_simd(doc_in.as_mut(), &mut self.simd_doc_deltas)?;
+
+            if self.doc_iter.index_has_freq {
+                if self.doc_iter.needs_freq {
+                    self.doc_iter.for_util.read_block_only(
+                        doc_in.as_mut(),
+                        &mut self.doc_iter.encoded,
+                        &mut self.doc_iter.freq_buffer,
+                        None,
+                        &mut self.doc_iter.partial_freqs,
+                    )?;
+                } else {
+                    self.doc_iter.for_util.skip_block(doc_in.as_mut())?; // skip over freqs
+                }
+            }
+        } else if self.doc_iter.doc_freq == 1 {
+            self.doc_iter.doc_delta_buffer[0] = self.doc_iter.singleton_doc_id;
+            self.doc_iter.freq_buffer[0] = self.doc_iter.total_term_freq as i32;
+        } else {
+            let doc_in = self.doc_iter.doc_in.as_mut().unwrap();
+            // Read vInts:
+            read_vint_block(
+                doc_in.as_mut(),
+                &mut self.doc_iter.doc_delta_buffer,
+                &mut self.doc_iter.freq_buffer,
+                left,
+                self.doc_iter.index_has_freq,
+            )?;
+        }
+        self.doc_iter.doc_buffer_upto = 0;
+        Ok(())
+    }
+}
+
+impl DocIterator for SIMDBlockDocIterator {
+    fn doc_id(&self) -> DocId {
+        self.doc_iter.doc_id()
+    }
+
+    fn next(&mut self) -> Result<DocId> {
+        if unlikely(self.doc_iter.doc_upto == self.doc_iter.doc_freq) {
+            self.doc_iter.doc = NO_MORE_DOCS;
+            return Ok(self.doc_iter.doc);
+        }
+        if unlikely(self.doc_iter.doc_buffer_upto == BLOCK_SIZE) {
+            if unlikely(self.doc_iter.doc < 0) {
+                self.doc_iter.accum = 0;
+                self.total_base = 0;
+                self.simd_doc_deltas.reset_delta_base(0);
+            } else {
+                self.doc_iter.accum = self.doc_iter.doc;
+                self.total_base = self.doc_iter.doc_upto;
+                self.simd_doc_deltas.reset_delta_base(self.doc_iter.accum);
+            }
+            self.refill_docs()?;
+        }
+        self.doc_iter.doc = if likely(self.doc_iter.partial_decode) {
+            self.doc_iter.accum = self.simd_doc_deltas.next();
+            self.doc_iter.accum
+        } else {
+            self.doc_iter.accum = self.doc_iter.accum
+                + self.doc_iter.doc_delta_buffer[self.doc_iter.doc_buffer_upto as usize];
+            self.doc_iter.accum
+        };
+
+        self.doc_iter.freq = self.doc_iter.decode_current_freq();
+        self.doc_iter.doc_buffer_upto += 1;
+        self.doc_iter.doc_upto += 1;
+        Ok(self.doc_iter.doc)
+    }
+
+    fn advance(&mut self, target: i32) -> Result<DocId> {
+        if unlikely(target == NO_MORE_DOCS) {
+            self.doc_iter.doc = NO_MORE_DOCS;
+            return Ok(self.doc_iter.doc);
+        }
+        // TODO: make frq block load lazy/skippable
+        // current skip docID < docIDs generated from current buffer <= next skip docID
+        // we don't need to skip if target is buffered already
+        if self.doc_iter.doc_freq > BLOCK_SIZE && target > self.doc_iter.next_skip_doc {
+            if self.doc_iter.skipper.is_none() {
+                // Lazy init: first time this enum has ever been used for skipping
+                self.doc_iter.skipper = Some(Lucene50SkipReader::new(
+                    clone_option_index_input(&self.doc_iter.doc_in)?,
+                    MAX_SKIP_LEVELS,
+                    self.doc_iter.index_has_pos,
+                    self.doc_iter.index_has_offsets,
+                    self.doc_iter.index_has_payloads,
+                ));
+            }
+
+            let skipper = self.doc_iter.skipper.as_mut().unwrap();
+
+            if !self.doc_iter.skipped {
+                debug_assert_ne!(self.doc_iter.skip_offset, -1);
+                // This is the first time this enum has skipped
+                // since reset() was called; load the skip data:
+                skipper.init(
+                    self.doc_iter.doc_term_start_fp + self.doc_iter.skip_offset,
+                    self.doc_iter.doc_term_start_fp,
+                    0,
+                    0,
+                    self.doc_iter.doc_freq,
+                )?;
+                self.doc_iter.skipped = true;
+            }
+
+            // always plus one to fix the result, since skip position in Lucene50SkipReader
+            // is a little different from MultiLevelSkipListReader
+            let new_doc_upto = skipper.skip_to(target)? + 1;
+
+            if new_doc_upto >= self.doc_iter.doc_upto {
+                // Skipper moved
+                debug_assert_eq!(new_doc_upto % BLOCK_SIZE, 0);
+                self.doc_iter.doc_upto = new_doc_upto;
+
+                // Force to read next block
+                self.doc_iter.doc_buffer_upto = BLOCK_SIZE;
+                self.doc_iter.accum = skipper.doc(); // actually, this is just lastSkipEntry
+                self.doc_iter
+                    .doc_in
+                    .as_mut()
+                    .unwrap()
+                    .seek(skipper.doc_pointer())?; // now point to the
+                                                   // block we want to
+                                                   // search
+            }
+            // next time we call advance, this is used to
+            // foresee whether skipper is necessary.
+            self.doc_iter.next_skip_doc = skipper.next_skip_doc();
+        }
+        if self.doc_iter.doc_upto == self.doc_iter.doc_freq {
+            self.doc_iter.doc = NO_MORE_DOCS;
+            return Ok(self.doc_iter.doc);
+        }
+
+        if unlikely(self.doc_iter.doc_buffer_upto == BLOCK_SIZE) {
+            if unlikely(self.doc_iter.accum <= 0) {
+                // self.doc_iter.accum = 0;
+                self.total_base = 0;
+                self.simd_doc_deltas.reset_delta_base(0);
+            } else {
+                // self.doc_iter.accum = self.doc_iter.skipper.as_ref().unwrap().doc();
+                self.total_base = self.doc_iter.doc_upto;
+                self.simd_doc_deltas.reset_delta_base(self.doc_iter.accum);
+            }
+            self.refill_docs()?;
+        }
+
+        if likely(self.doc_iter.partial_decode) {
+            // let (doc, pos) = self.simd_doc_deltas.advance_by_binary_search(target);
+            let (doc, pos) = self.simd_doc_deltas.advance(target);
+            self.doc_iter.doc = doc;
+            if unlikely(doc == NO_MORE_DOCS) {
+                return Ok(NO_MORE_DOCS);
+            }
+            self.doc_iter.doc_buffer_upto = pos as i32;
+            self.doc_iter.doc_upto = self.total_base + pos as i32 + 1;
+        } else {
+            loop {
+                self.doc_iter.accum +=
+                    self.doc_iter.doc_delta_buffer[self.doc_iter.doc_buffer_upto as usize];
+                self.doc_iter.doc_upto += 1;
+
+                if self.doc_iter.accum >= target {
+                    break;
+                }
+                self.doc_iter.doc_buffer_upto += 1;
+                if self.doc_iter.doc_upto == self.doc_iter.doc_freq {
+                    self.doc_iter.doc = NO_MORE_DOCS;
+                    return Ok(self.doc_iter.doc);
+                }
+            }
+            self.doc_iter.doc = self.doc_iter.accum;
+        }
+        self.doc_iter.freq = self.doc_iter.decode_current_freq();
+        self.doc_iter.doc_buffer_upto += 1;
+        Ok(self.doc_iter.doc)
+    }
+
+    fn cost(&self) -> usize {
+        self.doc_iter.cost()
+    }
+}
+
+impl PostingIterator for SIMDBlockDocIterator {
+    fn freq(&self) -> Result<i32> {
+        self.doc_iter.freq()
+    }
+
+    fn next_position(&mut self) -> Result<i32> {
+        self.doc_iter.next_position()
+    }
+
+    fn start_offset(&self) -> Result<i32> {
+        self.doc_iter.start_offset()
+    }
+
+    fn end_offset(&self) -> Result<i32> {
+        self.doc_iter.end_offset()
+    }
+
+    fn payload(&self) -> Result<Payload> {
+        self.doc_iter.payload()
     }
 }
 
@@ -687,6 +1110,15 @@ struct BlockPostingIterator {
     singleton_doc_id: i32,
 
     for_util: ForUtil,
+    /// PF/EF/BITSET/FULL
+    encode_type: EncodeType,
+    ef_decoder: Option<EliasFanoDecoder>,
+    ef_base_doc: DocId,
+    ef_base_total: i32,
+    doc_bits: FixedBitSet,
+    bits_min_doc: DocId,
+    bits_index: i32,
+    use_simd: bool,
 }
 
 impl BlockPostingIterator {
@@ -697,6 +1129,7 @@ impl BlockPostingIterator {
         term_state: &BlockTermState,
         _flags: u16,
         for_util: ForUtil,
+        use_simd: bool,
     ) -> Result<BlockPostingIterator> {
         let options = &field_info.index_options;
         let mut iterator = BlockPostingIterator {
@@ -731,6 +1164,14 @@ impl BlockPostingIterator {
             index_has_offsets: options.has_offsets(),
             index_has_payloads: field_info.has_store_payloads,
             for_util,
+            encode_type: EncodeType::PF,
+            ef_decoder: None,
+            ef_base_doc: -1,
+            ef_base_total: 0,
+            doc_bits: FixedBitSet::default(),
+            bits_min_doc: 0,
+            bits_index: 0,
+            use_simd,
         };
         iterator.reset(term_state)?;
         Ok(iterator)
@@ -776,10 +1217,27 @@ impl BlockPostingIterator {
         };
         self.doc_buffer_upto = BLOCK_SIZE;
         self.skipped = false;
+
+        self.encode_type = EncodeType::PF;
+        self.ef_decoder = None;
+        self.ef_base_doc = -1;
+        self.ef_base_total = 0;
+        // self.doc_bits.clear_batch(0, self.doc_bits.len());
+        self.doc_bits.clear_all();
+        self.bits_index = 0;
+
         Ok(())
     }
 
     fn refill_docs(&mut self) -> Result<()> {
+        // EF & PF compatible
+        if self.accum > 0 {
+            self.ef_base_doc = self.accum;
+        }
+        self.ef_base_total = self.doc_upto;
+        self.encode_type = EncodeType::PF;
+        self.bits_index = 0;
+
         let left = self.doc_freq - self.doc_upto;
         if left >= BLOCK_SIZE {
             let doc_in = self.doc_in.as_mut().unwrap();
@@ -787,9 +1245,25 @@ impl BlockPostingIterator {
                 doc_in.as_mut(),
                 &mut self.encoded,
                 &mut self.doc_delta_buffer,
+                Some(&mut self.encode_type),
+                self.use_simd,
             )?;
-            self.for_util
-                .read_block(doc_in.as_mut(), &mut self.encoded, &mut self.freq_buffer)?;
+
+            ForUtil::read_other_encode_block(
+                doc_in.as_mut(),
+                &mut self.ef_decoder,
+                &self.encode_type,
+                &mut self.doc_bits,
+                &mut self.bits_min_doc,
+            )?;
+
+            self.for_util.read_block(
+                doc_in.as_mut(),
+                &mut self.encoded,
+                &mut self.freq_buffer,
+                None,
+                self.use_simd,
+            )?;
         } else if self.doc_freq == 1 {
             self.doc_delta_buffer[0] = self.singleton_doc_id;
             self.freq_buffer[0] = self.total_term_freq as i32;
@@ -837,6 +1311,8 @@ impl BlockPostingIterator {
                 pos_in.as_mut(),
                 &mut self.encoded,
                 &mut self.pos_delta_buffer,
+                None,
+                self.use_simd,
             )?;
         }
 
@@ -929,19 +1405,42 @@ impl DocIterator for BlockPostingIterator {
         if self.doc_buffer_upto == BLOCK_SIZE {
             self.refill_docs()?;
         }
+        // set doc id
+        self.doc = match self.encode_type {
+            EncodeType::PF => self.accum + self.doc_delta_buffer[self.doc_buffer_upto as usize],
 
-        self.accum += self.doc_delta_buffer[self.doc_buffer_upto as usize];
+            EncodeType::EF => {
+                self.ef_decoder.as_mut().unwrap().next_value() as i32 + 1 + self.ef_base_doc
+            }
+
+            EncodeType::BITSET => {
+                self.bits_index = self.doc_bits.next_set_bit(self.bits_index as usize);
+                let doc = self.bits_min_doc + self.bits_index;
+                self.bits_index += 1;
+                doc
+            }
+
+            _ => {
+                unimplemented!();
+            }
+        };
+
+        self.accum = self.doc;
+
         self.freq = self.freq_buffer[self.doc_buffer_upto as usize];
         self.pos_pending_count += self.freq;
         self.doc_buffer_upto += 1;
         self.doc_upto += 1;
 
-        self.doc = self.accum;
         self.position = 0;
         Ok(self.doc)
     }
 
     fn advance(&mut self, target: DocId) -> Result<i32> {
+        if unlikely(target == NO_MORE_DOCS) {
+            self.doc = NO_MORE_DOCS;
+            return Ok(self.doc);
+        }
         // TODO: make frq block load lazy/skippable
 
         if target > self.next_skip_doc {
@@ -999,26 +1498,91 @@ impl DocIterator for BlockPostingIterator {
             self.refill_docs()?;
         }
 
-        // Now scan... this is an inlined/pared down version
-        // of nextDoc():
-        loop {
-            self.accum += self.doc_delta_buffer[self.doc_buffer_upto as usize];
-            self.freq = self.freq_buffer[self.doc_buffer_upto as usize];
-            self.pos_pending_count += self.freq;
-            self.doc_buffer_upto += 1;
-            self.doc_upto += 1;
+        self.doc = match self.encode_type {
+            EncodeType::PF => {
+                // Now scan... this is an inlined/pared down version
+                // of nextDoc():
+                loop {
+                    self.accum += self.doc_delta_buffer[self.doc_buffer_upto as usize];
+                    self.freq = self.freq_buffer[self.doc_buffer_upto as usize];
+                    self.pos_pending_count += self.freq;
+                    self.doc_buffer_upto += 1;
+                    self.doc_upto += 1;
 
-            if self.accum >= target {
-                break;
+                    if self.accum >= target {
+                        break;
+                    }
+                    if self.doc_upto == self.doc_freq {
+                        self.doc = NO_MORE_DOCS;
+                        return Ok(self.doc);
+                    }
+                }
+                self.accum
             }
-            if self.doc_upto == self.doc_freq {
-                self.doc = NO_MORE_DOCS;
-                return Ok(self.doc);
+
+            EncodeType::EF => {
+                let decoder = self.ef_decoder.as_mut().unwrap();
+                let doc = decoder.advance_to_value((target - 1 - self.ef_base_doc) as i64);
+                if doc == NO_MORE_VALUES {
+                    self.doc = NO_MORE_DOCS;
+                    return Ok(self.doc);
+                }
+
+                let current_index = decoder.current_index()? as i32;
+                for i in self.doc_buffer_upto..=current_index {
+                    self.pos_pending_count += self.freq_buffer[i as usize];
+                }
+                self.freq = self.freq_buffer[current_index as usize];
+                self.doc_buffer_upto = current_index + 1;
+                self.doc_upto = self.ef_base_total + self.doc_buffer_upto;
+                self.accum = doc as i32 + 1 + self.ef_base_doc;
+                self.accum
             }
-        }
+
+            EncodeType::BITSET => {
+                if target < self.bits_min_doc {
+                    self.accum = self.bits_min_doc;
+                    self.bits_index = 1;
+                    self.doc_buffer_upto = 0;
+                } else {
+                    let mut index = target - self.bits_min_doc;
+                    if index >= self.doc_bits.num_bits as i32 {
+                        self.doc = NO_MORE_DOCS;
+                        return Ok(NO_MORE_DOCS);
+                    }
+                    let find = self.doc_bits.get(index as usize)?;
+                    // self.bits_index = index + 1;
+                    self.accum = if find {
+                        target
+                    } else {
+                        index = self.doc_bits.next_set_bit(index as usize);
+                        if index == NO_MORE_DOCS {
+                            self.doc = NO_MORE_DOCS;
+                            return Ok(NO_MORE_DOCS);
+                        }
+                        self.bits_min_doc + index
+                    };
+                    self.doc_buffer_upto = self.doc_bits.count_ones_before_index2(
+                        self.doc_buffer_upto,
+                        self.bits_index as usize,
+                        index as usize,
+                    ) as i32;
+                    // self.doc_buffer_upto =
+                    // self.doc_bits.count_ones_before_index(index as usize) as i32;
+                    self.bits_index = index + 1;
+                }
+                self.freq = self.freq_buffer[self.doc_buffer_upto as usize];
+                self.doc_buffer_upto += 1;
+                self.doc_upto = self.ef_base_total + self.doc_buffer_upto;
+                self.accum
+            }
+
+            _ => {
+                unimplemented!();
+            }
+        };
 
         self.position = 0;
-        self.doc = self.accum;
         Ok(self.doc)
     }
 
@@ -1118,6 +1682,15 @@ struct EverythingIterator {
     singleton_doc_id: i32,
     // docid when there is a single pulsed posting, otherwise -1
     for_util: ForUtil,
+    /// PF/EF/BITSET/FULL
+    encode_type: EncodeType,
+    ef_decoder: Option<EliasFanoDecoder>,
+    ef_base_doc: DocId,
+    ef_base_total: i32,
+    doc_bits: FixedBitSet,
+    bits_min_doc: DocId,
+    bits_index: i32,
+    use_simd: bool,
 }
 
 impl<'a> EverythingIterator {
@@ -1130,6 +1703,7 @@ impl<'a> EverythingIterator {
         term_state: &BlockTermState,
         flags: u16,
         for_util: ForUtil,
+        use_simd: bool,
     ) -> Result<EverythingIterator> {
         let encoded = [0u8; MAX_ENCODED_SIZE];
         let index_has_offsets = field_info.index_options.has_offsets();
@@ -1193,6 +1767,14 @@ impl<'a> EverythingIterator {
             skipped: false,
             total_term_freq: 0,
             for_util,
+            encode_type: EncodeType::PF,
+            ef_decoder: None,
+            ef_base_doc: -1,
+            ef_base_total: 0,
+            doc_bits: FixedBitSet::default(),
+            bits_min_doc: 0,
+            bits_index: 0,
+            use_simd,
         };
 
         iterator.reset(term_state, flags)?;
@@ -1244,10 +1826,27 @@ impl<'a> EverythingIterator {
         };
         self.doc_buffer_upto = BLOCK_SIZE;
         self.skipped = false;
+
+        self.encode_type = EncodeType::PF;
+        self.ef_decoder = None;
+        self.ef_base_doc = -1;
+        self.ef_base_total = 0;
+        // self.doc_bits.clear_batch(0, self.doc_bits.len());
+        self.doc_bits.clear_all();
+        self.bits_index = 0;
+
         Ok(())
     }
 
     pub fn refill_docs(&mut self) -> Result<()> {
+        // EF & PF compatible
+        if self.accum > 0 {
+            self.ef_base_doc = self.accum;
+        }
+        self.ef_base_total = self.doc_upto;
+        self.encode_type = EncodeType::PF;
+        self.bits_index = 0;
+
         let left = self.doc_freq - self.doc_upto;
         if left >= BLOCK_SIZE {
             let doc_in = self.doc_in.as_mut().unwrap();
@@ -1255,9 +1854,25 @@ impl<'a> EverythingIterator {
                 doc_in.as_mut(),
                 &mut self.encoded,
                 &mut self.doc_delta_buffer,
+                Some(&mut self.encode_type),
+                self.use_simd,
             )?;
-            self.for_util
-                .read_block(doc_in.as_mut(), &mut self.encoded, &mut self.freq_buffer)?;
+
+            ForUtil::read_other_encode_block(
+                doc_in.as_mut(),
+                &mut self.ef_decoder,
+                &self.encode_type,
+                &mut self.doc_bits,
+                &mut self.bits_min_doc,
+            )?;
+
+            self.for_util.read_block(
+                doc_in.as_mut(),
+                &mut self.encoded,
+                &mut self.freq_buffer,
+                None,
+                self.use_simd,
+            )?;
         } else if self.doc_freq == 1 {
             self.doc_delta_buffer[0] = self.singleton_doc_id;
             self.freq_buffer[0] = self.total_term_freq as i32;
@@ -1281,7 +1896,7 @@ impl<'a> EverythingIterator {
             let count = (self.total_term_freq % i64::from(BLOCK_SIZE)) as usize;
             let mut payload_length = 0i32;
             let mut offset_length = 0i32;
-            let payload_byte_upto = 0i32;
+            self.payload_byte_upto = 0;
             for i in 0..count {
                 let code = pos_in.read_vint()?;
                 if self.index_has_payloads {
@@ -1294,7 +1909,7 @@ impl<'a> EverythingIterator {
                         if self.payload_byte_upto + payload_length > self.payload_bytes.len() as i32
                         {
                             self.payload_bytes
-                                .resize((payload_byte_upto + payload_length) as usize, 0);
+                                .resize((self.payload_byte_upto + payload_length) as usize, 0);
                         }
                         pos_in.read_exact(
                             &mut self.payload_bytes[self.payload_byte_upto as usize
@@ -1321,6 +1936,8 @@ impl<'a> EverythingIterator {
                 pos_in.as_mut(),
                 self.encoded.as_mut(),
                 self.pos_delta_buffer.as_mut(),
+                None,
+                self.use_simd,
             )?;
 
             let pay_in = &mut self.pay_in;
@@ -1330,6 +1947,8 @@ impl<'a> EverythingIterator {
                         pay_in.as_mut(),
                         &mut self.encoded,
                         self.payload_length_buffer.as_mut(),
+                        None,
+                        self.use_simd,
                     )?;
                     let num_bytes = pay_in.read_vint()? as usize;
                     if num_bytes > self.payload_bytes.len() {
@@ -1353,11 +1972,15 @@ impl<'a> EverythingIterator {
                         pay_in.as_mut(),
                         &mut self.encoded,
                         self.offset_start_delta_buffer.as_mut(),
+                        None,
+                        self.use_simd,
                     )?;
                     self.for_util.read_block(
                         pay_in.as_mut(),
                         &mut self.encoded,
                         self.offset_length_buffer.as_mut(),
+                        None,
+                        self.use_simd,
                     )?;
                 } else {
                     // this works, because when writing a vint block we always force the first
@@ -1504,11 +2127,11 @@ impl PostingIterator for EverythingIterator {
     }
 
     fn payload(&self) -> Result<Payload> {
-        if self.payload_length == 0 {
+        if self.payload_length == 0 || self.payload_byte_upto < self.payload_length {
             Ok(vec![])
         } else {
-            let start = self.payload_byte_upto as usize;
-            let end = start + self.payload_length as usize;
+            let end = self.payload_byte_upto as usize;
+            let start = end - self.payload_length as usize;
             Ok(self.payload_bytes[start..end].to_vec())
         }
     }
@@ -1527,20 +2150,43 @@ impl DocIterator for EverythingIterator {
         if self.doc_buffer_upto == BLOCK_SIZE {
             self.refill_docs()?;
         }
+        // set doc id
+        self.doc = match self.encode_type {
+            EncodeType::PF => self.accum + self.doc_delta_buffer[self.doc_buffer_upto as usize],
 
-        self.accum += self.doc_delta_buffer[self.doc_buffer_upto as usize];
+            EncodeType::EF => {
+                self.ef_decoder.as_mut().unwrap().next_value() as i32 + 1 + self.ef_base_doc
+            }
+
+            EncodeType::BITSET => {
+                self.bits_index = self.doc_bits.next_set_bit(self.bits_index as usize);
+                let doc = self.bits_min_doc + self.bits_index;
+                self.bits_index += 1;
+                doc
+            }
+
+            _ => {
+                unimplemented!();
+            }
+        };
+
+        self.accum = self.doc;
+
         self.freq = self.freq_buffer[self.doc_buffer_upto as usize];
         self.pos_pending_count += self.freq;
         self.doc_buffer_upto += 1;
         self.doc_upto += 1;
 
-        self.doc = self.accum;
         self.position = 0;
         self.last_start_offset = 0;
         Ok(self.doc)
     }
 
     fn advance(&mut self, target: DocId) -> Result<DocId> {
+        if unlikely(target == NO_MORE_DOCS) {
+            self.doc = NO_MORE_DOCS;
+            return Ok(self.doc);
+        }
         // TODO: make frq block load lazy/skippable
 
         if target > self.next_skip_doc {
@@ -1596,26 +2242,92 @@ impl DocIterator for EverythingIterator {
             self.refill_docs()?;
         }
 
-        // Now scan:
-        loop {
-            self.accum += self.doc_delta_buffer[self.doc_buffer_upto as usize];
-            self.freq = self.freq_buffer[self.doc_buffer_upto as usize];
-            self.pos_pending_count += self.freq;
-            self.doc_buffer_upto += 1;
-            self.doc_upto += 1;
+        self.doc = match self.encode_type {
+            EncodeType::PF => {
+                // Now scan... this is an inlined/pared down version
+                // of nextDoc():
+                loop {
+                    self.accum += self.doc_delta_buffer[self.doc_buffer_upto as usize];
+                    self.freq = self.freq_buffer[self.doc_buffer_upto as usize];
+                    self.pos_pending_count += self.freq;
+                    self.doc_buffer_upto += 1;
+                    self.doc_upto += 1;
 
-            if self.accum >= target {
-                break;
+                    if self.accum >= target {
+                        break;
+                    }
+                    if self.doc_upto == self.doc_freq {
+                        self.doc = NO_MORE_DOCS;
+                        return Ok(self.doc);
+                    }
+                }
+                self.accum
             }
-            if self.doc_upto == self.doc_freq {
-                self.doc = NO_MORE_DOCS;
-                return Ok(self.doc);
+
+            EncodeType::EF => {
+                let decoder = self.ef_decoder.as_mut().unwrap();
+                let doc = decoder.advance_to_value((target - 1 - self.ef_base_doc) as i64);
+                if doc == NO_MORE_VALUES {
+                    self.doc = NO_MORE_DOCS;
+                    return Ok(self.doc);
+                }
+
+                let current_index = decoder.current_index()? as i32;
+                for i in self.doc_buffer_upto..=current_index {
+                    self.pos_pending_count += self.freq_buffer[i as usize];
+                }
+                self.freq = self.freq_buffer[current_index as usize];
+                self.doc_buffer_upto = current_index + 1;
+                self.doc_upto = self.ef_base_total + self.doc_buffer_upto;
+                self.accum = doc as i32 + 1 + self.ef_base_doc;
+                self.accum
             }
-        }
+
+            EncodeType::BITSET => {
+                if target < self.bits_min_doc {
+                    self.accum = self.bits_min_doc;
+                    self.bits_index = 1;
+                    self.doc_buffer_upto = 0;
+                } else {
+                    let mut index = target - self.bits_min_doc;
+                    if index >= self.doc_bits.num_bits as i32 {
+                        self.doc = NO_MORE_DOCS;
+                        return Ok(NO_MORE_DOCS);
+                    }
+                    let find = self.doc_bits.get(index as usize)?;
+                    // self.bits_index = index + 1;
+                    self.accum = if find {
+                        target
+                    } else {
+                        index = self.doc_bits.next_set_bit(index as usize);
+                        if index == NO_MORE_DOCS {
+                            self.doc = NO_MORE_DOCS;
+                            return Ok(NO_MORE_DOCS);
+                        }
+                        self.bits_min_doc + index
+                    };
+                    self.doc_buffer_upto = self.doc_bits.count_ones_before_index2(
+                        self.doc_buffer_upto,
+                        self.bits_index as usize,
+                        index as usize,
+                    ) as i32;
+                    // self.doc_buffer_upto =
+                    // self.doc_bits.count_ones_before_index(index as usize) as i32;
+                    self.bits_index = index + 1;
+                }
+                self.freq = self.freq_buffer[self.doc_buffer_upto as usize];
+                self.doc_buffer_upto += 1;
+                self.doc_upto = self.ef_base_total + self.doc_buffer_upto;
+                self.accum
+            }
+
+            _ => {
+                unimplemented!();
+            }
+        };
 
         self.position = 0;
         self.last_start_offset = 0;
-        self.doc = self.accum;
         Ok(self.doc)
     }
 
@@ -1629,6 +2341,8 @@ pub struct Lucene50PostingIterator(Lucene50PostingIterEnum);
 
 enum Lucene50PostingIterEnum {
     Doc(BlockDocIterator),
+    #[allow(dead_code)]
+    SDoc(SIMDBlockDocIterator),
     Posting(BlockPostingIterator),
     Everything(EverythingIterator),
 }
@@ -1637,6 +2351,7 @@ impl PostingIterator for Lucene50PostingIterator {
     fn freq(&self) -> Result<i32> {
         match &self.0 {
             Lucene50PostingIterEnum::Doc(i) => i.freq(),
+            Lucene50PostingIterEnum::SDoc(i) => i.freq(),
             Lucene50PostingIterEnum::Posting(i) => i.freq(),
             Lucene50PostingIterEnum::Everything(i) => i.freq(),
         }
@@ -1645,6 +2360,7 @@ impl PostingIterator for Lucene50PostingIterator {
     fn next_position(&mut self) -> Result<i32> {
         match &mut self.0 {
             Lucene50PostingIterEnum::Doc(i) => i.next_position(),
+            Lucene50PostingIterEnum::SDoc(i) => i.next_position(),
             Lucene50PostingIterEnum::Posting(i) => i.next_position(),
             Lucene50PostingIterEnum::Everything(i) => i.next_position(),
         }
@@ -1653,6 +2369,7 @@ impl PostingIterator for Lucene50PostingIterator {
     fn start_offset(&self) -> Result<i32> {
         match &self.0 {
             Lucene50PostingIterEnum::Doc(i) => i.start_offset(),
+            Lucene50PostingIterEnum::SDoc(i) => i.start_offset(),
             Lucene50PostingIterEnum::Posting(i) => i.start_offset(),
             Lucene50PostingIterEnum::Everything(i) => i.start_offset(),
         }
@@ -1661,6 +2378,7 @@ impl PostingIterator for Lucene50PostingIterator {
     fn end_offset(&self) -> Result<i32> {
         match &self.0 {
             Lucene50PostingIterEnum::Doc(i) => i.end_offset(),
+            Lucene50PostingIterEnum::SDoc(i) => i.end_offset(),
             Lucene50PostingIterEnum::Posting(i) => i.end_offset(),
             Lucene50PostingIterEnum::Everything(i) => i.end_offset(),
         }
@@ -1669,6 +2387,7 @@ impl PostingIterator for Lucene50PostingIterator {
     fn payload(&self) -> Result<Payload> {
         match &self.0 {
             Lucene50PostingIterEnum::Doc(i) => i.payload(),
+            Lucene50PostingIterEnum::SDoc(i) => i.payload(),
             Lucene50PostingIterEnum::Posting(i) => i.payload(),
             Lucene50PostingIterEnum::Everything(i) => i.payload(),
         }
@@ -1679,6 +2398,7 @@ impl DocIterator for Lucene50PostingIterator {
     fn doc_id(&self) -> DocId {
         match &self.0 {
             Lucene50PostingIterEnum::Doc(i) => i.doc_id(),
+            Lucene50PostingIterEnum::SDoc(i) => i.doc_id(),
             Lucene50PostingIterEnum::Posting(i) => i.doc_id(),
             Lucene50PostingIterEnum::Everything(i) => i.doc_id(),
         }
@@ -1687,6 +2407,7 @@ impl DocIterator for Lucene50PostingIterator {
     fn next(&mut self) -> Result<DocId> {
         match &mut self.0 {
             Lucene50PostingIterEnum::Doc(i) => i.next(),
+            Lucene50PostingIterEnum::SDoc(i) => i.next(),
             Lucene50PostingIterEnum::Posting(i) => i.next(),
             Lucene50PostingIterEnum::Everything(i) => i.next(),
         }
@@ -1695,6 +2416,7 @@ impl DocIterator for Lucene50PostingIterator {
     fn advance(&mut self, target: i32) -> Result<DocId> {
         match &mut self.0 {
             Lucene50PostingIterEnum::Doc(i) => i.advance(target),
+            Lucene50PostingIterEnum::SDoc(i) => i.advance(target),
             Lucene50PostingIterEnum::Posting(i) => i.advance(target),
             Lucene50PostingIterEnum::Everything(i) => i.advance(target),
         }
@@ -1703,6 +2425,7 @@ impl DocIterator for Lucene50PostingIterator {
     fn slow_advance(&mut self, target: i32) -> Result<DocId> {
         match &mut self.0 {
             Lucene50PostingIterEnum::Doc(i) => i.slow_advance(target),
+            Lucene50PostingIterEnum::SDoc(i) => i.slow_advance(target),
             Lucene50PostingIterEnum::Posting(i) => i.slow_advance(target),
             Lucene50PostingIterEnum::Everything(i) => i.slow_advance(target),
         }
@@ -1711,6 +2434,7 @@ impl DocIterator for Lucene50PostingIterator {
     fn cost(&self) -> usize {
         match &self.0 {
             Lucene50PostingIterEnum::Doc(i) => i.cost(),
+            Lucene50PostingIterEnum::SDoc(i) => i.cost(),
             Lucene50PostingIterEnum::Posting(i) => i.cost(),
             Lucene50PostingIterEnum::Everything(i) => i.cost(),
         }
@@ -1719,6 +2443,7 @@ impl DocIterator for Lucene50PostingIterator {
     fn matches(&mut self) -> Result<bool> {
         match &mut self.0 {
             Lucene50PostingIterEnum::Doc(i) => i.matches(),
+            Lucene50PostingIterEnum::SDoc(i) => i.matches(),
             Lucene50PostingIterEnum::Posting(i) => i.matches(),
             Lucene50PostingIterEnum::Everything(i) => i.matches(),
         }
@@ -1727,6 +2452,7 @@ impl DocIterator for Lucene50PostingIterator {
     fn match_cost(&self) -> f32 {
         match &self.0 {
             Lucene50PostingIterEnum::Doc(i) => i.match_cost(),
+            Lucene50PostingIterEnum::SDoc(i) => i.match_cost(),
             Lucene50PostingIterEnum::Posting(i) => i.match_cost(),
             Lucene50PostingIterEnum::Everything(i) => i.match_cost(),
         }
@@ -1735,6 +2461,7 @@ impl DocIterator for Lucene50PostingIterator {
     fn approximate_next(&mut self) -> Result<DocId> {
         match &mut self.0 {
             Lucene50PostingIterEnum::Doc(i) => i.approximate_next(),
+            Lucene50PostingIterEnum::SDoc(i) => i.approximate_next(),
             Lucene50PostingIterEnum::Posting(i) => i.approximate_next(),
             Lucene50PostingIterEnum::Everything(i) => i.approximate_next(),
         }
@@ -1743,6 +2470,7 @@ impl DocIterator for Lucene50PostingIterator {
     fn approximate_advance(&mut self, target: i32) -> Result<DocId> {
         match &mut self.0 {
             Lucene50PostingIterEnum::Doc(i) => i.approximate_advance(target),
+            Lucene50PostingIterEnum::SDoc(i) => i.approximate_advance(target),
             Lucene50PostingIterEnum::Posting(i) => i.approximate_advance(target),
             Lucene50PostingIterEnum::Everything(i) => i.approximate_advance(target),
         }

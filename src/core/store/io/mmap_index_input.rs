@@ -242,6 +242,14 @@ impl IndexInput for MmapIndexInput {
         Ok(Box::new(boxed))
     }
 
+    #[inline(always)]
+    unsafe fn get_and_advance(&mut self, length: usize) -> *const u8 {
+        debug_assert!(self.position + length <= self.slice.len());
+        let ptr = self.slice.as_ptr().add(self.position);
+        self.position += length;
+        ptr
+    }
+
     fn slice(&self, description: &str, offset: i64, length: i64) -> Result<Box<dyn IndexInput>> {
         let boxed = self.slice_impl(description, offset, length)?;
         Ok(Box::new(boxed))

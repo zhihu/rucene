@@ -65,13 +65,7 @@ impl TopDocsBaseCollector {
     }
 
     fn add_doc(&mut self, doc_id: DocId, score: f32) {
-        debug_assert!(self.pq.len() <= self.estimated_hits);
-
-        self.total_hits += 1;
-
-        let at_capacity = self.pq.len() == self.estimated_hits;
-
-        if !at_capacity {
+        if self.pq.len() < self.estimated_hits {
             let score_doc = ScoreDoc::new(doc_id, score);
             self.pq.push(score_doc);
         } else if let Some(mut doc) = self.pq.peek_mut() {
@@ -94,6 +88,7 @@ impl Collector for TopDocsBaseCollector {
 
         let id = doc + self.cur_doc_base;
         self.add_doc(id, score);
+        self.total_hits += 1;
 
         Ok(())
     }

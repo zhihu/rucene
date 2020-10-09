@@ -15,9 +15,9 @@ use core::codec::Codec;
 use core::index::reader::LeafReaderContext;
 use core::search::explanation::Explanation;
 use core::search::query::{Query, TermQuery, Weight};
-use core::search::scorer::{two_phase_next, FeatureResult, Scorer};
+use core::search::scorer::{FeatureResult, Scorer};
 use core::search::searcher::SearchPlanBuilder;
-use core::search::DocIterator;
+use core::search::{DocIterator, NO_MORE_DOCS};
 use core::util::DocId;
 use core::util::IndexedContext;
 use error::Result;
@@ -157,19 +157,31 @@ struct FilterScorer {
     filters: Vec<Box<dyn LeafFilterFunction>>,
 }
 
+impl FilterScorer {
+    fn two_phase_next(&mut self) -> Result<DocId> {
+        let mut doc = self.doc_id();
+        loop {
+            if doc == NO_MORE_DOCS {
+                return Ok(NO_MORE_DOCS);
+            } else if self.matches()? {
+                return Ok(doc);
+            }
+            doc = self.scorer.approximate_next()?;
+        }
+    }
+}
+
 impl DocIterator for FilterScorer {
     fn doc_id(&self) -> DocId {
         self.scorer.doc_id()
     }
 
     fn next(&mut self) -> Result<DocId> {
-        self.approximate_next()?;
-        two_phase_next(self)
+        self.approximate_next()
     }
 
     fn advance(&mut self, target: DocId) -> Result<DocId> {
-        self.approximate_advance(target)?;
-        two_phase_next(self)
+        self.approximate_advance(target)
     }
 
     fn cost(&self) -> usize {
@@ -196,11 +208,13 @@ impl DocIterator for FilterScorer {
     }
 
     fn approximate_next(&mut self) -> Result<DocId> {
-        self.scorer.approximate_next()
+        self.scorer.approximate_next()?;
+        self.two_phase_next()
     }
 
     fn approximate_advance(&mut self, target: DocId) -> Result<DocId> {
-        self.scorer.approximate_advance(target)
+        self.scorer.approximate_advance(target)?;
+        self.two_phase_next()
     }
 }
 

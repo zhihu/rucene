@@ -67,7 +67,9 @@ impl FSDirectory {
         let mut deleted_set = BTreeSet::new();
         for name in pending_deletes.iter() {
             let path = dir.join(name);
-            fs::remove_file(path)?;
+            if let Err(e) = fs::remove_file(path.clone()) {
+                info!("delete_pending_files {:?} failed. {}", path, e.to_string());
+            }
             deleted_set.insert(name.clone());
         }
         for name in deleted_set {
