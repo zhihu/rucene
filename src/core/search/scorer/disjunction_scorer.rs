@@ -18,6 +18,8 @@ use core::util::{DisiPriorityQueue, DocId};
 use error::Result;
 use std::f32;
 
+pub const DEFAULT_MIN_SHOULD_MATCH: i32 = 1;
+
 /// A Scorer for OR like queries, counterpart of `ConjunctionScorer`.
 pub struct DisjunctionSumScorer<T: Scorer> {
     sub_scorers: SubScorers<T>,
@@ -36,7 +38,7 @@ impl<T: Scorer> DisjunctionSumScorer<T> {
 
         let cost = children.iter().map(|w| w.cost()).sum();
 
-        let sub_scorers = if children.len() < 10 || min_should_match > 1 {
+        let sub_scorers = if children.len() < 10 || min_should_match > DEFAULT_MIN_SHOULD_MATCH {
             SubScorers::SQ(SimpleQueue::new(children))
         } else {
             SubScorers::DPQ(DisiPriorityQueue::new(children))
@@ -87,8 +89,13 @@ impl<T: Scorer> DocIterator for DisjunctionSumScorer<T> {
     }
 
     fn approximate_next(&mut self) -> Result<DocId> {
-        self.sub_scorers
-            .approximate_next(Some(self.min_should_match))
+        let min_should_match = if self.min_should_match > DEFAULT_MIN_SHOULD_MATCH {
+            Some(self.min_should_match)
+        } else {
+            None
+        };
+
+        self.sub_scorers.approximate_next(min_should_match)
     }
 
     fn approximate_advance(&mut self, target: DocId) -> Result<DocId> {
@@ -286,28 +293,42 @@ impl<T: Scorer> SubScorers<T> {
     }
 
     fn approximate_next(&mut self, min_should_match: Option<i32>) -> Result<DocId> {
-        let min_should_match = min_should_match.unwrap_or(0);
-
         match self {
             SubScorers::SQ(sq) => {
+                let min_should_match = min_should_match.unwrap_or(DEFAULT_MIN_SHOULD_MATCH);
+
                 loop {
-                    // curr_doc = current min_doc, (not -1)
+                    if sq.curr_doc == NO_MORE_DOCS {
+                        return Ok(sq.curr_doc);
+                    }
+
+                    // curr_doc begin with -1
                     let curr_doc = sq.curr_doc;
                     let mut min_doc = NO_MORE_DOCS;
-                    let mut should_count = 0;
                     for s in sq.scorers.iter_mut() {
                         if s.doc_id() == curr_doc {
-                            should_count += 1;
                             s.approximate_next()?;
                         }
 
                         min_doc = min_doc.min(s.doc_id());
                     }
-
                     sq.curr_doc = min_doc;
-                    if should_count >= min_should_match || sq.curr_doc == NO_MORE_DOCS {
-                        return Ok(sq.curr_doc);
+
+                    if min_should_match > DEFAULT_MIN_SHOULD_MATCH {
+                        let mut should_count = 0;
+
+                        for s in sq.scorers.iter_mut() {
+                            if s.doc_id() == min_doc {
+                                should_count += 1;
+                            }
+                        }
+
+                        if should_count < min_should_match {
+                            continue;
+                        }
                     }
+
+                    return Ok(sq.curr_doc);
                 }
             }
             SubScorers::DPQ(dbq) => {
