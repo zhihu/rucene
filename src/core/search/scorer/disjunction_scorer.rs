@@ -34,7 +34,7 @@ impl<T: Scorer> DisjunctionSumScorer<T> {
         needs_scores: bool,
         min_should_match: i32,
     ) -> DisjunctionSumScorer<T> {
-        assert!(children.len() > 1);
+        debug_assert!(children.len() > 0);
 
         let cost = children.iter().map(|w| w.cost()).sum();
 
@@ -121,7 +121,7 @@ impl<T: Scorer> DisjunctionMaxScorer<T> {
         tie_breaker_multiplier: f32,
         needs_scores: bool,
     ) -> DisjunctionMaxScorer<T> {
-        assert!(children.len() > 1);
+        debug_assert!(children.len() > 0);
 
         let cost = children.iter().map(|w| w.cost()).sum();
 
