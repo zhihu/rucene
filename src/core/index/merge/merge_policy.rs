@@ -636,9 +636,9 @@ impl TieredMergePolicy {
                 next_merges.iter().map(|i| info_seg_bytes[*i]).collect();
 
             info!(
-                "segment_count={} curr_merge_bytes={} one_merge={:?}",
-                next_merges_bytes.len(),
+                "curr_merge_bytes={} segment_count={} one_merge={:?}",
                 curr_merge_bytes,
+                next_merges_bytes.len(),
                 next_merges_bytes
             );
             let mut segments = Vec::with_capacity(next_merges.len());

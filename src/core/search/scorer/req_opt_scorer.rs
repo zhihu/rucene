@@ -44,7 +44,7 @@ impl Scorer for ReqOptScorer {
         let mut score = self.req_scorer.score()?;
 
         if self.scores_num > OPT_SCORE_THRESHOLD {
-            if score < self.scores_sum / self.scores_num as f32 {
+            if 2.0 * score < self.scores_sum / self.scores_num as f32 {
                 return Ok(score);
             }
         }

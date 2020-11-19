@@ -56,5 +56,3 @@ pub trait DocValuesProducer: Send + Sync {
     /// Returns an instance optimized for merging.
     fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>>;
 }
-
-pub type DocValuesProducerRef = Arc<dyn DocValuesProducer>;

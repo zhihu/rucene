@@ -292,7 +292,11 @@ impl<C: Codec> Weight<C> for PhraseWeight<C> {
         let mut total_match_cost = 0f32;
         for i in 0..self.terms.len() {
             if !term_iter.seek_exact(self.terms[i].bytes.as_ref())? {
-                return Err(format!("term={} does not exist", String::from_utf8(self.terms[i].bytes.clone()).unwrap()).into());
+                return Err(format!(
+                    "term={} does not exist",
+                    String::from_utf8(self.terms[i].bytes.clone()).unwrap()
+                )
+                .into());
             }
 
             total_match_cost += self.term_positions_cost(&mut term_iter)?;
