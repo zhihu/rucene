@@ -223,7 +223,8 @@ impl<C: Codec> Weight<C> for BooleanWeight<C> {
             }
             match scorers.len() {
                 0 => None,
-                1 => Some(scorers.remove(0)),
+                // min_should_match
+                // 1 => Some(scorers.remove(0)),
                 _ => Some(Box::new(DisjunctionSumScorer::new(
                     scorers,
                     self.needs_scores,

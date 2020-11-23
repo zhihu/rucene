@@ -12,8 +12,8 @@
 // limitations under the License.
 
 use core::codec::doc_values::{
-    BinaryDocValues, DocValuesProducerRef, NumericDocValues, SortedDocValues,
-    SortedNumericDocValues, SortedSetDocValues,
+    BinaryDocValues, DocValuesProducer, NumericDocValues, SortedDocValues, SortedNumericDocValues,
+    SortedSetDocValues,
 };
 use core::codec::field_infos::{FieldInfo, FieldInfos};
 use core::codec::norms::NormsProducer;
@@ -176,7 +176,7 @@ pub trait LeafReader {
 
     fn norms_reader(&self) -> Result<Option<Self::NormsReader>>;
 
-    fn doc_values_reader(&self) -> Result<Option<DocValuesProducerRef>>;
+    fn doc_values_reader(&self) -> Result<Option<Arc<dyn DocValuesProducer>>>;
 
     fn postings_reader(&self) -> Result<Self::FieldsProducer>;
 }

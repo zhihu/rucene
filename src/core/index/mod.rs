@@ -33,7 +33,7 @@ pub mod tests {
     use std::collections::HashMap;
 
     use core::codec::doc_values::{
-        BinaryDocValues, DocValuesProducerRef, NumericDocValues, SortedDocValues,
+        BinaryDocValues, DocValuesProducer, NumericDocValues, SortedDocValues,
         SortedNumericDocValues, SortedSetDocValues,
     };
     use core::codec::field_infos::{FieldInfo, FieldInfos};
@@ -271,7 +271,7 @@ pub mod tests {
             unimplemented!()
         }
 
-        fn doc_values_reader(&self) -> Result<Option<DocValuesProducerRef>> {
+        fn doc_values_reader(&self) -> Result<Option<Arc<dyn DocValuesProducer>>> {
             unimplemented!()
         }
 
