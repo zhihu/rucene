@@ -2846,9 +2846,9 @@ where
                 self.segment_infos.remove(info);
                 self.pending_num_docs
                     .fetch_sub(info.info.max_doc as i64, Ordering::AcqRel);
-                if merge.segments.contains(info) {
+                if let Some(pos) = merge.segments.iter().position(|x| *x == *info) {
                     self.merging_segments.remove(&info.info.name);
-                    merge.segments.remove_item(info);
+                    merge.segments.remove(pos);
                 }
                 self.reader_pool.drop(info.as_ref())?;
             }

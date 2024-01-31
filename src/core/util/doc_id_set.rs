@@ -361,7 +361,7 @@ impl<DI: DocIterator> DocIterator for NotDocIterator<DI> {
 
 #[derive(Debug)]
 pub struct EliasFanoDocIdSet {
-    ef_encoder: Arc<EliasFanoEncoder>,
+    ef_encoder:Arc<EliasFanoEncoder>,
 }
 
 impl EliasFanoDocIdSet {

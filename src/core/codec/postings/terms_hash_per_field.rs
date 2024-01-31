@@ -103,7 +103,7 @@ impl<T: PostingsArray + 'static> TermsHashPerFieldBase<T> {
         self.byte_pool = &mut parent.byte_pool;
         self.term_byte_pool = parent.term_byte_pool;
         unsafe {
-            self.bytes_hash.get_mut().pool = parent.term_byte_pool;
+            self.bytes_hash.assume_init_mut().pool = parent.term_byte_pool;
         }
     }
 
@@ -215,7 +215,7 @@ impl<T: PostingsArray + 'static> TermsHashPerFieldBase<T> {
     pub fn sort_postings(&mut self) {
         debug_assert!(self.inited);
         unsafe {
-            self.bytes_hash.get_mut().sort();
+            self.bytes_hash.assume_init_mut().sort();
         }
     }
 
@@ -240,7 +240,7 @@ pub trait TermsHashPerField: Ord + PartialOrd + Eq + PartialEq {
 
     fn reset(&mut self) {
         unsafe {
-            self.base_mut().bytes_hash.get_mut().clear(false);
+            self.base_mut().bytes_hash.assume_init_mut().clear(false);
         }
     }
 
@@ -269,7 +269,7 @@ pub trait TermsHashPerField: Ord + PartialOrd + Eq + PartialEq {
         let term_id = unsafe {
             self.base_mut()
                 .bytes_hash
-                .get_mut()
+                .assume_init_mut()
                 .add_by_pool_offset(text_start)
         };
         self.base_mut().add(term_id);
@@ -293,12 +293,12 @@ pub trait TermsHashPerField: Ord + PartialOrd + Eq + PartialEq {
         // term text into text_start address
         let bytes_ref = BytesRef::new(&token_stream.token().term);
 
-        let term_id = unsafe { self.base_mut().bytes_hash.get_mut().add(&bytes_ref) };
+        let term_id = unsafe { self.base_mut().bytes_hash.assume_init_mut().add(&bytes_ref) };
         if term_id >= 0 {
             unsafe {
                 self.base_mut()
                     .bytes_hash
-                    .get_ref()
+                    .assume_init_ref()
                     .byte_start(term_id as usize);
             }
         }

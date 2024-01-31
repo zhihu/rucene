@@ -167,7 +167,7 @@ where
         let consumer = DocConsumer::new(self, field_infos);
         self.consumer.write(consumer);
         unsafe {
-            self.consumer.get_mut().init();
+            self.consumer.assume_init_mut().init();
         }
 
         self.inited = true;
@@ -213,7 +213,7 @@ where
         // vs non-aborting exceptions):
         let res = unsafe {
             self.consumer
-                .get_mut()
+                .assume_init_mut()
                 .process_document(&mut self.doc_state, &mut doc)
         };
         self.doc_state.clear();
@@ -273,7 +273,7 @@ where
 
             let res = unsafe {
                 self.consumer
-                    .get_mut()
+                    .assume_init_mut()
                     .process_document(&mut self.doc_state, &mut doc)
             };
             if res.is_err() {
@@ -388,7 +388,7 @@ where
         let mut flush_state = SegmentWriteState::new(
             Arc::clone(&self.directory),
             self.segment_info.clone(),
-            unsafe { self.consumer.get_ref().field_infos.finish()? },
+            unsafe { self.consumer.assume_init_ref().field_infos.finish()? },
             Some(&self.pending_updates),
             ctx,
             "".into(),
@@ -438,11 +438,11 @@ where
 
         // re-init
         unsafe {
-            self.consumer.get_mut().reset_doc_writer(doc_writer);
-            self.consumer.get_mut().init();
+            self.consumer.assume_init_mut().reset_doc_writer(doc_writer);
+            self.consumer.assume_init_mut().init();
         }
 
-        let sort_map = unsafe { self.consumer.get_mut().flush(&mut flush_state)? };
+        let sort_map = unsafe { self.consumer.assume_init_mut().flush(&mut flush_state)? };
         self.pending_updates.deleted_terms.clear();
         self.segment_info
             .set_files(&self.directory.create_files())?;
@@ -596,7 +596,7 @@ where
         debug!("DWPT: now abort");
 
         unsafe {
-            if let Err(e) = self.consumer.get_mut().abort() {
+            if let Err(e) = self.consumer.assume_init_mut().abort() {
                 error!("DefaultIndexChain abort failed by error: '{:?}'", e);
             }
         }
