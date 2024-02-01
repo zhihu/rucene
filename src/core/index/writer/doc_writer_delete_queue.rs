@@ -360,10 +360,10 @@ impl<C: Codec> Drop for DeleteListNode<C> {
                 if Arc::strong_count(&(*next)) <= 1 {
                     Arc::get_mut(&mut *next).unwrap().next = AtomicPtr::default();
 
-                    Box::from_raw(next);
+                    drop(Box::from_raw(next));
                     next = next2;
                 } else {
-                    Box::from_raw(next);
+                    drop(Box::from_raw(next));
                     break;
                 }
             }

@@ -72,10 +72,10 @@ pub fn max_data_size() -> usize {
                     let iterations = compute_iterations(&decoder) as usize;
                     max_data_size = max(max_data_size, iterations * decoder.byte_value_count());
                 } else {
-                    panic!(format!(
+                    panic!(
                         "get_decoder({:?},{:?},{:?}) failed.",
                         format, version, bpv
-                    ));
+                    );
                 }
             }
             let format = Format::PackedSingleBlock;
@@ -84,10 +84,10 @@ pub fn max_data_size() -> usize {
                     let iterations = compute_iterations(&decoder) as usize;
                     max_data_size = max(max_data_size, iterations * decoder.byte_value_count());
                 } else {
-                    panic!(format!(
+                    panic!(
                         "get_decoder({:?},{:?},{:?}) failed.",
                         format, version, bpv
-                    ));
+                    );
                 }
             }
         }

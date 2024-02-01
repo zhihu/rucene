@@ -1458,7 +1458,7 @@ where
         {
             let lock = Arc::clone(&self.lock);
             let l = lock.lock()?;
-            let _ = self.abort_merges(l)?;
+            drop(self.abort_merges(l)?);
         }
         self.rate_limiters = Arc::new(ThreadLocal::new());
         debug!("IW - rollback: done finish merges");

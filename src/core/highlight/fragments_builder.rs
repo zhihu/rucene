@@ -389,10 +389,8 @@ impl FragmentsBuilder for BaseFragmentsBuilder {
 
         assert!(
             max_num_fragments > 0,
-            format!(
-                "maxNumFragments({}) must be positive number.",
-                max_num_fragments
-            )
+            "maxNumFragments({}) must be positive number.",
+            max_num_fragments
         );
 
         let values = self.fields(reader, doc_id, field_name)?;

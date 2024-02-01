@@ -493,7 +493,7 @@ impl<D: Directory + Send + Sync + 'static, C: Codec, MP: MergePolicy> MergeThrea
         let scheduler_mut = unsafe { self.merge_scheduler.inner.scheduler_mut(&l) };
         scheduler_mut
             .merge_tasks
-            .extract_if(|t| t.merge.id == one_merge.id);
+            .retain(|t| t.merge.id != one_merge.id);
         scheduler_mut.update_merge_threads();
         // In case we had stalled indexing, we can now wake up
         // and possibly unstall:

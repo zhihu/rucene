@@ -31,10 +31,8 @@ impl EarlyTerminatingSortingCollector {
     pub fn new(num_docs_to_collect_per_reader: usize) -> EarlyTerminatingSortingCollector {
         assert!(
             num_docs_to_collect_per_reader > 0,
-            format!(
-                "num_docs_to_collect_per_reader must always be > 0, got {}",
-                num_docs_to_collect_per_reader
-            )
+            "num_docs_to_collect_per_reader must always be > 0, got {}",
+            num_docs_to_collect_per_reader
         );
 
         EarlyTerminatingSortingCollector {

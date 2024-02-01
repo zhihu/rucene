@@ -74,7 +74,7 @@ impl PhraseQuery {
             ctxs.as_ref().map(Vec::len).unwrap_or_else(|| terms.len()),
             "Must have as many terms as positions"
         );
-        assert!(slop >= 0, format!("Slop must be >= 0, got {}", slop));
+        assert!(slop >= 0, "Slop must be >= 0, got {}", slop);
         if terms.len() < 2 {
             bail!(ErrorKind::IllegalArgument(
                 "phrase query terms should not be less than 2!".into()
@@ -88,16 +88,14 @@ impl PhraseQuery {
             );
         }
         for pos in &positions {
-            debug_assert!(*pos >= 0, format!("Positions must be >= 0, got {}", pos));
+            debug_assert!(*pos >= 0, "Positions must be >= 0, got {}", pos);
         }
         for i in 1..positions.len() {
             debug_assert!(
                 positions[i - 1] <= positions[i],
-                format!(
-                    "Positions should not go backwards, got {} before {}",
-                    positions[i - 1],
-                    positions[i]
-                )
+                "Positions should not go backwards, got {} before {}",
+                positions[i - 1],
+                positions[i]
             );
         }
         // normalize positions
@@ -278,11 +276,10 @@ impl<C: Codec> Weight<C> for PhraseWeight<C> {
         let mut term_iter = if let Some(field_terms) = reader.reader.terms(&self.field)? {
             debug_assert!(
                 field_terms.has_positions()?,
-                format!(
-                    "field {} was indexed without position data; cannot run PhraseQuery \
-                     (phrase={:?})",
-                    self.field, self.terms
-                )
+                "field {} was indexed without position data; cannot run PhraseQuery \
+                (phrase={:?})",
+                self.field, 
+                self.terms
             );
             field_terms.iterator()?
         } else {
@@ -356,11 +353,10 @@ impl<C: Codec> Weight<C> for PhraseWeight<C> {
         let mut term_iter = if let Some(field_terms) = reader.reader.terms(&self.field)? {
             debug_assert!(
                 field_terms.has_positions()?,
-                format!(
-                    "field {} was indexed without position data; cannot run PhraseQuery \
-                     (phrase={:?})",
-                    self.field, self.terms
-                )
+                "field {} was indexed without position data; cannot run PhraseQuery \
+                (phrase={:?})",
+                self.field, 
+                self.terms
             );
             Some(field_terms.iterator()?)
         } else {

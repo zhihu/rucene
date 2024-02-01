@@ -1651,7 +1651,8 @@ impl Packed64SingleBlock {
     pub fn new(value_count: usize, bits_per_value: usize) -> Packed64SingleBlock {
         debug_assert!(
             Self::is_supported(bits_per_value),
-            format!("Unsupported number of bits per value: {}", bits_per_value)
+            "Unsupported number of bits per value: {}", 
+            bits_per_value
         );
         let value_per_block = 64 / bits_per_value;
         let blocks = vec![0i64; Self::required_capacity(value_count, value_per_block)];
@@ -2629,10 +2630,9 @@ impl PackedIntDecoder for BulkOperationPacked {
 
     fn decode_long_to_int(&self, blocks: &[i64], values: &mut [i32], iterations: usize) {
         if self.bits_per_value > 32 {
-            panic!(format!(
-                "Cannot decode {} -bits values into an i32 slice",
+            panic!("Cannot decode {} -bits values into an i32 slice",
                 self.bits_per_value
-            ));
+            );
         }
 
         let mut bits_left = 64;
@@ -2815,10 +2815,9 @@ impl PackedIntDecoder for BulkOperationPackedSingleBlock {
 
     fn decode_long_to_int(&self, blocks: &[i64], values: &mut [i32], iterations: usize) {
         if self.bits_per_value > 32 {
-            panic!(format!(
-                "Cannot decode {} -bits values into an i32 slice",
+            panic!("Cannot decode {} -bits values into an i32 slice",
                 self.bits_per_value
-            ));
+            );
         }
         let mut values_offset = 0;
         for b in blocks.iter().take(iterations) {
@@ -2828,10 +2827,9 @@ impl PackedIntDecoder for BulkOperationPackedSingleBlock {
 
     fn decode_byte_to_int(&self, blocks: &[u8], values: &mut [i32], iterations: usize) {
         if self.bits_per_value > 32 {
-            panic!(format!(
-                "Cannot decode {} -bits values into an i32 slice",
+            panic!("Cannot decode {} -bits values into an i32 slice",
                 self.bits_per_value
-            ));
+            );
         }
         let mut values_offset = 0;
         for i in 0..iterations {
@@ -2986,8 +2984,8 @@ pub struct BlockPackedReaderIterator {
     block_size: usize,
     pub values: Vec<i64>,
     // 一下两个字段用于替代原始定义中的 `values_ref` 成员
-    values_offset: usize,
-    values_length: usize,
+    //values_offset: usize,
+    //values_length: usize,
     blocks: Vec<u8>,
     off: usize,
     pub ord: i64,
@@ -3029,8 +3027,8 @@ impl BlockPackedReaderIterator {
             value_count,
             block_size,
             values,
-            values_offset: 0,
-            values_length: 0,
+            //values_offset: 0,
+            //values_length: 0,
             blocks: vec![],
             off: block_size,
             ord: 0,
