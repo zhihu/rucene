@@ -14,11 +14,12 @@
 use core::store::RateLimiter;
 
 use core::index::ErrorKind::MergeAborted;
+use std::cell::UnsafeCell;
 use error::{ErrorKind, Result};
 
 use std::f64;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Condvar, Mutex};
+use std::sync::{Condvar, Mutex, RwLock};
 use std::time::{Duration, SystemTime};
 
 use core::util::external::Volatile;
@@ -31,12 +32,12 @@ use core::util::external::Volatile;
 /// much time it spent stopped and paused, and it supports aborting.
 pub struct MergeRateLimiter {
     total_bytes_written: AtomicU64,
-    mb_per_sec: Volatile<f64>,
-    last_time: Volatile<SystemTime>,
-    min_pause_check_bytes: Volatile<u64>,
+    mb_per_sec: Mutex<Volatile<f64>>,
+    last_time: Mutex<Volatile<SystemTime>>,
+    min_pause_check_bytes: Mutex<Volatile<u64>>,
     abort: AtomicBool,
-    total_paused_dur: Volatile<Duration>,
-    total_stopped_dur: Volatile<Duration>,
+    total_paused_dur: Mutex<Volatile<Duration>>,
+    total_stopped_dur: Mutex<Volatile<Duration>>,
     // merge: OneMerge,
     lock: Mutex<()>,
     cond: Condvar,
@@ -59,12 +60,12 @@ impl MergeRateLimiter {
         // Now is a good time to abort the merge:
         self.check_abort()?;
 
-        let mb_per_sec = self.mb_per_sec.read();
+        let mb_per_sec = self.mb_per_sec.lock().unwrap().read();
         let seconds_to_pause = bytes as f64 / 1024.0 / 1024.0 / mb_per_sec;
         // Time we should sleep until; this is purely instantaneous
         // rate (just adds seconds onto the last time we had paused to);
         // maybe we should also offer decayed recent history one?
-        let target_time = self.last_time.read()
+        let target_time = self.last_time.lock().unwrap().read()
             + Duration::from_nanos((seconds_to_pause * 1_000_000_000.0) as u64);
 
         if target_time < cur_ns {
@@ -88,7 +89,7 @@ impl MergeRateLimiter {
         // CMS can wake us up here if it changes our target rate:
         let _ = self.cond.wait_timeout(l, cur_pause_dur)?;
 
-        let rate = self.mb_per_sec.read();
+        let rate = self.mb_per_sec.lock().unwrap().read();
         if rate == 0.0 {
             Ok(PauseResult::Stopped)
         } else {
@@ -117,12 +118,12 @@ impl Default for MergeRateLimiter {
     fn default() -> Self {
         let limiter = MergeRateLimiter {
             total_bytes_written: AtomicU64::new(0),
-            mb_per_sec: Volatile::new(0.0),
-            last_time: Volatile::new(SystemTime::now()),
-            min_pause_check_bytes: Volatile::new(0),
+            mb_per_sec: Mutex::new(Volatile::new(0.0)),
+            last_time: Mutex::new(Volatile::new(SystemTime::now())),
+            min_pause_check_bytes: Mutex::new(Volatile::new(0)),
             abort: AtomicBool::new(false),
-            total_paused_dur: Volatile::new(Duration::default()),
-            total_stopped_dur: Volatile::new(Duration::default()),
+            total_paused_dur: Mutex::new(Volatile::new(Duration::default())),
+            total_stopped_dur: Mutex::new(Volatile::new(Duration::default())),
             lock: Mutex::new(()),
             cond: Condvar::new(),
         };
@@ -141,7 +142,7 @@ impl RateLimiter for MergeRateLimiter {
             panic!("mb_per_sec must be position; got: {}", mb_per_sec);
         }
 
-        self.mb_per_sec.write(mb_per_sec);
+        self.mb_per_sec.lock().unwrap().write(mb_per_sec);
         // NOTE: java Double.POSITIVE_INFINITY cast to long is long.MAX_VALUE,
         // rust f64::INFINITY cast to u64 is 0.
         let check_value = MIN_PAUSE_CHECK_MSEC as f64 / 1000.0 * mb_per_sec * 1024.0 * 1024.0;
@@ -152,12 +153,12 @@ impl RateLimiter for MergeRateLimiter {
             check_value as u64
         };
         self.min_pause_check_bytes
-            .write(::std::cmp::min(64 * 1024 * 1024, check_bytes));
+            .lock().unwrap().write(::std::cmp::min(64 * 1024 * 1024, check_bytes));
         self.cond.notify_one();
     }
 
     fn mb_per_sec(&self) -> f64 {
-        self.mb_per_sec.read()
+        self.mb_per_sec.lock().unwrap().read()
     }
 
     fn pause(&self, bytes: u64) -> Result<Duration> {
@@ -175,7 +176,7 @@ impl RateLimiter for MergeRateLimiter {
             if result == PauseResult::No {
                 // Set to curNS, not targetNS, to enforce the instant rate, not
                 // the "averaaged over all history" rate:
-                self.last_time.write(cur_time);
+                self.last_time.lock().unwrap().write(cur_time);
                 break;
             }
             cur_time = SystemTime::now();
@@ -184,12 +185,12 @@ impl RateLimiter for MergeRateLimiter {
 
             // Separately track when merge was stopped vs rate limited:
             if result == PauseResult::Stopped {
-                let stopped_dur = self.total_stopped_dur.read();
-                self.total_stopped_dur.write(stopped_dur + dur);
+                let stopped_dur = self.total_stopped_dur.lock().unwrap().read();
+                self.total_stopped_dur.lock().unwrap().write(stopped_dur + dur);
             } else {
                 debug_assert_eq!(result, PauseResult::Paused);
-                let total_paused_dur = self.total_stopped_dur.read();
-                self.total_paused_dur.write(total_paused_dur + dur);
+                let total_paused_dur = self.total_stopped_dur.lock().unwrap().read();
+                self.total_paused_dur.lock().unwrap().write(total_paused_dur + dur);
             }
             paused += dur;
         }
@@ -197,6 +198,6 @@ impl RateLimiter for MergeRateLimiter {
     }
 
     fn min_pause_check_bytes(&self) -> u64 {
-        self.min_pause_check_bytes.read()
+        self.min_pause_check_bytes.lock().unwrap().read()
     }
 }

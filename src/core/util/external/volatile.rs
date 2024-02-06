@@ -53,7 +53,7 @@
 //! and then perform operations on the pointer as usual in a volatile way. This method works as all
 //! of the volatile wrapper types are the same size as their contained values.
 
-use std::ptr;
+use std::{cell::UnsafeCell, ptr};
 
 /// A wrapper type around a volatile variable, which allows for volatile reads and writes
 /// to the contained value. The stored type needs to be `Copy`, as volatile reads and writes
@@ -62,7 +62,7 @@ use std::ptr;
 /// The size of this struct is the same as the size of the contained type.
 #[derive(Debug)]
 #[repr(transparent)]
-pub struct Volatile<T: Copy>(T);
+pub struct Volatile<T: Copy>(UnsafeCell<T>);
 
 impl<T: Copy> Volatile<T> {
     /// Construct a new volatile instance wrapping the given value.
@@ -78,7 +78,7 @@ impl<T: Copy> Volatile<T> {
     /// This method never panics.
     #[cfg(not(feature = "const_fn"))]
     pub fn new(value: T) -> Volatile<T> {
-        Volatile(value)
+        Volatile(value.into())
     }
 
     /// Performs a volatile read of the contained value, returning a copy
@@ -89,7 +89,7 @@ impl<T: Copy> Volatile<T> {
     /// This method never panics.
     pub fn read(&self) -> T {
         // UNSAFE: Safe, as we know that our internal value exists.
-        unsafe { ptr::read_volatile(&self.0) }
+        unsafe { ptr::read_volatile(self.0.get() as *const T) }
     }
 
     /// Performs a volatile write, setting the contained value to the given value `value`. Volatile
@@ -104,7 +104,7 @@ impl<T: Copy> Volatile<T> {
     /// else we need to use Atomic instead
     pub fn write(&self, value: T) {
         // UNSAFE: Safe, as we know that our internal value exists.
-        unsafe { ptr::write_volatile(&self.0 as *const T as *mut T, value) };
+        unsafe { ptr::write_volatile(self.0.get() as *const T as *mut T, value) };
     }
 
     /// Performs a volatile read of the contained value, passes a mutable reference to it to the
@@ -124,6 +124,6 @@ impl<T: Copy> Volatile<T> {
 
 impl<T: Copy> Clone for Volatile<T> {
     fn clone(&self) -> Self {
-        Volatile(self.read())
+        Volatile(self.read().into())
     }
 }

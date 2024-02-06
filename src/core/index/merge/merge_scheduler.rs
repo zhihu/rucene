@@ -17,6 +17,8 @@ use core::index::merge::{MergePolicy, MergerTrigger, OneMerge, OneMergeScheduleI
 use core::index::writer::IndexWriter;
 use core::store::directory::Directory;
 use core::store::RateLimiter;
+use std::borrow::BorrowMut;
+use std::cell::UnsafeCell;
 
 use error::{Error, ErrorKind, Result};
 
@@ -139,7 +141,7 @@ impl Ord for MergeTaskInfo {
 /// throttle the incoming threads by pausing until one more more merges complete.
 #[derive(Clone)]
 pub struct ConcurrentMergeScheduler {
-    inner: Arc<ConcurrentMergeSchedulerInner>,
+    inner: Arc<Mutex<ConcurrentMergeSchedulerInner>>,
 }
 
 impl Default for ConcurrentMergeScheduler {
@@ -155,21 +157,23 @@ impl ConcurrentMergeScheduler {
             panic!("max thread count must not be 0");
         }
         Self {
-            inner: Arc::new(ConcurrentMergeSchedulerInner::new(max_thread_count)),
+            inner: Arc::new(Mutex::new(ConcurrentMergeSchedulerInner::new(
+                max_thread_count),
+            )),
         }
     }
 }
 
 struct ConcurrentMergeSchedulerInner {
-    lock: Mutex<()>,
-    cond: Condvar,
-    merge_tasks: Vec<MergeTaskInfo>,
-    max_merge_count: usize,
-    max_thread_count: usize,
-    merge_thread_count: usize,
-    target_mb_per_sec: f64,
-    do_auto_io_throttle: bool,
-    force_merge_mb_per_sec: f64,
+    lock: UnsafeCell<Mutex<()>>,
+    cond: UnsafeCell<Condvar>,
+    merge_tasks: UnsafeCell<Vec<MergeTaskInfo>>,
+    max_merge_count: UnsafeCell<usize>,
+    max_thread_count: UnsafeCell<usize>,
+    merge_thread_count: UnsafeCell<usize>,
+    target_mb_per_sec: UnsafeCell<f64>,
+    do_auto_io_throttle: UnsafeCell<bool>,
+    force_merge_mb_per_sec: UnsafeCell<f64>,
 }
 
 // Floor for IO write rate limit (we will never go any lower than this)
@@ -191,23 +195,26 @@ pub const MAX_MERGING_COUNT: usize = 5;
 impl ConcurrentMergeSchedulerInner {
     fn new(max_thread_count: usize) -> Self {
         ConcurrentMergeSchedulerInner {
-            lock: Mutex::new(()),
-            cond: Condvar::new(),
-            merge_tasks: vec![],
-            max_merge_count: max_thread_count.max(MAX_MERGING_COUNT),
-            max_thread_count,
-            merge_thread_count: 0,
-            target_mb_per_sec: START_MB_PER_SEC,
-            do_auto_io_throttle: true,
-            force_merge_mb_per_sec: f64::INFINITY,
+            lock: UnsafeCell::new(Mutex::new(())),
+            cond: UnsafeCell::new(Condvar::new()),
+            merge_tasks: UnsafeCell::new(vec![]),
+            max_merge_count: UnsafeCell::new(max_thread_count.max(MAX_MERGING_COUNT)),
+            max_thread_count: UnsafeCell::new(max_thread_count),
+            merge_thread_count: UnsafeCell::new(0),
+            target_mb_per_sec: UnsafeCell::new(START_MB_PER_SEC),
+            do_auto_io_throttle: UnsafeCell::new(true),
+            force_merge_mb_per_sec: UnsafeCell::new(f64::INFINITY),
         }
     }
 
     #[allow(clippy::mut_from_ref)]
-    unsafe fn scheduler_mut(&self, _guard: &MutexGuard<()>) -> &mut ConcurrentMergeSchedulerInner {
+    unsafe fn scheduler_mut(
+        &self,
+        _guard: UnsafeCell<&MutexGuard<()>>,
+    ) -> &mut ConcurrentMergeSchedulerInner {
         let scheduler =
             self as *const ConcurrentMergeSchedulerInner as *mut ConcurrentMergeSchedulerInner;
-        &mut *scheduler
+        unsafe { &mut *scheduler }
     }
 
     fn maybe_stall<'a, D, C, MP>(
@@ -222,81 +229,93 @@ impl ConcurrentMergeSchedulerInner {
     {
         let thread_id = thread::current().id();
         let mut guard = guard;
-        while writer.has_pending_merges() && self.merge_thread_count() >= self.max_merge_count {
-            // This means merging has fallen too far behind: we
-            // have already created maxMergeCount threads, and
-            // now there's at least one more merge pending.
-            // Note that only maxThreadCount of
-            // those created merge threads will actually be
-            // running; the rest will be paused (see
-            // updateMergeThreads).  We stall this producer
-            // thread to prevent creation of new segments,
-            // until merging has caught up:
-            if self.merge_tasks.iter().any(|t| t.thread_id == thread_id) {
-                // Never stall a merge thread since this blocks the thread from
-                // finishing and calling updateMergeThreads, and blocking it
-                // accomplishes nothing anyway (it's not really a segment producer):
-                return (false, guard);
-            }
+        unsafe {
+            while writer.has_pending_merges() && self.merge_thread_count() >= *self.max_merge_count.get() {
+                // This means merging has fallen too far behind: we
+                // have already created maxMergeCount threads, and
+                // now there's at least one more merge pending.
+                // Note that only maxThreadCount of
+                // those created merge threads will actually be
+                // running; the rest will be paused (see
+                // updateMergeThreads).  We stall this producer
+                // thread to prevent creation of new segments,
+                // until merging has caught up:
+                if self.merge_tasks.get_mut().iter().any(|t| t.thread_id == thread_id) {
+                    // Never stall a merge thread since this blocks the thread from
+                    // finishing and calling updateMergeThreads, and blocking it
+                    // accomplishes nothing anyway (it's not really a segment producer):
+                    return (false, guard);
+                }
 
-            // Defensively wait for only .25 seconds in case we are missing a .notify/All somewhere:
-            let (g, _) = self
-                .cond
-                .wait_timeout(guard, Duration::from_millis(25))
-                .unwrap();
-            guard = g;
+                // Defensively wait for only .25 seconds in case we are missing a .notify/All
+                // somewhere:
+                let (g, _) = *self
+                    .cond
+                    .get()
+                    .wait_timeout(guard, Duration::from_millis(25))
+                    .unwrap();
+                guard = g;
+            }
         }
         (true, guard)
     }
 
     fn update_merge_threads(&mut self) {
-        let mut active_tasks: Vec<_> = self.merge_tasks.iter().collect();
-        active_tasks.sort();
+        unsafe {
+            let mut active_tasks: Vec<MergeTaskInfo> = self.merge_tasks.get_mut().iter().collect();
+            active_tasks.sort();
 
-        let tasks_count = active_tasks.len();
+            let tasks_count = active_tasks.len();
 
-        let mut big_merge_count = 0;
-        for i in 0..tasks_count {
-            if active_tasks[tasks_count - 1 - i]
-                .merge
-                .estimated_merge_bytes
-                .read() as f64
-                > MIN_BIG_MERGE_MB * 1024.0 * 1024.0
-            {
-                big_merge_count = tasks_count - i;
-                break;
+            let mut big_merge_count = 0;
+            for i in 0..tasks_count {
+                if active_tasks[tasks_count - 1 - i]
+                    .merge
+                    .estimated_merge_bytes
+                    .read() as f64
+                    > MIN_BIG_MERGE_MB * 1024.0 * 1024.0
+                {
+                    big_merge_count = tasks_count - i;
+                    break;
+                }
             }
-        }
 
-        for (idx, task) in active_tasks.iter().enumerate() {
-            // pause the thread if max_thread_count is smaller than the number of merge threads.
-            let do_pause = idx + self.max_thread_count < big_merge_count;
+            for (idx, task) in active_tasks.iter().enumerate() {
+                // pause the thread if max_thread_count is smaller than the number of merge threads.
+                let do_pause = idx + self.max_thread_count < big_merge_count;
+                unsafe
 
-            let new_mb_per_sec = if do_pause {
-                0.0
-            } else if task.merge.max_num_segments.get().is_some() {
-                self.force_merge_mb_per_sec
-            } else if !self.do_auto_io_throttle
-                || ((task.merge.estimated_merge_bytes.read() as f64)
-                    < MIN_BIG_MERGE_MB * 1024.0 * 1024.0)
-            {
-                f64::INFINITY
-            } else {
-                self.target_mb_per_sec
-            };
+                let new_mb_per_sec = if do_pause {
+                    0.0
+                } else if task.merge.max_num_segments.get().is_some() {
+                    self.force_merge_mb_per_sec
+                } else if !self.do_auto_io_throttle.get()
+                    || ((task.merge.estimated_merge_bytes.read() as f64)
+                        < MIN_BIG_MERGE_MB * 1024.0 * 1024.0)
+                {
+                    f64::INFINITY
+                } else {
+                    self.target_mb_per_sec.get()
+                };
 
-            task.merge.rate_limiter.set_mb_per_sec(new_mb_per_sec);
+                task.merge.rate_limiter.set_mb_per_sec(new_mb_per_sec);
+            }
         }
     }
 
     fn merge_thread_count(&self) -> usize {
         let current_thread = thread::current().id();
-        self.merge_tasks
-            .iter()
-            .filter(|t| {
-                t.thread_id != current_thread && t.thread_alive() && !t.merge.rate_limiter.aborted()
-            })
-            .count()
+        unsafe {
+            self.merge_tasks
+                .get_mut()
+                .iter()
+                .filter(|t| {
+                    t.thread_id != current_thread
+                        && t.thread_alive()
+                        && !t.merge.rate_limiter.aborted()
+                })
+                .count()
+        }
     }
 
     fn update_io_throttle<D: Directory + Send + Sync + 'static, C: Codec>(
@@ -394,7 +413,9 @@ impl MergeScheduler for ConcurrentMergeScheduler {
         MP: MergePolicy,
     {
         let mut guard = self.inner.lock.lock().unwrap();
-        let scheduler = unsafe { self.inner.scheduler_mut(&guard) };
+        let t =
+            guard.borrow_mut() as *mut MutexGuard<'_, ()> as *const UnsafeCell<&MutexGuard<'_, ()>>;
+        let scheduler = unsafe { self.inner.scheduler_mut((&guard).into()) };
 
         if trigger == MergerTrigger::Closing {
             // Disable throttling on close:
@@ -489,8 +510,9 @@ impl<D: Directory + Send + Sync + 'static, C: Codec, MP: MergePolicy> MergeThrea
             }
             Ok(()) => {}
         }
-        let l = self.merge_scheduler.inner.lock.lock().unwrap();
-        let scheduler_mut = unsafe { self.merge_scheduler.inner.scheduler_mut(&l) };
+        let mut l = self.merge_scheduler.inner.lock.lock().unwrap();
+        let t = l.borrow_mut() as *mut MutexGuard<'_, ()> as *const UnsafeCell<&MutexGuard<'_, ()>>;
+        let scheduler_mut = unsafe { self.merge_scheduler.inner.scheduler_mut((&l).into()) };
         scheduler_mut
             .merge_tasks
             .retain(|t| t.merge.id != one_merge.id);
