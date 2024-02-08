@@ -19,6 +19,7 @@ use core::index::writer::{
 };
 use core::util::external::Volatile;
 use error::Result;
+use std::cell::UnsafeCell;
 
 use core::store::directory::Directory;
 use std::collections::{HashMap, VecDeque};
@@ -101,14 +102,24 @@ impl<D: Directory + Send + Sync + 'static, C: Codec, MS: MergeScheduler, MP: Mer
         unsafe { &*self.per_thread_pool }
     }
 
+    unsafe fn get_self(
+        ptr: &UnsafeCell<DocumentsWriterFlushControl<D, C, MS, MP>>,
+    ) -> &mut DocumentsWriterFlushControl<D, C, MS, MP> {
+        unsafe { &mut *ptr.get() }
+    }
+
     #[allow(clippy::mut_from_ref)]
     unsafe fn flush_control_mut(
         &self,
         _l: &MutexGuard<FlushControlLock>,
     ) -> &mut DocumentsWriterFlushControl<D, C, MS, MP> {
         let control = self as *const DocumentsWriterFlushControl<D, C, MS, MP>
-            as *mut DocumentsWriterFlushControl<D, C, MS, MP>;
-        &mut *control
+            as *mut DocumentsWriterFlushControl<D, C, MS, MP>
+            as *const UnsafeCell<DocumentsWriterFlushControl<D, C, MS, MP>>;
+        unsafe {
+            let s = DocumentsWriterFlushControl::get_self(control.as_ref().unwrap());
+            &mut *s
+        }
     }
 
     pub fn do_after_document(

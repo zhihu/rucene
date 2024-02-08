@@ -43,6 +43,7 @@ use core::util::to_base36;
 use core::util::{BitsRef, DerefWrapper, DocId, VERSION_LATEST};
 
 use core::index::ErrorKind::MergeAborted;
+use std::cell::UnsafeCell;
 use error::ErrorKind::{AlreadyClosed, IllegalArgument, IllegalState, Index, RuntimeError};
 use error::{Error, Result};
 
@@ -1061,11 +1062,20 @@ where
         })
     }
 
+    unsafe fn get_self(
+        ptr: &UnsafeCell<IndexWriterInner<D, C, MS, MP>>,
+    ) -> &mut IndexWriterInner<D, C, MS, MP> {
+        unsafe { &mut *ptr.get() }
+    }
+
     #[allow(clippy::mut_from_ref)]
     unsafe fn writer_mut(&self, _l: &MutexGuard<()>) -> &mut IndexWriterInner<D, C, MS, MP> {
         let writer =
-            self as *const IndexWriterInner<D, C, MS, MP> as *mut IndexWriterInner<D, C, MS, MP>;
-        &mut *writer
+            self as *const IndexWriterInner<D, C, MS, MP> as *mut IndexWriterInner<D, C, MS, MP> as *const UnsafeCell<IndexWriterInner<D, C, MS, MP>>;
+        unsafe {
+            let s = IndexWriterInner::get_self(writer.as_ref().unwrap());
+            &mut *s
+        }
     }
 
     fn get_reader(
