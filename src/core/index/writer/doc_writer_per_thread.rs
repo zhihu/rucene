@@ -29,7 +29,7 @@ use core::{
     },
 };
 
-use std::collections::{HashMap, HashSet};
+use std::{cell::UnsafeCell, collections::{HashMap, HashSet}};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockWriteGuard, Weak};
 use std::time::SystemTime;
@@ -814,13 +814,22 @@ where
         }
     }
 
+    unsafe fn get_self(
+        ptr: &UnsafeCell<ThreadState<D, C, MS, MP>>,
+    ) -> &mut ThreadState<D, C, MS, MP> {
+        unsafe { &mut *ptr.get() }
+    }
+
     #[allow(clippy::mut_from_ref)]
     pub fn thread_state_mut(
         &self,
         _lock: &MutexGuard<ThreadStateLock>,
     ) -> &mut ThreadState<D, C, MS, MP> {
-        let state = self as *const ThreadState<D, C, MS, MP> as *mut ThreadState<D, C, MS, MP>;
-        unsafe { &mut *state }
+        let state = self as *const ThreadState<D, C, MS, MP> as *mut ThreadState<D, C, MS, MP> as *const UnsafeCell<ThreadState<D, C, MS, MP>>;
+        unsafe {
+            let s = ThreadState::get_self(state.as_ref().unwrap());
+            &mut *s
+        }
     }
 
     pub fn dwpt(&self) -> &DocumentsWriterPerThread<D, C, MS, MP> {
