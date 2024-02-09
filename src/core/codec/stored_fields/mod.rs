@@ -30,7 +30,6 @@ pub use self::stored_fields_consumer::*;
 use core::analysis::TokenStream;
 use core::codec::field_infos::{FieldInfo, FieldInfos};
 use core::codec::segment_infos::SegmentInfo;
-use core::codec::stored_fields::CompressingStoredFieldsWriter;
 use core::codec::Codec;
 use core::doc::{FieldType, Fieldable, STORE_FIELD_TYPE};
 use core::doc::{Status, StoredFieldVisitor};

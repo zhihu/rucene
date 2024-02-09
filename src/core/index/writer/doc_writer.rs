@@ -23,6 +23,7 @@ use core::index::writer::{
 use core::search::query::Query;
 use core::store::directory::{Directory, LockValidatingDirectoryWrapper};
 use core::util::external::Volatile;
+use std::cell::UnsafeCell;
 use error::{ErrorKind::AlreadyClosed, ErrorKind::IllegalState, Result};
 
 use crossbeam::queue::SegQueue;
@@ -181,10 +182,19 @@ where
         self.index_writer.upgrade().unwrap()
     }
 
+    unsafe fn get_self(
+        ptr: &UnsafeCell<DocumentsWriter<D, C, MS, MP>>,
+    ) -> &mut DocumentsWriter<D, C, MS, MP> {
+        unsafe { &mut *ptr.get() }
+    }
+
     #[allow(clippy::mut_from_ref)]
     unsafe fn doc_writer_mut(&self, _l: &MutexGuard<()>) -> &mut DocumentsWriter<D, C, MS, MP> {
-        let w = self as *const DocumentsWriter<D, C, MS, MP> as *mut DocumentsWriter<D, C, MS, MP>;
-        &mut *w
+        let w = self as *const DocumentsWriter<D, C, MS, MP> as *mut DocumentsWriter<D, C, MS, MP> as *const UnsafeCell<DocumentsWriter<D, C, MS, MP>>;
+        unsafe {
+            let s = DocumentsWriter::get_self(w.as_ref().unwrap());
+            &mut *s
+        }
     }
 
     pub fn set_delete_queue(&self, delete_queue: Arc<DocumentsWriterDeleteQueue<C>>) {

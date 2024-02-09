@@ -127,7 +127,6 @@ pub struct MmapIndexInput {
     source: ReadOnlySource,
     position: usize,
     slice: &'static [u8],
-    description: String,
 }
 
 unsafe impl Send for MmapIndexInput {}
@@ -143,7 +142,6 @@ impl From<ReadOnlySource> for MmapIndexInput {
             source,
             slice,
             position: 0,
-            description: String::from(""),
         }
     }
 }
@@ -186,7 +184,7 @@ impl MmapIndexInput {
         }
     }
 
-    fn slice_impl(&self, description: &str, offset: i64, length: i64) -> Result<Self> {
+    fn slice_impl(&self, offset: i64, length: i64) -> Result<Self> {
         let total_len = self.len() as i64;
         if offset < 0 || length < 0 || offset + length > total_len {
             bail!(IllegalArgument(format!(
@@ -200,7 +198,6 @@ impl MmapIndexInput {
             slice,
             source: self.source.clone(),
             position: 0,
-            description: description.to_string(),
         })
     }
 
@@ -238,7 +235,7 @@ impl IndexInput for MmapIndexInput {
     }
 
     fn random_access_slice(&self, offset: i64, length: i64) -> Result<Box<dyn RandomAccessInput>> {
-        let boxed = self.slice_impl("RandomAccessSlice", offset, length)?;
+        let boxed = self.slice_impl(offset, length)?;
         Ok(Box::new(boxed))
     }
 
@@ -250,8 +247,8 @@ impl IndexInput for MmapIndexInput {
         ptr
     }
 
-    fn slice(&self, description: &str, offset: i64, length: i64) -> Result<Box<dyn IndexInput>> {
-        let boxed = self.slice_impl(description, offset, length)?;
+    fn slice(&self, _description: &str, offset: i64, length: i64) -> Result<Box<dyn IndexInput>> {
+        let boxed = self.slice_impl(offset, length)?;
         Ok(Box::new(boxed))
     }
 

@@ -30,6 +30,7 @@ use core::store::directory::Directory;
 use core::store::IOContext;
 use core::util::DocId;
 
+use std::cell::UnsafeCell;
 use std::cmp::{min, Ordering as CmpOrdering};
 use std::collections::{BinaryHeap, HashMap};
 use std::fmt;
@@ -362,6 +363,12 @@ impl<C: Codec> BufferedUpdatesStream<C> {
         self.num_terms.load(Ordering::Acquire)
     }
 
+    unsafe fn get_self(
+        ptr: &UnsafeCell<BufferedUpdatesStream<C>>,
+    ) -> &mut BufferedUpdatesStream<C> {
+        unsafe { &mut *ptr.get() }
+    }
+
     pub fn apply_deletes_and_updates<D, MS, MP>(
         &self,
         pool: &ReaderPool<D, C, MS, MP>,
@@ -374,8 +381,9 @@ impl<C: Codec> BufferedUpdatesStream<C> {
     {
         let _l = self.lock.lock().unwrap();
         let updates_stream = unsafe {
-            let stream = self as *const BufferedUpdatesStream<C> as *mut BufferedUpdatesStream<C>;
-            &mut *stream
+            let stream = self as *const BufferedUpdatesStream<C> as *mut BufferedUpdatesStream<C> as *const UnsafeCell<BufferedUpdatesStream<C>>;
+            let s = BufferedUpdatesStream::get_self(stream.as_ref().unwrap());
+            &mut *s
         };
         let mut seg_states = Vec::with_capacity(infos.len());
         let gen = self.next_gen.load(Ordering::Acquire);

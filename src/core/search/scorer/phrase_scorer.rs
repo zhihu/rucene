@@ -326,8 +326,6 @@ struct PhrasePositions<T: PostingIterator> {
     pub ord: i32,
     // unique across all PhrasePositions instances
     pub postings: Rc<RefCell<T>>,
-    // stream of docs & positions
-    pub next_pp_idx: i32,
     // used to make list
     pub rpt_group: i32,
     // >=0 indicates that this is a repeating PP
@@ -347,7 +345,6 @@ impl<T: PostingIterator> PhrasePositions<T> {
             offset,
             ord,
             postings,
-            next_pp_idx: -1,
             rpt_group: -1,
             rpt_ind: 0,
             terms,

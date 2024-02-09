@@ -418,11 +418,11 @@ impl<P: PostingIterator> NearSpansUnordered<P> {
 
 impl<P: PostingIterator> ConjunctionSpans<P> for NearSpansUnordered<P> {
     fn conjunction_span_base(&self) -> &ConjunctionSpanBase<P> {
-        unsafe { self.conjunction_span.get_ref() }
+        unsafe { self.conjunction_span.assume_init_ref() }
     }
 
     fn conjunction_span_base_mut(&mut self) -> &mut ConjunctionSpanBase<P> {
-        unsafe { self.conjunction_span.get_mut() }
+        unsafe { self.conjunction_span.assume_init_mut() }
     }
 
     fn two_phase_current_doc_matches(&mut self) -> Result<bool> {
@@ -431,8 +431,8 @@ impl<P: PostingIterator> ConjunctionSpans<P> for NearSpansUnordered<P> {
         loop {
             if self.at_match() {
                 unsafe {
-                    self.conjunction_span.get_mut().first_in_current_doc = true;
-                    self.conjunction_span.get_mut().one_exhausted_in_current_doc = false;
+                    self.conjunction_span.assume_init_mut().first_in_current_doc = true;
+                    self.conjunction_span.assume_init_mut().one_exhausted_in_current_doc = false;
                 }
                 return Ok(true);
             }
@@ -450,8 +450,8 @@ impl<P: PostingIterator> ConjunctionSpans<P> for NearSpansUnordered<P> {
 impl<P: PostingIterator> Spans for NearSpansUnordered<P> {
     fn next_start_position(&mut self) -> Result<i32> {
         unsafe {
-            if self.conjunction_span.get_ref().first_in_current_doc {
-                self.conjunction_span.get_mut().first_in_current_doc = false;
+            if self.conjunction_span.assume_init_ref().first_in_current_doc {
+                self.conjunction_span.assume_init_mut().first_in_current_doc = false;
                 return Ok(self.min_cell().start_position());
             }
         }
@@ -475,7 +475,7 @@ impl<P: PostingIterator> Spans for NearSpansUnordered<P> {
                 == NO_MORE_POSITIONS
             {
                 unsafe {
-                    self.conjunction_span.get_mut().one_exhausted_in_current_doc = true;
+                    self.conjunction_span.assume_init_mut().one_exhausted_in_current_doc = true;
                 }
                 return Ok(NO_MORE_POSITIONS);
             }
@@ -487,9 +487,9 @@ impl<P: PostingIterator> Spans for NearSpansUnordered<P> {
 
     fn start_position(&self) -> i32 {
         unsafe {
-            if self.conjunction_span.get_ref().first_in_current_doc {
+            if self.conjunction_span.assume_init_ref().first_in_current_doc {
                 -1
-            } else if self.conjunction_span.get_ref().one_exhausted_in_current_doc {
+            } else if self.conjunction_span.assume_init_ref().one_exhausted_in_current_doc {
                 NO_MORE_POSITIONS
             } else {
                 self.min_cell().start_position()
@@ -499,9 +499,9 @@ impl<P: PostingIterator> Spans for NearSpansUnordered<P> {
 
     fn end_position(&self) -> i32 {
         unsafe {
-            if self.conjunction_span.get_ref().first_in_current_doc {
+            if self.conjunction_span.assume_init_ref().first_in_current_doc {
                 -1
-            } else if self.conjunction_span.get_ref().one_exhausted_in_current_doc {
+            } else if self.conjunction_span.assume_init_ref().one_exhausted_in_current_doc {
                 NO_MORE_POSITIONS
             } else {
                 self.sub_span_cells[self.max_end_position_cell_idx].end_position()

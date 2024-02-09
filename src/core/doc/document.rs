@@ -152,7 +152,7 @@ impl StoredFieldVisitor for DocumentStoredFieldVisitor {
                 ));
             }
             Err(e) => {
-                panic!(format!("string_field failed: {:?}", e));
+                panic!("string_field failed: {:?}", e);
             }
         }
         Ok(())

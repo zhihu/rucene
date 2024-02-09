@@ -17,6 +17,7 @@ use core::search::{DocIdSet, DocIterator, NO_MORE_DOCS};
 use core::util::bit_set::{FixedBitSet, ImmutableBitSet};
 use core::util::packed::{EliasFanoDecoder, EliasFanoEncoder, NO_MORE_VALUES};
 use core::util::DocId;
+use std::cell::UnsafeCell;
 use error::ErrorKind::*;
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -379,9 +380,15 @@ impl EliasFanoDocIdSet {
         EliasFanoEncoder::sufficiently_smaller_than_bit_set(num_values, upper_bound)
     }
 
+    unsafe fn get_self(ptr: &UnsafeCell<EliasFanoEncoder>) -> &mut EliasFanoEncoder {
+        unsafe { &mut *ptr.get() }
+    }
+
     pub fn encode_from_disi(&mut self, mut disi: impl DocIterator) -> Result<()> {
         let encoder = unsafe {
-            &mut *(self.ef_encoder.as_ref() as *const EliasFanoEncoder as *mut EliasFanoEncoder)
+            let s = self.ef_encoder.as_ref() as *const EliasFanoEncoder as *mut EliasFanoEncoder as *const UnsafeCell<EliasFanoEncoder>;
+            let t = EliasFanoDocIdSet::get_self(s.as_ref().unwrap());
+            &mut *t
         };
         while self.ef_encoder.num_encoded < self.ef_encoder.num_values {
             let x = disi.next()?;

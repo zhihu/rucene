@@ -970,7 +970,7 @@ impl<D: Directory> BKDWriter<D> {
             let mut first_diff_byte_delta: i32;
             if prefix < self.bytes_per_dim {
                 first_diff_byte_delta = (split_packed_values[address + prefix] as u32 as i32)
-                    - (last_split_values[(split_dim * self.bytes_per_dim + prefix)] as u32 as i32);
+                    - (last_split_values[split_dim * self.bytes_per_dim + prefix] as u32 as i32);
                 if negative_deltas[split_dim] {
                     first_diff_byte_delta *= -1;
                 }
