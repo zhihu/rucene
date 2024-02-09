@@ -21,6 +21,7 @@ pub use self::segment_infos_format::*;
 
 use serde::ser::SerializeStruct;
 use serde::{Serialize, Serializer};
+use std::cell::UnsafeCell;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -422,6 +423,12 @@ impl<D: Directory, C: Codec> SegmentCommitInfo<D, C> {
             size_in_bytes: AtomicI64::new(-1),
             buffered_deletes_gen: AtomicI64::new(0),
         }
+    }
+
+    pub unsafe fn get_self(
+        ptr: &UnsafeCell<SegmentCommitInfo<D, C>>,
+    ) -> &mut SegmentCommitInfo<D, C> {
+        unsafe { &mut *ptr.get() }
     }
 
     pub fn files(&self) -> HashSet<String> {
