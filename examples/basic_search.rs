@@ -41,12 +41,14 @@ fn new_index_text_field(field_name: String, text: String) -> Field {
 fn new_stored_text_field(field_name: String, text: String) -> Field {
     let mut field_type = FieldType::default();
     field_type.stored = true;
-
+    field_type.index_options = IndexOptions::DocsAndFreqsAndPositionsAndOffsets;
     Field::new(
         field_name,
         field_type,
         Some(VariantValue::VString(text)),
-        None,
+        Some(Box::new(WhitespaceTokenizer::new(Box::new(
+            StringReader::new("The quick brown fox jumps over a lazy dog".into()),
+        )))),
     )
 }
 
@@ -90,9 +92,9 @@ fn main() -> Result<()> {
     // add indexed text field
     let text = "The quick brown fox jumps over a lazy dog";
     let text_field = new_index_text_field("title".into(), text.into());
-    doc.push(Box::new(text_field));
+    // doc.push(Box::new(text_field));
     // add raw text field, this used for highlight
-    let stored_text_field = new_stored_text_field("title.raw".into(), text.into());
+    let stored_text_field = new_stored_text_field("title".into(), text.into());
     doc.push(Box::new(stored_text_field));
     // add numeric doc value field
     doc.push(Box::new(NumericDocValuesField::new("weight".into(), 1)));
