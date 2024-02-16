@@ -45,6 +45,7 @@ use core::util::{BitsRef, DerefWrapper, DocId, VERSION_LATEST};
 use core::index::ErrorKind::MergeAborted;
 use error::ErrorKind::{AlreadyClosed, IllegalArgument, IllegalState, Index, RuntimeError};
 use error::{Error, Result};
+use std::cell::UnsafeCell;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::mem;
@@ -1061,11 +1062,21 @@ where
         })
     }
 
+    unsafe fn get_self(
+        ptr: &UnsafeCell<IndexWriterInner<D, C, MS, MP>>,
+    ) -> &mut IndexWriterInner<D, C, MS, MP> {
+        unsafe { &mut *ptr.get() }
+    }
+
     #[allow(clippy::mut_from_ref)]
     unsafe fn writer_mut(&self, _l: &MutexGuard<()>) -> &mut IndexWriterInner<D, C, MS, MP> {
-        let writer =
-            self as *const IndexWriterInner<D, C, MS, MP> as *mut IndexWriterInner<D, C, MS, MP>;
-        &mut *writer
+        let writer = self as *const IndexWriterInner<D, C, MS, MP>
+            as *mut IndexWriterInner<D, C, MS, MP>
+            as *const UnsafeCell<IndexWriterInner<D, C, MS, MP>>;
+        unsafe {
+            let s = IndexWriterInner::get_self(writer.as_ref().unwrap());
+            &mut *s
+        }
     }
 
     fn get_reader(
@@ -1458,7 +1469,7 @@ where
         {
             let lock = Arc::clone(&self.lock);
             let l = lock.lock()?;
-            let _ = self.abort_merges(l)?;
+            drop(self.abort_merges(l)?);
         }
         self.rate_limiters = Arc::new(ThreadLocal::new());
         debug!("IW - rollback: done finish merges");
@@ -2846,9 +2857,9 @@ where
                 self.segment_infos.remove(info);
                 self.pending_num_docs
                     .fetch_sub(info.info.max_doc as i64, Ordering::AcqRel);
-                if merge.segments.contains(info) {
+                if let Some(pos) = merge.segments.iter().position(|x| *x == *info) {
                     self.merging_segments.remove(&info.info.name);
-                    merge.segments.remove_item(info);
+                    merge.segments.remove(pos);
                 }
                 self.reader_pool.drop(info.as_ref())?;
             }
@@ -4435,6 +4446,13 @@ where
             self.pending_dv_updates.insert(field, v);
         }
     }
+
+    unsafe fn get_self(
+        ptr: &UnsafeCell<ReadersAndUpdatesInner<D, C, MS, MP>>,
+    ) -> &mut ReadersAndUpdatesInner<D, C, MS, MP> {
+        unsafe { &mut *ptr.get() }
+    }
+
     // Writes field updates (new _X_N updates files) to the directory
     // pub fn write_field_updates<DW: Directory>(&mut self, _dir: &DW) -> Result<()> {
     pub fn write_field_updates(&self) -> Result<bool> {
@@ -4444,8 +4462,12 @@ where
         }
 
         let me = unsafe {
-            &mut *(self as *const ReadersAndUpdatesInner<D, C, MS, MP>
-                as *mut ReadersAndUpdatesInner<D, C, MS, MP>)
+            let t = self as *const ReadersAndUpdatesInner<D, C, MS, MP>
+                as *mut ReadersAndUpdatesInner<D, C, MS, MP>
+                as *const UnsafeCell<ReadersAndUpdatesInner<D, C, MS, MP>>;
+            let s = ReadersAndUpdatesInner::get_self(t.as_ref().unwrap());
+
+            &mut *s
         };
 
         assert!(self.reader.is_some());
@@ -4472,7 +4494,10 @@ where
         let mut new_dv_files = me.handle_doc_values_updates(&mut field_infos, doc_values_format)?;
 
         let info_mut_ref = unsafe {
-            &mut *(info.as_ref() as *const SegmentCommitInfo<D, C> as *mut SegmentCommitInfo<D, C>)
+            let t = info.as_ref() as *const SegmentCommitInfo<D, C> as *mut SegmentCommitInfo<D, C>
+                as *const UnsafeCell<SegmentCommitInfo<D, C>>;
+            let s = SegmentCommitInfo::get_self(t.as_ref().unwrap());
+            &mut *s
         };
         // writeFieldInfosGen fnm
         if !new_dv_files.is_empty() {
@@ -4530,7 +4555,12 @@ where
             // step1 construct segment write state
             let ctx = IOContext::Flush(FlushInfo::new(info.info.max_doc() as u32));
             let field_info = infos.field_info_by_name(field).unwrap();
-            let field_info = unsafe { &mut *(field_info as *const FieldInfo as *mut FieldInfo) };
+            let field_info = unsafe {
+                let t = field_info as *const FieldInfo as *mut FieldInfo
+                    as *const UnsafeCell<FieldInfo>;
+                let s: &mut FieldInfo = FieldInfo::get_self(t.as_ref().unwrap());
+                &mut *s
+            };
             let old_dv_gen = field_info.set_doc_values_gen(dv_gen);
             let state = SegmentWriteState::new(
                 tracker.clone(),

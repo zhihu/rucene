@@ -147,7 +147,7 @@ macro_rules! unpack_bits {
                                 _buffer, simd::_mm_slli_epi32(temp, remain)), mask);
                             $(_buffer = $transfer($obj, _buffer);)?
                             simd::_mm_storeu_si128(_output, _buffer);
-                            simd::_mm_srli_epi32(temp, $num - remain)
+                            simd::_mm_srli_epi32(temp, (32 + $num - remain) % 32)
                         }
                     } else {
                         let mut _data = simd::_mm_and_si128(_buffer, mask);

@@ -17,6 +17,7 @@ use core::index::merge::{MergePolicy, MergerTrigger, OneMerge, OneMergeScheduleI
 use core::index::writer::IndexWriter;
 use core::store::directory::Directory;
 use core::store::RateLimiter;
+use std::cell::UnsafeCell;
 
 use error::{Error, ErrorKind, Result};
 
@@ -139,7 +140,7 @@ impl Ord for MergeTaskInfo {
 /// throttle the incoming threads by pausing until one more more merges complete.
 #[derive(Clone)]
 pub struct ConcurrentMergeScheduler {
-    inner: Arc<ConcurrentMergeSchedulerInner>,
+    inner: Arc<Mutex<ConcurrentMergeSchedulerInner>>,
 }
 
 impl Default for ConcurrentMergeScheduler {
@@ -155,13 +156,14 @@ impl ConcurrentMergeScheduler {
             panic!("max thread count must not be 0");
         }
         Self {
-            inner: Arc::new(ConcurrentMergeSchedulerInner::new(max_thread_count)),
+            inner: Arc::new(Mutex::new(ConcurrentMergeSchedulerInner::new(
+                max_thread_count,
+            ))),
         }
     }
 }
 
 struct ConcurrentMergeSchedulerInner {
-    lock: Mutex<()>,
     cond: Condvar,
     merge_tasks: Vec<MergeTaskInfo>,
     max_merge_count: usize,
@@ -191,7 +193,6 @@ pub const MAX_MERGING_COUNT: usize = 5;
 impl ConcurrentMergeSchedulerInner {
     fn new(max_thread_count: usize) -> Self {
         ConcurrentMergeSchedulerInner {
-            lock: Mutex::new(()),
             cond: Condvar::new(),
             merge_tasks: vec![],
             max_merge_count: max_thread_count.max(MAX_MERGING_COUNT),
@@ -203,18 +204,30 @@ impl ConcurrentMergeSchedulerInner {
         }
     }
 
+    unsafe fn get_self<ConcurrentMergeSchedulerInner>(
+        ptr: &UnsafeCell<ConcurrentMergeSchedulerInner>,
+    ) -> &mut ConcurrentMergeSchedulerInner {
+        unsafe { &mut *ptr.get() }
+    }
+
     #[allow(clippy::mut_from_ref)]
-    unsafe fn scheduler_mut(&self, _guard: &MutexGuard<()>) -> &mut ConcurrentMergeSchedulerInner {
-        let scheduler =
-            self as *const ConcurrentMergeSchedulerInner as *mut ConcurrentMergeSchedulerInner;
-        &mut *scheduler
+    unsafe fn scheduler_mut(
+        &self,
+        _guard: &MutexGuard<ConcurrentMergeSchedulerInner>,
+    ) -> &mut ConcurrentMergeSchedulerInner {
+        let t = self as *const ConcurrentMergeSchedulerInner as *mut ConcurrentMergeSchedulerInner
+            as *const UnsafeCell<ConcurrentMergeSchedulerInner>;
+        unsafe {
+            let scheduler = ConcurrentMergeSchedulerInner::get_self(t.as_ref().unwrap());
+            &mut *scheduler
+        }
     }
 
     fn maybe_stall<'a, D, C, MP>(
         &self,
         writer: &IndexWriter<D, C, ConcurrentMergeScheduler, MP>,
-        guard: MutexGuard<'a, ()>,
-    ) -> (bool, MutexGuard<'a, ()>)
+        guard: MutexGuard<'a, ConcurrentMergeSchedulerInner>,
+    ) -> (bool, MutexGuard<'a, ConcurrentMergeSchedulerInner>)
     where
         D: Directory + Send + Sync + 'static,
         C: Codec,
@@ -376,7 +389,6 @@ impl ConcurrentMergeSchedulerInner {
                 }
             }
         }
-
         false
     }
 }
@@ -393,60 +405,63 @@ impl MergeScheduler for ConcurrentMergeScheduler {
         C: Codec,
         MP: MergePolicy,
     {
-        let mut guard = self.inner.lock.lock().unwrap();
-        let scheduler = unsafe { self.inner.scheduler_mut(&guard) };
+        unsafe {
+            let mut guard = self.inner.lock().unwrap();
+            let lock = self.inner.lock().unwrap();
+            let scheduler = lock.scheduler_mut(&guard);
 
-        if trigger == MergerTrigger::Closing {
-            // Disable throttling on close:
-            scheduler.target_mb_per_sec = MAX_MERGE_MB_PER_SEC;
-            scheduler.update_merge_threads();
-        }
-
-        // First, quickly run through the newly proposed merges
-        // and add any orthogonal merges (ie a merge not
-        // involving segments already pending to be merged) to
-        // the queue.  If we are way behind on merging, many of
-        // these newly proposed merges will likely already be
-        // registered.
-
-        loop {
-            let (valid, g) = scheduler.maybe_stall(writer, guard);
-            guard = g;
-            if !valid {
-                break;
+            if trigger == MergerTrigger::Closing {
+                // Disable throttling on close:
+                scheduler.target_mb_per_sec = MAX_MERGE_MB_PER_SEC;
+                scheduler.update_merge_threads();
             }
 
-            if let Some(merge) = writer.next_merge() {
-                scheduler.update_io_throttle(&merge);
+            // First, quickly run through the newly proposed merges
+            // and add any orthogonal merges (ie a merge not
+            // involving segments already pending to be merged) to
+            // the queue.  If we are way behind on merging, many of
+            // these newly proposed merges will likely already be
+            // registered.
 
-                let sentinel = Arc::new(ThreadSentinel);
-                let live_sentinel = Arc::downgrade(&sentinel);
-                let merge_thread = MergeThread {
-                    index_writer: writer.clone(),
-                    merge_scheduler: self.clone(),
-                    _live_sentinel: sentinel,
-                };
-                let merge_info = merge.schedule_info();
-                let handler = thread::Builder::new()
-                    .name(format!(
-                        "Rucene Merge Thread #{}",
-                        scheduler.merge_thread_count
-                    ))
-                    .spawn(move || {
-                        merge_thread.merge(merge);
-                    })
-                    .expect("failed to spawn thread");
-                scheduler.merge_thread_count += 1;
+            loop {
+                let (valid, g) = scheduler.maybe_stall(writer, guard);
+                guard = g;
+                if !valid {
+                    break;
+                }
 
-                let merge_task = MergeTaskInfo {
-                    merge: merge_info,
-                    thread_id: handler.thread().id(),
-                    live_sentinel,
-                };
-                scheduler.merge_tasks.push(merge_task);
-                scheduler.update_merge_threads();
-            } else {
-                return Ok(());
+                if let Some(merge) = writer.next_merge() {
+                    scheduler.update_io_throttle(&merge);
+
+                    let sentinel = Arc::new(ThreadSentinel);
+                    let live_sentinel = Arc::downgrade(&sentinel);
+                    let merge_thread = MergeThread {
+                        index_writer: writer.clone(),
+                        merge_scheduler: self.clone(),
+                        _live_sentinel: sentinel,
+                    };
+                    let merge_info = merge.schedule_info();
+                    let handler = thread::Builder::new()
+                        .name(format!(
+                            "Rucene Merge Thread #{}",
+                            scheduler.merge_thread_count
+                        ))
+                        .spawn(move || {
+                            merge_thread.merge(merge);
+                        })
+                        .expect("failed to spawn thread");
+                    scheduler.merge_thread_count += 1;
+
+                    let merge_task = MergeTaskInfo {
+                        merge: merge_info,
+                        thread_id: handler.thread().id(),
+                        live_sentinel,
+                    };
+                    scheduler.merge_tasks.push(merge_task);
+                    scheduler.update_merge_threads();
+                } else {
+                    return Ok(());
+                }
             }
         }
         Ok(())
@@ -460,7 +475,7 @@ impl MergeScheduler for ConcurrentMergeScheduler {
     }
 
     fn merging_thread_count(&self) -> Option<usize> {
-        Some(self.inner.merge_thread_count())
+        Some(self.inner.lock().unwrap().merge_thread_count())
     }
 }
 
@@ -489,11 +504,11 @@ impl<D: Directory + Send + Sync + 'static, C: Codec, MP: MergePolicy> MergeThrea
             }
             Ok(()) => {}
         }
-        let l = self.merge_scheduler.inner.lock.lock().unwrap();
-        let scheduler_mut = unsafe { self.merge_scheduler.inner.scheduler_mut(&l) };
+        let l = self.merge_scheduler.inner.lock().unwrap();
+        let scheduler_mut = unsafe { l.scheduler_mut(&l) };
         scheduler_mut
             .merge_tasks
-            .drain_filter(|t| t.merge.id == one_merge.id);
+            .retain(|t| t.merge.id != one_merge.id);
         scheduler_mut.update_merge_threads();
         // In case we had stalled indexing, we can now wake up
         // and possibly unstall:

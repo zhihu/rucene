@@ -656,7 +656,7 @@ impl CompressingStoredFieldsReader {
                 Self::read_zdouble(input)?;
             }
             _ => {
-                debug_assert!(false, format!("Unknown type flag: {}", bits));
+                debug_assert!(false, "Unknown type flag: {}", bits);
             }
         }
         Ok(())

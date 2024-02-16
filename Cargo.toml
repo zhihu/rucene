@@ -41,4 +41,6 @@ tempfile = "3.0.8"
 
 # The release profile, used for `cargo build --release`
 [profile.release]
-debug = true
+opt-level = 3
+debug = false
+debug-assertions = false

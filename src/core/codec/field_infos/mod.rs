@@ -18,6 +18,7 @@ pub use self::field_infos_format::*;
 use error::ErrorKind::{IllegalArgument, IllegalState};
 use error::Result;
 
+use std::cell::UnsafeCell;
 use std::cmp::max;
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
@@ -106,6 +107,12 @@ impl FieldInfo {
 
         info.check_consistency()?;
         Ok(info)
+    }
+
+    pub unsafe fn get_self(
+        ptr: &UnsafeCell<FieldInfo>,
+    ) -> &mut FieldInfo {
+        unsafe { &mut *ptr.get() }
     }
 
     pub fn check_consistency(&self) -> Result<()> {
@@ -324,10 +331,10 @@ pub struct FieldInvertState {
     // we must track these across field instances (multi-valued case)
     pub last_start_offset: i32,
     pub last_position: i32,
-    /*    pub offset_attribute: OffsetAttribute,
-     *    pub pos_incr_attribute: PositionIncrementAttribute,
-     *    pub payload_attribute: PayloadAttribute,
-     *    term_attribute: TermToBytesRefAttribute, */
+    //    pub offset_attribute: OffsetAttribute,
+    //    pub pos_incr_attribute: PositionIncrementAttribute,
+    //    pub payload_attribute: PayloadAttribute,
+    //    term_attribute: TermToBytesRefAttribute,
 }
 
 impl FieldInvertState {

@@ -11,6 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::cell::UnsafeCell;
 use std::cmp::max;
 use std::sync::{Arc, Once};
 
@@ -72,10 +73,7 @@ pub fn max_data_size() -> usize {
                     let iterations = compute_iterations(&decoder) as usize;
                     max_data_size = max(max_data_size, iterations * decoder.byte_value_count());
                 } else {
-                    panic!(format!(
-                        "get_decoder({:?},{:?},{:?}) failed.",
-                        format, version, bpv
-                    ));
+                    panic!("get_decoder({:?},{:?},{:?}) failed.", format, version, bpv);
                 }
             }
             let format = Format::PackedSingleBlock;
@@ -84,10 +82,7 @@ pub fn max_data_size() -> usize {
                     let iterations = compute_iterations(&decoder) as usize;
                     max_data_size = max(max_data_size, iterations * decoder.byte_value_count());
                 } else {
-                    panic!(format!(
-                        "get_decoder({:?},{:?},{:?}) failed.",
-                        format, version, bpv
-                    ));
+                    panic!("get_decoder({:?},{:?},{:?}) failed.", format, version, bpv);
                 }
             }
         }
@@ -132,9 +127,11 @@ impl ForUtilInstance {
             let format = Format::with_id(format_id);
             encoded_sizes[bpv] = encoded_size(format, packed_ints_version, bits_per_value);
             unsafe {
-                decoders.get_mut()[bpv] = get_decoder(format, packed_ints_version, bits_per_value)?;
-                encoders.get_mut()[bpv] = get_encoder(format, packed_ints_version, bits_per_value)?;
-                iterations[bpv] = compute_iterations(&decoders.get_ref()[bpv]);
+                decoders.assume_init_mut()[bpv] =
+                    get_decoder(format, packed_ints_version, bits_per_value)?;
+                encoders.assume_init_mut()[bpv] =
+                    get_encoder(format, packed_ints_version, bits_per_value)?;
+                iterations[bpv] = compute_iterations(&decoders.assume_init_ref()[bpv]);
             }
         }
 
@@ -168,9 +165,11 @@ impl ForUtilInstance {
             debug_assert!(bits_per_value <= 32);
             encoded_sizes[bpv - 1] = encoded_size(format, VERSION_CURRENT, bits_per_value);
             unsafe {
-                decoders.get_mut()[bpv - 1] = get_decoder(format, VERSION_CURRENT, bits_per_value)?;
-                encoders.get_mut()[bpv - 1] = get_encoder(format, VERSION_CURRENT, bits_per_value)?;
-                iterations[bpv - 1] = compute_iterations(&decoders.get_ref()[bpv - 1]);
+                decoders.assume_init_mut()[bpv - 1] =
+                    get_decoder(format, VERSION_CURRENT, bits_per_value)?;
+                encoders.assume_init_mut()[bpv - 1] =
+                    get_encoder(format, VERSION_CURRENT, bits_per_value)?;
+                iterations[bpv - 1] = compute_iterations(&decoders.assume_init_ref()[bpv - 1]);
             }
 
             output.write_vint(format.get_id() << 5 | (bits_per_value - 1))?;
@@ -221,7 +220,7 @@ impl ForUtilInstance {
         }
 
         let encoded_size = self.encoded_sizes[num_bits - 1];
-        let decoder = unsafe { &self.decoders.get_ref()[num_bits - 1] };
+        let decoder = unsafe { &self.decoders.assume_init_ref()[num_bits - 1] };
         if let Some(p) = partial_decoder {
             let format = match decoder {
                 &BulkOperationEnum::Packed(_) => Format::Packed,
@@ -334,6 +333,12 @@ impl ForUtil {
         self.instance.read_block_by_simd(input, decoder)
     }
 
+    unsafe fn get_self(
+        ptr: &UnsafeCell<EliasFanoEncoder>
+    ) -> &mut EliasFanoEncoder {
+        unsafe { &mut *ptr.get() }
+    }
+
     pub fn read_other_encode_block(
         doc_in: &mut dyn IndexInput,
         ef_decoder: &mut Option<EliasFanoDecoder>,
@@ -346,9 +351,12 @@ impl ForUtil {
                 let upper_bound = doc_in.read_vlong()?;
                 if ef_decoder.is_some() {
                     let encoder = unsafe {
-                        &mut *(ef_decoder.as_mut().unwrap().get_encoder().as_ref()
+                        let s = 
+                        ef_decoder.as_mut().unwrap().get_encoder().as_ref()
                             as *const EliasFanoEncoder
-                            as *mut EliasFanoEncoder)
+                            as *mut EliasFanoEncoder as *const UnsafeCell<EliasFanoEncoder>;
+                            let t = ForUtil::get_self(s.as_ref().unwrap());
+                            &mut *t
                     };
                     encoder.rebuild_not_with_check(BLOCK_SIZE as i64, upper_bound)?;
                     encoder.deserialize2(doc_in)?;
@@ -410,7 +418,7 @@ impl ForUtil {
         assert!(num_bits > 0 && num_bits <= 32);
 
         let iters = self.instance.iterations[num_bits - 1];
-        let encoder = unsafe { &self.instance.encoders.get_ref()[num_bits - 1] };
+        let encoder = unsafe { &self.instance.encoders.assume_init_ref()[num_bits - 1] };
         assert!(iters * encoder.byte_value_count() as i32 >= BLOCK_SIZE);
         let encoded_size = self.instance.encoded_sizes[num_bits - 1];
         debug_assert!(iters * encoder.byte_block_count() as i32 >= encoded_size);

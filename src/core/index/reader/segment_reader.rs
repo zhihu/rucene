@@ -665,7 +665,7 @@ impl<D: Directory + 'static, C: Codec> SegmentReader<D, C> {
     pub fn check_bounds(&self, doc_id: DocId) {
         debug_assert!(
             doc_id >= 0 && doc_id < self.max_docs(),
-            format!("doc_id={} max_docs={}", doc_id, self.max_docs(),)
+            "doc_id={} max_docs={}", doc_id, self.max_docs()
         );
     }
 

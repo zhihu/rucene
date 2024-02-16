@@ -262,7 +262,7 @@ where
         let mut all_fields = Vec::with_capacity(field_to_flush.len());
         for (_, f) in field_to_flush {
             unsafe {
-                if !f.base().bytes_hash.get_ref().is_empty() {
+                if !f.base().bytes_hash.assume_init_ref().is_empty() {
                     // TODO: Hack logic, it's because it's hard to gain param `field_to_flush` as
                     // `HashMap<&str, &mut FreqProxTermsWriterPerField>`
                     // this should be fixed later
@@ -472,7 +472,7 @@ where
     fn new(terms_writer: &FreqProxTermsWriterPerField<D, C, MS, MP>) -> Self {
         FreqProxTermsIterator {
             terms_writer,
-            num_terms: unsafe { terms_writer.base.bytes_hash.get_ref().len() },
+            num_terms: unsafe { terms_writer.base.bytes_hash.assume_init_ref().len() },
             ord: -1,
             scratch: BytesRef::default(),
         }
@@ -487,7 +487,7 @@ where
     }
 
     fn set_bytes(&mut self, term_id: usize) {
-        let idx = unsafe { self.terms().base.bytes_hash.get_ref().ids[term_id] as usize };
+        let idx = unsafe { self.terms().base.bytes_hash.assume_init_ref().ids[term_id] as usize };
         let text_start = self.terms().base.postings_array.base.text_starts[idx];
         self.scratch = self
             .terms()
@@ -589,7 +589,7 @@ where
             let mut pos_iter = FreqProxPostingsIterator::new(self.terms());
             unsafe {
                 pos_iter
-                    .reset(self.terms().base.bytes_hash.get_ref().ids[self.ord as usize] as usize);
+                    .reset(self.terms().base.bytes_hash.assume_init_ref().ids[self.ord as usize] as usize);
             }
             Ok(FreqProxPostingIterEnum::Postings(pos_iter))
         } else {
@@ -604,7 +604,7 @@ where
             let mut pos_iter = FreqProxDocsIterator::new(self.terms());
             unsafe {
                 pos_iter
-                    .reset(self.terms().base.bytes_hash.get_ref().ids[self.ord as usize] as usize);
+                    .reset(self.terms().base.bytes_hash.assume_init_ref().ids[self.ord as usize] as usize);
             }
             Ok(FreqProxPostingIterEnum::Docs(pos_iter))
         }

@@ -641,13 +641,13 @@ where
         }
 
         self.do_vectors = false;
-        let num_postings = unsafe { self.base.bytes_hash.get_ref().len() };
+        let num_postings = unsafe { self.base.bytes_hash.assume_init_ref().len() };
 
         // This is called once, after inverting all occurrences
         // of a given field in the doc.  At this point we flush
         // our hash into the DocWriter.
         unsafe {
-            self.base.bytes_hash.get_mut().sort();
+            self.base.bytes_hash.assume_init_mut().sort();
         }
         match &mut self.term_vectors_writer().0 {
             TermVectorsConsumerEnum::Raw(r) => {
@@ -670,7 +670,7 @@ where
             }
         }
         for j in 0..num_postings {
-            let term_id = unsafe { self.base.bytes_hash.get_ref().ids[j] as usize };
+            let term_id = unsafe { self.base.bytes_hash.assume_init_ref().ids[j] as usize };
             let freq = self.base.postings_array.freqs[term_id];
 
             // Get BytesPtr
@@ -702,7 +702,7 @@ where
 
     fn reset(&mut self) {
         unsafe {
-            self.base.bytes_hash.get_mut().clear(false);
+            self.base.bytes_hash.assume_init_mut().clear(false);
         }
     }
 
@@ -777,14 +777,14 @@ where
         debug_assert_ne!(field.field_type().index_options(), IndexOptions::Null);
         if first {
             unsafe {
-                if !self.base.bytes_hash.get_ref().is_empty() {
+                if !self.base.bytes_hash.assume_init_ref().is_empty() {
                     // Only necessary if previous doc hit a
                     // non-aborting exception while writing vectors in
                     // this field:
                     self.reset();
                 }
 
-                self.base.bytes_hash.get_mut().reinit();
+                self.base.bytes_hash.assume_init_mut().reinit();
             }
             self.has_payloads = false;
             self.do_vectors = field.field_type().store_term_vectors();
@@ -865,7 +865,7 @@ where
     /// RAMOutputStream, which is then quickly flushed to
     /// the real term vectors files in the Directory.
     fn finish(&mut self, _field_state: &FieldInvertState) -> Result<()> {
-        if self.do_vectors && unsafe { !self.base.bytes_hash.get_ref().is_empty() } {
+        if self.do_vectors && unsafe { !self.base.bytes_hash.assume_init_ref().is_empty() } {
             self.term_vectors_writer().add_field_to_flush(self);
         }
         Ok(())
