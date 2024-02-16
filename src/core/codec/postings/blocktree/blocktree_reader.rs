@@ -618,60 +618,59 @@ impl Stats {
         Stats {
             index_num_bytes: 0,
 
-            /// Total number of terms in the field.
+            // Total number of terms in the field.
             total_term_count: 0,
 
-            /// Total number of bytes (sum of term lengths) across all terms in the
-            /// field.
+            // Total number of bytes (sum of term lengths) across all terms in the field.
             total_term_bytes: 0,
 
             // TODO: add total auto-prefix term count
-            /// The number of normal (non-floor) blocks in the terms file.
+            // The number of normal (non-floor) blocks in the terms file.
             non_floor_block_count: 0,
 
-            /// The number of floor blocks (meta-blocks larger than the
-            /// allowed {@code maxItemsPerBlock}) in the terms file.
+            // The number of floor blocks (meta-blocks larger than the
+            // allowed {@code maxItemsPerBlock}) in the terms file.
             floor_block_count: 0,
 
-            /// The number of sub-blocks within the floor blocks.
+            // The number of sub-blocks within the floor blocks.
             floor_sub_block_count: 0,
 
-            /// The number of "internal" blocks (that have both
-            /// terms and sub-blocks).
+            // The number of "internal" blocks (that have both
+            // terms and sub-blocks).
             mixed_block_count: 0,
 
-            /// The number of "leaf" blocks (blocks that have only
-            /// terms).
+            // The number of "leaf" blocks (blocks that have only
+            // terms).
             terms_only_block_count: 0,
 
-            /// The number of "internal" blocks that do not contain
-            /// terms (have only sub-blocks).
+            // The number of "internal" blocks that do not contain
+            // terms (have only sub-blocks).
             sub_blocks_only_block_count: 0,
 
-            /// Total number of blocks.
+            // Total number of blocks.
             total_block_count: 0,
 
-            /// Number of blocks at each prefix depth.
+            // Number of blocks at each prefix depth.
             block_count_by_prefix_len: vec![0 as i32; 10],
             start_block_count: 0,
             end_block_count: 0,
 
-            /// Total number of bytes used to store term suffixes.
+            // Total number of bytes used to store term suffixes.
             total_block_suffix_bytes: 0,
 
-            /// Total number of bytes used to store term stats (not
-            /// including what the {@link PostingsReaderBase}
-            /// stores.
+            // Total number of bytes used to store term stats (not
+            // including what the {@link PostingsReaderBase}
+            // stores.
             total_block_stats_bytes: 0,
 
-            /// Total bytes stored by the {@link PostingsReaderBase},
-            /// plus the other few vInts stored in the frame.
+            // Total bytes stored by the {@link PostingsReaderBase},
+            // plus the other few vInts stored in the frame.
             total_block_other_bytes: 0,
 
-            /// Segment name.
+            // Segment name.
             segment: String::from(segment),
 
-            /// Field name.
+            // Field name.
             field: String::from(field),
         }
     }

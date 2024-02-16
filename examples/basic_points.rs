@@ -1,24 +1,17 @@
 extern crate rucene;
 
-use rucene::core::analysis::WhitespaceTokenizer;
-use rucene::core::codec::doc_values::lucene54::DocValues;
-use rucene::core::codec::Lucene62Codec;
-use rucene::core::doc::{DocValuesType, Field, FieldType, Fieldable, IndexOptions, NumericDocValuesField, Term};
+use rucene::core::doc::{DocValuesType, Field, FieldType, Fieldable};
 use rucene::core::index::reader::IndexReader;
 use rucene::core::index::writer::{IndexWriter, IndexWriterConfig};
 use rucene::core::search::collector::TopDocsCollector;
-use rucene::core::search::query::{IntPoint, LongPoint, PointRangeQuery, Query, TermQuery};
+use rucene::core::search::query::LongPoint;
 use rucene::core::search::{DefaultIndexSearcher, IndexSearcher};
 use rucene::core::store::directory::FSDirectory;
 
 use std::fs;
-use std::io;
 use std::path::Path;
 use std::sync::Arc;
 
-use rucene::core::highlight::FastVectorHighlighter;
-use rucene::core::highlight::FieldQuery;
-use rucene::core::util::VariantValue;
 use rucene::error::Result;
 
 fn indexed_numeric_field_type() -> FieldType {

@@ -19,24 +19,24 @@ use rucene::core::highlight::FieldQuery;
 use rucene::core::util::VariantValue;
 use rucene::error::Result;
 
-fn indexed_text_field_type() -> FieldType {
-    let mut field_type = FieldType::default();
-    field_type.index_options = IndexOptions::DocsAndFreqsAndPositionsAndOffsets;
-    field_type.store_term_vectors = true;
-    field_type.store_term_vector_offsets = true;
-    field_type.store_term_vector_positions = true;
-    field_type
-}
+// fn indexed_text_field_type() -> FieldType {
+//     let mut field_type = FieldType::default();
+//     field_type.index_options = IndexOptions::DocsAndFreqsAndPositionsAndOffsets;
+//     field_type.store_term_vectors = true;
+//     field_type.store_term_vector_offsets = true;
+//     field_type.store_term_vector_positions = true;
+//     field_type
+// }
 
-fn new_index_text_field(field_name: String, text: String) -> Field {
-    let token_stream = WhitespaceTokenizer::new(Box::new(StringReader::new(text)));
-    Field::new(
-        field_name,
-        indexed_text_field_type(),
-        None,
-        Some(Box::new(token_stream)),
-    )
-}
+// fn new_index_text_field(field_name: String, text: String) -> Field {
+//     let token_stream = WhitespaceTokenizer::new(Box::new(StringReader::new(text)));
+//     Field::new(
+//         field_name,
+//         indexed_text_field_type(),
+//         None,
+//         Some(Box::new(token_stream)),
+//     )
+// }
 
 fn new_stored_text_field(field_name: String, text: String) -> Field {
     let mut field_type = FieldType::default();
@@ -91,7 +91,7 @@ fn main() -> Result<()> {
     let mut doc: Vec<Box<dyn Fieldable>> = vec![];
     // add indexed text field
     let text = "The quick brown fox jumps over a lazy dog";
-    let text_field = new_index_text_field("title".into(), text.into());
+    // let text_field = new_index_text_field("title".into(), text.into());
     // doc.push(Box::new(text_field));
     // add raw text field, this used for highlight
     let stored_text_field = new_stored_text_field("title".into(), text.into());
