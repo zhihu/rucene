@@ -14,12 +14,12 @@
 use core::store::RateLimiter;
 
 use core::index::ErrorKind::MergeAborted;
-use std::cell::UnsafeCell;
+
 use error::{ErrorKind, Result};
 
 use std::f64;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Condvar, Mutex, RwLock};
+use std::sync::{Condvar, Mutex};
 use std::time::{Duration, SystemTime};
 
 use core::util::external::Volatile;

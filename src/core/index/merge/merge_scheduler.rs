@@ -213,7 +213,7 @@ impl ConcurrentMergeSchedulerInner {
     #[allow(clippy::mut_from_ref)]
     unsafe fn scheduler_mut(
         &self,
-        _guard: &MutexGuard<(ConcurrentMergeSchedulerInner)>,
+        _guard: &MutexGuard<ConcurrentMergeSchedulerInner>,
     ) -> &mut ConcurrentMergeSchedulerInner {
         let t = self as *const ConcurrentMergeSchedulerInner as *mut ConcurrentMergeSchedulerInner
             as *const UnsafeCell<ConcurrentMergeSchedulerInner>;
